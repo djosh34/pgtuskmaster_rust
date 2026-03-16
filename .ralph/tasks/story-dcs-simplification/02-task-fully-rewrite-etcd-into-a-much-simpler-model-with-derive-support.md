@@ -1,4 +1,5 @@
 ## Task: Fully Rewrite Etcd Into A Much Simpler Model With `#[]` Derive Support <status>not_started</status> <passes>false</passes> <priority>low</priority>
+<blocked_by>human review, don't do this one yet</blocked_by>
 
 <description>
 **Goal**

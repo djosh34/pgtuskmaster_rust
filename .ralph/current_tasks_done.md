@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar 16 01:24:32 AM CET 2026
+Generated: Mon Mar 16 04:12:52 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -217,6 +217,18 @@ Generated: Mon Mar 16 01:24:32 AM CET 2026
 ## Task: Collapse Duplicated HA Givens Into A Typed Topology Fixture Pipeline <status>done</status> <passes>true</passes>
 
 <priority>medium</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md`
+
+```
+## Task: Move HA Scenario Execution Into A Per-Scenario Runner Container And Remove Docker-Daemon Polling <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
 
 <description>
 ```

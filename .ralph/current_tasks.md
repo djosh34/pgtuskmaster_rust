@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar 16 01:24:32 AM CET 2026
+Generated: Mon Mar 16 04:12:52 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-stable-primary-gate-allows-non-writable-primary.md`
 
@@ -18,21 +18,10 @@ Generated: Mon Mar 16 01:24:32 AM CET 2026
 
 ```
 ## Task: Fully Rewrite Etcd Into A Much Simpler Model With `#[]` Derive Support <status>not_started</status> <passes>false</passes> <priority>low</priority>
+<blocked_by>human review, don't do this one yet</blocked_by>
 
 <description>
 **Goal**
-```
-
-==============
-
-# Task `.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md`
-
-```
-## Task: Move HA Scenario Execution Into A Per-Scenario Runner Container And Remove Docker-Daemon Polling <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
 ```
 
 ==============

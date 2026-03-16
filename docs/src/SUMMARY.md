@@ -15,6 +15,7 @@
     - [Bootstrap a New Cluster from Zero State](how-to/bootstrap-cluster.md)
     - [Check Cluster Health](how-to/check-cluster-health.md)
     - [Add a Cluster Node](how-to/add-cluster-node.md)
+    - [Perform Backup and Restore Operations](how-to/backup-and-restore.md)
     - [Configure TLS](how-to/configure-tls.md)
     - [Configure TLS Security](how-to/configure-tls-security.md)
     - [Debug Cluster Issues](how-to/debug-cluster-issues.md)

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::support::{
     error::{HarnessError, Result},
     faults::DCS_MEMBERS,
-    topology::{ClusterMember, ComposeService, DcsMember, DcsService},
+    topology::{ClusterMember, ComposeService, DcsMember, DcsService, RunnerService},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,7 +49,7 @@ impl HaGivenDefinition {
     }
 
     pub fn support_services(&self) -> Vec<ComposeService> {
-        std::iter::once(ComposeService::Observer)
+        std::iter::once(RunnerService::ScenarioRunner.into())
             .chain(self.dcs_services().into_iter().map(ComposeService::from))
             .collect()
     }
@@ -88,7 +88,7 @@ pub enum HaTopologyFixture {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreeNodeTopologyFixture {
     pub postgres_roles: PostgresRoleMapping,
-    pub observer_net_admin: ObserverNetAdmin,
+    pub runner_fault_injection: RunnerFaultInjectionMode,
     pub dcs_layout: ThreeNodeDcsLayout,
 }
 
@@ -121,9 +121,9 @@ impl RoleName {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObserverNetAdmin {
-    Enabled,
-    Disabled,
+pub enum RunnerFaultInjectionMode {
+    InContainerNetAdmin,
+    HostMediatedOnly,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,19 +193,19 @@ pub struct RenderedFixtureFile {
 pub enum FixtureRenderTarget {
     ComposeFile,
     MemberRuntimeConfig(ClusterMember),
-    ObserverConfig(ClusterMember),
+    RunnerSeedConfig(ClusterMember),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FixtureTemplate {
     Compose(ComposeTemplate),
     Runtime(NodeRuntimeTemplate),
-    Observer(ObserverTemplate),
+    RunnerSeed(RunnerSeedTemplate),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ComposeTemplate {
-    pub observer_net_admin: ObserverNetAdmin,
+    pub runner_fault_injection: RunnerFaultInjectionMode,
     pub dcs_layout: ThreeNodeDcsLayout,
 }
 
@@ -216,7 +216,7 @@ pub struct NodeRuntimeTemplate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ObserverTemplate {
+pub struct RunnerSeedTemplate {
     pub binding: MemberDcsBinding,
     pub postgres_roles: PostgresRoleMapping,
 }
@@ -261,7 +261,7 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("replicator"),
                 rewinder: RoleName::new("rewinder"),
             },
-            observer_net_admin: ObserverNetAdmin::Enabled,
+            runner_fault_injection: RunnerFaultInjectionMode::InContainerNetAdmin,
             dcs_layout: ThreeNodeDcsLayout::SharedSingle,
         },
         HaGivenId::CustomRoles => ThreeNodeTopologyFixture {
@@ -269,7 +269,7 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("mirrorbot"),
                 rewinder: RoleName::new("rewindbot"),
             },
-            observer_net_admin: ObserverNetAdmin::Disabled,
+            runner_fault_injection: RunnerFaultInjectionMode::HostMediatedOnly,
             dcs_layout: ThreeNodeDcsLayout::SharedSingle,
         },
         HaGivenId::ThreeEtcd => ThreeNodeTopologyFixture {
@@ -277,7 +277,7 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("replicator"),
                 rewinder: RoleName::new("rewinder"),
             },
-            observer_net_admin: ObserverNetAdmin::Enabled,
+            runner_fault_injection: RunnerFaultInjectionMode::InContainerNetAdmin,
             dcs_layout: ThreeNodeDcsLayout::ColocatedThreeMember,
         },
     }
@@ -287,7 +287,7 @@ fn three_node_render_plan(topology: ThreeNodeTopologyFixture) -> Vec<RenderedFix
     std::iter::once(RenderedFixtureFile {
         target: FixtureRenderTarget::ComposeFile,
         template: FixtureTemplate::Compose(ComposeTemplate {
-            observer_net_admin: topology.observer_net_admin,
+            runner_fault_injection: topology.runner_fault_injection,
             dcs_layout: topology.dcs_layout,
         }),
     })
@@ -302,8 +302,8 @@ fn three_node_render_plan(topology: ThreeNodeTopologyFixture) -> Vec<RenderedFix
                 }),
             },
             RenderedFixtureFile {
-                target: FixtureRenderTarget::ObserverConfig(member),
-                template: FixtureTemplate::Observer(ObserverTemplate {
+                target: FixtureRenderTarget::RunnerSeedConfig(member),
+                template: FixtureTemplate::RunnerSeed(RunnerSeedTemplate {
                     binding,
                     postgres_roles: topology.postgres_roles.clone(),
                 }),

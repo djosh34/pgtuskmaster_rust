@@ -1,4 +1,4 @@
-## Task: Move HA Scenario Execution Into A Per-Scenario Runner Container And Remove Docker-Daemon Polling <status>not_started</status> <passes>false</passes>
+## Task: Move HA Scenario Execution Into A Per-Scenario Runner Container And Remove Docker-Daemon Polling <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -103,26 +103,75 @@ This task must also make HA runs easier to debug. Each HA scenario should have i
 </description>
 
 <acceptance_criteria>
-- [ ] Add a dedicated test-only HA runner ownership boundary. This must be a new dev/test-only binary or crate and must not enlarge the production runtime/library surface under `src/` as public API. The task implementation must document where the runner lives and why that ownership boundary is correct.
-- [ ] Refactor the current `tests/ha` architecture so host-side orchestration and in-network scenario execution are separate responsibilities instead of being mixed through the current host-driven harness.
-- [ ] Update the HA compose materialization path under `tests/ha/support/world/mod.rs` (and any adjacent materialization modules) so each per-scenario compose project includes one long-lived runner container/service attached to the scenario network and mounted to the per-run artifacts directory.
-- [ ] Replace the current passive observer-sidecar usage. It is acceptable either to repurpose the existing `observer` service into the active scenario runner or to rename it to a clearer runner service, but the final design must have one long-lived per-scenario runner container and must not preserve the old passive-tail-plus-docker-exec model.
-- [ ] Remove normal steady-state reliance on `docker exec` for `pgtm status`, `pgtm primary`, `pgtm replicas`, and SQL polling. Current logic in `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/observer/sql.rs` must be rewritten so normal cluster observation happens through direct network clients running inside the runner container.
-- [ ] Eliminate repeated short-lived `psql` probing as the normal SQL path. The new runner must use long-lived PostgreSQL connections or a bounded connection pool so SQL/data-plane validation is not implemented as a fresh process and connection for every poll iteration.
-- [ ] Eliminate repeated all-three-seed polling as the mandatory steady-state path. The new runner may still perform all-node or all-seed checks when needed for ambiguity resolution, explicit invariants, or failure diagnostics, but the normal observation path must not fan out across all three nodes on every poll by default.
-- [ ] Preserve real HA correctness checks. The rewrite must keep SQL proof-row and writeability checks, real API observation, and real failover/recovery behavior. Do not replace those with weaker mock or API-only assertions.
-- [ ] Preserve explicit Docker-backed control actions for cluster mutation and fault injection. The new design must still support kill/start/restart/network-fault/DCS-fault actions. If Docker socket access is mounted into the runner container, the implementation must use a narrow typed control adapter for explicit actions only and must not reintroduce daemon polling as a read path.
-- [ ] Preserve old-style rescue cleanup. If the runner container fails, times out, or wedges, the host-side harness must still be able to run the current cleanup path, capture artifacts/logs as best-effort rescue data, and tear down the compose project with the old mechanism.
-- [ ] Preserve or improve artifact quality. The runner container must write per-scenario logs, structured result/timeline data, and failure context into the mounted run directory so each scenario is easier to inspect independently after failure.
-- [ ] Update nextest/image setup (`tools/nextest/setup-ha-cucumber-image.sh` and any related Docker/image definitions) so the runner binary/service is built into the HA test image or otherwise made available in a coherent, documented way without inventing an ad hoc parallel image flow unless that is clearly simpler.
-- [ ] Update all affected HA support modules and tests under `tests/ha/support/`, including `world`, `observer`, `docker`, `runner`, and any new runner-control/config modules, so there is one coherent architecture rather than a long-lived parallel old/new implementation.
-- [ ] Add focused tests for the new split architecture. At minimum this must include:
+- [x] Add a dedicated test-only HA runner ownership boundary. This must be a new dev/test-only binary or crate and must not enlarge the production runtime/library surface under `src/` as public API. The task implementation must document where the runner lives and why that ownership boundary is correct.
+- [x] Refactor the current `tests/ha` architecture so host-side orchestration and in-network scenario execution are separate responsibilities instead of being mixed through the current host-driven harness.
+- [x] Update the HA compose materialization path under `tests/ha/support/world/mod.rs` (and any adjacent materialization modules) so each per-scenario compose project includes one long-lived runner container/service attached to the scenario network and mounted to the per-run artifacts directory.
+- [x] Replace the current passive observer-sidecar usage. It is acceptable either to repurpose the existing `observer` service into the active scenario runner or to rename it to a clearer runner service, but the final design must have one long-lived per-scenario runner container and must not preserve the old passive-tail-plus-docker-exec model.
+- [x] Remove normal steady-state reliance on `docker exec` for `pgtm status`, `pgtm primary`, `pgtm replicas`, and SQL polling. Current logic in `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/observer/sql.rs` must be rewritten so normal cluster observation happens through direct network clients running inside the runner container.
+- [x] Eliminate repeated short-lived `psql` probing as the normal SQL path. The new runner must use long-lived PostgreSQL connections or a bounded connection pool so SQL/data-plane validation is not implemented as a fresh process and connection for every poll iteration.
+- [x] Eliminate repeated all-three-seed polling as the mandatory steady-state path. The new runner may still perform all-node or all-seed checks when needed for ambiguity resolution, explicit invariants, or failure diagnostics, but the normal observation path must not fan out across all three nodes on every poll by default.
+- [x] Preserve real HA correctness checks. The rewrite must keep SQL proof-row and writeability checks, real API observation, and real failover/recovery behavior. Do not replace those with weaker mock or API-only assertions.
+- [x] Preserve explicit Docker-backed control actions for cluster mutation and fault injection. The new design must still support kill/start/restart/network-fault/DCS-fault actions. If Docker socket access is mounted into the runner container, the implementation must use a narrow typed control adapter for explicit actions only and must not reintroduce daemon polling as a read path.
+- [x] Preserve old-style rescue cleanup. If the runner container fails, times out, or wedges, the host-side harness must still be able to run the current cleanup path, capture artifacts/logs as best-effort rescue data, and tear down the compose project with the old mechanism.
+- [x] Preserve or improve artifact quality. The runner container must write per-scenario logs, structured result/timeline data, and failure context into the mounted run directory so each scenario is easier to inspect independently after failure.
+- [x] Update nextest/image setup (`tools/nextest/setup-ha-cucumber-image.sh` and any related Docker/image definitions) so the runner binary/service is built into the HA test image or otherwise made available in a coherent, documented way without inventing an ad hoc parallel image flow unless that is clearly simpler.
+- [x] Update all affected HA support modules and tests under `tests/ha/support/`, including `world`, `observer`, `docker`, `runner`, and any new runner-control/config modules, so there is one coherent architecture rather than a long-lived parallel old/new implementation.
+- [x] Add focused tests for the new split architecture. At minimum this must include:
   - unit/integration coverage for runner config/materialization and host/runner contract parsing;
   - focused validation that the runner container is rendered with the correct mounts/network wiring;
   - focused validation that fallback cleanup still executes when the runner exits unsuccessfully or cannot be reached.
-- [ ] Validate the new architecture with at least one focused real HA scenario run through `cargo nextest` during development, then finish with the required repo gates.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Validate the new architecture with at least one focused real HA scenario run through `cargo nextest` during development, then finish with the required repo gates.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+1. Finish the type split around an explicit host-orchestrator vs in-network runner boundary:
+   - replace the monolithic `HarnessShared` shape with a host orchestration owner plus a runner contract/handle ADT
+   - encode runner service identity, mounts, seed configs, and control-plane mode as first-class runner types instead of loose strings/container ids
+   - keep scenario state distinct from host lifecycle state so step code stops reaching through one grab-bag owner
+2. Rework HA service and fixture identity types to reflect the new architecture:
+   - rename the passive `observer` service identity to a dedicated runner service
+   - change compose/materialization render targets and seed-config types from observer-shaped to runner-shaped ADTs
+   - keep cluster-member identity separate from host-managed compose-service identity so the compiler can help prevent boundary leaks
+3. Push the runner-oriented type model through the harness support modules before fixing call sites:
+   - `tests/ha/support/world/mod.rs`
+   - `tests/ha/support/topology.rs`
+   - `tests/ha/support/givens/mod.rs`
+   - `tests/ha/support/observer/pgtm.rs`
+   - `tests/ha/support/observer/sql.rs`
+   - `tests/ha/support/runner/mod.rs`
+4. During execution, finish the implementation behind those types:
+   - separate host-side compose startup, wait/timeout handling, rescue artifact capture, and cleanup from runner-side observation/query responsibilities
+   - replace steady-state `docker exec` observation paths with the new runner-facing boundary
+   - preserve narrow Docker-backed control actions only for explicit mutation/fault injection and rescue
+5. Add focused tests around the new host/runner contract and materialization boundary:
+   - runner service rendering and mounts
+   - runner seed-config rendering/contract parsing
+   - rescue cleanup when runner startup or completion fails
+6. Validate in repo order after the design still proves correct:
+   - `make check`
+   - `make lint`
+   - `make test`
+   - `make test-long`
+7. Only after all checks pass, update docs with the `k2-docs-loop` skill, remove stale observer-oriented HA docs, set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit, and push.
+
+- If execution shows the current ADTs are still wrong, switch this task back to `TO BE VERIFIED`, explain the design gap, and stop immediately.
+- Do not run `cargo test`; use the required `make` targets, and use `cargo nextest` only for focused local HA validation if needed before the final repo gates.
+
+Type redesign completed on 2026-03-16:
+- `tests/ha/support/topology.rs` now has an explicit `RunnerService` identity, so compose-managed runner service identity is no longer just an untyped `ComposeService::Runner` marker.
+- `tests/ha/support/runner/mod.rs` now defines a real runner-process boundary around `RunnerExecutable`, `RunnerReadPlane`, `RunnerControlPlane`, `RunnerSeedSet`, `RunnerSessionContract`, `RunnerSessionHandle`, and `InNetworkScenarioRunner`.
+- `tests/ha/support/world/mod.rs` now materializes a dedicated `runner-contract/` directory inside each scenario run and constructs the host-side runner deployment/session around the real runner binary path and contract files rather than a Docker-exec helper.
+- `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/observer/sql.rs` are now contract/protocol ADTs for runner API and SQL execution; the steady-state read types no longer store `DockerCli` or container ids.
+- `tests/ha/support/steps/mod.rs` and `tests/ha/support/workload/mod.rs` were pushed toward `ScenarioHarness`, `runner_api`, and `runner_sql` terminology so the execute pass can finish implementations against the new boundary instead of restoring observer-shaped helpers.
+
+Execution pass requirements:
+- finish the compile-fix pass behind the new runner contract types without reintroducing host-side `docker exec` or per-query `psql` as steady-state read behavior;
+- complete the remaining `ScenarioHarness` host-field rewiring and step/workload call-site migration onto the runner contract ADTs;
+- implement the real runner process/binary wiring and host/runner contract handling, then run the required validations in task order.
+
+If execution shows the new boundary is still wrong, switch this task back to `TO BE VERIFIED`, explain the remaining design gap precisely, and stop immediately.
+
+NOW EXECUTE

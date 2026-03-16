@@ -12,7 +12,10 @@ use serde::Serialize;
 
 use crate::support::{
     error::{HarnessError, Result},
-    observer::{pgtm::PgtmObserver, sql::SqlObserver},
+    observer::{
+        pgtm::RunnerApiContract,
+        sql::{RunnerSqlCommand, RunnerSqlContract},
+    },
 };
 
 const MAX_ATTEMPTS: usize = 256;
@@ -49,8 +52,8 @@ impl SqlWorkloadHandle {
     pub fn start(
         feature_name: &str,
         table_name: &str,
-        observer: PgtmObserver,
-        sql: SqlObserver,
+        runner_api: RunnerApiContract,
+        runner_sql: RunnerSqlContract,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -62,8 +65,8 @@ impl SqlWorkloadHandle {
             run_workload(
                 feature_name.as_str(),
                 table_name.as_str(),
-                observer,
-                sql,
+                runner_api,
+                runner_sql,
                 stop_signal,
                 shared_events,
             )
@@ -142,8 +145,8 @@ impl fmt::Debug for SqlWorkloadHandle {
 fn run_workload(
     feature_name: &str,
     table_name: &str,
-    observer: PgtmObserver,
-    sql: SqlObserver,
+    runner_api: RunnerApiContract,
+    runner_sql: RunnerSqlContract,
     stop_signal: Arc<AtomicBool>,
     shared_events: Arc<Mutex<Vec<WorkloadEvent>>>,
 ) -> std::result::Result<(), String> {
@@ -154,12 +157,15 @@ fn run_workload(
 
         let token = format!("workload-{feature_name}-{sequence}");
         let started_at_ms = timestamp_millis().map_err(|err| err.to_string())?;
-        let event = match resolve_primary_target(&observer) {
+        let event = match resolve_primary_target(&runner_api) {
             Ok((member_id, dsn)) => {
-                let insert_sql = format!(
-                    "INSERT INTO {table_name} (token) VALUES ('{token}') ON CONFLICT (token) DO NOTHING;"
-                );
-                match sql.execute(dsn.as_str(), insert_sql.as_str()) {
+                let command = RunnerSqlCommand {
+                    dsn,
+                    sql: format!(
+                        "INSERT INTO {table_name} (token) VALUES ('{token}') ON CONFLICT (token) DO NOTHING;"
+                    ),
+                };
+                match runner_sql.execute_command(command) {
                     Ok(_) => WorkloadEvent {
                         token,
                         target_member: Some(member_id),
@@ -205,8 +211,8 @@ fn run_workload(
     Ok(())
 }
 
-fn resolve_primary_target(observer: &PgtmObserver) -> Result<(String, String)> {
-    let primary = observer.primary_tls_json()?;
+fn resolve_primary_target(runner_api: &RunnerApiContract) -> Result<(String, String)> {
+    let primary = runner_api.primary_tls_json()?;
     match primary.targets.as_slice() {
         [target] => Ok((target.member_id.clone(), target.dsn.clone())),
         [] => Err(HarnessError::message(

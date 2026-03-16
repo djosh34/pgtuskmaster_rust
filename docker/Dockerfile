@@ -20,12 +20,13 @@ COPY Cargo.toml Cargo.lock ./
 COPY crates/pgtm_log_derive/Cargo.toml crates/pgtm_log_derive/Cargo.toml
 COPY crates/pgtuskmaster_test_support/Cargo.toml crates/pgtuskmaster_test_support/Cargo.toml
 
-RUN install -d src/bin crates/pgtm_log_derive/src crates/pgtuskmaster_test_support/src \
+RUN install -d src/bin crates/pgtm_log_derive/src crates/pgtuskmaster_test_support/src crates/pgtuskmaster_test_support/src/bin \
     && printf '%s\n' '// cargo-chef skeleton target' > src/lib.rs \
     && printf '%s\n' 'fn main() {}' > src/bin/pgtuskmaster.rs \
     && printf '%s\n' 'fn main() {}' > src/bin/pgtm.rs \
     && printf '%s\n' '// cargo-chef skeleton target' > crates/pgtm_log_derive/src/lib.rs \
     && printf '%s\n' '// cargo-chef skeleton target' > crates/pgtuskmaster_test_support/src/lib.rs \
+    && printf '%s\n' 'fn main() {}' > crates/pgtuskmaster_test_support/src/bin/pgtm-ha-runner.rs \
     && cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -47,9 +48,11 @@ COPY crates/pgtuskmaster_test_support/src ./crates/pgtuskmaster_test_support/src
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release --locked --bin pgtuskmaster --bin pgtm \
+    cargo build --release --locked -p pgtuskmaster_rust --bin pgtuskmaster --bin pgtm \
+    && cargo build --release --locked -p pgtuskmaster_test_support --bin pgtm-ha-runner \
     && install -Dm0755 /app/target/release/pgtuskmaster /out/pgtuskmaster \
-    && install -Dm0755 /app/target/release/pgtm /out/pgtm
+    && install -Dm0755 /app/target/release/pgtm /out/pgtm \
+    && install -Dm0755 /app/target/release/pgtm-ha-runner /out/pgtm-ha-runner
 
 FROM postgres:16-bookworm AS runtime-base
 
@@ -92,8 +95,10 @@ RUN apt-get update \
 
 COPY tests/docker/entrypoint.sh /usr/local/bin/pgtuskmaster-ha-entrypoint
 COPY tests/docker/wrappers /usr/local/lib/pgtuskmaster/wrappers
+COPY --from=builder /out/pgtm-ha-runner /usr/local/bin/pgtm-ha-runner
 
 RUN chmod 0755 /usr/local/bin/pgtuskmaster-ha-entrypoint \
+    && chmod 0755 /usr/local/bin/pgtm-ha-runner \
     && chmod 0755 /usr/local/lib/pgtuskmaster/wrappers/*
 
 USER postgres

@@ -209,3 +209,5 @@ NONE
 .ralph/tasks/story-dcs-simplification/01-task-rewrite-dcs-as-one-private-async-actor-with-one-public-opaque-view.md
 .ralph/tasks/story-logging-simplification/02-task-rewrite-logging-around-best-effort-private-traited-domain-events-and-opaque-log-sender.md
 NONE
+.ralph/tasks/story-logging-simplification/03-task-rewrite-logging-around-one-owned-logdto-global-context-and-an-exhaustive-event-set.md
+.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md

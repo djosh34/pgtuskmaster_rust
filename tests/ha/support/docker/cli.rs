@@ -371,20 +371,6 @@ impl DockerCli {
             })
     }
 
-    pub fn exec(&self, container: &str, binary: &Path, args: &[&str]) -> Result<String> {
-        self.exec_with_env(container, binary, args, &[])
-    }
-
-    pub fn exec_with_env(
-        &self,
-        container: &str,
-        binary: &Path,
-        args: &[&str],
-        env: &[(&str, &str)],
-    ) -> Result<String> {
-        self.exec_with_options(container, None, binary, args, env)
-    }
-
     pub fn exec_as_user(
         &self,
         container: &str,

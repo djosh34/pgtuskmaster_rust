@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -12,6 +13,7 @@ use pgtuskmaster_rust::{
     dcs::MemberPostgresView,
     ha::types::{AuthorityProjection, PublicationState},
 };
+use pgtuskmaster_test_support::ha_runner::{RunnerCommand, RunnerResponsePayload};
 use serde::Deserialize;
 
 use crate::support::{
@@ -25,18 +27,25 @@ use crate::support::{
     feature_metadata,
     givens::{
         resolve_given, ComposeTemplate, FixtureMaterialization, FixtureRenderTarget,
-        FixtureTemplate, HaGivenDefinition, HaGivenId, ObserverNetAdmin, ObserverTemplate,
-        RenderedFixtureFile, SharedFixtureEntry, ThreeNodeDcsLayout,
+        FixtureTemplate, HaGivenDefinition, HaGivenId, RenderedFixtureFile,
+        RunnerFaultInjectionMode, RunnerSeedTemplate, SharedFixtureEntry, ThreeNodeDcsLayout,
     },
-    observer::{pgtm::PgtmObserver, sql::SqlObserver},
+    observer::{pgtm::RunnerApiContract, sql::RunnerSqlContract},
+    runner::{
+        run_contract_command, InNetworkScenarioRunner, RunnerControlPlane, RunnerExecutable,
+        RunnerMountSet, RunnerProcessHandle, RunnerReadPlane, RunnerSeed, RunnerSeedSet,
+        RunnerServiceSpec, RunnerSessionContract, RunnerSessionHandle, HA_RUNNER_BINARY_PATH,
+        HA_RUNNER_CONTAINER_ARTIFACTS_DIR, HA_RUNNER_CONTAINER_CONTRACT_DIR,
+        HA_RUNNER_CONTAINER_MATERIALIZED_DIR, HA_RUNNER_CONTAINER_SCENARIO_DIR,
+    },
     timeouts::TimeoutModel,
-    topology::{ClusterMember, ComposeService, DcsMember},
+    topology::{ClusterMember, ComposeService, DcsMember, RunnerService},
     workload::{SqlWorkloadHandle, WorkloadSummary},
 };
 
 #[derive(Debug, Default, World)]
 pub struct HaWorld {
-    pub harness: Option<HarnessShared>,
+    pub harness: Option<ScenarioHarness>,
     pub scenario: ScenarioState,
 }
 
@@ -177,8 +186,8 @@ pub struct CommandState {
 }
 
 #[derive(Debug, Default)]
-pub struct ObservationScope {
-    pub observer_unreachable_members: MemberSet,
+pub struct RunnerReachability {
+    pub runner_api_unreachable_members: MemberSet,
 }
 
 #[derive(Debug, Default)]
@@ -186,7 +195,7 @@ pub struct TransitionWindow {
     pub markers: BTreeMap<MarkerName, u128>,
     pub stopped_members: MemberSet,
     pub wedged_members: MemberSet,
-    pub observation_scope: ObservationScope,
+    pub runner_reachability: RunnerReachability,
 }
 
 #[derive(Debug, Default)]
@@ -200,13 +209,13 @@ impl HaWorld {
         self.scenario = ScenarioState::default();
     }
 
-    pub fn harness(&self) -> Result<&HarnessShared> {
+    pub fn harness(&self) -> Result<&ScenarioHarness> {
         self.harness
             .as_ref()
             .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))
     }
 
-    pub fn set_harness(&mut self, harness: HarnessShared) {
+    pub fn set_harness(&mut self, harness: ScenarioHarness) {
         self.harness = Some(harness);
     }
 
@@ -250,21 +259,21 @@ impl HaWorld {
         let _ = self.scenario.transition.stopped_members.remove(member);
     }
 
-    pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
+    pub fn mark_runner_api_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
             .transition
-            .observation_scope
-            .observer_unreachable_members
+            .runner_reachability
+            .runner_api_unreachable_members
             .insert(member);
     }
 
-    pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
+    pub fn clear_runner_api_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
             .transition
-            .observation_scope
-            .observer_unreachable_members
+            .runner_reachability
+            .runner_api_unreachable_members
             .remove(member);
     }
 
@@ -294,11 +303,11 @@ impl HaWorld {
             .remove(member);
     }
 
-    pub fn clear_observer_unreachable_members(&mut self) {
+    pub fn clear_runner_api_unreachable_members(&mut self) {
         self.scenario
             .transition
-            .observation_scope
-            .observer_unreachable_members
+            .runner_reachability
+            .runner_api_unreachable_members
             .clear();
     }
 
@@ -315,21 +324,6 @@ impl HaWorld {
             .invariants
             .observed_authoritative_primaries
             .clear();
-    }
-
-    pub fn record_primary_observation(&mut self, member: ClusterMember) {
-        let already_recorded = self
-            .scenario
-            .invariants
-            .observed_authoritative_primaries
-            .iter()
-            .any(|observed| observed == &member);
-        if !already_recorded {
-            self.scenario
-                .invariants
-                .observed_authoritative_primaries
-                .push(member);
-        }
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
@@ -358,41 +352,47 @@ impl HaWorld {
 }
 
 #[derive(Debug)]
-pub struct HarnessWorkspace {
+pub struct ScenarioWorkspace {
     pub run_id: String,
     pub feature_name: String,
     pub given: HaGivenDefinition,
-    pub paths: WorkspacePaths,
+    pub paths: ScenarioPaths,
 }
 
 #[derive(Debug)]
-pub struct WorkspacePaths {
+pub struct ScenarioPaths {
     pub run_dir: PathBuf,
     pub materialized_dir: PathBuf,
     pub artifacts_dir: PathBuf,
+    pub runner_contract_dir: PathBuf,
 }
 
 #[derive(Debug)]
-pub struct ComposeStack {
+pub struct ScenarioComposeProject {
     pub file: PathBuf,
     pub project: String,
 }
 
 #[derive(Debug)]
-pub struct HarnessShared {
-    pub workspace: HarnessWorkspace,
-    pub compose: ComposeStack,
+pub struct HostOrchestratorHarness {
+    pub workspace: ScenarioWorkspace,
+    pub compose: ScenarioComposeProject,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
-    pub observer_container: String,
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
-    timeline: Mutex<Vec<serde_json::Value>>,
     cleaned_up: bool,
 }
 
-impl HarnessShared {
+#[derive(Debug)]
+pub struct ScenarioHarness {
+    pub host: HostOrchestratorHarness,
+    pub runner: InNetworkScenarioRunner,
+    timeline: Mutex<Vec<serde_json::Value>>,
+}
+
+impl ScenarioHarness {
     pub async fn initialize(given: HaGivenId) -> Result<Self> {
         let feature = feature_metadata()?;
         let docker = DockerCli::discover()?;
@@ -401,12 +401,12 @@ impl HarnessShared {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), given)?;
         let run_id = build_run_id(feature.feature_name.as_str())?;
-        let compose = ComposeStack {
+        let compose = ScenarioComposeProject {
             file: PathBuf::new(),
             project: build_compose_project(feature.feature_name.as_str(), run_id.as_str()),
         };
         let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
-        let paths = WorkspacePaths {
+        let paths = ScenarioPaths {
             run_dir: repo_root
                 .join("tests/ha/runs")
                 .join(feature.feature_name.as_str())
@@ -421,10 +421,16 @@ impl HarnessShared {
                 .join(feature.feature_name.as_str())
                 .join(run_id.as_str())
                 .join("artifacts"),
+            runner_contract_dir: repo_root
+                .join("tests/ha/runs")
+                .join(feature.feature_name.as_str())
+                .join(run_id.as_str())
+                .join("runner-contract"),
         };
         create_dir_all(paths.run_dir.as_path())?;
         create_dir_all(paths.materialized_dir.as_path())?;
         create_dir_all(paths.artifacts_dir.as_path())?;
+        create_dir_all(paths.runner_contract_dir.as_path())?;
         materialize_given_fixture(
             &given,
             paths.materialized_dir.as_path(),
@@ -432,7 +438,7 @@ impl HarnessShared {
         )?;
         create_fault_directories(paths.materialized_dir.as_path())?;
 
-        let compose = ComposeStack {
+        let compose = ScenarioComposeProject {
             file: paths.materialized_dir.join("compose.yml"),
             project: compose.project,
         };
@@ -456,42 +462,92 @@ impl HarnessShared {
         docker.compose_up_services(
             compose.file.as_path(),
             compose.project.as_str(),
-            &["observer"],
+            &[RunnerService::ScenarioRunner.service_name()],
         )?;
-        let observer_container = docker.compose_container_id(
+        let runner_container = docker.compose_container_id(
             compose.file.as_path(),
             compose.project.as_str(),
-            "observer",
+            RunnerService::ScenarioRunner.service_name(),
         )?;
         let service_container_ids = Mutex::new(BTreeMap::from([(
-            ComposeService::Observer,
-            observer_container.clone(),
+            RunnerService::ScenarioRunner.compose_service(),
+            runner_container.clone(),
         )]));
+        let runner_contract = RunnerSessionContract {
+            launch_request_path: paths.runner_contract_dir.join("launch-request.json"),
+            progress_path: paths.runner_contract_dir.join("progress.jsonl"),
+            result_path: paths.runner_contract_dir.join("result.json"),
+            timeline_path: paths.runner_contract_dir.join("timeline.json"),
+            stdout_path: paths.artifacts_dir.join("runner.stdout.log"),
+            stderr_path: paths.artifacts_dir.join("runner.stderr.log"),
+        };
+        initialize_runner_contract_files(&runner_contract)?;
+        let runner_spec = RunnerServiceSpec {
+            service: RunnerService::ScenarioRunner,
+            executable: RunnerExecutable {
+                binary_path: PathBuf::from(HA_RUNNER_BINARY_PATH),
+                arguments: Vec::new(),
+            },
+            read_plane: RunnerReadPlane::DirectNetwork,
+            control_plane: RunnerControlPlane::InContainerDockerSocket,
+            seeds: RunnerSeedSet {
+                seeds: ClusterMember::ALL
+                    .into_iter()
+                    .map(|member| RunnerSeed {
+                        member,
+                        config_path: paths
+                            .materialized_dir
+                            .join(member.runner_seed_config_relative_path()),
+                    })
+                    .collect(),
+            },
+            mounts: RunnerMountSet {
+                scenario_dir: paths.run_dir.clone(),
+                materialized_dir: paths.materialized_dir.clone(),
+                contract_dir: paths.runner_contract_dir.clone(),
+                artifacts_dir: paths.artifacts_dir.clone(),
+                docker_socket: Some(PathBuf::from("/var/run/docker.sock")),
+            },
+            contract: runner_contract.clone(),
+        };
+        let runner = InNetworkScenarioRunner {
+            spec: runner_spec,
+            session: RunnerSessionHandle {
+                process: RunnerProcessHandle {
+                    service: RunnerService::ScenarioRunner,
+                    container_id: runner_container,
+                },
+                contract: runner_contract,
+            },
+        };
 
         let mut harness = Self {
-            workspace: HarnessWorkspace {
-                run_id,
-                feature_name: feature.feature_name.clone(),
-                given,
-                paths,
+            host: HostOrchestratorHarness {
+                workspace: ScenarioWorkspace {
+                    run_id,
+                    feature_name: feature.feature_name.clone(),
+                    given,
+                    paths,
+                },
+                compose,
+                cucumber_test_image_run_id,
+                docker,
+                ryuk: Some(ryuk),
+                timeouts,
+                service_container_ids,
+                cleaned_up: false,
             },
-            compose,
-            cucumber_test_image_run_id,
-            docker,
-            ryuk: Some(ryuk),
-            observer_container,
-            timeouts,
-            service_container_ids,
+            runner,
             timeline: Mutex::new(Vec::new()),
-            cleaned_up: false,
         };
         harness.record_note(
             "initialize",
             format!(
                 "created per-feature run workspace using cucumber image run id `{}`",
-                harness.cucumber_test_image_run_id
+                harness.host.cucumber_test_image_run_id
             ),
         )?;
+        harness.wait_for_runner_ready().await?;
         if let Err(err) = harness.bootstrap_cluster().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
@@ -505,55 +561,66 @@ impl HarnessShared {
     }
 
     pub fn feature_name(&self) -> &str {
-        self.workspace.feature_name.as_str()
+        self.host.workspace.feature_name.as_str()
     }
 
     pub fn run_id(&self) -> &str {
-        self.workspace.run_id.as_str()
+        self.host.workspace.run_id.as_str()
     }
 
     pub fn given_name(&self) -> &str {
-        self.workspace.given.id.as_str()
+        self.host.workspace.given.id.as_str()
     }
 
     pub fn compose_file(&self) -> &Path {
-        self.compose.file.as_path()
+        self.host.compose.file.as_path()
     }
 
     pub fn compose_project(&self) -> &str {
-        self.compose.project.as_str()
+        self.host.compose.project.as_str()
     }
 
     pub fn run_dir(&self) -> &Path {
-        self.workspace.paths.run_dir.as_path()
+        self.host.workspace.paths.run_dir.as_path()
     }
 
     pub fn materialized_dir(&self) -> &Path {
-        self.workspace.paths.materialized_dir.as_path()
+        self.host.workspace.paths.materialized_dir.as_path()
     }
 
     pub fn artifacts_dir(&self) -> &Path {
-        self.workspace.paths.artifacts_dir.as_path()
+        self.host.workspace.paths.artifacts_dir.as_path()
     }
 
-    pub fn observer(&self) -> PgtmObserver {
-        PgtmObserver::new(self.docker.clone(), self.observer_container.clone())
+    pub fn runner_api(&self) -> RunnerApiContract {
+        RunnerApiContract::from_session(
+            self.runner.session.clone(),
+            self.runner.spec.seeds.seeds.as_slice(),
+        )
     }
 
-    pub fn sql(&self) -> SqlObserver {
-        SqlObserver::new(self.docker.clone(), self.observer_container.clone())
+    pub fn runner_sql(&self) -> RunnerSqlContract {
+        RunnerSqlContract::from_session(self.runner.session.clone())
+    }
+
+    pub fn observer(&self) -> RunnerApiContract {
+        self.runner_api()
+    }
+
+    pub fn sql(&self) -> RunnerSqlContract {
+        self.runner_sql()
     }
 
     pub fn kill_node(&self, member: ClusterMember) -> Result<()> {
         let container_id = self.service_container_id(member.into())?;
         self.record_note("docker.kill", format!("killing `{member}`"))?;
-        self.docker.kill_container(container_id.as_str())
+        self.host.docker.kill_container(container_id.as_str())
     }
 
     pub fn start_node(&self, member: ClusterMember) -> Result<()> {
         let container_id = self.service_container_id(member.into())?;
         self.record_note("docker.start", format!("starting `{member}`"))?;
-        self.docker.start_container(container_id.as_str())
+        self.host.docker.start_container(container_id.as_str())
     }
 
     pub fn record_note(&self, phase: &str, detail: impl Into<String>) -> Result<()> {
@@ -589,7 +656,7 @@ impl HarnessShared {
 
     pub fn service_logs(&self, service: ComposeService) -> Result<String> {
         let container_id = self.service_container_id(service)?;
-        self.docker.container_logs(container_id.as_str())
+        self.host.docker.container_logs(container_id.as_str())
     }
 
     pub fn write_artifact_json(
@@ -608,18 +675,18 @@ impl HarnessShared {
     pub fn stop_service(&self, service: ComposeService) -> Result<()> {
         let container_id = self.service_container_id(service)?;
         self.record_note("docker.stop_service", format!("stopping `{service}`"))?;
-        self.docker.kill_container(container_id.as_str())
+        self.host.docker.kill_container(container_id.as_str())
     }
 
     pub fn start_service(&self, service: ComposeService) -> Result<()> {
         let container_id = self.service_container_id(service)?;
         self.record_note("docker.start_service", format!("starting `{service}`"))?;
-        self.docker.start_container(container_id.as_str())
+        self.host.docker.start_container(container_id.as_str())
     }
 
     pub fn run_shell_as_root(&self, service: ComposeService, script: &str) -> Result<String> {
         let container_id = self.service_container_id(service)?;
-        self.docker.exec_as_user(
+        self.host.docker.exec_as_user(
             container_id.as_str(),
             "root",
             Path::new("/bin/sh"),
@@ -679,6 +746,7 @@ impl HarnessShared {
     ) -> Result<()> {
         let peer_container_id = self.service_container_id(peer_service)?;
         let peer_ip = self
+            .host
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
         self.ensure_fault_plumbing(member.into())?;
@@ -709,6 +777,7 @@ impl HarnessShared {
         }
         let peer_container_id = self.service_container_id(peer_service)?;
         let peer_ip = self
+            .host
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
         let script = remove_fault_rule_script(peer_ip.as_str(), path.port());
@@ -741,20 +810,29 @@ impl HarnessShared {
             .try_for_each(|peer| self.isolate_member_from_peer_on_path(member, peer, path))
     }
 
-    pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(member, TrafficPath::Api, ComposeService::Observer)
+    pub fn isolate_member_from_runner_on_api(&self, member: ClusterMember) -> Result<()> {
+        self.block_member_path_to_host(
+            member,
+            TrafficPath::Api,
+            RunnerService::ScenarioRunner.compose_service(),
+        )
     }
 
     pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
         self.block_member_path_to_host(
             member,
             TrafficPath::Dcs,
-            self.workspace.given.local_dcs_service_for(member).into(),
+            self.host
+                .workspace
+                .given
+                .local_dcs_service_for(member)
+                .into(),
         )
     }
 
     pub fn stop_all_dcs_services(&self) -> Result<()> {
-        self.workspace
+        self.host
+            .workspace
             .given
             .dcs_services()
             .into_iter()
@@ -762,7 +840,8 @@ impl HarnessShared {
     }
 
     pub fn start_all_dcs_services(&self) -> Result<()> {
-        self.workspace
+        self.host
+            .workspace
             .given
             .dcs_services()
             .into_iter()
@@ -770,7 +849,8 @@ impl HarnessShared {
     }
 
     pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
-        self.workspace
+        self.host
+            .workspace
             .given
             .quorum_majority_dcs_services()
             .into_iter()
@@ -778,7 +858,8 @@ impl HarnessShared {
     }
 
     pub fn start_dcs_quorum_majority(&self) -> Result<()> {
-        self.workspace
+        self.host
+            .workspace
             .given
             .quorum_majority_dcs_services()
             .into_iter()
@@ -786,11 +867,23 @@ impl HarnessShared {
     }
 
     pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.stop_service(self.workspace.given.local_dcs_service_for(member).into())
+        self.stop_service(
+            self.host
+                .workspace
+                .given
+                .local_dcs_service_for(member)
+                .into(),
+        )
     }
 
     pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.start_service(self.workspace.given.local_dcs_service_for(member).into())
+        self.start_service(
+            self.host
+                .workspace
+                .given
+                .local_dcs_service_for(member)
+                .into(),
+        )
     }
 
     pub fn set_blocker(
@@ -910,7 +1003,9 @@ impl HarnessShared {
         for service in DATABASE_MEMBERS
             .into_iter()
             .map(ComposeService::from)
-            .chain(std::iter::once(ComposeService::Observer))
+            .chain(std::iter::once(
+                RunnerService::ScenarioRunner.compose_service(),
+            ))
         {
             self.clear_network_faults(service)?;
         }
@@ -919,7 +1014,11 @@ impl HarnessShared {
 
     fn service_is_running(&self, service: ComposeService) -> Result<bool> {
         let container_id = self.service_container_id(service)?;
-        Ok(self.docker.container_state_status(container_id.as_str())? == "running")
+        Ok(self
+            .host
+            .docker
+            .container_state_status(container_id.as_str())?
+            == "running")
     }
 
     fn host_fault_dir(&self, member: ClusterMember) -> PathBuf {
@@ -961,18 +1060,18 @@ impl HarnessShared {
     }
 
     async fn bootstrap_cluster(&self) -> Result<()> {
-        for service in self.workspace.given.dcs_services() {
+        for service in self.host.workspace.given.dcs_services() {
             self.wait_for_service_health(service.into()).await?;
         }
         self.record_note("bootstrap", "starting seed primary node-b")?;
-        self.docker.compose_up_services(
+        self.host.docker.compose_up_services(
             self.compose_file(),
             self.compose_project(),
             &["node-b"],
         )?;
         self.wait_for_seed_primary().await?;
         self.record_note("bootstrap", "starting remaining nodes node-a and node-c")?;
-        self.docker.compose_up_services(
+        self.host.docker.compose_up_services(
             self.compose_file(),
             self.compose_project(),
             &["node-a", "node-c"],
@@ -980,13 +1079,14 @@ impl HarnessShared {
     }
 
     async fn wait_for_service_health(&self, service: ComposeService) -> Result<()> {
-        let deadline = Instant::now() + self.timeouts.startup_deadline;
+        let deadline = Instant::now() + self.host.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result = match self
-                .service_container_id(service)
-                .and_then(|container_id| self.docker.container_health_status(container_id.as_str()))
-            {
+            let result = match self.service_container_id(service).and_then(|container_id| {
+                self.host
+                    .docker
+                    .container_health_status(container_id.as_str())
+            }) {
                 Ok(Some(status)) if status == "healthy" => Ok(()),
                 Ok(Some(status)) => Err(HarnessError::message(format!(
                     "service `{service}` health is `{status}`"
@@ -1000,7 +1100,7 @@ impl HarnessShared {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err.to_string()),
             }
-            tokio::time::sleep(self.timeouts.poll_interval).await;
+            tokio::time::sleep(self.host.timeouts.poll_interval).await;
         }
 
         Err(HarnessError::message(format!(
@@ -1010,10 +1110,10 @@ impl HarnessShared {
     }
 
     async fn wait_for_seed_primary(&self) -> Result<()> {
-        let deadline = Instant::now() + self.timeouts.startup_deadline;
+        let deadline = Instant::now() + self.host.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result = match self.observer().state() {
+            let result = match self.runner_api().state() {
                 Ok(status) => {
                     self.record_status_snapshot("bootstrap.seed_primary", &status)?;
                     validate_seed_primary(&status)
@@ -1024,7 +1124,7 @@ impl HarnessShared {
                 Ok(()) => return Ok(()),
                 Err(err) => last_error = Some(err.to_string()),
             }
-            tokio::time::sleep(self.timeouts.poll_interval).await;
+            tokio::time::sleep(self.host.timeouts.poll_interval).await;
         }
 
         Err(HarnessError::message(format!(
@@ -1033,8 +1133,36 @@ impl HarnessShared {
         )))
     }
 
+    async fn wait_for_runner_ready(&self) -> Result<()> {
+        let deadline = Instant::now() + self.host.timeouts.startup_deadline;
+        let mut last_error = None;
+        while Instant::now() < deadline {
+            match run_contract_command(&self.runner.session, RunnerCommand::Ping) {
+                Ok(RunnerResponsePayload::Pong) => {
+                    self.record_note("runner.ready", "runner accepted the first contract request")?;
+                    return Ok(());
+                }
+                Ok(other) => {
+                    last_error = Some(format!(
+                        "runner returned `{other:?}` instead of pong during readiness"
+                    ));
+                    tokio::time::sleep(self.host.timeouts.poll_interval).await;
+                }
+                Err(err) => {
+                    last_error = Some(err.to_string());
+                    tokio::time::sleep(self.host.timeouts.poll_interval).await;
+                }
+            }
+        }
+
+        Err(HarnessError::message(format!(
+            "timed out waiting for the runner contract to become ready; last observed error: {}",
+            last_error.unwrap_or_else(|| "no runner response was observed".to_string())
+        )))
+    }
+
     pub fn cleanup(&mut self) -> Result<()> {
-        if self.cleaned_up {
+        if self.host.cleaned_up {
             return Ok(());
         }
 
@@ -1044,17 +1172,18 @@ impl HarnessShared {
             failures.push(format!("artifact capture failed: {err}"));
         }
         let compose_result = self
+            .host
             .docker
             .compose_down(self.compose_file(), self.compose_project());
         if let Err(err) = &compose_result {
             failures.push(format!("docker compose down failed: {err}"));
         }
-        let ryuk_result = self.ryuk.as_mut().map(RyukGuard::close).transpose();
+        let ryuk_result = self.host.ryuk.as_mut().map(RyukGuard::close).transpose();
         if let Err(err) = &ryuk_result {
             failures.push(format!("ryuk cleanup failed: {err}"));
         }
         if compose_result.is_ok() && ryuk_result.is_ok() {
-            self.cleaned_up = true;
+            self.host.cleaned_up = true;
         }
 
         if failures.is_empty() {
@@ -1070,6 +1199,7 @@ impl HarnessShared {
             self.artifacts_dir().join("compose-ps.json").as_path(),
             serde_json::to_string_pretty(
                 &self
+                    .host
                     .docker
                     .compose_ps_entries(self.compose_file(), self.compose_project())?,
             )
@@ -1081,7 +1211,8 @@ impl HarnessShared {
         )?;
         write_text_file(
             self.artifacts_dir().join("compose-logs.txt").as_path(),
-            self.docker
+            self.host
+                .docker
                 .compose_logs(self.compose_file(), self.compose_project())?
                 .as_str(),
         )?;
@@ -1095,7 +1226,7 @@ impl HarnessShared {
                 "materialized_dir": self.materialized_dir(),
                 "artifacts_dir": self.artifacts_dir(),
                 "compose_project": self.compose_project(),
-                "cucumber_test_image_run_id": self.cucumber_test_image_run_id,
+                "cucumber_test_image_run_id": self.host.cucumber_test_image_run_id,
             }))
             .map_err(|source| HarnessError::Json {
                 context: "serializing run metadata".to_string(),
@@ -1113,22 +1244,23 @@ impl HarnessShared {
                 })?
                 .as_str(),
         )?;
-        match self.observer().state() {
+        match self.runner_api().state() {
             Ok(state) => write_text_file(
-                self.artifacts_dir().join("observer-state.json").as_path(),
+                self.artifacts_dir().join("runner-state.json").as_path(),
                 serde_json::to_string_pretty(&state)
                     .map_err(|source| HarnessError::Json {
-                        context: "serializing observer state payload".to_string(),
+                        context: "serializing runner state payload".to_string(),
                         source,
                     })?
                     .as_str(),
             )?,
-            Err(err) => failures.push(format!("observer state capture failed: {err}")),
+            Err(err) => failures.push(format!("runner state capture failed: {err}")),
         }
 
-        for service in self.workspace.given.artifact_services() {
+        for service in self.host.workspace.given.artifact_services() {
             match self.service_container_id(service) {
-                Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
+                Ok(container_id) => match self.host.docker.inspect_container(container_id.as_str())
+                {
                     Ok(inspect) => {
                         let artifact = self
                             .artifacts_dir()
@@ -1168,7 +1300,8 @@ impl HarnessShared {
     }
 
     fn cached_service_container_id(&self, service: ComposeService) -> Result<Option<String>> {
-        self.service_container_ids
+        self.host
+            .service_container_ids
             .lock()
             .map(|cache| cache.get(&service).cloned())
             .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))
@@ -1176,9 +1309,11 @@ impl HarnessShared {
 
     fn refresh_service_container_ids(&self) -> Result<()> {
         let compose_entries = self
+            .host
             .docker
             .compose_ps_entries(self.compose_file(), self.compose_project())?;
         let mut cache = self
+            .host
             .service_container_ids
             .lock()
             .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))?;
@@ -1195,7 +1330,8 @@ impl HarnessShared {
     }
 
     fn compose_service_for_name(&self, service_name: &str) -> Option<ComposeService> {
-        self.workspace
+        self.host
+            .workspace
             .given
             .artifact_services()
             .into_iter()
@@ -1232,6 +1368,26 @@ fn required_env(key: &str) -> Result<String> {
             "required environment variable `{key}` is missing: {err}"
         ))
     })
+}
+
+fn initialize_runner_contract_files(contract: &RunnerSessionContract) -> Result<()> {
+    for path in [
+        contract.launch_request_path.as_path(),
+        contract.progress_path.as_path(),
+        contract.result_path.as_path(),
+    ] {
+        fs::write(path, "").map_err(|source| HarnessError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o666)).map_err(|source| {
+            HarnessError::Io {
+                path: path.to_path_buf(),
+                source,
+            }
+        })?;
+    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1426,8 +1582,8 @@ fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
         FixtureRenderTarget::MemberRuntimeConfig(member) => {
             PathBuf::from(member.runtime_config_relative_path())
         }
-        FixtureRenderTarget::ObserverConfig(member) => {
-            PathBuf::from(member.observer_config_relative_path())
+        FixtureRenderTarget::RunnerSeedConfig(member) => {
+            PathBuf::from(member.runner_seed_config_relative_path())
         }
     }
 }
@@ -1436,14 +1592,14 @@ fn render_fixture_template(template: &FixtureTemplate, feature_name: &str) -> Re
     match template {
         FixtureTemplate::Compose(template) => render_compose_template(*template, feature_name),
         FixtureTemplate::Runtime(template) => Ok(render_member_runtime_template(template)),
-        FixtureTemplate::Observer(template) => Ok(render_observer_template(template)),
+        FixtureTemplate::RunnerSeed(template) => Ok(render_runner_seed_template(template)),
     }
 }
 
 fn render_compose_template(template: ComposeTemplate, feature_name: &str) -> Result<String> {
-    let observer_cap_add = match template.observer_net_admin {
-        ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
-        ObserverNetAdmin::Disabled => "",
+    let runner_cap_add = match template.runner_fault_injection {
+        RunnerFaultInjectionMode::InContainerNetAdmin => "    cap_add:\n      - NET_ADMIN\n",
+        RunnerFaultInjectionMode::HostMediatedOnly => "",
     };
     let dcs_services = render_dcs_services(template.dcs_layout);
     let dcs_volumes = render_dcs_volumes(template.dcs_layout);
@@ -1560,33 +1716,33 @@ fn render_compose_template(template: ComposeTemplate, feature_name: &str) -> Res
       - node-c-logs:/var/log/pgtuskmaster
       - ./faults/node-c:/var/lib/pgtuskmaster/faults
 
-  observer:
+  ha-runner:
     image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
     pull_policy: never
     entrypoint:
-      - /usr/bin/tail
+      - /usr/local/bin/pgtm-ha-runner
     command:
-      - -f
-      - /dev/null
-{observer_cap_add}    networks:
+      - --contract-dir
+      - {runner_contract_dir}
+{runner_cap_add}    networks:
       - ha
     configs:
-      - source: observer_node_a
-        target: /etc/pgtuskmaster/observer/node-a.toml
-      - source: observer_node_b
-        target: /etc/pgtuskmaster/observer/node-b.toml
-      - source: observer_node_c
-        target: /etc/pgtuskmaster/observer/node-c.toml
+      - source: runner_seed_node_a
+        target: /etc/pgtuskmaster/ha-runner/seeds/node-a.toml
+      - source: runner_seed_node_b
+        target: /etc/pgtuskmaster/ha-runner/seeds/node-b.toml
+      - source: runner_seed_node_c
+        target: /etc/pgtuskmaster/ha-runner/seeds/node-c.toml
       - source: pg_hba
         target: /etc/pgtuskmaster/pg_hba.conf
       - source: pg_ident
         target: /etc/pgtuskmaster/pg_ident.conf
       - source: tls_ca
         target: /etc/pgtuskmaster/tls/ca.crt
-      - source: tls_observer_crt
-        target: /etc/pgtuskmaster/tls/observer.crt
-      - source: tls_observer_key
-        target: /etc/pgtuskmaster/tls/observer.key
+      - source: tls_runner_crt
+        target: /etc/pgtuskmaster/tls/runner.crt
+      - source: tls_runner_key
+        target: /etc/pgtuskmaster/tls/runner.key
     secrets:
       - source: postgres_superuser_password
         target: postgres-superuser-password
@@ -1598,6 +1754,12 @@ fn render_compose_template(template: ComposeTemplate, feature_name: &str) -> Res
         target: replicator-password
       - source: rewinder_password
         target: rewinder-password
+    volumes:
+      - ../:{runner_scenario_dir}
+      - ./:{runner_materialized_dir}:ro
+      - ../runner-contract:{runner_contract_dir}
+      - ../artifacts:{runner_artifacts_dir}
+      - /var/run/docker.sock:/var/run/docker.sock
 
 networks:
   ha:
@@ -1621,12 +1783,12 @@ configs:
     file: ./configs/node-b/runtime.toml
   node_c_runtime:
     file: ./configs/node-c/runtime.toml
-  observer_node_a:
-    file: ./configs/observer/node-a.toml
-  observer_node_b:
-    file: ./configs/observer/node-b.toml
-  observer_node_c:
-    file: ./configs/observer/node-c.toml
+  runner_seed_node_a:
+    file: ./configs/ha-runner/seeds/node-a.toml
+  runner_seed_node_b:
+    file: ./configs/ha-runner/seeds/node-b.toml
+  runner_seed_node_c:
+    file: ./configs/ha-runner/seeds/node-c.toml
   pg_hba:
     file: ./configs/pg_hba.conf
   pg_ident:
@@ -1645,9 +1807,9 @@ configs:
     file: ./configs/tls/node-c.crt
   tls_node_c_key:
     file: ./configs/tls/node-c.key
-  tls_observer_crt:
+  tls_runner_crt:
     file: ./configs/tls/observer.crt
-  tls_observer_key:
+  tls_runner_key:
     file: ./configs/tls/observer.key
 
 secrets:
@@ -1661,7 +1823,11 @@ secrets:
     file: ./secrets/replicator-password
   rewinder_password:
     file: ./secrets/rewinder-password
-"#
+"#,
+        runner_scenario_dir = HA_RUNNER_CONTAINER_SCENARIO_DIR,
+        runner_materialized_dir = HA_RUNNER_CONTAINER_MATERIALIZED_DIR,
+        runner_contract_dir = HA_RUNNER_CONTAINER_CONTRACT_DIR,
+        runner_artifacts_dir = HA_RUNNER_CONTAINER_ARTIFACTS_DIR,
     ))
 }
 
@@ -1769,7 +1935,7 @@ enabled = true
     )
 }
 
-fn render_observer_template(template: &ObserverTemplate) -> String {
+fn render_runner_seed_template(template: &RunnerSeedTemplate) -> String {
     let member = template.binding.member.service_name();
     format!(
         r#"[api]
@@ -1785,7 +1951,7 @@ ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
 
 [postgres.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }}
+identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/runner.crt" }}, key = {{ path = "/etc/pgtuskmaster/tls/runner.key" }} }}
 "#
     )
 }
@@ -2029,20 +2195,22 @@ mod tests {
                 assert!(runtime.contains(r#"username = "replicator""#));
                 assert!(runtime.contains(r#"username = "rewinder""#));
 
-                let observer = fs::read_to_string(
-                    output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+                let runner_seed = fs::read_to_string(
+                    output_root.join(ClusterMember::NodeA.runner_seed_config_relative_path()),
                 )
                 .map_err(|source| HarnessError::Io {
-                    path: output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
+                    path: output_root.join(ClusterMember::NodeA.runner_seed_config_relative_path()),
                     source,
                 })?;
-                toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str())
+                toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(runner_seed.as_str())
                     .map_err(|source| {
                         HarnessError::message(format!(
-                            "materialized observer config failed to parse: {source}"
+                            "materialized runner seed config failed to parse: {source}"
                         ))
                     })?;
-                assert!(observer.contains(r#"base_url = "https://node-a:8443""#));
+                assert!(runner_seed.contains(r#"base_url = "https://node-a:8443""#));
+                assert!(compose.contains("/usr/local/bin/pgtm-ha-runner"));
+                assert!(compose.contains(HA_RUNNER_CONTAINER_CONTRACT_DIR));
                 assert!(output_root.join("configs/tls/ca.crt").is_file());
                 assert!(output_root.join("secrets/replicator-password").is_file());
                 Ok(())
@@ -2089,21 +2257,21 @@ mod tests {
             assert!(runtime.contains(r#"username = "mirrorbot""#));
             assert!(runtime.contains(r#"username = "rewindbot""#));
 
-            let observer = fs::read_to_string(
-                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+            let runner_seed = fs::read_to_string(
+                output_root.join(ClusterMember::NodeC.runner_seed_config_relative_path()),
             )
             .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+                path: output_root.join(ClusterMember::NodeC.runner_seed_config_relative_path()),
                 source,
             })?;
-            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str()).map_err(
+            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(runner_seed.as_str()).map_err(
                 |source| {
                     HarnessError::message(format!(
-                        "materialized observer config failed to parse: {source}"
+                        "materialized runner seed config failed to parse: {source}"
                     ))
                 },
             )?;
-            assert!(observer.contains(r#"base_url = "https://node-c:8443""#));
+            assert!(runner_seed.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 
@@ -2176,20 +2344,20 @@ mod tests {
                 })?;
             assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
 
-            let node_c_observer = fs::read_to_string(
-                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+            let node_c_runner_seed = fs::read_to_string(
+                output_root.join(ClusterMember::NodeC.runner_seed_config_relative_path()),
             )
             .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
+                path: output_root.join(ClusterMember::NodeC.runner_seed_config_relative_path()),
                 source,
             })?;
-            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(node_c_observer.as_str())
+            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(node_c_runner_seed.as_str())
                 .map_err(|source| {
                     HarnessError::message(format!(
-                        "materialized observer config failed to parse: {source}"
+                        "materialized runner seed config failed to parse: {source}"
                     ))
                 })?;
-            assert!(node_c_observer.contains(r#"base_url = "https://node-c:8443""#));
+            assert!(node_c_runner_seed.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 

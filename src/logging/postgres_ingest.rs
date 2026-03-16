@@ -1371,6 +1371,24 @@ mod tests {
                                 }
                             )));
                         }
+                        crate::process::state::JobOutcome::Timeout { id, .. } if *id == *job_id => {
+                            let debug_tail = match debug_log_path {
+                                Some(path) => tail_file_best_effort(path, 60),
+                                None => String::new(),
+                            };
+                            return Err(WorkerError::Message(format!(
+                                "process job {} timed out unexpectedly{}",
+                                job_id.0,
+                                if debug_tail.is_empty() {
+                                    "".to_string()
+                                } else {
+                                    format!(
+                                        "\n--- debug tail {} ---\n{debug_tail}",
+                                        path_display(debug_log_path)
+                                    )
+                                }
+                            )));
+                        }
                         _ => {}
                     }
                 }
@@ -1641,6 +1659,8 @@ mod tests {
 
             let mut cfg = sample_runtime_config();
             cfg.process.binaries = binaries.clone();
+            cfg.process.timeouts.bootstrap_ms = 30_000;
+            cfg.process.timeouts.fencing_ms = 30_000;
             cfg.postgres.paths.data_dir = data_dir.clone();
             cfg.postgres.paths.socket_dir = Some(socket_dir.clone());
             cfg.postgres.network.listen_port = port;

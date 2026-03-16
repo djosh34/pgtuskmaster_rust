@@ -18,13 +18,13 @@ use crate::support::{
     givens::HaGivenId,
     observer::pgtm::ConnectionTarget,
     topology::ClusterMember,
-    world::{HaWorld, HarnessShared, MemberSet},
+    world::{HaWorld, MemberSet, ScenarioHarness},
 };
 
 #[given(regex = r#"^the "([^"]+)" harness is running$"#)]
 async fn the_harness_is_running(world: &mut HaWorld, given_name: String) -> Result<()> {
     let given = HaGivenId::parse(given_name.as_str())?;
-    let harness = HarnessShared::initialize(given).await?;
+    let harness = ScenarioHarness::initialize(given).await?;
     harness.record_note("scenario", format!("started given `{given_name}`"))?;
     world.set_harness(harness);
     Ok(())
@@ -311,7 +311,7 @@ async fn after_the_configured_ha_lease_deadline_a_different_node_becomes_the_onl
     world: &mut HaWorld,
 ) -> Result<()> {
     let killed_node = world.require_alias("killed_node")?;
-    let new_primary = wait_for_single_primary(
+    let new_primary = wait_for_authoritative_single_primary(
         world,
         "legacy.failover.new_primary",
         PollKind::Failover,
@@ -330,20 +330,13 @@ async fn the_primary_named_remains_the_only_primary(
     member_ref: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    let observed = wait_for_single_primary(
+    let observed = wait_for_authoritative_single_primary(
         world,
         format!("primary.same.{member_id}").as_str(),
         PollKind::Failover,
         online_expected_count(world),
         Some(member_id),
         None,
-    )
-    .await?;
-    let _ = wait_for_primary_resolution_for_member(
-        world,
-        format!("primary.same.resolution.{member_id}").as_str(),
-        PollKind::Failover,
-        Some(member_id),
     )
     .await?;
     if observed != member_id {
@@ -392,32 +385,12 @@ async fn exactly_one_primary_exists_across_running_nodes_as(
 ) -> Result<()> {
     let expected_online = parse_count(expected_online.as_str())?;
     let intended_online = online_member_ids(world);
-    let primary = poll_for_status(
+    let primary = wait_for_authoritative_single_primary_within(
         world,
         format!("primary.across.{expected_online}.{alias}").as_str(),
         PollKind::Recovery,
-        |status| {
-            require_visible_members(status, expected_online)?;
-            let primary = single_primary(status)?;
-            if intended_online
-                .iter()
-                .any(|member_id| member_id == &primary)
-            {
-                Ok(primary)
-            } else {
-                Err(HarnessError::message(format!(
-                    "expected operator-visible primary within {:?}, observed `{primary}`",
-                    intended_online
-                )))
-            }
-        },
-    )
-    .await?;
-    let _ = wait_for_primary_resolution_for_member(
-        world,
-        format!("primary.across.primary.{expected_online}.{alias}").as_str(),
-        PollKind::Recovery,
-        Some(primary),
+        expected_online,
+        intended_online.as_slice(),
     )
     .await?;
     world.remember_alias(alias.as_str(), primary);
@@ -432,20 +405,13 @@ async fn i_wait_for_a_different_stable_primary_than_as(
     alias: String,
 ) -> Result<()> {
     let previous_member = resolve_member_reference(world, previous_ref.as_str())?;
-    let primary = wait_for_single_primary(
+    let primary = wait_for_authoritative_single_primary(
         world,
         format!("primary.changed.{alias}").as_str(),
         PollKind::Failover,
         online_expected_count(world),
         None,
         Some(previous_member),
-    )
-    .await?;
-    let _ = wait_for_primary_resolution_for_member(
-        world,
-        format!("primary.changed.primary.{alias}").as_str(),
-        PollKind::Failover,
-        Some(primary),
     )
     .await?;
     world.remember_alias(alias.as_str(), primary);
@@ -459,20 +425,13 @@ async fn i_wait_for_the_primary_named_to_become_the_only_primary(
     member_ref: String,
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    let observed = wait_for_single_primary(
+    let observed = wait_for_authoritative_single_primary(
         world,
         format!("primary.targeted.{member_id}").as_str(),
         PollKind::Failover,
         online_expected_count(world),
         Some(member_id),
         None,
-    )
-    .await?;
-    let _ = wait_for_primary_resolution_for_member(
-        world,
-        format!("primary.targeted.primary.{member_id}").as_str(),
-        PollKind::Failover,
-        Some(member_id),
     )
     .await?;
     if observed != member_id {
@@ -592,6 +551,7 @@ async fn the_node_named_remains_offline(world: &mut HaWorld, member_ref: String)
     let harness = world.harness()?;
     let container_id = harness.service_container_id(member_id.into())?;
     let state = harness
+        .host
         .docker
         .container_state_status(container_id.as_str())?;
     if matches!(state.as_str(), "exited" | "dead") {
@@ -691,26 +651,73 @@ async fn the_primary_history_never_included(world: &mut HaWorld, member_ref: Str
 async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str) -> Result<()> {
     let table_name = ensure_proof_table(world)?;
     let member_id = resolve_member_reference(world, member_ref)?;
-    let target = sql_target_for_member(world.harness()?, member_id)?;
     let create_sql = format!("CREATE TABLE IF NOT EXISTS {table_name} (token TEXT PRIMARY KEY);");
     let insert_sql = format!(
         "INSERT INTO {table_name} (token) VALUES ('{}') ON CONFLICT (token) DO NOTHING;",
         sql_quote_literal(row_value)
     );
-    let harness = world.harness()?;
-    if let Err(err) = harness
-        .sql()
-        .execute(target.dsn.as_str(), insert_sql.as_str())
-    {
-        if !err.to_string().contains("does not exist") {
-            return Err(err);
+    let deadline = {
+        let harness = world.harness()?;
+        Instant::now() + harness.host.timeouts.recovery_deadline
+    };
+    let poll_interval = {
+        let harness = world.harness()?;
+        harness.host.timeouts.poll_interval
+    };
+    let mut last_retryable_error = None;
+
+    loop {
+        let target = sql_target_for_member(world.harness()?, member_id)?;
+        let insert_result = {
+            let harness = world.harness()?;
+            harness
+                .sql()
+                .execute(target.dsn.as_str(), insert_sql.as_str())
+        };
+        match insert_result {
+            Ok(_) => break,
+            Err(err) => {
+                let message = err.to_string();
+                if message.contains("does not exist") {
+                    let create_result = {
+                        let harness = world.harness()?;
+                        harness
+                            .sql()
+                            .execute(target.dsn.as_str(), create_sql.as_str())
+                    };
+                    match create_result {
+                        Ok(_) => {}
+                        Err(create_err) => {
+                            let create_message = create_err.to_string();
+                            if !is_retryable_proof_insert_error(create_message.as_str())
+                                || Instant::now() >= deadline
+                            {
+                                return Err(create_err);
+                            }
+                            last_retryable_error = Some(create_message);
+                            tokio::time::sleep(poll_interval).await;
+                            continue;
+                        }
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                    continue;
+                }
+                if !is_retryable_proof_insert_error(message.as_str()) || Instant::now() >= deadline
+                {
+                    return Err(err);
+                }
+                last_retryable_error = Some(message);
+                tokio::time::sleep(poll_interval).await;
+                continue;
+            }
         }
-        let _ = harness
-            .sql()
-            .execute(target.dsn.as_str(), create_sql.as_str())?;
-        let _ = harness
-            .sql()
-            .execute(target.dsn.as_str(), insert_sql.as_str())?;
+    }
+    let harness = world.harness()?;
+    if let Some(last_retryable_error) = last_retryable_error {
+        harness.record_note(
+            "sql.insert_proof_row.retry",
+            format!("member={member_id} row={row_value} last_error={last_retryable_error}"),
+        )?;
     }
     harness.record_note(
         "sql.insert_proof_row",
@@ -735,8 +742,8 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
         && world
             .scenario
             .transition
-            .observation_scope
-            .observer_unreachable_members
+            .runner_reachability
+            .runner_api_unreachable_members
             .is_empty()
         && world.scenario.transition.wedged_members.is_empty()
         && world
@@ -750,6 +757,17 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
         return wait_for_recorded_proof_rows(world, expected_online).await;
     }
     Ok(())
+}
+
+fn is_retryable_proof_insert_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    normalized.contains("db error")
+        || normalized.contains("connection closed")
+        || normalized.contains("error communicating with the server")
+        || normalized.contains("read-only")
+        || normalized.contains("recovery is in progress")
+        || normalized.contains("starting up")
+        || normalized.contains("not yet accepting connections")
 }
 
 fn ensure_proof_table(world: &mut HaWorld) -> Result<String> {
@@ -788,11 +806,11 @@ async fn wait_for_recorded_proof_rows(world: &mut HaWorld, expected_online: usiz
         .collect::<Vec<_>>();
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.recovery_deadline
+        Instant::now() + harness.host.timeouts.recovery_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -843,11 +861,11 @@ async fn wait_for_member_rows(
     let member_id = resolve_member_reference(world, member_ref)?;
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.recovery_deadline
+        Instant::now() + harness.host.timeouts.recovery_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -895,11 +913,11 @@ async fn wait_for_recorded_proof_rows_included(
         .collect::<Vec<_>>();
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.recovery_deadline
+        Instant::now() + harness.host.timeouts.recovery_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -934,38 +952,6 @@ async fn wait_for_recorded_proof_rows_included(
     )))
 }
 
-async fn wait_for_single_primary(
-    world: &mut HaWorld,
-    phase: &str,
-    kind: PollKind,
-    expected_online: usize,
-    exact_primary: Option<ClusterMember>,
-    different_from: Option<ClusterMember>,
-) -> Result<ClusterMember> {
-    let expected_primary = exact_primary;
-    let previous_primary = different_from;
-    poll_for_status(world, phase, kind, |status| {
-        require_visible_members(status, expected_online)?;
-        let primary = single_primary(status)?;
-        if let Some(expected_primary) = expected_primary.as_ref() {
-            if primary != *expected_primary {
-                return Err(HarnessError::message(format!(
-                    "expected `{expected_primary}` to be primary, observed `{primary}`"
-                )));
-            }
-        }
-        if let Some(previous_primary) = previous_primary.as_ref() {
-            if primary == *previous_primary {
-                return Err(HarnessError::message(format!(
-                    "expected a different primary than `{previous_primary}`, observed `{primary}`"
-                )));
-            }
-        }
-        Ok(primary)
-    })
-    .await
-}
-
 async fn wait_for_authoritative_single_primary(
     world: &mut HaWorld,
     phase: &str,
@@ -982,7 +968,7 @@ async fn wait_for_authoritative_single_primary(
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1048,17 +1034,89 @@ async fn wait_for_authoritative_single_primary(
     )))
 }
 
+async fn wait_for_authoritative_single_primary_within(
+    world: &mut HaWorld,
+    phase: &str,
+    kind: PollKind,
+    expected_online: usize,
+    allowed_members: &[ClusterMember],
+) -> Result<ClusterMember> {
+    let deadline = {
+        let harness = world.harness()?;
+        Instant::now() + kind.deadline(harness)
+    };
+    let poll_interval = {
+        let harness = world.harness()?;
+        harness.host.timeouts.poll_interval
+    };
+    let mut last_error = None;
+
+    while Instant::now() < deadline {
+        let attempt: Result<ClusterMember> = (|| {
+            let status = {
+                let harness = world.harness()?;
+                let status = harness.observer().state()?;
+                harness.record_status_snapshot(phase, &status)?;
+                status
+            };
+            require_visible_members(&status, expected_online)?;
+            let primary = single_primary(&status)?;
+            if !allowed_members.contains(&primary) {
+                Err(HarnessError::message(format!(
+                    "expected operator-visible primary within {:?}, observed `{primary}`",
+                    allowed_members
+                )))?;
+            }
+            let target = {
+                let harness = world.harness()?;
+                let target = current_primary_target(harness)?;
+                let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
+                target
+            };
+            if target.member_id != primary.service_name() {
+                Err(HarnessError::message(format!(
+                    "DCS-reported primary was `{primary}`, but authoritative pgtm primary resolved to `{}`",
+                    target.member_id
+                )))?;
+            }
+            Ok(primary)
+        })();
+        match attempt {
+            Ok(primary) => return Ok(primary),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        let terminal_error = {
+            let harness = world.harness()?;
+            terminal_container_failure(harness, &world.scenario.transition.stopped_members, kind)?
+        };
+        if let Some(terminal_error) = terminal_error {
+            return Err(HarnessError::message(format!(
+                "{}\nterminal container failure detected: {terminal_error}",
+                last_error.unwrap_or_else(|| "authoritative primary polling failed".to_string())
+            )));
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Err(HarnessError::message(format!(
+        "{} deadline expired while waiting for a stable authoritative primary within {:?}; last observed error: {}",
+        kind.label(),
+        allowed_members,
+        last_error.unwrap_or_else(|| "no authoritative primary verification attempt ran".to_string())
+    )))
+}
+
 async fn wait_for_no_operator_primary(
     world: &mut HaWorld,
     expected_visible_members: Option<usize>,
 ) -> Result<()> {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1094,11 +1152,11 @@ async fn wait_for_member_to_rejoin_as_replica(world: &mut HaWorld, member_ref: &
     let expected_online = online_expected_count(world);
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.recovery_deadline
+        Instant::now() + harness.host.timeouts.recovery_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1127,11 +1185,11 @@ async fn wait_for_members_to_reject_proof_writes(
     let table_name = ensure_proof_table(world)?;
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1173,11 +1231,11 @@ async fn wait_for_members_to_reject_proof_writes(
 async fn wait_for_pgtm_replicas(world: &mut HaWorld, expected: BTreeSet<String>) -> Result<()> {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1255,58 +1313,6 @@ async fn wait_for_minimum_replicas(
     .await
 }
 
-async fn wait_for_primary_resolution_for_member(
-    world: &mut HaWorld,
-    phase: &str,
-    kind: PollKind,
-    expected_member_id: Option<ClusterMember>,
-) -> Result<ConnectionTarget> {
-    let deadline = {
-        let harness = world.harness()?;
-        Instant::now() + kind.deadline(harness)
-    };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
-    let mut last_error = None;
-
-    while Instant::now() < deadline {
-        let attempt: Result<ConnectionTarget> = (|| {
-            let target = {
-                let harness = world.harness()?;
-                let status = harness.observer().state()?;
-                harness.record_status_snapshot(phase, &status)?;
-                let target = current_primary_target(harness)?;
-                if let Some(expected_member_id) = expected_member_id {
-                    if target.member_id != expected_member_id.service_name() {
-                        Err(HarnessError::message(format!(
-                            "pgtm primary resolved to `{}` instead of expected `{expected_member_id}`",
-                            target.member_id
-                        )))?;
-                    }
-                }
-                let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
-                target
-            };
-            let primary_member = ClusterMember::parse(target.member_id.as_str())?;
-            world.record_primary_observation(primary_member);
-            Ok(target)
-        })();
-        match attempt {
-            Ok(target) => return Ok(target),
-            Err(err) => last_error = Some(err.to_string()),
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    Err(HarnessError::message(format!(
-        "{} deadline expired while waiting for an authoritative pgtm primary target; last observed error: {}",
-        kind.label(),
-        last_error.unwrap_or_else(|| "no primary-resolution attempt ran".to_string())
-    )))
-}
-
 async fn poll_for_status<T, F>(
     world: &mut HaWorld,
     phase: &str,
@@ -1322,7 +1328,7 @@ where
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -1371,7 +1377,7 @@ fn current_status(world: &HaWorld) -> Result<NodeState> {
     Ok(status)
 }
 
-fn current_primary_target(harness: &HarnessShared) -> Result<ConnectionTarget> {
+fn current_primary_target(harness: &ScenarioHarness) -> Result<ConnectionTarget> {
     let primary = harness.observer().primary_tls_json()?;
     match primary.targets.as_slice() {
         [target] => Ok(target.clone()),
@@ -1388,7 +1394,7 @@ fn current_primary_target(harness: &HarnessShared) -> Result<ConnectionTarget> {
     }
 }
 
-fn current_connection_targets(harness: &HarnessShared) -> Result<Vec<ConnectionTarget>> {
+fn current_connection_targets(harness: &ScenarioHarness) -> Result<Vec<ConnectionTarget>> {
     let primary = harness.observer().primary_tls_json()?;
     let replicas = harness.observer().replicas_tls_json()?;
     let mut by_member = BTreeMap::new();
@@ -1408,7 +1414,7 @@ fn direct_connection_target(member_id: ClusterMember) -> ConnectionTarget {
         postgres_host: member_id.to_string(),
         postgres_port: 5432,
         dsn: format!(
-            "host={member_id} port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtuskmaster/tls/ca.crt sslcert=/etc/pgtuskmaster/tls/observer.crt sslkey=/etc/pgtuskmaster/tls/observer.key"
+            "host={member_id} port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtuskmaster/tls/ca.crt sslcert=/etc/pgtuskmaster/tls/runner.crt sslkey=/etc/pgtuskmaster/tls/runner.key"
         ),
     }
 }
@@ -1421,7 +1427,7 @@ fn direct_online_connection_targets(world: &HaWorld) -> Result<Vec<ConnectionTar
 }
 
 fn pgtm_connection_target_for_member(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     member_id: ClusterMember,
 ) -> Result<ConnectionTarget> {
     if let Ok(primary_target) = current_primary_target(harness) {
@@ -1441,7 +1447,7 @@ fn pgtm_connection_target_for_member(
 }
 
 fn sql_target_for_member(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     member_id: ClusterMember,
 ) -> Result<ConnectionTarget> {
     match pgtm_connection_target_for_member(harness, member_id) {
@@ -1451,7 +1457,7 @@ fn sql_target_for_member(
 }
 
 fn verify_rows_on_targets(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     targets: &[ConnectionTarget],
     table_name: &str,
     expected_rows: &[String],
@@ -1464,7 +1470,7 @@ fn verify_rows_on_targets(
 }
 
 fn verify_rows_included_on_targets(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     targets: &[ConnectionTarget],
     table_name: &str,
     expected_rows: &[String],
@@ -1477,7 +1483,7 @@ fn verify_rows_included_on_targets(
 }
 
 fn fetch_rows_for_member(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     table_name: &str,
     member_id: ClusterMember,
 ) -> Result<Vec<String>> {
@@ -1486,7 +1492,7 @@ fn fetch_rows_for_member(
 }
 
 fn fetch_rows_via_target(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     table_name: &str,
     target: &ConnectionTarget,
 ) -> Result<Vec<String>> {
@@ -1598,7 +1604,7 @@ fn operator_visible_member_ids(status: &NodeState) -> Vec<ClusterMember> {
 }
 
 fn assert_member_is_replica_via_member(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     member: ClusterMember,
     expected_online: usize,
 ) -> Result<()> {
@@ -1718,7 +1724,7 @@ fn self_is_fail_safe(status: &NodeState, member: ClusterMember) -> bool {
 }
 
 fn terminal_container_failure(
-    harness: &HarnessShared,
+    harness: &ScenarioHarness,
     expected_offline: &MemberSet,
     kind: PollKind,
 ) -> Result<Option<String>> {
@@ -1741,6 +1747,7 @@ fn terminal_container_failure(
             }
         };
         let state = harness
+            .host
             .docker
             .container_state_status(container_id.as_str())?;
         if matches!(state.as_str(), "exited" | "dead") {
@@ -1761,7 +1768,7 @@ fn parse_count(raw_value: &str) -> Result<usize> {
     })
 }
 
-fn proof_table_name(harness: &HarnessShared) -> String {
+fn proof_table_name(harness: &ScenarioHarness) -> String {
     const MAX_SQL_IDENTIFIER_BYTES: usize = 63;
     const PROOF_TABLE_PREFIX: &str = "ha_cucumber_proof_";
 
@@ -1817,8 +1824,8 @@ fn online_expected_count(world: &HaWorld) -> usize {
         - world
             .scenario
             .transition
-            .observation_scope
-            .observer_unreachable_members
+            .runner_reachability
+            .runner_api_unreachable_members
             .len()
 }
 
@@ -1831,8 +1838,8 @@ fn online_member_ids(world: &HaWorld) -> Vec<ClusterMember> {
                 && !world
                     .scenario
                     .transition
-                    .observation_scope
-                    .observer_unreachable_members
+                    .runner_reachability
+                    .runner_api_unreachable_members
                     .contains(**member)
         })
         .copied()
@@ -1851,11 +1858,11 @@ enum PollKind {
 }
 
 impl PollKind {
-    fn deadline(self, harness: &HarnessShared) -> Duration {
+    fn deadline(self, harness: &ScenarioHarness) -> Duration {
         match self {
-            Self::Startup => harness.timeouts.startup_deadline,
-            Self::Failover => harness.timeouts.failover_deadline,
-            Self::Recovery => harness.timeouts.recovery_deadline,
+            Self::Startup => harness.host.timeouts.startup_deadline,
+            Self::Failover => harness.host.timeouts.failover_deadline,
+            Self::Recovery => harness.host.timeouts.recovery_deadline,
         }
     }
 
@@ -1899,17 +1906,17 @@ async fn i_start_a_bounded_concurrent_write_workload_and_record_commit_outcomes(
         crate::support::workload::SqlWorkloadHandle::start(
             harness.feature_name(),
             table_name.as_str(),
-            harness.observer(),
-            harness.sql(),
+            harness.runner_api(),
+            harness.runner_sql(),
         )
     };
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.startup_deadline
+        Instant::now() + harness.host.timeouts.startup_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     while Instant::now() < deadline {
         if workload.committed_count_so_far()? > 0 {
@@ -2136,8 +2143,8 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
         harness.isolate_member_from_all_peers_on_path(member_id, path)?;
     }
     harness.cut_member_off_from_dcs(member_id)?;
-    harness.isolate_member_from_observer_on_api(member_id)?;
-    world.mark_observer_unreachable(member_id);
+    harness.isolate_member_from_runner_on_api(member_id)?;
+    world.mark_runner_api_unreachable(member_id);
     Ok(())
 }
 
@@ -2155,8 +2162,8 @@ async fn i_isolate_the_node_named_from_observer_api_access(
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     world
         .harness()?
-        .isolate_member_from_observer_on_api(member_id)?;
-    world.mark_observer_unreachable(member_id);
+        .isolate_member_from_runner_on_api(member_id)?;
+    world.mark_runner_api_unreachable(member_id);
     Ok(())
 }
 
@@ -2167,7 +2174,7 @@ async fn i_heal_network_faults_on_the_node_named(
 ) -> Result<()> {
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     world.harness()?.heal_member_network_faults(member_id)?;
-    world.clear_observer_unreachable(member_id);
+    world.clear_runner_api_unreachable(member_id);
     world.remove_proof_convergence_blocker(member_id);
     Ok(())
 }
@@ -2175,7 +2182,7 @@ async fn i_heal_network_faults_on_the_node_named(
 #[when("I heal all network faults")]
 async fn i_heal_all_network_faults(world: &mut HaWorld) -> Result<()> {
     world.harness()?.clear_all_network_faults()?;
-    world.clear_observer_unreachable_members();
+    world.clear_runner_api_unreachable_members();
     world.clear_proof_convergence_blockers();
     Ok(())
 }
@@ -2280,11 +2287,11 @@ async fn wait_for_targeted_switchover_rejection_precondition(
 ) -> Result<()> {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -2325,11 +2332,11 @@ async fn wait_for_planned_switchover_precondition(
 ) -> Result<ClusterMember> {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 
@@ -2531,15 +2538,15 @@ async fn the_node_named_emitted_blocker_evidence_for(
     };
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
 
     while Instant::now() < deadline {
-        let logs = world.harness()?.docker.compose_logs(
+        let logs = world.harness()?.host.docker.compose_logs(
             world.harness()?.compose_file(),
             world.harness()?.compose_project(),
         )?;
@@ -2558,11 +2565,11 @@ async fn the_node_named_emitted_blocker_evidence_for(
 async fn every_running_node_reports_fail_safe_in_debug_output(world: &mut HaWorld) -> Result<()> {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let stopped = world.scenario.transition.stopped_members.clone();
     let mut last_error = None;
@@ -2606,11 +2613,11 @@ async fn the_node_named_enters_fail_safe_or_loses_primary_authority_safely(
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
+        Instant::now() + harness.host.timeouts.failover_deadline
     };
     let poll_interval = {
         let harness = world.harness()?;
-        harness.timeouts.poll_interval
+        harness.host.timeouts.poll_interval
     };
     let mut last_error = None;
 

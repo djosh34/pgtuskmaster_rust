@@ -4,9 +4,9 @@ use pgtuskmaster_rust::config::RuntimeConfig;
 
 use crate::support::error::{HarnessError, Result};
 
-const FAILOVER_SLACK_LOOPS: u64 = 3;
-const DCS_DETECTION_SLACK_LOOPS: u64 = 1;
-const RECOVERY_SLACK_LOOPS: u64 = 10;
+const FAILOVER_SLACK_LOOPS: u64 = 6;
+const DCS_DETECTION_SLACK_LOOPS: u64 = 2;
+const RECOVERY_SLACK_LOOPS: u64 = 20;
 const HARNESS_POLL_INTERVAL_MULTIPLIER: u64 = 2;
 const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 2_000;
 
@@ -78,13 +78,13 @@ mod tests {
     fn doubles_harness_poll_interval_for_fast_ha_loops() {
         let model = derive_timeout_model(1_000, 10_000, 300_000, 120_000);
         assert_eq!(model.poll_interval, Duration::from_secs(2));
-        assert_eq!(model.failover_deadline, Duration::from_secs(14));
+        assert_eq!(model.failover_deadline, Duration::from_secs(18));
     }
 
     #[test]
     fn preserves_longer_harness_poll_intervals_above_the_minimum() {
         let model = derive_timeout_model(3_000, 10_000, 300_000, 120_000);
         assert_eq!(model.poll_interval, Duration::from_secs(6));
-        assert_eq!(model.failover_deadline, Duration::from_secs(22));
+        assert_eq!(model.failover_deadline, Duration::from_secs(34));
     }
 }

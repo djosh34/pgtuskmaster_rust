@@ -2,7 +2,6 @@ use crate::support::topology::{ClusterMember, DcsMember};
 
 pub const DATABASE_MEMBERS: [ClusterMember; 3] = ClusterMember::ALL;
 pub const DCS_MEMBERS: [DcsMember; 3] = DcsMember::ALL;
-pub const OBSERVER_SERVICE_NAME: &str = "observer";
 pub const IPTABLES_CHAIN: &str = "PGTM_HA_FAULTS";
 pub const FAULT_DIR: &str = "/var/lib/pgtuskmaster/faults";
 

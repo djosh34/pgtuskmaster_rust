@@ -1,40 +1,60 @@
-use std::path::Path;
+use pgtuskmaster_test_support::ha_runner::{RunnerCommand, RunnerResponsePayload};
 
-use crate::support::{docker::cli::DockerCli, error::Result};
+use crate::support::{
+    error::{HarnessError, Result},
+    runner::run_contract_command,
+};
 
-const PSQL_BIN: &str = "/usr/lib/postgresql/16/bin/psql";
+use crate::support::runner::RunnerSessionHandle;
 
-#[derive(Clone, Debug)]
-pub struct SqlObserver {
-    docker: DockerCli,
-    observer_container: String,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunnerSqlCommand {
+    pub dsn: String,
+    pub sql: String,
 }
 
-impl SqlObserver {
-    pub fn new(docker: DockerCli, observer_container: String) -> Self {
-        Self {
-            docker,
-            observer_container,
-        }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunnerSqlContract {
+    pub session: RunnerSessionHandle,
+}
+
+impl RunnerSqlContract {
+    pub fn from_session(session: RunnerSessionHandle) -> Self {
+        Self { session }
     }
 
     pub fn execute(&self, dsn: &str, sql: &str) -> Result<String> {
-        self.docker.exec(
-            self.observer_container.as_str(),
-            Path::new(PSQL_BIN),
-            [
-                "--no-psqlrc",
-                "--quiet",
-                "--tuples-only",
-                "--no-align",
-                "--set",
-                "ON_ERROR_STOP=1",
-                "--dbname",
-                dsn,
-                "--command",
-                sql,
-            ]
-            .as_slice(),
-        )
+        self.execute_command(RunnerSqlCommand {
+            dsn: dsn.to_string(),
+            sql: sql.to_string(),
+        })
+    }
+
+    pub fn execute_command(&self, command: RunnerSqlCommand) -> Result<String> {
+        match run_contract_command(
+            &self.session,
+            RunnerCommand::ExecuteSql {
+                dsn: command.dsn,
+                sql: command.sql,
+            },
+        )? {
+            RunnerResponsePayload::SqlRows { rows } => Ok(rows.join("\n")),
+            other => Err(HarnessError::message(format!(
+                "runner returned unexpected payload `{}` for SQL execution",
+                response_kind_label(&other)
+            ))),
+        }
+    }
+}
+
+fn response_kind_label(payload: &RunnerResponsePayload) -> &'static str {
+    match payload {
+        RunnerResponsePayload::Pong => "pong",
+        RunnerResponsePayload::State { .. } => "state",
+        RunnerResponsePayload::ConnectionView { .. } => "connection_view",
+        RunnerResponsePayload::Accepted { .. } => "accepted",
+        RunnerResponsePayload::SqlRows { .. } => "sql_rows",
+        RunnerResponsePayload::Text { .. } => "text",
+        RunnerResponsePayload::Error { .. } => "error",
     }
 }
