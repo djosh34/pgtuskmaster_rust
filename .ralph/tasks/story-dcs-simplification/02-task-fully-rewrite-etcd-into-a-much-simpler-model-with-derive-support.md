@@ -1,4 +1,4 @@
-## Task: Fully Rewrite Etcd Into A Much Simpler Model With `#[]` Derive Support <status>not_started</status> <passes>false</passes>
+## Task: Fully Rewrite Etcd Into A Much Simpler Model With `#[]` Derive Support <status>not_started</status> <passes>false</passes> <priority>low</priority>
 
 <description>
 **Goal**
@@ -145,14 +145,14 @@ If timeout/context wrapping is needed, it must use a typed operation enum instea
 
 ```rust
 enum EtcdOp {
-    Connect,
-    StartPrefixWatch,
-    LoadSnapshot,
-    PutKey,
-    DeleteKey,
-    CompareAndSwapAbsent,
-    GrantLease,
-    KeepLeaseAlive,
+  Connect,
+  StartPrefixWatch,
+  LoadSnapshot,
+  PutKey,
+  DeleteKey,
+  CompareAndSwapAbsent,
+  GrantLease,
+  KeepLeaseAlive,
 }
 ```
 
@@ -160,10 +160,10 @@ and errors should carry that typed operation:
 
 ```rust
 enum EtcdStoreError {
-    Timeout { op: EtcdOp },
-    Io { op: EtcdOp, message: String },
-    Decode { key: String, message: String },
-    Mutation(String),
+  Timeout { op: EtcdOp },
+  Io { op: EtcdOp, message: String },
+  Decode { key: String, message: String },
+  Mutation(String),
 }
 ```
 
@@ -187,22 +187,22 @@ Example:
 
 ```rust
 session
-    .mutate(|state| {
-        state.switchover = Some(target);
-        Ok(())
-    })
-    .await?;
+.mutate(|state| {
+state.switchover = Some(target);
+Ok(())
+})
+.await?;
 ```
 
 and:
 
 ```rust
 session
-    .mutate(|state| {
-        state.switchover = None;
-        Ok(())
-    })
-    .await?;
+.mutate(|state| {
+state.switchover = None;
+Ok(())
+})
+.await?;
 ```
 
 The schema/store layer should infer from the before/after typed state whether that means:
@@ -242,6 +242,107 @@ Greenfield rules apply here:
 - no backward compatibility
 - no compatibility shim for the old shape
 - delete the old scattered implementation instead of preserving it under new wrappers
+
+## Deep Verification Results
+
+This section documents a verified code audit of the current DCS implementation against the proposed design. Every claim below is backed by inspection of the actual source.
+
+### Feasibility: Confirmed
+
+The proposed schema/store/runtime split is fully viable against the current codebase. Evidence:
+
+1. **Clean consumer boundary.** All external consumers (ha, process, api, cli, runtime, dev_support) depend only on `DcsView`, `DcsHandle`, `DcsMode`, `ClusterView`, `ClusterMemberView`, `MemberPostgresView`, `LeadershipObservation`, `SwitchoverView`, and `NotTrustedView`. No external module imports etcd types, etcd client, or raw DCS key paths. (Verified: `src/ha/`, `src/process/`, `src/api/`, `src/cli/`, `src/runtime/node.rs`, `src/dev_support/`)
+
+2. **Isolated etcd dependency.** All `etcd_client::` imports are confined to `src/dcs/worker.rs`. No other file in the crate imports etcd types. The split into store.rs (etcd transport) is a clean extraction. (Verified: `grep -r 'etcd_client' src/`)
+
+3. **Existing proc-macro pattern.** The workspace already has `crates/pgtm_log_derive/` as a proc-macro crate, so optional derive support follows an established pattern. (Verified: `Cargo.toml` workspace members)
+
+4. **Bootstrap boundary is already correct.** `src/runtime/node.rs` calls `crate::dcs::startup::bootstrap(DcsRuntimeRequest { ... })` and receives `DcsRuntime { state, handle, worker }`. The proposed design preserves this exact interface shape. (Verified: `src/runtime/node.rs:94`)
+
+5. **State channel pattern is reusable.** The `StatePublisher<DcsView>` / `StateSubscriber<DcsView>` pattern from `src/state/` is already used. The new runtime.rs just calls `new_state_channel(DcsView::starting())` exactly as today. (Verified: `src/dcs/startup.rs:62`)
+
+### Additional Simplifications Found (Beyond Original Task)
+
+The following simplifications reduce code further and improve type safety. They should be incorporated into the implementation.
+
+#### 1. Merge `MemberPostgresRecord` into `MemberPostgresView` (eliminates ~90 lines)
+
+**Current state:** `MemberPostgresRecord` (internal, stored in etcd) and `MemberPostgresView` (public) are structurally identical enums with identical serde attributes (`#[serde(tag = "kind", rename_all = "snake_case")]`). The `build_member_view` function manually maps every field between them, with one special case: downgrading non-leader Primary members to Unknown.
+
+**Fix:** Use `MemberPostgresView` as the single canonical type for both etcd storage and public display. The "downgrade non-leader Primary" transformation — which protects consumers from split-brain confusion by marking members that claim Primary without holding the authoritative leader record — becomes a simple `sanitize_for_view()` method during view building, not a full parallel type hierarchy.
+
+This eliminates:
+- The entire `MemberPostgresRecord` enum definition (~20 lines)
+- The `build_member_view` function's field-by-field mapping (~50 lines)
+- The `record_timeline()` and `record_system_identifier()` helper functions (~25 lines)
+
+And replaces them with one small sanitize method (~15 lines).
+
+#### 2. Remove `expires_at` from `MemberRecord` — trust etcd leases (eliminates clock dependency)
+
+**Current state:** The task proposes `MemberRecord { expires_at: UnixMillis, ... }` and uses `member.expires_at.0 > now.0` in `evaluate_mode()` and `build_dcs_view()` to filter live members.
+
+**Problem:** This is redundant with etcd's lease mechanism. When a member's etcd lease expires, etcd automatically deletes the key and fires a watch delete event. The current codebase already relies on this — `evaluate_mode` just checks `cache.member_records.contains_key(self_id)` without any clock-based filtering. Adding application-level expiry checking on top of etcd leases introduces clock skew sensitivity and unnecessary complexity.
+
+**Fix:** Remove `expires_at` from `MemberRecord`. The simplified record becomes:
+
+```rust
+pub(super) struct MemberRecord {
+    pub(super) postgres_target: PgTcpTarget,
+    pub(super) postgres: MemberPostgresView,  // reuses the public type
+}
+```
+
+And `evaluate_mode` stays clock-free:
+
+```rust
+fn evaluate_mode(etcd_reachable: bool, state: &DcsState, self_id: &MemberId) -> DcsMode {
+    if !etcd_reachable { return DcsMode::NotTrusted; }
+    if !state.members.contains_key(self_id) { return DcsMode::Degraded; }
+    if state.members.is_empty() { return DcsMode::Degraded; }
+    DcsMode::Coordinated
+}
+```
+
+This also removes the `UnixMillis` import from schema.rs entirely.
+
+#### 3. Simplify `LeaseAttachment::TtlUntil(UnixMillis)` → `LeaseAttachment::Ttl(u64)`
+
+Since `expires_at` is removed from records, the `TtlUntil` variant is unnecessary. Replace with `Ttl(u64)` which holds the TTL in milliseconds. The `diff()` function takes `member_ttl_ms: u64` as a parameter. This is cleaner because the lease TTL is a config-level concern, not a record-level concern.
+
+```rust
+enum LeaseAttachment {
+    None,              // switchover
+    SessionEphemeral,  // leader
+    Ttl(u64),          // members (TTL in ms, from config)
+}
+```
+
+The store layer translates `Ttl(ms)` to an etcd lease grant.
+
+#### 4. Remove wrapper newtypes `LeadershipRecord` and `SwitchoverRecord`
+
+**Current state (in state.rs):** `LeadershipRecord { epoch: LeaseEpoch }` and `SwitchoverRecord { target: SwitchoverTarget }` are single-field wrapper structs. They add indirection without safety.
+
+**The task already does this correctly** by storing `Option<LeaseEpoch>` and `Option<SwitchoverTarget>` directly in `DcsState`. Confirmed this is the right call.
+
+#### 5. Remove `MemberLeaseRecord` entirely
+
+**Current state (in state.rs):** `MemberLeaseRecord { owner: MemberId, ttl_ms: u64 }` is stored inside each `MemberRecord`. The `owner` field is redundant with the BTreeMap key (the member ID). The `ttl_ms` is only used for creating the etcd lease, which is a transport concern, not a schema concern.
+
+**Fix:** Remove `MemberLeaseRecord`. The TTL comes from config (passed to `diff()`), and the owner is the map key. This is consistent with simplification #2.
+
+### Summary of type count reduction
+
+| Concern | Current types | Task proposed | After simplifications |
+|---------|--------------|--------------|----------------------|
+| Postgres state | `MemberPostgresRecord` + `MemberPostgresView` | `MemberPostgresRecord` + `MemberPostgresView` | **`MemberPostgresView` only** |
+| Member record | `MemberRecord` + `MemberLeaseRecord` | `MemberRecord` (with `expires_at`) | **`MemberRecord` (2 fields, no lease/expiry)** |
+| Leadership | `LeadershipRecord` | `Option<LeaseEpoch>` | `Option<LeaseEpoch>` |
+| Switchover | `SwitchoverRecord` | `Option<SwitchoverTarget>` | `Option<SwitchoverTarget>` |
+| Lease variant | N/A | `TtlUntil(UnixMillis)` | **`Ttl(u64)`** |
+
+Net eliminated types: `MemberPostgresRecord`, `MemberLeaseRecord`, `LeadershipRecord`, `SwitchoverRecord` (4 types removed from current code). The task already eliminates 2 of those; these additional simplifications eliminate 2 more plus remove the clock dependency from the schema layer.
 
 ## Required final layout
 
@@ -348,7 +449,7 @@ use crate::{
     pginfo::state::{PgInfoState, Readiness},
     state::{
         LeaseEpoch, MemberId, ObservedWalPosition, PgTcpTarget, SwitchoverTarget,
-        SystemIdentifier, TimelineId, UnixMillis,
+        SystemIdentifier, TimelineId,
     },
 };
 
@@ -481,6 +582,33 @@ pub enum MemberPostgresView {
     },
 }
 
+impl MemberPostgresView {
+    /// Extract the timeline from any variant, for carry-forward during Unknown states.
+    pub fn timeline(&self) -> Option<TimelineId> {
+        match self {
+            Self::Unknown { timeline, .. } => *timeline,
+            Self::Primary { committed_wal, .. } => committed_wal.timeline,
+            Self::Replica {
+                replay_wal,
+                follow_wal,
+                ..
+            } => replay_wal
+                .as_ref()
+                .and_then(|pos| pos.timeline)
+                .or_else(|| follow_wal.as_ref().and_then(|pos| pos.timeline)),
+        }
+    }
+
+    /// Extract system_identifier from any variant, for carry-forward during Unknown states.
+    pub fn system_identifier(&self) -> Option<SystemIdentifier> {
+        match self {
+            Self::Unknown { system_identifier, .. }
+            | Self::Primary { system_identifier, .. }
+            | Self::Replica { system_identifier, .. } => *system_identifier,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LeadershipObservation {
     Open,
@@ -503,6 +631,8 @@ pub enum SwitchoverView {
     Requested(SwitchoverTarget),
 }
 
+// ── Internal schema state (stored in etcd, visible only within dcs module) ──
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct DcsState {
     pub(super) leader: Option<LeaseEpoch>,
@@ -520,40 +650,27 @@ impl DcsState {
     }
 }
 
+// MemberRecord stores only the domain data.
+// Lease TTL is a transport concern (etcd handles expiry via lease grant),
+// and the member ID is the BTreeMap key — neither belongs in the record.
+// MemberPostgresView is reused directly (no separate MemberPostgresRecord).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct MemberRecord {
-    pub(super) expires_at: UnixMillis,
     pub(super) postgres_target: PgTcpTarget,
-    pub(super) postgres: MemberPostgresRecord,
+    pub(super) postgres: MemberPostgresView,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub(super) enum MemberPostgresRecord {
-    Unknown {
-        readiness: Readiness,
-        timeline: Option<TimelineId>,
-        system_identifier: Option<SystemIdentifier>,
-    },
-    Primary {
-        readiness: Readiness,
-        system_identifier: Option<SystemIdentifier>,
-        committed_wal: ObservedWalPosition,
-    },
-    Replica {
-        readiness: Readiness,
-        system_identifier: Option<SystemIdentifier>,
-        upstream: Option<MemberId>,
-        replay_wal: Option<ObservedWalPosition>,
-        follow_wal: Option<ObservedWalPosition>,
-    },
-}
-
+// Lease metadata for schema writes. This is a transport-level concern.
+// The schema `diff()` emits these; the store layer translates them to etcd leases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum LeaseAttachment {
+    /// No lease (e.g. switchover key).
     None,
+    /// Attached to the session-scoped ephemeral lease (e.g. leader key).
     SessionEphemeral,
-    TtlUntil(UnixMillis),
+    /// Attached to a TTL-based lease with the given duration in milliseconds.
+    /// The TTL comes from config, not from the record. Etcd handles actual expiry.
+    Ttl(u64),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -675,6 +792,7 @@ impl DcsKvSchema {
         scope: &str,
         before: &DcsState,
         after: &DcsState,
+        member_ttl_ms: u64,
     ) -> Result<Vec<SchemaWrite>, String> {
         let mut writes = Vec::new();
 
@@ -726,7 +844,7 @@ impl DcsKvSchema {
                     writes.push(SchemaWrite::Put {
                         key: Self::member_key(scope, member_id),
                         json: serde_json::to_string(record).map_err(|err| err.to_string())?,
-                        lease: LeaseAttachment::TtlUntil(record.expires_at),
+                        lease: LeaseAttachment::Ttl(member_ttl_ms),
                     });
                 }
                 _ => {}
@@ -737,50 +855,43 @@ impl DcsKvSchema {
     }
 }
 
+// evaluate_mode has no clock dependency. Etcd leases handle member expiry.
+// If etcd deleted the key (lease expired), the member won't be in state.members.
 pub(super) fn evaluate_mode(
     etcd_reachable: bool,
     state: &DcsState,
     self_id: &MemberId,
-    now: UnixMillis,
 ) -> DcsMode {
     if !etcd_reachable {
         return DcsMode::NotTrusted;
     }
 
-    let local_is_live = state
-        .members
-        .get(self_id)
-        .map(|member| member.expires_at.0 > now.0)
-        .unwrap_or(false);
-    if !local_is_live {
-        return DcsMode::Degraded;
-    }
-
-    let live_members = state
-        .members
-        .values()
-        .filter(|member| member.expires_at.0 > now.0)
-        .count();
-    if live_members < 1 {
+    if !state.members.contains_key(self_id) {
         return DcsMode::Degraded;
     }
 
     DcsMode::Coordinated
 }
 
-pub(super) fn build_dcs_view(mode: DcsMode, state: &DcsState, now: UnixMillis) -> DcsView {
-    let authoritative_leader = state.leader.as_ref().map(|epoch| epoch.holder.clone());
+// build_dcs_view doesn't filter members by time — etcd lease expiry already
+// removed dead members from state. It uses MemberPostgresView directly with
+// a sanitize step to downgrade non-leader primaries.
+pub(super) fn build_dcs_view(mode: DcsMode, state: &DcsState) -> DcsView {
+    let authoritative_leader = state.leader.as_ref().map(|epoch| &epoch.holder);
     let cluster = ClusterView {
         members: state
             .members
             .iter()
-            .filter(|(_, member)| member.expires_at.0 > now.0)
             .map(|(member_id, member)| {
                 (
                     member_id.clone(),
                     ClusterMemberView {
                         postgres_target: member.postgres_target.clone(),
-                        postgres: build_member_view(member_id, member, authoritative_leader.as_ref()),
+                        postgres: sanitize_member_postgres(
+                            member_id,
+                            &member.postgres,
+                            authoritative_leader,
+                        ),
                     },
                 )
             })
@@ -807,22 +918,16 @@ pub(super) fn build_dcs_view(mode: DcsMode, state: &DcsState, now: UnixMillis) -
     }
 }
 
-fn build_member_view(
+// Sanitizes a member's postgres state for public view.
+// If a member claims to be Primary but is NOT the authoritative leader,
+// downgrade it to Unknown to prevent split-brain confusion in consumers.
+fn sanitize_member_postgres(
     member_id: &MemberId,
-    record: &MemberRecord,
+    postgres: &MemberPostgresView,
     authoritative_leader: Option<&MemberId>,
 ) -> MemberPostgresView {
-    match &record.postgres {
-        MemberPostgresRecord::Unknown {
-            readiness,
-            timeline,
-            system_identifier,
-        } => MemberPostgresView::Unknown {
-            readiness: readiness.clone(),
-            timeline: *timeline,
-            system_identifier: *system_identifier,
-        },
-        MemberPostgresRecord::Primary {
+    match postgres {
+        MemberPostgresView::Primary {
             readiness,
             system_identifier,
             committed_wal,
@@ -833,48 +938,24 @@ fn build_member_view(
                 system_identifier: *system_identifier,
             }
         }
-        MemberPostgresRecord::Primary {
-            readiness,
-            system_identifier,
-            committed_wal,
-        } => MemberPostgresView::Primary {
-            readiness: readiness.clone(),
-            system_identifier: *system_identifier,
-            committed_wal: committed_wal.clone(),
-        },
-        MemberPostgresRecord::Replica {
-            readiness,
-            system_identifier,
-            upstream,
-            replay_wal,
-            follow_wal,
-        } => MemberPostgresView::Replica {
-            readiness: readiness.clone(),
-            system_identifier: *system_identifier,
-            upstream: upstream.clone(),
-            replay_wal: replay_wal.clone(),
-            follow_wal: follow_wal.clone(),
-        },
+        other => other.clone(),
     }
 }
 
 pub(super) fn build_local_member_record(
-    now: UnixMillis,
     postgres_target: &PgTcpTarget,
-    ttl_ms: u64,
     pg_state: &PgInfoState,
     previous_record: Option<&MemberRecord>,
 ) -> MemberRecord {
-    let expires_at = UnixMillis(now.0.saturating_add(ttl_ms));
     let postgres = match pg_state {
-        PgInfoState::Unknown { common } => MemberPostgresRecord::Unknown {
+        PgInfoState::Unknown { common } => MemberPostgresView::Unknown {
             readiness: common.readiness.clone(),
-            timeline: common.timeline.or_else(|| previous_record.and_then(record_timeline)),
+            timeline: common.timeline.or_else(|| previous_record.and_then(|r| r.postgres.timeline())),
             system_identifier: common
                 .system_identifier
-                .or_else(|| previous_record.and_then(record_system_identifier)),
+                .or_else(|| previous_record.and_then(|r| r.postgres.system_identifier())),
         },
-        PgInfoState::Primary { common, wal_lsn, .. } => MemberPostgresRecord::Primary {
+        PgInfoState::Primary { common, wal_lsn, .. } => MemberPostgresView::Primary {
             readiness: common.readiness.clone(),
             system_identifier: common.system_identifier,
             committed_wal: ObservedWalPosition {
@@ -887,7 +968,7 @@ pub(super) fn build_local_member_record(
             replay_lsn,
             follow_lsn,
             upstream,
-        } => MemberPostgresRecord::Replica {
+        } => MemberPostgresView::Replica {
             readiness: common.readiness.clone(),
             system_identifier: common.system_identifier,
             upstream: upstream.as_ref().map(|value| value.member_id.clone()),
@@ -903,38 +984,8 @@ pub(super) fn build_local_member_record(
     };
 
     MemberRecord {
-        expires_at,
         postgres_target: postgres_target.clone(),
         postgres,
-    }
-}
-
-fn record_timeline(record: &MemberRecord) -> Option<TimelineId> {
-    match &record.postgres {
-        MemberPostgresRecord::Unknown { timeline, .. } => *timeline,
-        MemberPostgresRecord::Primary { committed_wal, .. } => committed_wal.timeline,
-        MemberPostgresRecord::Replica {
-            replay_wal,
-            follow_wal,
-            ..
-        } => replay_wal
-            .as_ref()
-            .and_then(|position| position.timeline)
-            .or_else(|| follow_wal.as_ref().and_then(|position| position.timeline)),
-    }
-}
-
-fn record_system_identifier(record: &MemberRecord) -> Option<SystemIdentifier> {
-    match &record.postgres {
-        MemberPostgresRecord::Unknown {
-            system_identifier, ..
-        }
-        | MemberPostgresRecord::Primary {
-            system_identifier, ..
-        }
-        | MemberPostgresRecord::Replica {
-            system_identifier, ..
-        } => *system_identifier,
     }
 }
 ```
@@ -1108,12 +1159,13 @@ impl EtcdSession {
 
     pub(super) async fn mutate(
         &mut self,
+        member_ttl_ms: u64,
         mutate: impl FnOnce(&mut DcsState) -> Result<(), String>,
     ) -> Result<(), EtcdStoreError> {
         let before = self.cache.clone();
         let mut after = before.clone();
         mutate(&mut after).map_err(EtcdStoreError::Mutation)?;
-        let plan = DcsKvSchema::diff(self.scope.as_str(), &before, &after)
+        let plan = DcsKvSchema::diff(self.scope.as_str(), &before, &after, member_ttl_ms)
             .map_err(EtcdStoreError::Mutation)?;
         self.apply_plan(plan).await?;
         self.cache = after;
@@ -1244,9 +1296,7 @@ impl EtcdSession {
                     .ok_or(EtcdStoreError::MissingSessionLease)?;
                 Ok(Some(PutOptions::new().with_lease(lease_id)))
             }
-            super::schema::LeaseAttachment::TtlUntil(deadline) => {
-                let now = crate::logging::system_now_unix_millis();
-                let ttl_ms = deadline.0.saturating_sub(now);
+            super::schema::LeaseAttachment::Ttl(ttl_ms) => {
                 let ttl_seconds =
                     i64::try_from((ttl_ms / 1000).max(1)).map_err(|err| EtcdStoreError::Io {
                         op: EtcdOp::GrantLease,
@@ -1354,7 +1404,7 @@ use crate::{
     pginfo::state::PgInfoState,
     state::{
         new_state_channel, LeaseEpoch, NodeIdentity, PgTcpTarget, StatePublisher, StateSubscriber,
-        SwitchoverTarget, UnixMillis, WorkerError,
+        SwitchoverTarget, WorkerError,
     },
 };
 
@@ -1470,11 +1520,11 @@ async fn apply_command(
         DcsCommand::AcquireLeadership => {
             let epoch = LeaseEpoch {
                 holder: ctx.identity.member_id.clone(),
-                generation: now_unix_millis()?.0,
+                generation: now_generation()?,
             };
             let self_id = ctx.identity.member_id.clone();
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     if state.leader.is_none() {
                         state.leader = Some(epoch);
                     }
@@ -1492,7 +1542,7 @@ async fn apply_command(
         }
         DcsCommand::ReleaseLeadership => {
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     if state
                         .leader
                         .as_ref()
@@ -1507,7 +1557,7 @@ async fn apply_command(
         }
         DcsCommand::PublishSwitchover(target) => {
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     state.switchover = Some(target);
                     Ok(())
                 })
@@ -1516,7 +1566,7 @@ async fn apply_command(
         }
         DcsCommand::ClearSwitchover => {
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     state.switchover = None;
                     Ok(())
                 })
@@ -1525,15 +1575,13 @@ async fn apply_command(
         }
         DcsCommand::RefreshLocalMember(pg_state) => {
             let record = build_local_member_record(
-                now_unix_millis()?,
                 &ctx.advertised_postgres,
-                ctx.member_ttl_ms,
                 &pg_state,
                 ctx.cache.members.get(&ctx.identity.member_id),
             );
             let member_id = ctx.identity.member_id.clone();
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     state.members.insert(member_id, record);
                     Ok(())
                 })
@@ -1542,7 +1590,7 @@ async fn apply_command(
         }
         DcsCommand::RemoveLocalMember => {
             session
-                .mutate(|state| {
+                .mutate(ctx.member_ttl_ms, |state| {
                     state.members.remove(&ctx.identity.member_id);
                     if state
                         .leader
@@ -1561,21 +1609,21 @@ async fn apply_command(
 }
 
 fn publish_view(ctx: &mut DcsWorkerCtx, etcd_reachable: bool) -> Result<(), WorkerError> {
-    let now = now_unix_millis()?;
-    let mode = evaluate_mode(etcd_reachable, &ctx.cache, &ctx.identity.member_id, now);
-    let view = build_dcs_view(mode, &ctx.cache, now);
+    let mode = evaluate_mode(etcd_reachable, &ctx.cache, &ctx.identity.member_id);
+    let view = build_dcs_view(mode, &ctx.cache);
     ctx.state_tx
         .publish(view)
         .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))
 }
 
-fn now_unix_millis() -> Result<UnixMillis, WorkerError> {
+/// Used only for leader epoch generation — not for record expiry.
+fn now_generation() -> Result<u64, WorkerError> {
     let elapsed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|err| WorkerError::Message(format!("system clock before unix epoch: {err}")))?;
     let millis = u64::try_from(elapsed.as_millis())
         .map_err(|err| WorkerError::Message(format!("unix millis conversion failed: {err}")))?;
-    Ok(UnixMillis(millis))
+    Ok(millis)
 }
 
 fn to_worker_error(err: impl std::fmt::Display) -> WorkerError {
@@ -1982,7 +2030,7 @@ enum FieldMeta {
 enum LeaseMeta {
     None,
     SessionEphemeral,
-    TtlUntilField(syn::Ident),
+    TtlMsField(syn::Ident),
 }
 
 fn parse_container_prefix(attrs: &[syn::Attribute]) -> syn::Result<String> {
@@ -2043,7 +2091,7 @@ fn parse_field_meta(attrs: &[syn::Attribute]) -> syn::Result<FieldMeta> {
                         return Err(lease_meta.error("unsupported lease kind"));
                     }
                     if lease_meta.path.is_ident("from") {
-                        lease = LeaseMeta::TtlUntilField(lease_meta.value()?.parse()?);
+                        lease = LeaseMeta::TtlMsField(lease_meta.value()?.parse()?);
                         return Ok(());
                     }
                     Ok(())
@@ -2079,8 +2127,8 @@ fn singleton_lease_expr(
         LeaseMeta::SessionEphemeral => {
             quote! { crate::dcs::schema::LeaseAttachment::SessionEphemeral }
         }
-        LeaseMeta::TtlUntilField(field) => {
-            quote! { crate::dcs::schema::LeaseAttachment::TtlUntil(value.#field) }
+        LeaseMeta::TtlMsField(field) => {
+            quote! { crate::dcs::schema::LeaseAttachment::Ttl(value.#field) }
         }
     }
 }
@@ -2091,8 +2139,8 @@ fn map_lease_expr(lease: &LeaseMeta) -> proc_macro2::TokenStream {
         LeaseMeta::SessionEphemeral => {
             quote! { |_| crate::dcs::schema::LeaseAttachment::SessionEphemeral }
         }
-        LeaseMeta::TtlUntilField(field) => {
-            quote! { |value| crate::dcs::schema::LeaseAttachment::TtlUntil(value.#field) }
+        LeaseMeta::TtlMsField(field) => {
+            quote! { |value| crate::dcs::schema::LeaseAttachment::Ttl(value.#field) }
         }
     }
 }
@@ -2159,57 +2207,115 @@ This appendix now represents a legitimate branch of the design, not a bad smell 
 
 The implementation must include an explicit audit, not just "touch the obvious files".
 
-- `Cargo.toml`
-  - Only if optional derive support is added.
-- `src/dcs/mod.rs`
-- `src/dcs/command.rs`
-- `src/dcs/state.rs`
-  - Expected outcome: delete or replace by extracted `schema.rs`.
-- `src/dcs/worker.rs`
-  - Expected outcome: delete or replace by extracted `runtime.rs` plus `store.rs`.
-- `src/dcs/startup.rs`
-- `src/runtime/node.rs`
-  - Retarget bootstrap request type if necessary.
-- `src/ha/worker.rs`
-- `src/ha/decide.rs`
-- `src/api/controller.rs`
-- `src/cli/status.rs`
-- `src/process/source.rs`
-- `src/process/worker.rs`
-- `src/config/schema.rs`
-  - Remove dead `DcsInitConfig` if still unused.
-- `src/config/mod.rs`
-  - Stop re-exporting dead DCS config types if removed.
-- `src/dev_support/runtime_config.rs`
-  - Remove dead builder support and tests for `dcs.init` if the feature is deleted.
-- `tests/ha/support/...`
-  - Update any fixture or observer logic that assumes old DCS data shape or stale config knobs.
+### Files to DELETE
+
+These files must be deleted entirely. Their content moves to the new schema/store/runtime structure.
+
+- **`src/dcs/state.rs`** — all types, business logic, and key layout functions move to `schema.rs`. There is no reason for this file to exist after the split.
+- **`src/dcs/worker.rs`** — etcd transport moves to `store.rs`, runtime loop and command handling moves to `runtime.rs`. This file is the primary source of the schema/transport/business coupling that the task fixes.
+
+### Files to CREATE
+
+- **`src/dcs/schema.rs`** — owns all DCS record types, public view types, key layout, apply_put/apply_delete, diff logic, evaluate_mode, build_dcs_view.
+- **`src/dcs/store.rs`** — owns EtcdRepo, EtcdSession, etcd client connect, watch stream, lease management, snapshot load, mutate-via-diff. All `etcd_client::` imports must be confined here.
+- **`src/dcs/runtime.rs`** — owns the DCS worker loop, command handling, view publication. Consumes schema+store; does not directly import `etcd_client::`.
+
+### Files to MODIFY
+
+- **`src/dcs/mod.rs`**
+  - Replace `mod state;` and `mod worker;` with `mod schema; mod store; mod runtime;`.
+  - Update re-exports. Keep only `DcsHandle`, `DcsView`, `ClusterView`, etc. as public.
+  - Remove any re-export of dead types.
+
+- **`src/dcs/command.rs`**
+  - Already nearly correct. Verify visibility is `pub(super)`.
+  - Must not change functionality.
+
+- **`src/dcs/startup.rs`**
+  - Update bootstrap to use new `EtcdRepo` and `bootstrap_runtime` from `runtime.rs`.
+  - Update import paths.
+
+- **`src/dcs/log_event.rs`**
+  - Verify no structural changes needed (event types are decoupled from schema).
+
+- **`src/config/schema.rs`**
+  - **DELETE `DcsInitConfig` struct** (line 379-382). It is dead code — never used at runtime.
+  - **DELETE `init: Option<DcsInitConfig>` field** from `DcsConfig` (line 342). This field is never consumed.
+
+- **`src/config/mod.rs`**
+  - **Remove `DcsInitConfig` from re-export list** (line 19).
+
+- **`src/dev_support/runtime_config.rs`**
+  - **DELETE `with_dcs_init()` method** (line 280).
+  - **DELETE `builder_can_override_auth_and_dcs_init` test** (or rewrite as `builder_can_override_auth` without the dead `DcsInitConfig` references) (line 625).
+
+- **`src/runtime/node.rs`**
+  - Update bootstrap call if type names change (currently `DcsRuntimeRequest` → keep or rename).
+  - Verify import paths still match new module structure.
+
+### Files to AUDIT (may need minor updates)
+
+These files consume DCS public types. If the public API surface changes (e.g. method signatures), they need updates:
+
+- **`src/ha/worker.rs`** — uses `DcsView`, `DcsHandle`, `DcsMode`.
+- **`src/ha/decide.rs`** — uses `DcsView`, `ClusterView`, `LeadershipObservation`.
+- **`src/api/controller.rs`** — uses `DcsView`, `DcsHandle`.
+- **`src/cli/status.rs`** — uses `DcsView`, `ClusterView`, `ClusterMemberView`, `MemberPostgresView`.
+- **`src/process/source.rs`** — uses `DcsView`.
+- **`src/process/worker.rs`** — uses `DcsView`.
+- **`tests/ha/support/...`** — Update fixture/observer logic that may reference old DCS data shape or dead config knobs.
+
+### Dead code that must be removed
+
+This is an explicit checklist. Every item must be verified deleted:
+
+- [ ] `DcsInitConfig` struct in `src/config/schema.rs`
+- [ ] `init: Option<DcsInitConfig>` field in `DcsConfig`
+- [ ] `DcsInitConfig` re-export in `src/config/mod.rs`
+- [ ] `with_dcs_init()` method in `src/dev_support/runtime_config.rs`
+- [ ] `DcsInitConfig` import/usage in `src/dev_support/runtime_config.rs` test
+- [ ] `MemberPostgresRecord` enum (replaced by `MemberPostgresView` reuse)
+- [ ] `MemberLeaseRecord` struct (lease is a transport concern, not a record concern)
+- [ ] `LeadershipRecord` wrapper (use `LeaseEpoch` directly)
+- [ ] `SwitchoverRecord` wrapper (use `SwitchoverTarget` directly)
+- [ ] `record_timeline()` free function (replaced by `MemberPostgresView::timeline()` method)
+- [ ] `record_system_identifier()` free function (replaced by `MemberPostgresView::system_identifier()` method)
+- [ ] Any `timeout_etcd("string label", ...)` helper (replaced by `run_with_timeout(EtcdOp::Variant, ...)`)
+- [ ] The old `src/dcs/state.rs` file itself
+- [ ] The old `src/dcs/worker.rs` file itself
 
 ## Search terms that must be driven to the new design
 
 The implementer must explicitly grep these and either delete them or move them behind the new schema/store boundary:
 
-- `Compare::`
-- `Txn::new`
-- `WatchOptions::new`
-- `LeaseKeeper`
-- `LeaseKeepAliveStream`
-- `watch_stream`
-- `leader_lease`
-- `scope_prefix`
-- `member_path`
-- `leader_path`
-- `switchover_path`
-- `serde_json::from_slice`
-- `serde_json::to_string`
-- `EventType::Put`
-- `EventType::Delete`
-- `cfg.dcs.init`
-- `DcsInitConfig`
-- `dcs.init`
-- `pub(crate)`
-- `src/dcs/worker.rs`
-- `src/dcs/state.rs`
+- `Compare::` → must exist only in `store.rs`
+- `Txn::new` → must exist only in `store.rs`
+- `WatchOptions::new` → must exist only in `store.rs`
+- `LeaseKeeper` → must exist only in `store.rs`
+- `LeaseKeepAliveStream` → must exist only in `store.rs`
+- `watch_stream` → must exist only in `store.rs`
+- `leader_lease` → must exist only in `store.rs`
+- `scope_prefix` → must exist only in `schema.rs` (as `DcsKvSchema::prefix()`)
+- `member_path` → must exist only in `schema.rs` (as `DcsKvSchema::member_key()`)
+- `leader_path` → must exist only in `schema.rs` (as `DcsKvSchema::leader_key()`)
+- `switchover_path` → must exist only in `schema.rs` (as `DcsKvSchema::switchover_key()`)
+- `serde_json::from_slice` → must exist only in `schema.rs` (`apply_put`)
+- `serde_json::to_string` → must exist only in `schema.rs` (`diff`)
+- `EventType::Put` → must exist only in `store.rs` (delegating to `schema.rs`)
+- `EventType::Delete` → must exist only in `store.rs` (delegating to `schema.rs`)
+- `cfg.dcs.init` → must be deleted entirely (dead code)
+- `DcsInitConfig` → must be deleted entirely (dead code)
+- `dcs.init` → must be deleted entirely (dead config key)
+- `pub(crate)` in `src/dcs/` → only on the 5 explicitly justified root-boundary items (DcsHandle, bootstrap, BootstrapRequest, DcsAdvertisedEndpoints, DcsRuntime)
+- `src/dcs/worker.rs` → must not exist
+- `src/dcs/state.rs` → must not exist
+- `MemberPostgresRecord` → must not exist (merged into MemberPostgresView)
+- `MemberLeaseRecord` → must not exist (lease is transport concern)
+- `LeadershipRecord` → must not exist (use LeaseEpoch directly)
+- `SwitchoverRecord` → must not exist (use SwitchoverTarget directly)
+- `timeout_etcd` → must not exist (replaced by run_with_timeout with EtcdOp)
+- `expires_at` → must not exist in schema (trust etcd lease expiry)
+- `UnixMillis` → must not be imported by schema.rs (no clock in schema layer)
 
 The expected final rule is:
 
@@ -2218,6 +2324,34 @@ The expected final rule is:
 - DCS runtime/business hits should land in `src/dcs/runtime.rs`
 
 If those grep terms still appear scattered across unrelated DCS files after the rewrite, the task is not complete.
+
+## Simpler Alternative to Proc Macro: `macro_rules!`
+
+If the team decides derive support is worth adding, consider a `macro_rules!` declarative macro as a simpler alternative to a full proc-macro crate. Benefits:
+
+- No separate crate needed (no `crates/pgtm_etcd_derive/`)
+- Faster compilation (no proc-macro compile step)
+- Easier to read and maintain (no syn/quote dependencies)
+- The schema declaration becomes ultra-compact
+
+Example usage:
+
+```rust
+dcs_schema! {
+    prefix = "/{scope}";
+    singleton leader: LeaseEpoch => lease::ephemeral;
+    singleton switchover: SwitchoverTarget => lease::none;
+    map members[MemberId]: MemberRecord => lease::ttl;
+}
+```
+
+This would generate `DcsKvSchema` with `prefix()`, `apply_put()`, `apply_delete()`, and `diff()` — the exact same output as the proc-macro, but defined inline in the crate.
+
+The `macro_rules!` body generates the same pattern as the handwritten code:
+- For singletons: match key == `{prefix}/{path}`, deserialize value type, emit Put/Delete in diff
+- For maps: match key starts with `{prefix}/{path}/`, parse key suffix, deserialize value type, emit Put/Delete in diff
+
+The proc-macro alternative in the previous section remains valid if the team prefers attribute-based declaration over `macro_rules!` syntax. Both produce the same output. The choice is a team preference, not a correctness issue.
 </description>
 
 <acceptance_criteria>
@@ -2231,6 +2365,11 @@ If those grep terms still appear scattered across unrelated DCS files after the 
 - [ ] The live watch model is one schema-prefix watch plus snapshot reloads, not a pile of field-by-field watches.
 - [ ] The DCS runtime uses the schema/store layer and does not manually build keys, parse watch paths, or directly manipulate raw etcd transactions for DCS fields.
 - [ ] The implementation explicitly audits and cleans adjacent config/test/consumer files that still depend on dead DCS shape or dead `dcs.init` support.
+- [ ] `MemberPostgresRecord` is eliminated; `MemberPostgresView` is reused as the single type for both etcd storage and public display, with a `sanitize_member_postgres()` transformation during view building.
+- [ ] `MemberRecord` does not contain `expires_at` or any lease metadata. The record stores only domain data (`postgres_target`, `postgres`). Etcd lease expiry is handled by the store layer.
+- [ ] `evaluate_mode` and `build_dcs_view` have no clock/time dependency. They trust etcd to remove expired member keys via lease expiry.
+- [ ] All dead code items from the explicit cleanup checklist are verified deleted: `DcsInitConfig`, `MemberLeaseRecord`, `LeadershipRecord`, `SwitchoverRecord`, `timeout_etcd`, old `state.rs` and `worker.rs` files.
+- [ ] `LeaseAttachment` uses `Ttl(u64)` (milliseconds from config), not `TtlUntil(UnixMillis)` (record-level deadline).
 - [ ] If derive support is implemented, it is added only as a small follow-up over an already-clear handwritten schema split, and it does not hide business logic.
 - [ ] If derive support is not implemented, that is still acceptable as long as the handwritten schema/store/runtime split is clean and the schema/key-format scattering problem is fully solved.
-</acceptance_criteria>
+  </acceptance_criteria>

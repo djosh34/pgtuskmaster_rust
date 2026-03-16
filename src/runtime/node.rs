@@ -57,10 +57,13 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    log.send(runtime_startup_event(startup_run_id.as_str(), cfg.logging.level))
-        .map_err(|err| {
-            RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
-        })?;
+    log.send(runtime_startup_event(
+        startup_run_id.as_str(),
+        cfg.logging.level,
+    ))
+    .map_err(|err| {
+        RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
+    })?;
 
     let process_plan = ProcessRuntimePlan::from_config(&cfg);
     process_plan.ensure_start_paths().map_err(|err| {

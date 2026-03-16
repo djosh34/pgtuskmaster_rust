@@ -1,19 +1,18 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use cucumber::World;
-use serde::Deserialize;
 use pgtuskmaster_rust::{
     api::NodeState,
     dcs::MemberPostgresView,
     ha::types::{AuthorityProjection, PublicationState},
 };
+use serde::Deserialize;
 
 use crate::support::{
     docker::{cli::DockerCli, ryuk::RyukGuard},
@@ -388,6 +387,7 @@ pub struct HarnessShared {
     pub ryuk: Option<RyukGuard>,
     pub observer_container: String,
     pub timeouts: TimeoutModel,
+    service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
     cleaned_up: bool,
 }
@@ -463,6 +463,10 @@ impl HarnessShared {
             compose.project.as_str(),
             "observer",
         )?;
+        let service_container_ids = Mutex::new(BTreeMap::from([(
+            ComposeService::Observer,
+            observer_container.clone(),
+        )]));
 
         let mut harness = Self {
             workspace: HarnessWorkspace {
@@ -477,6 +481,7 @@ impl HarnessShared {
             ryuk: Some(ryuk),
             observer_container,
             timeouts,
+            service_container_ids,
             timeline: Mutex::new(Vec::new()),
             cleaned_up: false,
         };
@@ -570,11 +575,16 @@ impl HarnessShared {
     }
 
     pub fn service_container_id(&self, service: ComposeService) -> Result<String> {
-        self.docker.compose_container_id(
-            self.compose_file(),
-            self.compose_project(),
-            service.service_name(),
-        )
+        if let Some(container_id) = self.cached_service_container_id(service)? {
+            return Ok(container_id);
+        }
+        self.refresh_service_container_ids()?;
+        self.cached_service_container_id(service)?.ok_or_else(|| {
+            HarnessError::message(format!(
+                "docker compose service `{service}` has no container in project `{}`",
+                self.compose_project()
+            ))
+        })
     }
 
     pub fn service_logs(&self, service: ComposeService) -> Result<String> {
@@ -1155,6 +1165,41 @@ impl HarnessShared {
             .lock()
             .map(|guard| guard.clone())
             .map_err(|_| HarnessError::message("timeline mutex was poisoned"))
+    }
+
+    fn cached_service_container_id(&self, service: ComposeService) -> Result<Option<String>> {
+        self.service_container_ids
+            .lock()
+            .map(|cache| cache.get(&service).cloned())
+            .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))
+    }
+
+    fn refresh_service_container_ids(&self) -> Result<()> {
+        let compose_entries = self
+            .docker
+            .compose_ps_entries(self.compose_file(), self.compose_project())?;
+        let mut cache = self
+            .service_container_ids
+            .lock()
+            .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))?;
+        compose_entries
+            .into_iter()
+            .filter_map(|entry| {
+                self.compose_service_for_name(entry.service.as_str())
+                    .map(|service| (service, entry.id))
+            })
+            .for_each(|(service, container_id)| {
+                let _ = cache.insert(service, container_id);
+            });
+        Ok(())
+    }
+
+    fn compose_service_for_name(&self, service_name: &str) -> Option<ComposeService> {
+        self.workspace
+            .given
+            .artifact_services()
+            .into_iter()
+            .find(|service| service.service_name() == service_name)
     }
 }
 
