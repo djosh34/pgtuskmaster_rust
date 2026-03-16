@@ -30,7 +30,10 @@ use crate::support::{
         FixtureTemplate, HaGivenDefinition, HaGivenId, RenderedFixtureFile,
         RunnerFaultInjectionMode, RunnerSeedTemplate, SharedFixtureEntry, ThreeNodeDcsLayout,
     },
-    observer::{pgtm::RunnerApiContract, sql::RunnerSqlContract},
+    observer::{
+        pgtm::{ConnectionTarget, RunnerApiContract},
+        sql::RunnerSqlContract,
+    },
     runner::{
         run_contract_command, InNetworkScenarioRunner, RunnerControlPlane, RunnerExecutable,
         RunnerMountSet, RunnerProcessHandle, RunnerReadPlane, RunnerSeed, RunnerSeedSet,
@@ -130,6 +133,41 @@ impl ProofTableName {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WritablePrimaryTarget {
+    member: ClusterMember,
+    target: ConnectionTarget,
+}
+
+impl WritablePrimaryTarget {
+    pub fn new(member: ClusterMember, target: ConnectionTarget) -> Self {
+        Self { member, target }
+    }
+
+    pub fn member(&self) -> ClusterMember {
+        self.member
+    }
+
+    pub fn target(&self) -> &ConnectionTarget {
+        &self.target
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScenarioAlias {
+    Member(ClusterMember),
+    WritablePrimary(WritablePrimaryTarget),
+}
+
+impl ScenarioAlias {
+    pub fn member(&self) -> ClusterMember {
+        match self {
+            Self::Member(member) => *member,
+            Self::WritablePrimary(target) => target.member(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MemberSet {
     members: BTreeSet<ClusterMember>,
@@ -163,7 +201,7 @@ impl MemberSet {
 
 #[derive(Debug, Default)]
 pub struct AliasRegistry {
-    pub members_by_alias: BTreeMap<MemberAlias, ClusterMember>,
+    pub aliases_by_name: BTreeMap<MemberAlias, ScenarioAlias>,
 }
 
 #[derive(Debug, Default)]
@@ -235,20 +273,46 @@ impl HaWorld {
             .ok_or_else(|| HarnessError::message(format!("marker `{marker}` was not recorded")))
     }
 
-    pub fn remember_alias(&mut self, alias: impl Into<MemberAlias>, member: ClusterMember) {
+    pub fn remember_member_alias(&mut self, alias: impl Into<MemberAlias>, member: ClusterMember) {
         self.scenario
             .aliases
-            .members_by_alias
-            .insert(alias.into(), member);
+            .aliases_by_name
+            .insert(alias.into(), ScenarioAlias::Member(member));
     }
 
-    pub fn require_alias(&self, alias: &str) -> Result<ClusterMember> {
+    pub fn remember_writable_primary_alias(
+        &mut self,
+        alias: impl Into<MemberAlias>,
+        target: WritablePrimaryTarget,
+    ) {
         self.scenario
             .aliases
-            .members_by_alias
+            .aliases_by_name
+            .insert(alias.into(), ScenarioAlias::WritablePrimary(target));
+    }
+
+    pub fn alias(&self, alias: &str) -> Option<&ScenarioAlias> {
+        self.scenario
+            .aliases
+            .aliases_by_name
             .get(&MemberAlias::from(alias))
-            .cloned()
+    }
+
+    pub fn require_member_alias(&self, alias: &str) -> Result<ClusterMember> {
+        self.alias(alias)
+            .map(ScenarioAlias::member)
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
+    }
+
+    pub fn require_writable_primary_alias(&self, alias: &str) -> Result<WritablePrimaryTarget> {
+        self.alias(alias)
+            .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
+            .and_then(|alias_value| match alias_value {
+                ScenarioAlias::WritablePrimary(target) => Ok(target.clone()),
+                ScenarioAlias::Member(member) => Err(HarnessError::message(format!(
+                    "alias `{alias}` only records member `{member}`, not a validated writable primary target"
+                ))),
+            })
     }
 
     pub fn add_stopped_node(&mut self, member: ClusterMember) {
@@ -2155,6 +2219,48 @@ mod tests {
                 path: path.to_path_buf(),
                 source,
             }),
+        }
+    }
+
+    #[test]
+    fn writable_primary_alias_preserves_route_and_member_lookup() -> Result<()> {
+        let mut world = HaWorld::default();
+        let target = WritablePrimaryTarget::new(
+            ClusterMember::NodeA,
+            ConnectionTarget {
+                member_id: ClusterMember::NodeA.service_name().to_string(),
+                postgres_host: "node-a".to_string(),
+                postgres_port: 5432,
+                dsn: "host=node-a port=5432".to_string(),
+            },
+        );
+
+        world.remember_writable_primary_alias("current_primary", target.clone());
+
+        assert_eq!(
+            world.require_member_alias("current_primary")?,
+            ClusterMember::NodeA
+        );
+        assert_eq!(
+            world.require_writable_primary_alias("current_primary")?,
+            target
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn member_alias_is_rejected_as_writable_primary() -> Result<()> {
+        let mut world = HaWorld::default();
+        world.remember_member_alias("replica", ClusterMember::NodeB);
+
+        match world.require_writable_primary_alias("replica") {
+            Ok(_) => Err(HarnessError::message(
+                "plain member alias unexpectedly passed writable-primary validation",
+            )),
+            Err(err) => {
+                assert!(err.to_string().contains("only records member"));
+                Ok(())
+            }
         }
     }
 

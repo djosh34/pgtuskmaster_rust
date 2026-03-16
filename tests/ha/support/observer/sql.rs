@@ -52,6 +52,7 @@ fn response_kind_label(payload: &RunnerResponsePayload) -> &'static str {
         RunnerResponsePayload::Pong => "pong",
         RunnerResponsePayload::State { .. } => "state",
         RunnerResponsePayload::ConnectionView { .. } => "connection_view",
+        RunnerResponsePayload::WritablePrimaryTarget { .. } => "writable_primary_target",
         RunnerResponsePayload::Accepted { .. } => "accepted",
         RunnerResponsePayload::SqlRows { .. } => "sql_rows",
         RunnerResponsePayload::Text { .. } => "text",

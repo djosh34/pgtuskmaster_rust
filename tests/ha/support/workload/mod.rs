@@ -16,6 +16,8 @@ use crate::support::{
         pgtm::RunnerApiContract,
         sql::{RunnerSqlCommand, RunnerSqlContract},
     },
+    topology::ClusterMember,
+    world::WritablePrimaryTarget,
 };
 
 const MAX_ATTEMPTS: usize = 256;
@@ -158,9 +160,10 @@ fn run_workload(
         let token = format!("workload-{feature_name}-{sequence}");
         let started_at_ms = timestamp_millis().map_err(|err| err.to_string())?;
         let event = match resolve_primary_target(&runner_api) {
-            Ok((member_id, dsn)) => {
+            Ok(target) => {
+                let member_id = target.member().to_string();
                 let command = RunnerSqlCommand {
-                    dsn,
+                    dsn: target.target().dsn.clone(),
                     sql: format!(
                         "INSERT INTO {table_name} (token) VALUES ('{token}') ON CONFLICT (token) DO NOTHING;"
                     ),
@@ -211,23 +214,11 @@ fn run_workload(
     Ok(())
 }
 
-fn resolve_primary_target(runner_api: &RunnerApiContract) -> Result<(String, String)> {
-    let primary = runner_api.primary_tls_json()?;
-    match primary.targets.as_slice() {
-        [target] => Ok((target.member_id.clone(), target.dsn.clone())),
-        [] => Err(HarnessError::message(
-            "workload primary resolution returned zero targets",
-        )),
-        _ => Err(HarnessError::message(format!(
-            "workload primary resolution returned multiple targets: {}",
-            primary
-                .targets
-                .iter()
-                .map(|target| target.member_id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
+fn resolve_primary_target(runner_api: &RunnerApiContract) -> Result<WritablePrimaryTarget> {
+    runner_api.writable_primary_target().and_then(|target| {
+        ClusterMember::parse(target.authority_member_id.as_str())
+            .map(|member| WritablePrimaryTarget::new(member, target.route))
+    })
 }
 
 fn timestamp_millis() -> Result<u128> {

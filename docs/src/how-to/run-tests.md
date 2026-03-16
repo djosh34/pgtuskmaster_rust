@@ -50,6 +50,8 @@ make test-long
 
 The HA harness now prepares a per-run materialized workspace assembled from shared fixture assets plus rendered topology-specific files, with per-node `faults/` directories bind-mounted into `/var/lib/pgtuskmaster/faults` for explicit fault control.
 
+Stable-primary HA steps now validate a writable PostgreSQL route before recording aliases such as `"initial_primary"` or `"current_primary"`. Follow-up proof writes through those aliases reuse the same validated target instead of resolving a fresh connection path later, so a passed stable-primary wait means the next proof-row insert is checking the same writable endpoint.
+
 Run specific HA scenarios:
 
 ```bash

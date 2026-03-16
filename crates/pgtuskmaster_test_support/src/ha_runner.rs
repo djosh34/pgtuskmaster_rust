@@ -44,6 +44,7 @@ pub enum RunnerCommand {
         seed: RunnerSeedSelection,
     },
     PrimaryTls,
+    WritablePrimaryTls,
     ReplicasTls,
     SwitchoverRequest {
         via_member_id: String,
@@ -67,10 +68,17 @@ pub enum RunnerResponsePayload {
     Pong,
     State { state: Box<NodeState> },
     ConnectionView { view: ConnectionView },
+    WritablePrimaryTarget { target: WritablePrimaryTarget },
     Accepted { accepted: AcceptedResponse },
     SqlRows { rows: Vec<String> },
     Text { value: String },
     Error { message: String },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WritablePrimaryTarget {
+    pub authority_member_id: String,
+    pub route: ConnectionTarget,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +185,12 @@ async fn handle_request(
             build_primary_view(&state, &config)
                 .map(|view| RunnerResponsePayload::ConnectionView { view })
         }
+        RunnerCommand::WritablePrimaryTls => {
+            let (state, config) = select_seed(&RunnerSeedSelection::Automatic).await?;
+            build_writable_primary_target(&state, &config, sql_clients)
+                .await
+                .map(|target| RunnerResponsePayload::WritablePrimaryTarget { target })
+        }
         RunnerCommand::ReplicasTls => {
             let (state, config) = select_seed(&RunnerSeedSelection::Automatic).await?;
             build_replicas_view(&state, &config)
@@ -276,6 +290,7 @@ fn response_kind_label(payload: &RunnerResponsePayload) -> &'static str {
         RunnerResponsePayload::Pong => "pong",
         RunnerResponsePayload::State { .. } => "state",
         RunnerResponsePayload::ConnectionView { .. } => "connection_view",
+        RunnerResponsePayload::WritablePrimaryTarget { .. } => "writable_primary_target",
         RunnerResponsePayload::Accepted { .. } => "accepted",
         RunnerResponsePayload::SqlRows { .. } => "sql_rows",
         RunnerResponsePayload::Text { .. } => "text",
@@ -433,6 +448,29 @@ fn build_primary_view(state: &NodeState, config: &SeedConfig) -> Result<Connecti
     ))
 }
 
+async fn build_writable_primary_target(
+    state: &NodeState,
+    config: &SeedConfig,
+    sql_clients: &mut BTreeMap<String, CachedSqlClient>,
+) -> Result<WritablePrimaryTarget, String> {
+    let primary_id = authority_primary_member(state).ok_or_else(|| {
+        "seed state does not currently expose an authoritative primary".to_string()
+    })?;
+    let member = state
+        .dcs
+        .cluster()
+        .and_then(|cluster| cluster.member(&pgtuskmaster_rust::state::MemberId(primary_id.clone())))
+        .ok_or_else(|| {
+            format!("authoritative primary `{primary_id}` is not present in the DCS member slots")
+        })?;
+    let route = build_connection_target(member, config, config.operator.primary_target.as_ref())?;
+    probe_writable_primary(sql_clients, route.dsn.as_str()).await?;
+    Ok(WritablePrimaryTarget {
+        authority_member_id: primary_id,
+        route,
+    })
+}
+
 fn build_replicas_view(state: &NodeState, config: &SeedConfig) -> Result<ConnectionView, String> {
     let targets = state
         .dcs
@@ -454,6 +492,16 @@ fn build_replicas_view(state: &NodeState, config: &SeedConfig) -> Result<Connect
         ConnectionCommandKind::Replicas,
         targets,
     ))
+}
+
+async fn probe_writable_primary(
+    sql_clients: &mut BTreeMap<String, CachedSqlClient>,
+    dsn: &str,
+) -> Result<(), String> {
+    let probe_sql =
+        "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
+    let _ = execute_sql(sql_clients, dsn, probe_sql).await?;
+    Ok(())
 }
 
 fn build_connection_view(

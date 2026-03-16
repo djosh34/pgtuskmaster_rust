@@ -18,7 +18,7 @@ use crate::support::{
     givens::HaGivenId,
     observer::pgtm::ConnectionTarget,
     topology::ClusterMember,
-    world::{HaWorld, MemberSet, ScenarioHarness},
+    world::{HaWorld, MemberSet, ScenarioAlias, ScenarioHarness, WritablePrimaryTarget},
 };
 
 #[given(regex = r#"^the "([^"]+)" harness is running$"#)]
@@ -42,7 +42,7 @@ async fn the_cluster_reaches_one_stable_primary(world: &mut HaWorld) -> Result<(
         None,
     )
     .await?;
-    world.remember_alias("initial_primary", primary);
+    world.remember_writable_primary_alias("initial_primary", primary);
     Ok(())
 }
 
@@ -61,8 +61,8 @@ async fn i_wait_for_exactly_one_stable_primary_as(
         None,
     )
     .await?;
-    world.remember_alias(alias.as_str(), primary);
-    world.remember_alias("current_primary", primary);
+    world.remember_writable_primary_alias(alias.as_str(), primary.clone());
+    world.remember_writable_primary_alias("current_primary", primary);
     Ok(())
 }
 
@@ -116,9 +116,9 @@ async fn i_record_the_remaining_replica_as(world: &mut HaWorld, alias: String) -
     let used_members = world
         .scenario
         .aliases
-        .members_by_alias
+        .aliases_by_name
         .values()
-        .cloned()
+        .map(ScenarioAlias::member)
         .collect::<BTreeSet<_>>();
     let member_id = replicas
         .into_iter()
@@ -170,7 +170,7 @@ async fn the_current_primary_container_crashes(world: &mut HaWorld) -> Result<()
         let harness = world.harness()?;
         harness.kill_node(primary_member)?;
     }
-    world.remember_alias("killed_node", primary_member);
+    world.remember_member_alias("killed_node", primary_member);
     world.add_stopped_node(primary_member);
     Ok(())
 }
@@ -217,7 +217,7 @@ async fn i_kill_all_database_nodes(world: &mut HaWorld) -> Result<()> {
 
 #[when("I start the killed node container again")]
 async fn i_start_the_killed_node_container_again(world: &mut HaWorld) -> Result<()> {
-    let killed_node = world.require_alias("killed_node")?;
+    let killed_node = world.require_member_alias("killed_node")?;
     {
         let harness = world.harness()?;
         harness.start_node(killed_node)?;
@@ -257,7 +257,7 @@ async fn i_start_only_the_fixed_nodes(
 #[when("I request a planned switchover")]
 async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
     world.clear_primary_history();
-    let seed_member = world.require_alias("current_primary")?;
+    let seed_member = world.require_member_alias("current_primary")?;
     let target_member = wait_for_planned_switchover_precondition(world, seed_member).await?;
     let harness = world.harness()?;
     let response = harness
@@ -274,7 +274,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
     world.clear_primary_history();
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    let seed_member = world.require_alias("current_primary")?;
+    let seed_member = world.require_member_alias("current_primary")?;
     let harness = world.harness()?;
     let response = harness
         .observer()
@@ -310,7 +310,7 @@ async fn i_record_the_current_pgtm_primary_and_replicas_views(world: &mut HaWorl
 async fn after_the_configured_ha_lease_deadline_a_different_node_becomes_the_only_primary(
     world: &mut HaWorld,
 ) -> Result<()> {
-    let killed_node = world.require_alias("killed_node")?;
+    let killed_node = world.require_member_alias("killed_node")?;
     let new_primary = wait_for_authoritative_single_primary(
         world,
         "legacy.failover.new_primary",
@@ -320,7 +320,7 @@ async fn after_the_configured_ha_lease_deadline_a_different_node_becomes_the_onl
         Some(killed_node),
     )
     .await?;
-    world.remember_alias("new_primary", new_primary);
+    world.remember_writable_primary_alias("new_primary", new_primary);
     Ok(())
 }
 
@@ -339,9 +339,10 @@ async fn the_primary_named_remains_the_only_primary(
         None,
     )
     .await?;
-    if observed != member_id {
+    if observed.member() != member_id {
         return Err(HarnessError::message(format!(
-            "expected `{member_id}` to remain primary, observed `{observed}`"
+            "expected `{member_id}` to remain primary, observed `{}`",
+            observed.member()
         )));
     }
     Ok(())
@@ -393,8 +394,8 @@ async fn exactly_one_primary_exists_across_running_nodes_as(
         intended_online.as_slice(),
     )
     .await?;
-    world.remember_alias(alias.as_str(), primary);
-    world.remember_alias("current_primary", primary);
+    world.remember_writable_primary_alias(alias.as_str(), primary.clone());
+    world.remember_writable_primary_alias("current_primary", primary);
     Ok(())
 }
 
@@ -414,8 +415,8 @@ async fn i_wait_for_a_different_stable_primary_than_as(
         Some(previous_member),
     )
     .await?;
-    world.remember_alias(alias.as_str(), primary);
-    world.remember_alias("current_primary", primary);
+    world.remember_writable_primary_alias(alias.as_str(), primary.clone());
+    world.remember_writable_primary_alias("current_primary", primary);
     Ok(())
 }
 
@@ -434,9 +435,10 @@ async fn i_wait_for_the_primary_named_to_become_the_only_primary(
         None,
     )
     .await?;
-    if observed != member_id {
+    if observed.member() != member_id {
         return Err(HarnessError::message(format!(
-            "expected `{member_id}` to become primary, observed `{observed}`"
+            "expected `{member_id}` to become primary, observed `{}`",
+            observed.member()
         )));
     }
     Ok(())
@@ -565,7 +567,7 @@ async fn the_node_named_remains_offline(world: &mut HaWorld, member_ref: String)
 
 #[then("the proof row is visible from the restarted node")]
 async fn the_proof_row_is_visible_from_the_restarted_node(world: &mut HaWorld) -> Result<()> {
-    let member_id = world.require_alias("killed_node")?;
+    let member_id = world.require_member_alias("killed_node")?;
     let expected_rows = world
         .scenario
         .workload
@@ -667,7 +669,7 @@ async fn insert_proof_row(world: &mut HaWorld, row_value: &str, member_ref: &str
     let mut last_retryable_error = None;
 
     loop {
-        let target = sql_target_for_member(world.harness()?, member_id)?;
+        let target = write_target_for_reference(world, member_ref)?;
         let insert_result = {
             let harness = world.harness()?;
             harness
@@ -778,10 +780,10 @@ fn ensure_proof_table(world: &mut HaWorld) -> Result<String> {
     let harness = world.harness()?;
     let table_name = proof_table_name(harness);
     let create_sql = format!("CREATE TABLE IF NOT EXISTS {table_name} (token TEXT PRIMARY KEY);");
-    let primary = current_primary_target(harness)?;
+    let primary = current_writable_primary_target(harness)?;
     let _ = harness
         .sql()
-        .execute(primary.dsn.as_str(), create_sql.as_str())?;
+        .execute(primary.target().dsn.as_str(), create_sql.as_str())?;
     harness.record_note("sql.create_proof_table", format!("table={table_name}"))?;
     world.scenario.workload.proof.table = Some(table_name.clone().into());
     Ok(table_name)
@@ -959,7 +961,7 @@ async fn wait_for_authoritative_single_primary(
     expected_online: usize,
     exact_primary: Option<ClusterMember>,
     different_from: Option<ClusterMember>,
-) -> Result<ClusterMember> {
+) -> Result<WritablePrimaryTarget> {
     let expected_primary = exact_primary;
     let previous_primary = different_from;
     let deadline = {
@@ -973,7 +975,7 @@ async fn wait_for_authoritative_single_primary(
     let mut last_error = None;
 
     while Instant::now() < deadline {
-        let attempt: Result<ClusterMember> = (|| {
+        let attempt: Result<WritablePrimaryTarget> = (|| {
             let status = {
                 let harness = world.harness()?;
                 let status = harness.observer().state()?;
@@ -998,17 +1000,15 @@ async fn wait_for_authoritative_single_primary(
             }
             let target = {
                 let harness = world.harness()?;
-                let target = current_primary_target(harness)?;
-                let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
-                target
+                current_writable_primary_target(harness)?
             };
-            if target.member_id != primary.service_name() {
+            if target.member() != primary {
                 Err(HarnessError::message(format!(
-                    "DCS-reported primary was `{primary}`, but authoritative pgtm primary resolved to `{}`",
-                    target.member_id
+                    "DCS-reported primary was `{primary}`, but writable-primary routing resolved to `{}`",
+                    target.member()
                 )))?;
             }
-            Ok(primary)
+            Ok(target)
         })();
         match attempt {
             Ok(primary) => return Ok(primary),
@@ -1040,7 +1040,7 @@ async fn wait_for_authoritative_single_primary_within(
     kind: PollKind,
     expected_online: usize,
     allowed_members: &[ClusterMember],
-) -> Result<ClusterMember> {
+) -> Result<WritablePrimaryTarget> {
     let deadline = {
         let harness = world.harness()?;
         Instant::now() + kind.deadline(harness)
@@ -1052,7 +1052,7 @@ async fn wait_for_authoritative_single_primary_within(
     let mut last_error = None;
 
     while Instant::now() < deadline {
-        let attempt: Result<ClusterMember> = (|| {
+        let attempt: Result<WritablePrimaryTarget> = (|| {
             let status = {
                 let harness = world.harness()?;
                 let status = harness.observer().state()?;
@@ -1069,17 +1069,15 @@ async fn wait_for_authoritative_single_primary_within(
             }
             let target = {
                 let harness = world.harness()?;
-                let target = current_primary_target(harness)?;
-                let _ = harness.sql().execute(target.dsn.as_str(), "SELECT 1;")?;
-                target
+                current_writable_primary_target(harness)?
             };
-            if target.member_id != primary.service_name() {
+            if target.member() != primary {
                 Err(HarnessError::message(format!(
-                    "DCS-reported primary was `{primary}`, but authoritative pgtm primary resolved to `{}`",
-                    target.member_id
+                    "DCS-reported primary was `{primary}`, but writable-primary routing resolved to `{}`",
+                    target.member()
                 )))?;
             }
-            Ok(primary)
+            Ok(target)
         })();
         match attempt {
             Ok(primary) => return Ok(primary),
@@ -1198,7 +1196,7 @@ async fn wait_for_members_to_reject_proof_writes(
             let harness = world.harness()?;
             for member in members {
                 let probe_value = format!("non-writable-probe-{member}");
-                let target = sql_target_for_member(harness, *member)?;
+                let target = direct_connection_target(*member);
                 let probe_sql = format!(
                     "BEGIN; INSERT INTO {table_name} (token) VALUES ('{}'); ROLLBACK;",
                     sql_quote_literal(probe_value.as_str())
@@ -1377,21 +1375,16 @@ fn current_status(world: &HaWorld) -> Result<NodeState> {
     Ok(status)
 }
 
-fn current_primary_target(harness: &ScenarioHarness) -> Result<ConnectionTarget> {
-    let primary = harness.observer().primary_tls_json()?;
-    match primary.targets.as_slice() {
-        [target] => Ok(target.clone()),
-        [] => Err(HarnessError::message("pgtm primary returned zero targets")),
-        _ => Err(HarnessError::message(format!(
-            "pgtm primary returned multiple targets: {}",
-            primary
-                .targets
-                .iter()
-                .map(|target| target.member_id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
+fn current_writable_primary_target(harness: &ScenarioHarness) -> Result<WritablePrimaryTarget> {
+    let primary = harness.observer().writable_primary_target()?;
+    let authority_member = ClusterMember::parse(primary.authority_member_id.as_str())?;
+    if primary.route.member_id != authority_member.service_name() {
+        return Err(HarnessError::message(format!(
+            "runner writable primary route resolved to `{}` while authority remained `{authority_member}`",
+            primary.route.member_id
+        )));
     }
+    Ok(WritablePrimaryTarget::new(authority_member, primary.route))
 }
 
 fn current_connection_targets(harness: &ScenarioHarness) -> Result<Vec<ConnectionTarget>> {
@@ -1430,9 +1423,9 @@ fn pgtm_connection_target_for_member(
     harness: &ScenarioHarness,
     member_id: ClusterMember,
 ) -> Result<ConnectionTarget> {
-    if let Ok(primary_target) = current_primary_target(harness) {
-        if primary_target.member_id == member_id.service_name() {
-            return Ok(primary_target);
+    if let Ok(primary_target) = current_writable_primary_target(harness) {
+        if primary_target.member() == member_id {
+            return Ok(primary_target.target().clone());
         }
     }
 
@@ -1446,13 +1439,27 @@ fn pgtm_connection_target_for_member(
         })
 }
 
-fn sql_target_for_member(
+fn read_target_for_member(
     harness: &ScenarioHarness,
     member_id: ClusterMember,
 ) -> Result<ConnectionTarget> {
     match pgtm_connection_target_for_member(harness, member_id) {
         Ok(target) => Ok(target),
         Err(_) => Ok(direct_connection_target(member_id)),
+    }
+}
+
+fn write_target_for_reference(world: &HaWorld, member_ref: &str) -> Result<ConnectionTarget> {
+    if let Ok(target) = world.require_writable_primary_alias(member_ref) {
+        return Ok(target.target().clone());
+    }
+
+    match world.alias(member_ref) {
+        Some(ScenarioAlias::Member(member)) => Ok(direct_connection_target(*member)),
+        Some(ScenarioAlias::WritablePrimary(_)) => Err(HarnessError::message(format!(
+            "alias `{member_ref}` should have resolved through the typed writable-primary path first"
+        ))),
+        None => ClusterMember::parse(member_ref).map(direct_connection_target),
     }
 }
 
@@ -1487,7 +1494,7 @@ fn fetch_rows_for_member(
     table_name: &str,
     member_id: ClusterMember,
 ) -> Result<Vec<String>> {
-    let target = sql_target_for_member(harness, member_id)?;
+    let target = read_target_for_member(harness, member_id)?;
     fetch_rows_via_target(harness, table_name, &target)
 }
 
@@ -1559,13 +1566,13 @@ fn record_alias(
         let harness = world.harness()?;
         harness.record_note(phase, format!("alias `{alias}` -> `{member}`"))?;
     }
-    world.remember_alias(alias, member);
+    world.remember_member_alias(alias, member);
     Ok(())
 }
 
 fn resolve_member_reference(world: &HaWorld, member_ref: &str) -> Result<ClusterMember> {
     world
-        .require_alias(member_ref)
+        .require_member_alias(member_ref)
         .or_else(|_| ClusterMember::parse(member_ref))
 }
 
@@ -2250,7 +2257,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
 ) -> Result<()> {
     world.clear_primary_history();
     let member_id = resolve_member_reference(world, member_ref.as_str())?;
-    let seed_member = world.require_alias("current_primary")?;
+    let seed_member = world.require_member_alias("current_primary")?;
     wait_for_targeted_switchover_rejection_precondition(world, seed_member, member_id).await?;
     let request_result = {
         let harness = world.harness()?;
@@ -2508,9 +2515,9 @@ async fn the_aliases_and_are_distinct(
     alias_b: String,
     alias_c: String,
 ) -> Result<()> {
-    let member_a = world.require_alias(alias_a.as_str())?;
-    let member_b = world.require_alias(alias_b.as_str())?;
-    let member_c = world.require_alias(alias_c.as_str())?;
+    let member_a = world.require_member_alias(alias_a.as_str())?;
+    let member_b = world.require_member_alias(alias_b.as_str())?;
+    let member_c = world.require_member_alias(alias_c.as_str())?;
     let distinct = [member_a, member_b, member_c]
         .into_iter()
         .collect::<BTreeSet<_>>();
@@ -2741,9 +2748,9 @@ async fn the_aliases_and_are_all_distinct(
     alias_c: String,
 ) -> Result<()> {
     let values = [
-        world.require_alias(alias_a.as_str())?,
-        world.require_alias(alias_b.as_str())?,
-        world.require_alias(alias_c.as_str())?,
+        world.require_member_alias(alias_a.as_str())?,
+        world.require_member_alias(alias_b.as_str())?,
+        world.require_member_alias(alias_c.as_str())?,
     ];
     let distinct = values.iter().cloned().collect::<BTreeSet<_>>();
     if distinct.len() == values.len() {

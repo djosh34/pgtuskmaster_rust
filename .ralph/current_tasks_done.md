@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar 16 04:12:52 AM CET 2026
+Generated: Mon Mar 16 04:59:39 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -9,6 +9,18 @@ Generated: Mon Mar 16 04:12:52 AM CET 2026
 
 <description>
 `make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-ha-stable-primary-gate-allows-non-writable-primary.md`
+
+```
+## Bug: HA stable-primary gate allows non-writable primary <status>completed</status> <passes>true</passes>
+
+<blocked_by>Full completion of `.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md`</blocked_by>
+
+<description>
 ```
 
 ==============

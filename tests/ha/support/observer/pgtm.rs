@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use pgtuskmaster_rust::api::NodeState;
 use pgtuskmaster_test_support::ha_runner::{
     RunnerCommand, RunnerResponsePayload, RunnerSeedSelection,
+    WritablePrimaryTarget as RunnerWritablePrimaryTarget,
 };
 
 pub use pgtuskmaster_rust::cli::connect::ConnectionTarget;
@@ -58,6 +59,16 @@ impl RunnerApiContract {
 
     pub fn primary_tls_json(&self) -> Result<pgtuskmaster_rust::cli::connect::ConnectionView> {
         self.decode_connection_view(RunnerCommand::PrimaryTls)
+    }
+
+    pub fn writable_primary_target(&self) -> Result<RunnerWritablePrimaryTarget> {
+        match run_contract_command(&self.session, RunnerCommand::WritablePrimaryTls)? {
+            RunnerResponsePayload::WritablePrimaryTarget { target } => Ok(target),
+            other => Err(HarnessError::message(format!(
+                "runner returned `{}` instead of writable primary target",
+                response_kind_label(&other)
+            ))),
+        }
     }
 
     pub fn replicas_tls_json(&self) -> Result<pgtuskmaster_rust::cli::connect::ConnectionView> {
@@ -117,6 +128,7 @@ fn response_kind_label(payload: &RunnerResponsePayload) -> &'static str {
         RunnerResponsePayload::Pong => "pong",
         RunnerResponsePayload::State { .. } => "state",
         RunnerResponsePayload::ConnectionView { .. } => "connection_view",
+        RunnerResponsePayload::WritablePrimaryTarget { .. } => "writable_primary_target",
         RunnerResponsePayload::Accepted { .. } => "accepted",
         RunnerResponsePayload::SqlRows { .. } => "sql_rows",
         RunnerResponsePayload::Text { .. } => "text",
