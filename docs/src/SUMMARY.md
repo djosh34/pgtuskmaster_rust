@@ -43,6 +43,7 @@
     - [Code Organization Reference](reference/code-organization.md)
     - [HTTP API](reference/http-api.md)
     - [HA Decisions](reference/ha-decisions.md)
+    - [HA Docker Test Investigation](reference/ha-test-investigation.md)
     - [DCS State Model](reference/dcs-state-model.md)
     - [pgtm CLI](reference/pgtm-cli.md)
     - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)

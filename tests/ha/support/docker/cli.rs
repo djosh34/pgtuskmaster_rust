@@ -424,10 +424,6 @@ impl DockerCli {
         self.run_text(args, context)
     }
 
-    pub fn sleep_for_resource_cleanup(&self) {
-        std::thread::sleep(Duration::from_secs(2));
-    }
-
     fn run<I, S>(&self, args: I, context: impl Into<String>) -> Result<process::CommandOutput>
     where
         I: IntoIterator<Item = S>,
