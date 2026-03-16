@@ -2374,3 +2374,5 @@ The proc-macro alternative in the previous section remains valid if the team pre
 - [ ] If derive support is implemented, it is added only as a small follow-up over an already-clear handwritten schema split, and it does not hide business logic.
 - [ ] If derive support is not implemented, that is still acceptable as long as the handwritten schema/store/runtime split is clean and the schema/key-format scattering problem is fully solved.
   </acceptance_criteria>
+
+NOW EXECUTE
