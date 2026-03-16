@@ -4,7 +4,7 @@ use pgtuskmaster_rust::state::MemberId;
 
 use crate::support::{
     error::{HarnessError, Result},
-    runner::HA_RUNNER_SERVICE_NAME,
+    faults::OBSERVER_SERVICE_NAME,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -26,11 +26,19 @@ impl ClusterMember {
         }
     }
 
-    pub fn runner_seed_config_relative_path(self) -> &'static str {
+    pub fn observer_config_path(self) -> &'static str {
         match self {
-            Self::NodeA => "configs/ha-runner/seeds/node-a.toml",
-            Self::NodeB => "configs/ha-runner/seeds/node-b.toml",
-            Self::NodeC => "configs/ha-runner/seeds/node-c.toml",
+            Self::NodeA => "/etc/pgtuskmaster/observer/node-a.toml",
+            Self::NodeB => "/etc/pgtuskmaster/observer/node-b.toml",
+            Self::NodeC => "/etc/pgtuskmaster/observer/node-c.toml",
+        }
+    }
+
+    pub fn observer_config_relative_path(self) -> &'static str {
+        match self {
+            Self::NodeA => "configs/observer/node-a.toml",
+            Self::NodeB => "configs/observer/node-b.toml",
+            Self::NodeC => "configs/observer/node-c.toml",
         }
     }
 
@@ -154,32 +162,9 @@ impl fmt::Display for DcsService {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum RunnerService {
-    ScenarioRunner,
-}
-
-impl RunnerService {
-    pub fn service_name(self) -> &'static str {
-        match self {
-            Self::ScenarioRunner => HA_RUNNER_SERVICE_NAME,
-        }
-    }
-
-    pub fn compose_service(self) -> ComposeService {
-        ComposeService::Runner(self)
-    }
-}
-
-impl fmt::Display for RunnerService {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.service_name())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComposeService {
     Member(ClusterMember),
-    Runner(RunnerService),
+    Observer,
     Dcs(DcsService),
 }
 
@@ -187,7 +172,7 @@ impl ComposeService {
     pub fn service_name(self) -> &'static str {
         match self {
             Self::Member(member) => member.service_name(),
-            Self::Runner(service) => service.service_name(),
+            Self::Observer => OBSERVER_SERVICE_NAME,
             Self::Dcs(service) => service.service_name(),
         }
     }
@@ -202,12 +187,6 @@ impl fmt::Display for ComposeService {
 impl From<ClusterMember> for ComposeService {
     fn from(value: ClusterMember) -> Self {
         Self::Member(value)
-    }
-}
-
-impl From<RunnerService> for ComposeService {
-    fn from(value: RunnerService) -> Self {
-        Self::Runner(value)
     }
 }
 

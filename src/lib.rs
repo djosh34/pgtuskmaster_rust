@@ -8,6 +8,7 @@
 
 pub mod api;
 pub mod cli;
+pub mod command;
 pub mod config;
 pub mod dcs;
 #[cfg(test)]

@@ -162,9 +162,6 @@ pub fn validate_operator_config(cfg: &PgtmConfig) -> Result<(), ConfigError> {
     if let Some(advertised_url) = cfg.api.advertised_url.as_ref() {
         validate_non_empty("pgtm.api.advertised_url", advertised_url.as_str())?;
     }
-    if let Some(primary_target) = cfg.primary_target.as_ref() {
-        validate_non_empty("pgtm.primary_target.host", primary_target.host.as_str())?;
-    }
     Ok(())
 }
 

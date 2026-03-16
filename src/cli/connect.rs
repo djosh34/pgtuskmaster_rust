@@ -1,5 +1,3 @@
-use serde::{Deserialize, Serialize};
-
 use crate::{
     api::NodeState,
     cli::{
@@ -9,67 +7,43 @@ use crate::{
         error::CliError,
         output,
         status::{
-            authority_primary_member, fetch_seed_state, member_is_ready_replica, ClusterWarning,
+            authority_primary_member, build_state_projection, fetch_seed_state,
+            member_is_ready_replica,
         },
+    },
+    command::{
+        CommandOutputDto, LocalConnectionMaterialization, PathBackedClientTlsDto,
+        RenderedConnectionCommandDto, StateDerivedConnectionCommandDto,
+        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateQueryOriginDto,
     },
     dcs::ClusterMemberView,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ConnectionCommandKind {
-    Primary,
-    Replicas,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionTarget {
-    pub member_id: String,
-    pub postgres_host: String,
-    pub postgres_port: u16,
-    pub dsn: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConnectionView {
-    pub cluster_name: String,
-    pub scope: String,
-    pub kind: ConnectionCommandKind,
-    pub tls: bool,
-    pub discovered_member_count: usize,
-    pub warnings: Vec<ClusterWarning>,
-    pub targets: Vec<ConnectionTarget>,
-}
 
 pub(crate) async fn run_primary(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let (state, _queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_primary_view(
-        &state,
-        &context.postgres_client_tls,
-        options.tls,
-        context.primary_target.as_ref(),
-    )?;
-    output::render_connection_view(&view, options.json)
+    let (state, queried_via) = fetch_seed_state(context).await?;
+    let view = resolve_primary_view(&state, queried_via, &context.postgres_client_tls, options.tls)?;
+    output::render_command_output(&CommandOutputDto::Primary { output: view }, options.json)
 }
 
 pub(crate) async fn run_replicas(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let (state, _queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_replicas_view(&state, &context.postgres_client_tls, options.tls)?;
-    output::render_connection_view(&view, options.json)
+    let (state, queried_via) = fetch_seed_state(context).await?;
+    let view =
+        resolve_replicas_view(&state, queried_via, &context.postgres_client_tls, options.tls)?;
+    output::render_command_output(&CommandOutputDto::Replicas { output: view }, options.json)
 }
 
 fn resolve_primary_view(
     state: &NodeState,
+    queried_via: StateQueryOriginDto,
     tls: &CliTlsConfig,
     emit_tls: bool,
-    primary_target: Option<&crate::config::PgtmPrimaryTargetConfig>,
-) -> Result<ConnectionView, CliError> {
+) -> Result<RenderedConnectionCommandDto, CliError> {
     let primary_id = authority_primary_member(state).ok_or_else(|| {
         CliError::Resolution(
             "seed state does not currently expose an authoritative primary".to_string(),
@@ -87,22 +61,19 @@ fn resolve_primary_view(
 
     Ok(build_connection_view(
         state,
-        emit_tls,
-        ConnectionCommandKind::Primary,
-        vec![build_primary_connection_target(
-            member,
-            tls,
-            emit_tls,
-            primary_target,
-        )?],
+        queried_via,
+        StateDerivedConnectionCommandKind::Primary,
+        vec![build_connection_target(primary_id.as_str(), member)?],
+        build_local_connection_material(tls, emit_tls)?,
     ))
 }
 
 fn resolve_replicas_view(
     state: &NodeState,
+    queried_via: StateQueryOriginDto,
     tls: &CliTlsConfig,
     emit_tls: bool,
-) -> Result<ConnectionView, CliError> {
+) -> Result<RenderedConnectionCommandDto, CliError> {
     let targets = state
         .dcs
         .cluster()
@@ -110,10 +81,10 @@ fn resolve_replicas_view(
         .flat_map(|cluster| {
             cluster
                 .member_ids()
-                .filter_map(|member_id| cluster.member(member_id))
+                .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
         })
-        .filter(|member| member_is_ready_replica(member))
-        .map(|member| build_connection_target(member, tls, emit_tls))
+        .filter(|(_member_id, member)| member_is_ready_replica(member))
+        .map(|(member_id, member)| build_connection_target(member_id.0.as_str(), member))
         .collect::<Result<Vec<_>, _>>()?;
 
     if targets.is_empty() {
@@ -124,38 +95,34 @@ fn resolve_replicas_view(
 
     Ok(build_connection_view(
         state,
-        emit_tls,
-        ConnectionCommandKind::Replicas,
+        queried_via,
+        StateDerivedConnectionCommandKind::Replicas,
         targets,
+        build_local_connection_material(tls, emit_tls)?,
     ))
 }
 
 fn build_connection_view(
     state: &NodeState,
-    emit_tls: bool,
-    kind: ConnectionCommandKind,
-    targets: Vec<ConnectionTarget>,
-) -> ConnectionView {
-    ConnectionView {
-        cluster_name: state.cluster_name.clone(),
-        scope: state.scope.clone(),
-        kind,
-        tls: emit_tls,
-        discovered_member_count: state
-            .dcs
-            .cluster()
-            .map(|cluster| cluster.member_count())
-            .unwrap_or(0),
-        warnings: Vec::new(),
-        targets,
+    queried_via: StateQueryOriginDto,
+    kind: StateDerivedConnectionCommandKind,
+    targets: Vec<StateDerivedConnectionTargetDto>,
+    local_connection: LocalConnectionMaterialization,
+) -> RenderedConnectionCommandDto {
+    RenderedConnectionCommandDto {
+        state: StateDerivedConnectionCommandDto {
+            projection: build_state_projection(state, queried_via, false),
+            kind,
+            targets,
+        },
+        local_connection,
     }
 }
 
 fn build_connection_target(
+    member_id: &str,
     member: &ClusterMemberView,
-    tls: &CliTlsConfig,
-    emit_tls: bool,
-) -> Result<ConnectionTarget, CliError> {
+) -> Result<StateDerivedConnectionTargetDto, CliError> {
     let postgres_host = member.postgres_target().host().trim();
     let postgres_port = member.postgres_target().port();
     if postgres_host.is_empty() || postgres_port == 0 {
@@ -164,124 +131,51 @@ fn build_connection_target(
         ));
     }
 
-    let dsn = render_connection_dsn(postgres_host, postgres_port, tls, emit_tls)?;
-    Ok(ConnectionTarget {
-        member_id: postgres_host.to_string(),
+    Ok(StateDerivedConnectionTargetDto {
+        member_id: member_id.to_string(),
         postgres_host: postgres_host.to_string(),
         postgres_port,
-        dsn,
     })
 }
 
-fn build_primary_connection_target(
-    member: &ClusterMemberView,
+fn build_local_connection_material(
     tls: &CliTlsConfig,
     emit_tls: bool,
-    override_target: Option<&crate::config::PgtmPrimaryTargetConfig>,
-) -> Result<ConnectionTarget, CliError> {
-    let resolved_host = override_target
-        .map(|target| target.host.trim())
-        .unwrap_or_else(|| member.postgres_target().host().trim());
-    let resolved_port = override_target
-        .and_then(|target| target.port)
-        .unwrap_or(member.postgres_target().port());
-
-    if resolved_host.is_empty() || resolved_port == 0 {
-        return Err(CliError::Resolution(
-            "member does not advertise PostgreSQL host/port".to_string(),
-        ));
+) -> Result<LocalConnectionMaterialization, CliError> {
+    if !emit_tls {
+        return Ok(LocalConnectionMaterialization::Plaintext);
     }
 
-    let dsn = render_connection_dsn(resolved_host, resolved_port, tls, emit_tls)?;
-    Ok(ConnectionTarget {
-        member_id: resolved_host.to_string(),
-        postgres_host: resolved_host.to_string(),
-        postgres_port: resolved_port,
-        dsn,
-    })
-}
-
-fn render_connection_dsn(
-    postgres_host: &str,
-    postgres_port: u16,
-    tls: &CliTlsConfig,
-    emit_tls: bool,
-) -> Result<String, CliError> {
-    let mut fields = vec![
-        ("host", postgres_host.to_string()),
-        ("port", postgres_port.to_string()),
-        ("user", "postgres".to_string()),
-        ("dbname", "postgres".to_string()),
-    ];
-    if emit_tls {
-        fields.push(("sslmode", "verify-full".to_string()));
-        maybe_push_tls_path_field(
-            &mut fields,
-            "sslrootcert",
+    let paths = PathBackedClientTlsDto {
+        ca_cert_path: require_path_backed_tls_field(
             "pgtm postgres client CA certificate",
             tls.ca_cert_pem.as_ref(),
-            tls.ca_cert_path.as_ref(),
-        )?;
-        maybe_push_tls_path_field(
-            &mut fields,
-            "sslcert",
+            tls.ca_cert_path.clone(),
+        )?,
+        client_cert_path: require_path_backed_tls_field(
             "pgtm postgres client certificate",
             tls.client_cert_pem.as_ref(),
-            tls.client_cert_path.as_ref(),
-        )?;
-        maybe_push_tls_path_field(
-            &mut fields,
-            "sslkey",
+            tls.client_cert_path.clone(),
+        )?,
+        client_key_path: require_path_backed_tls_field(
             "pgtm postgres client key",
             tls.client_key_pem.as_ref(),
-            tls.client_key_path.as_ref(),
-        )?;
-    }
-
-    Ok(fields
-        .iter()
-        .map(|(key, value)| format!("{key}={}", escape_libpq_value(value.as_str())))
-        .collect::<Vec<_>>()
-        .join(" "))
+            tls.client_key_path.clone(),
+        )?,
+    };
+    Ok(LocalConnectionMaterialization::Tls { paths })
 }
 
-fn maybe_push_tls_path_field(
-    fields: &mut Vec<(&'static str, String)>,
-    dsn_key: &'static str,
+fn require_path_backed_tls_field(
     field_label: &'static str,
     pem: Option<&Vec<u8>>,
-    path: Option<&std::path::PathBuf>,
-) -> Result<(), CliError> {
+    path: Option<std::path::PathBuf>,
+) -> Result<Option<std::path::PathBuf>, CliError> {
     match (pem, path) {
-        (Some(_), Some(path)) | (None, Some(path)) => {
-            fields.push((dsn_key, path.to_string_lossy().into_owned()));
-            Ok(())
-        }
+        (Some(_), Some(path)) | (None, Some(path)) => Ok(Some(path)),
         (Some(_), None) => Err(CliError::Resolution(format!(
             "`--tls` cannot render {field_label} because the effective config is not path-backed"
         ))),
-        (None, None) => Ok(()),
+        (None, None) => Ok(None),
     }
-}
-
-fn escape_libpq_value(value: &str) -> String {
-    let requires_quotes = value.is_empty()
-        || value
-            .chars()
-            .any(|ch| ch.is_whitespace() || ch == '\'' || ch == '\\');
-    if !requires_quotes {
-        return value.to_string();
-    }
-
-    let escaped = value.chars().fold(String::new(), |mut acc, ch| {
-        match ch {
-            '\'' | '\\' => {
-                acc.push('\\');
-                acc.push(ch);
-            }
-            _ => acc.push(ch),
-        }
-        acc
-    });
-    format!("'{escaped}'")
 }

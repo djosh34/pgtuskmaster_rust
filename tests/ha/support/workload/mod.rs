@@ -13,11 +13,9 @@ use serde::Serialize;
 use crate::support::{
     error::{HarnessError, Result},
     observer::{
-        pgtm::RunnerApiContract,
-        sql::{RunnerSqlCommand, RunnerSqlContract},
+        pgtm::{materialize_connection_dsn, PgtmObserver},
+        sql::SqlObserver,
     },
-    topology::ClusterMember,
-    world::WritablePrimaryTarget,
 };
 
 const MAX_ATTEMPTS: usize = 256;
@@ -54,8 +52,8 @@ impl SqlWorkloadHandle {
     pub fn start(
         feature_name: &str,
         table_name: &str,
-        runner_api: RunnerApiContract,
-        runner_sql: RunnerSqlContract,
+        observer: PgtmObserver,
+        sql: SqlObserver,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let events = Arc::new(Mutex::new(Vec::new()));
@@ -67,8 +65,8 @@ impl SqlWorkloadHandle {
             run_workload(
                 feature_name.as_str(),
                 table_name.as_str(),
-                runner_api,
-                runner_sql,
+                observer,
+                sql,
                 stop_signal,
                 shared_events,
             )
@@ -147,8 +145,8 @@ impl fmt::Debug for SqlWorkloadHandle {
 fn run_workload(
     feature_name: &str,
     table_name: &str,
-    runner_api: RunnerApiContract,
-    runner_sql: RunnerSqlContract,
+    observer: PgtmObserver,
+    sql: SqlObserver,
     stop_signal: Arc<AtomicBool>,
     shared_events: Arc<Mutex<Vec<WorkloadEvent>>>,
 ) -> std::result::Result<(), String> {
@@ -159,16 +157,12 @@ fn run_workload(
 
         let token = format!("workload-{feature_name}-{sequence}");
         let started_at_ms = timestamp_millis().map_err(|err| err.to_string())?;
-        let event = match resolve_primary_target(&runner_api) {
-            Ok(target) => {
-                let member_id = target.member().to_string();
-                let command = RunnerSqlCommand {
-                    dsn: target.target().dsn.clone(),
-                    sql: format!(
-                        "INSERT INTO {table_name} (token) VALUES ('{token}') ON CONFLICT (token) DO NOTHING;"
-                    ),
-                };
-                match runner_sql.execute_command(command) {
+        let event = match resolve_primary_target(&observer, &sql) {
+            Ok((member_id, dsn)) => {
+                let insert_sql = format!(
+                    "INSERT INTO {table_name} (token) VALUES ('{token}') ON CONFLICT (token) DO NOTHING;"
+                );
+                match sql.execute(dsn.as_str(), insert_sql.as_str()) {
                     Ok(_) => WorkloadEvent {
                         token,
                         target_member: Some(member_id),
@@ -214,11 +208,35 @@ fn run_workload(
     Ok(())
 }
 
-fn resolve_primary_target(runner_api: &RunnerApiContract) -> Result<WritablePrimaryTarget> {
-    runner_api.writable_primary_target().and_then(|target| {
-        ClusterMember::parse(target.authority_member_id.as_str())
-            .map(|member| WritablePrimaryTarget::new(member, target.route))
-    })
+fn resolve_primary_target(observer: &PgtmObserver, sql: &SqlObserver) -> Result<(String, String)> {
+    let primary = observer.primary_tls_json()?;
+    match primary.state.targets.as_slice() {
+        [target] => {
+            let dsn = materialize_connection_dsn(target, &primary.local_connection);
+            probe_writable_primary(sql, dsn.as_str())?;
+            Ok((target.member_id.clone(), dsn))
+        }
+        [] => Err(HarnessError::message(
+            "workload primary resolution returned zero targets",
+        )),
+        _ => Err(HarnessError::message(format!(
+            "workload primary resolution returned multiple targets: {}",
+            primary
+                .state
+                .targets
+                .iter()
+                .map(|target| target.member_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))),
+    }
+}
+
+fn probe_writable_primary(sql: &SqlObserver, dsn: &str) -> Result<()> {
+    let probe_sql =
+        "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
+    let _ = sql.execute(dsn, probe_sql)?;
+    Ok(())
 }
 
 fn timestamp_millis() -> Result<u128> {

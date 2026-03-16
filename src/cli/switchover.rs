@@ -7,6 +7,7 @@ use crate::{
         output,
         status::{authority_primary_member, fetch_seed_state, member_is_ready_replica},
     },
+    command::CommandOutputDto,
     dcs::DcsMode,
     ha::types::{AuthorityProjection, PublicationState},
     state::MemberId,
@@ -15,7 +16,7 @@ use crate::{
 pub(crate) async fn run_clear(context: &OperatorContext, json: bool) -> Result<String, CliError> {
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let response = client.delete_switchover().await?;
-    output::render_accepted_output(&response, json)
+    output::render_command_output(&CommandOutputDto::Switchover { output: response }, json)
 }
 
 pub(crate) async fn run_request(
@@ -28,7 +29,7 @@ pub(crate) async fn run_request(
 
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let response = client.post_switchover(switchover_to).await?;
-    output::render_accepted_output(&response, json)
+    output::render_command_output(&CommandOutputDto::Switchover { output: response }, json)
 }
 
 fn validate_switchover_request(

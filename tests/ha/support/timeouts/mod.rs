@@ -4,9 +4,10 @@ use pgtuskmaster_rust::config::RuntimeConfig;
 
 use crate::support::error::{HarnessError, Result};
 
-const FAILOVER_SLACK_LOOPS: u64 = 6;
-const DCS_DETECTION_SLACK_LOOPS: u64 = 2;
-const RECOVERY_SLACK_LOOPS: u64 = 20;
+const FAILOVER_SLACK_LOOPS: u64 = 3;
+const DCS_DETECTION_SLACK_LOOPS: u64 = 1;
+const FAILOVER_EXTRA_BUFFER_MS: u64 = 12_000;
+const RECOVERY_SLACK_LOOPS: u64 = 10;
 const HARNESS_POLL_INTERVAL_MULTIPLIER: u64 = 2;
 const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 2_000;
 
@@ -50,8 +51,9 @@ fn derive_timeout_model(
     let ha_loop_interval = Duration::from_millis(ha_loop_interval_ms);
     let failover_slack =
         ha_loop_interval.mul_f64((FAILOVER_SLACK_LOOPS + DCS_DETECTION_SLACK_LOOPS) as f64);
+    let failover_buffer = Duration::from_millis(FAILOVER_EXTRA_BUFFER_MS);
     let recovery_slack = ha_loop_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
-    let failover_deadline = Duration::from_millis(lease_ttl_ms) + failover_slack;
+    let failover_deadline = Duration::from_millis(lease_ttl_ms) + failover_slack + failover_buffer;
     let startup_deadline = Duration::from_millis(bootstrap_ms) + recovery_slack;
     let recovery_base = bootstrap_ms.max(pg_rewind_ms);
     let recovery_deadline = Duration::from_millis(recovery_base) + recovery_slack;
@@ -78,7 +80,7 @@ mod tests {
     fn doubles_harness_poll_interval_for_fast_ha_loops() {
         let model = derive_timeout_model(1_000, 10_000, 300_000, 120_000);
         assert_eq!(model.poll_interval, Duration::from_secs(2));
-        assert_eq!(model.failover_deadline, Duration::from_secs(18));
+        assert_eq!(model.failover_deadline, Duration::from_secs(26));
     }
 
     #[test]

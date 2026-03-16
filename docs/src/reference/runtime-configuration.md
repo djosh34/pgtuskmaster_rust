@@ -386,10 +386,6 @@ tls = { ca_cert = { path = "/etc/pgtm/api-ca.pem" } }
 [pgtm.postgres.tls]
 ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
 identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pgtm/postgres.key" } }
-
-[pgtm.primary_target]
-host = "db-a.example.com"
-port = 15432
 ```
 
 ### Meaning
@@ -399,10 +395,7 @@ port = 15432
 - `pgtm.api.expected_transport`: optional client-side check for `http` or `https`
 - `pgtm.api.auth`: operator token config
 - `pgtm.api.tls`: API client TLS material
-- `pgtm.postgres.tls`: PostgreSQL client TLS material for `pgtm primary --tls` and `pgtm replicas --tls`
-- `pgtm.primary_target`: optional host/port override used only by `pgtm primary`
-
-`pgtm replicas` still uses discovered per-member routing rather than the primary-target override.
+- `pgtm.postgres.tls`: PostgreSQL client TLS material that `pgtm primary --tls` and `pgtm replicas --tls` append after target selection has already been derived from `GET /state`
 
 ## `debug`
 

@@ -274,18 +274,36 @@ pub struct PgClientTls {
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct PgAccessSpec {
+pub struct PgConnInfo {
     pub endpoint: PgEndpoint,
     pub user: String,
     pub tls: PgClientTls,
 }
 ```
 
-Do not keep `member_id`, `dbname`, `application_name`, `connect_timeout_s`, or opaque `options` inside the canonical access spec unless current repo usage proves they are actually required. In the current codebase, those look like derived policy/settings concerns, not core connection identity.
+Do not keep `member_id`, `dbname`, `application_name`, `connect_timeout_s`, or opaque `options` inside the canonical connection-info ADT unless current repo usage proves they are actually required. In the current codebase, those look like derived policy/settings concerns, not core connection identity.
 
-Hard requirement: fields removed from the canonical access spec must not disappear. They must move into the owning config structs or one dedicated PostgreSQL client-settings/config ADT, whichever gives the smallest truthful boundary.
+Hard requirement: fields removed from the canonical connection-info ADT must move into the owning config structs or one dedicated PostgreSQL client-settings/config ADT, whichever gives the smallest truthful boundary. They must not reappear as loose parameters threaded through clunky `build_*` helpers.
 
-Rendered DSNs should be methods or helper functions, not stored parallel data.
+The canonical `PgConnInfo` should own DSN conversion behavior through impls on the type itself rather than through free helper functions:
+
+```rust
+impl std::fmt::Display for PgConnInfo {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // render the supported DSN subset from the canonical ADT
+    }
+}
+
+impl std::str::FromStr for PgConnInfo {
+    type Err = PgConnInfoParseError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        // parse the supported DSN subset into the canonical ADT
+    }
+}
+```
+
+Use `to_string()` via `Display` for DSN rendering and `FromStr` for parsing. Do not store a parallel rendered DSN field, and do not introduce a new free `render_*dsn` / `parse_*dsn` layer if the behavior belongs on the canonical type.
 
 **Delete checklist for DCS snapshot unification:**
 - `DcsMode` in `src/dcs/state.rs`
@@ -351,7 +369,7 @@ pub(super) struct ApiRuntimeCtx {
 
 Do not carry loose bind/auth settings separately through the runtime if they are already available in the existing config structs.
 
-Hard requirement: if a field is removed from the runtime carrier because it is really configuration, it must move into the owning config struct or one dedicated settings ADT. It must not silently vanish.
+Hard requirement: if a field is removed from the runtime carrier because it is really configuration, it must move into the owning config struct or one dedicated settings ADT. Do not reintroduce it indirectly through a `build_*` function that reconstructs the same carrier by hand.
 
 **Delete checklist for DCS runtime-carrier unification:**
 - `DcsAdvertisedEndpoints` in `src/dcs/startup.rs`
@@ -381,7 +399,39 @@ pub(super) struct DcsRuntimeCtx {
 
 Do not keep loose cadence/config fields such as `member_ttl_ms` and `poll_interval` hanging off the runtime context. Keep settings in existing config structs or one dedicated settings ADT.
 
-Hard requirement: these removed loose fields must end up in the owning config/settings layer, not be deleted as behavior. The refactor must preserve the behavior while relocating the configuration to the correct owner.
+Hard requirement: these removed loose fields must end up in the owning config/settings layer. The refactor must preserve the behavior while relocating the configuration to the correct owner, and it must not recreate the same loose-field plumbing behind a `build_*` helper.
+
+**Conversion-builder cleanup that should follow from this migration:**
+- The goal is not to ban every `build_*` function in the repo. The goal is to remove the `build_*` helpers whose only job is to translate between duplicate DTOs, duplicate enum trees, or repacked carrier structs.
+- Output/render-layer assembly functions may survive if they are genuinely presentation-specific.
+- Domain/data transition functions should become direct ADT constructors, `From`/`TryFrom` implementations, or small methods on the owning type, instead of free functions that rebuild the same data under a different wrapper.
+
+**Concrete `build_*` / conversion helpers to remove or collapse as part of this task:**
+- `src/api/controller.rs`
+  - `build_node_state`
+- `src/dcs/state.rs`
+  - `build_dcs_view`
+  - `build_member_view`
+  - `build_local_member_record`
+- `src/dcs/worker.rs`
+  - `build_worker_ctx`
+- `src/ha/worker.rs`
+  - `build_next_state`
+  - `build_data_dir_state`
+  - `build_postgres_state`
+  - `build_local_postgres_state`
+  - `build_replication_state`
+  - `build_storage_state`
+  - `build_global_knowledge`
+  - `build_peer_knowledge_from_member`
+  - `build_self_peer`
+  - `build_leadership_view`
+- `src/cli/connect.rs`
+  - `build_connection_view`
+  - `build_connection_target`
+  - `build_primary_connection_target`
+
+These should either disappear entirely or collapse into direct constructors / `From` implementations on the canonical ADTs. The point is to stop rebuilding the same semantics through builder-shaped translation functions after the duplicate-type migration.
 
 **Delete checklist for child-process guard unification:**
 - `ChildGuard` in `src/api/worker.rs`
@@ -402,8 +452,8 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - `MandatoryPostgresRolesConfig`: the default preferred answer is the generic `PostgresRoleSlots<T>` ADT above, but the implementer should explicitly compare it against any more type-driven alternative they believe is better. A keyed map is not preferred because it loses exhaustiveness unless you wrap it in another ADT.
 - `SecretSource`: this task should not introduce an `OptionalSecret<T>` wrapper. The intended direction is one concrete Rust enum for secret sourcing, including absence, file, env, and string.
 - Switchover modeling: prefer the single enum above over keeping both a state enum and a target enum, because it makes the intent explicit and removes wrapper churn. If the implementer disagrees, they must document why and still converge the whole repo onto one canonical switchover ADT.
-- PostgreSQL access modeling: keep the canonical access shape small. Settings such as timeout, default database name, application name, and arbitrary libpq options belong in config/policy or in a truly separate ADT if current usage proves they are needed.
-- Removed fields are not optional deletions. If a field is taken out of a canonical domain ADT because it is really configuration, the task requires moving it into the owning config structs or a dedicated settings ADT and updating all call sites accordingly.
+- PostgreSQL connection modeling: keep the canonical `PgConnInfo` shape small. Settings such as timeout, default database name, application name, and arbitrary libpq options belong in config/policy or in a truly separate ADT if current usage proves they are needed.
+- Removed fields are not optional deletions. If a field is taken out of a canonical domain ADT because it is really configuration, the task requires moving it into the owning config structs or a dedicated settings ADT and updating all call sites accordingly, without reintroducing the same shape through `build_*` plumbing.
 - DCS semantics: remove `DcsMode` entirely and require HA and every other consumer to branch on `DcsSnapshot::Quorum { .. }` versus `DcsSnapshot::NotTrusted`. Never keep or expose stale DCS data under `NotTrusted`.
 - Visibility: for the new internal types, prefer private, then `pub(super)`. Do not default new internal ADTs to `pub(crate)`.
 
@@ -426,6 +476,7 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/api/controller.rs`: delete the separate `NodeStateSnapshot` struct declaration and replace call sites with the canonical node snapshot ADT.
 - [ ] `src/api/mod.rs`: delete the separate `NodeState` struct declaration and replace it with the canonical node snapshot ADT or a type alias onto it.
 - [ ] Create the canonical `NodeSnapshot` ADT and use it as the single node-state shape.
+- [ ] `src/api/controller.rs`: delete `build_node_state`; the canonical node snapshot/read model must be constructed directly by the owning ADT or a direct conversion implementation, not by a duplicate-shape builder function.
 - [ ] `src/api/worker.rs`: delete the separate `ApiClusterIdentity` struct declaration and switch the API runtime to `NodeIdentity`.
 - [ ] `src/dcs/state.rs`: delete the separate `DcsNodeIdentity` struct declaration and switch DCS runtime/state to `NodeIdentity`.
 - [ ] `src/ha/state.rs`: delete the separate `HaNodeIdentity` struct declaration and switch HA runtime/state to `NodeIdentity`.
@@ -464,9 +515,10 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/state/net.rs`: delete the separate `PgConnectTarget` enum declaration and replace it with the canonical endpoint or connection ADT.
 - [ ] Create the canonical `PgEndpoint` ADT and make it the single endpoint model.
 - [ ] Create the canonical `PgClientTls` ADT and make it the single TLS bundle for PostgreSQL client connections that require root certs and optional client cert/key material.
-- [ ] Create the canonical `PgAccessSpec` ADT and make it the single structured PostgreSQL access model.
-- [ ] Keep timeout/default-database/application-name/libpq-options style settings out of the canonical access spec unless current repo usage proves they are required; if they are required, place them in a separate config/policy ADT rather than the endpoint identity ADT.
-- [ ] Any fields removed from the canonical PostgreSQL access ADT must be relocated into the owning config structs or one dedicated PostgreSQL client-settings ADT; they must not be dropped or reintroduced as loose hanging parameters.
+- [ ] Create the canonical `PgConnInfo` ADT and make it the single structured PostgreSQL connection model.
+- [ ] Implement DSN conversion on the canonical `PgConnInfo` type itself via impls such as `Display`/`FromStr`; do not keep a parallel stored DSN field and do not replace it with a new free helper-function layer.
+- [ ] Keep timeout/default-database/application-name/libpq-options style settings out of the canonical `PgConnInfo` ADT unless current repo usage proves they are required; if they are required, place them in a separate config/policy ADT rather than the endpoint identity ADT.
+- [ ] Any fields removed from the canonical PostgreSQL connection ADT must be relocated into the owning config structs or one dedicated PostgreSQL client-settings ADT; they must not be dropped or reintroduced as loose hanging parameters.
 - [ ] `src/dcs/state.rs`: delete the separate `DcsMode` enum declaration completely.
 - [ ] `src/dcs/state.rs`: delete the separate `DcsView` enum declaration and replace it with the canonical DCS snapshot ADT or a thin alias/newtype onto it.
 - [ ] `src/dcs/state.rs`: delete the separate `ClusterMemberView` struct declaration and replace it with the canonical DCS snapshot/member ADTs.
@@ -481,6 +533,7 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `src/dcs/state.rs`: delete the separate `MemberPostgresRecord` enum declaration and replace it by using `PgInfoState` directly in the canonical DCS member state.
 - [ ] Create the canonical `DcsMemberState` ADT and use it as the single per-member DCS snapshot model.
 - [ ] Create the canonical `DcsSnapshot` ADT and use it as the single cluster-level DCS read/persisted/cache model.
+- [ ] `src/dcs/state.rs`: delete `build_dcs_view`, `build_member_view`, and `build_local_member_record`; the DCS domain should no longer rebuild the same cluster semantics through record/view/cache translation helpers after the canonical snapshot migration.
 - [ ] The canonical `DcsSnapshot` must be an enum with `NotTrusted` and `Quorum { leadership, switchover, members }`; do not keep `mode`, `observed_leadership`, or stale-cluster payloads in the snapshot shape.
 - [ ] `src/ha/worker.rs` and `src/ha/decide.rs`: refactor the HA loop first so it does not depend on `DcsMode` and never consumes DCS data unless it has `DcsSnapshot::Quorum { .. }`.
 - [ ] `src/dcs/worker.rs`: when etcd is unavailable or quorum is lost, publish `DcsSnapshot::NotTrusted` with no stale members, no stale leadership, and no stale switchover data. This is a hard requirement with no exceptions.
@@ -508,6 +561,10 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] Create the canonical `DcsRuntimeCtx` ADT and use it as the single DCS runtime carrier.
 - [ ] Fold loose cadence/settings fields such as `member_ttl_ms` and `poll_interval` into the existing config structs or one dedicated settings ADT; do not keep them as hanging runtime-context scalars.
 - [ ] Any fields removed from API/DCS/runtime carrier ADTs because they are really configuration must be relocated into the owning config structs or one dedicated settings ADT; they must not disappear during the refactor.
+- [ ] `src/dcs/worker.rs`: delete `build_worker_ctx`; DCS startup/runtime assembly should happen through the canonical runtime/context ADT directly rather than a repacking builder function.
+- [ ] `src/ha/worker.rs`: delete the builder-style world/state translation helpers (`build_next_state`, `build_data_dir_state`, `build_postgres_state`, `build_local_postgres_state`, `build_replication_state`, `build_storage_state`, `build_global_knowledge`, `build_peer_knowledge_from_member`, `build_self_peer`, `build_leadership_view`) and replace them with direct methods / conversions on the owning ADTs.
+- [ ] `src/cli/connect.rs`: delete `build_connection_view`, `build_connection_target`, and `build_primary_connection_target`; the CLI connection output should derive directly from the canonical endpoint/connection ADTs rather than rebuilding a parallel connection-target DTO via builder helpers.
+- [ ] After this migration, translation between canonical domain ADTs must happen through direct constructors, methods, or `From`/`TryFrom` implementations where appropriate, not through a new layer of free `build_*` functions that preserve the old duplicate-shape churn.
 - [ ] `src/api/worker.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
 - [ ] `src/process/postmaster.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
 - [ ] `src/process/worker.rs`: delete the local `ChildGuard` struct declaration and replace it with the shared internal child-guard type.
@@ -518,6 +575,7 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] Audit module re-exports such as `src/dcs/mod.rs`, `src/api/mod.rs`, `src/config/mod.rs`, and any CLI/test support surfaces so they expose only the canonical ADTs and do not keep old duplicate names alive accidentally.
 - [ ] New internal canonical helper/runtime ADTs default to private or `pub(super)`; do not leave them as `pub(crate)` unless a wider boundary is explicitly justified by the module structure.
 - [ ] Update all affected tests and fixtures so they build through the canonical types rather than reconstructing parallel duplicate DTOs.
+- [ ] mandatory rerun of `cargo run --manifest-path tools/type_inventory_gen/Cargo.toml -- type_inventory.txtcargo run --manifest-path tools/type_inventory_gen/Cargo.toml -- type_inventory.txtcargo run --manifest-path tools/type_inventory_gen/Cargo.toml -- type_inventory.txt`, to make sure no new/existing duplicate types (types that have large semantic overlap in fields), exist. Do not commit that output file
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly

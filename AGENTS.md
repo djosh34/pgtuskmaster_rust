@@ -30,6 +30,11 @@ Aim for using the Rust Type System as Much as Possible:
 - Aim to Convert everything into Abstract Data Types First, and work on those Types to do all Business logic (Real raw state -> ADT -> (logic -> New ADT)* -> Real world actions rendered)
 - Aim to do as much 'Compiler Driven Development' as possible. Aggressively refactor places that don't do this yet
 
+When creating new enums/structs, always first verifiably search the codebase for overlaps and aim to alter that existing state in order to reuse it instead of creating a new one.
+You should always aim to 'reduce code': 
+ - remove unnecessary 'combine functions', replace with larger match against rust enums
+ - remove unnecessary extra calls, or function calling one other function: that is a big code smell
+
 Also never swallow/ignore any errors. That is a huge anti-pattern, and must be reported as add-bug task.
 
 This is greenfield project with 0 users. 

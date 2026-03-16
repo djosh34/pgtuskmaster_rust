@@ -800,7 +800,6 @@ pub struct PgtmConfig {
     pub api: PgtmApiConfig,
     #[serde(default)]
     pub postgres: PgtmPostgresConfig,
-    pub primary_target: Option<PgtmPrimaryTargetConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
@@ -838,13 +837,6 @@ pub struct PgtmPostgresConfig {
 pub struct PgtmClientTlsConfig {
     pub ca_cert: Option<InlineOrPath>,
     pub identity: Option<TlsClientIdentityConfig>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PgtmPrimaryTargetConfig {
-    pub host: String,
-    pub port: Option<u16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]

@@ -213,3 +213,5 @@ NONE
 .ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md
 .ralph/tasks/bugs/bug-ha-stable-primary-gate-allows-non-writable-primary.md
 .ralph/tasks/story-logging-simplification/03-task-rewrite-logging-around-one-owned-logdto-global-context-and-an-exhaustive-event-set.md
+.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md
+.ralph/tasks/bugs/bug-remove-primary-and-replica-api-commands-and-derive-cli-output-from-state.md

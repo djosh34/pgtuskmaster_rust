@@ -432,19 +432,6 @@ impl PublicationState {
     }
 }
 
-impl TargetRole {
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::Leader(_) => "leader",
-            Self::Candidate(_) => "candidate",
-            Self::Follower(_) => "follower",
-            Self::FailSafe(_) => "fail_safe",
-            Self::DemotingForSwitchover(_) => "demoting_for_switchover",
-            Self::Fenced(_) => "fenced",
-            Self::Idle(_) => "idle",
-        }
-    }
-}
 
 impl PlannedActions {
     pub(crate) fn from_plan(value: &ReconcilePlan) -> Self {

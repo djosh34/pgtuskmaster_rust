@@ -11,8 +11,7 @@ use crate::{
     config::{
         load_operator_config, resolve_inline_or_path_bytes, resolve_secret_string, ApiAuthConfig,
         ApiClientAuthConfig, ApiTransportConfig, InlineOrPath, PgtmApiAuthConfig,
-        PgtmApiTransportExpectation, PgtmConfig, PgtmPrimaryTargetConfig, RuntimeConfig,
-        SecretSource,
+        PgtmApiTransportExpectation, PgtmConfig, RuntimeConfig, SecretSource,
     },
 };
 
@@ -21,7 +20,6 @@ pub(crate) struct OperatorContext {
     pub(crate) api_client: CliApiClientConfig,
     pub(crate) postgres_client_tls: CliTlsConfig,
     pub(crate) api_auth_enabled: bool,
-    pub(crate) primary_target: Option<PgtmPrimaryTargetConfig>,
 }
 
 #[derive(Clone, Debug)]
@@ -51,10 +49,6 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         CliTlsConfig::default()
     };
     let postgres_client_tls = resolve_postgres_client_tls(config_source.as_ref())?;
-    let primary_target = config_source
-        .as_ref()
-        .and_then(|source| source.operator.as_ref())
-        .and_then(|operator| operator.primary_target.clone());
 
     Ok(OperatorContext {
         api_client: CliApiClientConfig {
@@ -68,7 +62,6 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         },
         postgres_client_tls,
         api_auth_enabled,
-        primary_target,
     })
 }
 

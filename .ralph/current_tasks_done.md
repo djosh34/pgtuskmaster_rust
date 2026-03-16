@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar 16 10:01:26 PM CET 2026
+Generated: Tue Mar 17 12:10:36 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -21,6 +21,17 @@ Generated: Mon Mar 16 10:01:26 PM CET 2026
 <blocked_by>Full completion of `.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md`</blocked_by>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-remove-primary-and-replica-api-commands-and-derive-cli-output-from-state.md`
+
+```
+## Bug: Remove Primary And Replica API Commands And Derive CLI Output From State <status>done</status> <passes>true</passes>
+
+<description>
+`pgtm primary` / `pgtm replicas` can disagree with the cluster `state` view during HA scenarios. This was detected while restoring the older HA harness: ultra-long HA tests exposed cases where the authoritative state view showed one primary expectation while the primary-resolution command returned something different or no authoritative primary at all.
 ```
 
 ==============
