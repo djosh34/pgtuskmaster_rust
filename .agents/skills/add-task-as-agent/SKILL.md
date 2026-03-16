@@ -6,8 +6,6 @@ description: Create a task when the AGENT (Claude) needs to create one. Agents s
 ## Purpose
 
 This skill creates **focused, tasks** from completed research. Use your extensive research/subagent explore findings to define clear, concrete tasks.
-The tasks created must be FULLY COMPLETE. The one reading this task has 0 knowledge about your context. Write every little thing we discussed inside the task.
-When in doubt, write it out! This task must be independently readable, without any context, with 0 this/that that refers to anything not present/inferrable from this task alone.
 
 ## Prerequisites
 
@@ -43,6 +41,9 @@ When in doubt, write it out! This task must be independently readable, without a
 - [What should be true when done]
 
 </description>
+
+[Include all code needed for task]
+[Include all code for each struct/enum for task]
 
 <acceptance_criteria>
 - [ ]  Full exhaustive checklist of all files/modules to modify with specific requirements for each
