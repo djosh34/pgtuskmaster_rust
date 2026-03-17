@@ -54,6 +54,8 @@ struct DockerPortBinding {
 struct DockerNetworkEndpoint {
     #[serde(rename = "IPAddress")]
     ip_address: Option<String>,
+    #[serde(rename = "Gateway")]
+    gateway: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -398,18 +400,28 @@ impl DockerCli {
             })
     }
 
-    pub fn exec(&self, container: &str, binary: &Path, args: &[&str]) -> Result<String> {
-        self.exec_with_env(container, binary, args, &[])
-    }
-
-    pub fn exec_with_env(
-        &self,
-        container: &str,
-        binary: &Path,
-        args: &[&str],
-        env: &[(&str, &str)],
-    ) -> Result<String> {
-        self.exec_with_options(container, None, binary, args, env)
+    pub fn container_network_gateway(&self, container: &str) -> Result<String> {
+        let inspect_entries = self.inspect_container_entries(container)?;
+        let details = inspect_entries.first().ok_or_else(|| {
+            HarnessError::message(format!(
+                "docker inspect for `{container}` did not return a container object"
+            ))
+        })?;
+        details
+            .network_settings
+            .as_ref()
+            .and_then(|value| value.networks.as_ref())
+            .and_then(|value| {
+                value
+                    .values()
+                    .filter_map(|endpoint| endpoint.gateway.clone())
+                    .find(|gateway| !gateway.is_empty())
+            })
+            .ok_or_else(|| {
+                HarnessError::message(format!(
+                    "container `{container}` does not expose a non-empty network gateway"
+                ))
+            })
     }
 
     pub fn exec_as_user(

@@ -49,8 +49,9 @@ impl HaGivenDefinition {
     }
 
     pub fn support_services(&self) -> Vec<ComposeService> {
-        std::iter::once(ComposeService::Observer)
-            .chain(self.dcs_services().into_iter().map(ComposeService::from))
+        self.dcs_services()
+            .into_iter()
+            .map(ComposeService::from)
             .collect()
     }
 
@@ -88,7 +89,6 @@ pub enum HaTopologyFixture {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ThreeNodeTopologyFixture {
     pub postgres_roles: PostgresRoleMapping,
-    pub observer_net_admin: ObserverNetAdmin,
     pub dcs_layout: ThreeNodeDcsLayout,
 }
 
@@ -118,12 +118,6 @@ impl RoleName {
     pub fn as_str(&self) -> &str {
         self.0.as_str()
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ObserverNetAdmin {
-    Enabled,
-    Disabled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,8 +161,9 @@ pub struct MemberDcsBinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FixtureMaterialization {
     pub shared_root: PathBuf,
+    pub compose_variant: ComposeVariant,
     pub copies: Vec<SharedFixtureEntry>,
-    pub renders: Vec<RenderedFixtureFile>,
+    pub runtime_configs: Vec<MemberRuntimeConfigMaterialization>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -183,30 +178,19 @@ pub enum SharedFixtureEntry {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RenderedFixtureFile {
-    pub target: FixtureRenderTarget,
-    pub template: FixtureTemplate,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FixtureRenderTarget {
-    ComposeFile,
-    MemberRuntimeConfig(ClusterMember),
-    ObserverConfig(ClusterMember),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FixtureTemplate {
-    Compose(ComposeTemplate),
-    Runtime(NodeRuntimeTemplate),
-    Observer(ObserverTemplate),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ComposeTemplate {
-    pub observer_net_admin: ObserverNetAdmin,
-    pub dcs_layout: ThreeNodeDcsLayout,
+pub enum ComposeVariant {
+    SharedSingleDcs,
+    ColocatedThreeMemberDcs,
+}
+
+impl ComposeVariant {
+    pub fn relative_path(self) -> &'static str {
+        match self {
+            Self::SharedSingleDcs => "compose/three_node_shared_single.yml",
+            Self::ColocatedThreeMemberDcs => "compose/three_node_three_etcd.yml",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -216,9 +200,9 @@ pub struct NodeRuntimeTemplate {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ObserverTemplate {
-    pub binding: MemberDcsBinding,
-    pub postgres_roles: PostgresRoleMapping,
+pub struct MemberRuntimeConfigMaterialization {
+    pub member: ClusterMember,
+    pub template: NodeRuntimeTemplate,
 }
 
 pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefinition> {
@@ -227,6 +211,7 @@ pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefini
     let topology = three_node_topology(given);
     let materialization = FixtureMaterialization {
         shared_root,
+        compose_variant: compose_variant(topology.dcs_layout),
         copies: vec![
             SharedFixtureEntry::Directory {
                 source_relative_path: PathBuf::from("configs/tls"),
@@ -245,7 +230,7 @@ pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefini
                 target_relative_path: PathBuf::from("configs/pg_ident.conf"),
             },
         ],
-        renders: three_node_render_plan(topology.clone()),
+        runtime_configs: three_node_runtime_configs(topology.clone()),
     };
     Ok(HaGivenDefinition {
         id: given,
@@ -261,7 +246,6 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("replicator"),
                 rewinder: RoleName::new("rewinder"),
             },
-            observer_net_admin: ObserverNetAdmin::Enabled,
             dcs_layout: ThreeNodeDcsLayout::SharedSingle,
         },
         HaGivenId::CustomRoles => ThreeNodeTopologyFixture {
@@ -269,7 +253,6 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("mirrorbot"),
                 rewinder: RoleName::new("rewindbot"),
             },
-            observer_net_admin: ObserverNetAdmin::Disabled,
             dcs_layout: ThreeNodeDcsLayout::SharedSingle,
         },
         HaGivenId::ThreeEtcd => ThreeNodeTopologyFixture {
@@ -277,38 +260,29 @@ fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
                 replicator: RoleName::new("replicator"),
                 rewinder: RoleName::new("rewinder"),
             },
-            observer_net_admin: ObserverNetAdmin::Enabled,
             dcs_layout: ThreeNodeDcsLayout::ColocatedThreeMember,
         },
     }
 }
 
-fn three_node_render_plan(topology: ThreeNodeTopologyFixture) -> Vec<RenderedFixtureFile> {
-    std::iter::once(RenderedFixtureFile {
-        target: FixtureRenderTarget::ComposeFile,
-        template: FixtureTemplate::Compose(ComposeTemplate {
-            observer_net_admin: topology.observer_net_admin,
-            dcs_layout: topology.dcs_layout,
-        }),
-    })
-    .chain(ClusterMember::ALL.into_iter().flat_map(|member| {
-        let binding = topology.member_binding(member);
-        [
-            RenderedFixtureFile {
-                target: FixtureRenderTarget::MemberRuntimeConfig(member),
-                template: FixtureTemplate::Runtime(NodeRuntimeTemplate {
-                    binding,
-                    postgres_roles: topology.postgres_roles.clone(),
-                }),
+fn compose_variant(layout: ThreeNodeDcsLayout) -> ComposeVariant {
+    match layout {
+        ThreeNodeDcsLayout::SharedSingle => ComposeVariant::SharedSingleDcs,
+        ThreeNodeDcsLayout::ColocatedThreeMember => ComposeVariant::ColocatedThreeMemberDcs,
+    }
+}
+
+fn three_node_runtime_configs(
+    topology: ThreeNodeTopologyFixture,
+) -> Vec<MemberRuntimeConfigMaterialization> {
+    ClusterMember::ALL
+        .into_iter()
+        .map(|member| MemberRuntimeConfigMaterialization {
+            member,
+            template: NodeRuntimeTemplate {
+                binding: topology.member_binding(member),
+                postgres_roles: topology.postgres_roles.clone(),
             },
-            RenderedFixtureFile {
-                target: FixtureRenderTarget::ObserverConfig(member),
-                template: FixtureTemplate::Observer(ObserverTemplate {
-                    binding,
-                    postgres_roles: topology.postgres_roles.clone(),
-                }),
-            },
-        ]
-    }))
-    .collect()
+        })
+        .collect()
 }

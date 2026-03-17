@@ -48,7 +48,7 @@ For changes affecting HA behavior:
 make test-long
 ```
 
-The HA harness prepares a per-run materialized workspace assembled from shared fixture assets plus rendered topology-specific files, with per-node `faults/` directories bind-mounted into `/var/lib/pgtuskmaster/faults` for explicit fault control. Tests validate cluster health transitions and primary elections through a reduced DSL focused on state observation and fault injection.
+The HA harness prepares a per-run materialized workspace assembled from shared fixture assets, per-node runtime configs, and a tiny include-only `compose.yml` that points at one of two checked-in Docker Compose variants. The harness still bind-mounts per-node `faults/` directories into `/var/lib/pgtuskmaster/faults` for explicit fault control, but it no longer renders a large per-run compose file or starts a dedicated observer container. Cluster health, failover, and switchover checks are driven from the host through the node APIs and PostgreSQL ports published by those static compose variants.
 
 Run specific HA scenarios:
 

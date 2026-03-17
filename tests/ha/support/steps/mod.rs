@@ -13,38 +13,9 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
-    observer::pgtm::materialize_connection_dsn,
     topology::ClusterMember,
     world::{HaWorld, HarnessShared, MemberSet},
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PrimaryRoutingTarget {
-    member: ClusterMember,
-    dsn: String,
-}
-
-fn primary_target_from_output(
-    primary: pgtuskmaster_rust::command::RenderedConnectionCommandDto,
-) -> Result<PrimaryRoutingTarget> {
-    match primary.state.targets.as_slice() {
-        [target] => Ok(PrimaryRoutingTarget {
-            member: ClusterMember::parse(target.member_id.as_str())?,
-            dsn: materialize_connection_dsn(target, &primary.local_connection),
-        }),
-        [] => Err(HarnessError::message("pgtm primary returned zero targets")),
-        _ => Err(HarnessError::message(format!(
-            "pgtm primary returned multiple targets: {}",
-            primary
-                .state
-                .targets
-                .iter()
-                .map(|target| target.member_id.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))),
-    }
-}
 
 #[given(regex = r#"^the "([^"]+)" harness is running$"#)]
 async fn the_harness_is_running(world: &mut HaWorld, given_name: String) -> Result<()> {
@@ -457,9 +428,9 @@ async fn wait_for_authoritative_single_primary(
         let attempt: Result<ClusterMember> = (|| {
             let (status, primary_target) = {
                 let harness = world.harness()?;
-                let (status, primary) = harness.observer().state_and_primary_tls_json()?;
+                let (status, primary_target) = harness.observer().state_and_primary_target()?;
                 harness.record_status_snapshot(phase, &status)?;
-                (status, primary_target_from_output(primary)?)
+                (status, primary_target)
             };
             require_visible_members(&status, expected_online)?;
             let primary = single_primary(&status)?;

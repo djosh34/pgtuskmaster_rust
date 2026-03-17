@@ -102,11 +102,11 @@ Fencing is the process of forcibly stopping a misbehaving primary. The system en
 
 The fencing process runs as an independent job. Success transitions back to `WaitingDcsTrusted` with a lease release. Failure transitions to `FailSafe`, halting all further action. This conservative approach reflects that fencing failure indicates deeper infrastructure problems.
 
-### Observer-based split-brain detection
+### Harness split-brain detection
 
-The test harness includes an `HaInvariantObserver` that samples cluster state and immediately fails if it observes two primaries simultaneously. This is not part of the production runtime but validates the design: the system must never allow dual-primary scenarios in observable windows.
+The HA test harness samples cluster state from the host by querying the node APIs and, when needed, probing PostgreSQL connectivity through the host-published ports. If those checks observe more than one primary, the scenario fails immediately. This is not part of the production runtime, but it validates the design goal that dual-primary windows must not become operator-visible.
 
-The observer's existence demonstrates that split-brain prevention is a first-class design goal, not an afterthought. It also shows how operators can implement similar monitoring in production.
+That host-side validation path demonstrates that split-brain prevention is a first-class design goal, not an afterthought. It also shows how operators can implement similar independent monitoring in production without relying on an in-cluster observer sidecar.
 
 ## Fail-safe mode
 

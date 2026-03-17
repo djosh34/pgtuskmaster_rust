@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 21:29:05 CET 2026
+Generated: Tue Mar 17 10:22:02 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -296,6 +296,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 ```
 ## Task: Delete Scenario Bookkeeping And Shrink The HA World And Step Surface <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/03-task-delete-observer-compose-rendering-and-collapse-ha-fixtures-to-two-static-compose-variants.md`
+
+```
+## Task: Delete Observer Compose Rendering And Collapse HA Fixtures To Two Static Compose Variants <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 

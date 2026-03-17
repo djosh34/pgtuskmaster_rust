@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     sync::Mutex,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -11,7 +11,6 @@ use pgtuskmaster_rust::{
     api::NodeState,
     ha::types::{AuthorityProjection, PublicationState},
 };
-use serde::Deserialize;
 
 use crate::support::{
     docker::{cli::DockerCli, ryuk::RyukGuard},
@@ -22,13 +21,12 @@ use crate::support::{
     },
     feature_metadata,
     givens::{
-        resolve_given, ComposeTemplate, FixtureMaterialization, FixtureRenderTarget,
-        FixtureTemplate, HaGivenDefinition, HaGivenId, ObserverNetAdmin, ObserverTemplate,
-        RenderedFixtureFile, SharedFixtureEntry, ThreeNodeDcsLayout,
+        resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
+        MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
     observer::{pgtm::PgtmObserver, sql::SqlObserver},
     timeouts::TimeoutModel,
-    topology::{ClusterMember, ComposeService, DcsMember},
+    topology::{ClusterMember, ComposeService},
 };
 
 #[derive(Debug, Default, World)]
@@ -206,7 +204,6 @@ pub struct HarnessShared {
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
-    pub observer_container: String,
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
@@ -246,13 +243,7 @@ impl HarnessShared {
         create_dir_all(paths.run_dir.as_path())?;
         create_dir_all(paths.materialized_dir.as_path())?;
         create_dir_all(paths.artifacts_dir.as_path())?;
-        let network_scope_key =
-            scenario_network_scope_key(feature.feature_name.as_str(), scenario_name);
-        materialize_given_fixture(
-            &given,
-            paths.materialized_dir.as_path(),
-            network_scope_key.as_str(),
-        )?;
+        materialize_given_fixture(&given, paths.materialized_dir.as_path())?;
         create_fault_directories(paths.materialized_dir.as_path())?;
 
         let compose = ComposeStack {
@@ -276,20 +267,7 @@ impl HarnessShared {
             compose.project.as_str(),
             dcs_service_names.as_slice(),
         )?;
-        docker.compose_up_services(
-            compose.file.as_path(),
-            compose.project.as_str(),
-            &["observer"],
-        )?;
-        let observer_container = docker.compose_container_id(
-            compose.file.as_path(),
-            compose.project.as_str(),
-            "observer",
-        )?;
-        let service_container_ids = Mutex::new(BTreeMap::from([(
-            ComposeService::Observer,
-            observer_container.clone(),
-        )]));
+        let service_container_ids = Mutex::new(BTreeMap::new());
 
         let mut harness = Self {
             workspace: HarnessWorkspace {
@@ -302,7 +280,6 @@ impl HarnessShared {
             cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
-            observer_container,
             timeouts,
             service_container_ids,
             timeline: Mutex::new(Vec::new()),
@@ -360,11 +337,16 @@ impl HarnessShared {
     }
 
     pub fn observer(&self) -> PgtmObserver {
-        PgtmObserver::new(self.docker.clone(), self.observer_container.clone())
+        PgtmObserver::new(
+            self.docker.clone(),
+            self.compose.file.clone(),
+            self.compose.project.clone(),
+            self.materialized_dir().to_path_buf(),
+        )
     }
 
     pub fn sql(&self) -> SqlObserver {
-        SqlObserver::new(self.docker.clone(), self.observer_container.clone())
+        SqlObserver::new(self.materialized_dir().to_path_buf())
     }
 
     pub fn kill_node(&self, member: ClusterMember) -> Result<()> {
@@ -486,14 +468,7 @@ impl HarnessShared {
         let peer_ip = self
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
-        self.ensure_fault_plumbing(member.into())?;
-        let script = append_fault_rule_script(peer_ip.as_str(), path.port());
-        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
-        self.record_note(
-            "fault.block_path",
-            format!("member={member} path={} peer={peer_service}", path.label()),
-        )?;
-        Ok(())
+        self.block_member_path_to_address(member, path, peer_ip.as_str(), peer_service.service_name())
     }
 
     pub fn unblock_member_path_to_host(
@@ -525,6 +500,23 @@ impl HarnessShared {
         Ok(())
     }
 
+    fn block_member_path_to_address(
+        &self,
+        member: ClusterMember,
+        path: TrafficPath,
+        peer_ip: &str,
+        peer_label: &str,
+    ) -> Result<()> {
+        self.ensure_fault_plumbing(member.into())?;
+        let script = append_fault_rule_script(peer_ip, path.port());
+        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
+        self.record_note(
+            "fault.block_path",
+            format!("member={member} path={} peer={peer_label}", path.label()),
+        )?;
+        Ok(())
+    }
+
     pub fn isolate_member_from_peer_on_path(
         &self,
         member: ClusterMember,
@@ -547,7 +539,13 @@ impl HarnessShared {
     }
 
     pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(member, TrafficPath::Api, ComposeService::Observer)
+        let gateway_ip = self.member_network_gateway_ipv4(member)?;
+        self.block_member_path_to_address(
+            member,
+            TrafficPath::Api,
+            gateway_ip.as_str(),
+            "host-operator",
+        )
     }
 
     pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
@@ -629,11 +627,7 @@ impl HarnessShared {
     }
 
     pub fn clear_all_network_faults(&self) -> Result<()> {
-        for service in DATABASE_MEMBERS
-            .into_iter()
-            .map(ComposeService::from)
-            .chain(std::iter::once(ComposeService::Observer))
-        {
+        for service in DATABASE_MEMBERS.into_iter().map(ComposeService::from) {
             self.clear_network_faults(service)?;
         }
         Ok(())
@@ -648,6 +642,11 @@ impl HarnessShared {
         self.materialized_dir()
             .join("faults")
             .join(member.service_name())
+    }
+
+    fn member_network_gateway_ipv4(&self, member: ClusterMember) -> Result<String> {
+        let container_id = self.service_container_id(member.into())?;
+        self.docker.container_network_gateway(container_id.as_str())
     }
 
     fn host_fault_marker_path(&self, member: ClusterMember, marker_path: &str) -> Result<PathBuf> {
@@ -847,15 +846,15 @@ impl HarnessShared {
         )?;
         match self.observer().state() {
             Ok(state) => write_text_file(
-                self.artifacts_dir().join("observer-state.json").as_path(),
+                self.artifacts_dir().join("operator-state.json").as_path(),
                 serde_json::to_string_pretty(&state)
                     .map_err(|source| HarnessError::Json {
-                        context: "serializing observer state payload".to_string(),
+                        context: "serializing operator state payload".to_string(),
                         source,
                     })?
                     .as_str(),
             )?,
-            Err(err) => failures.push(format!("observer state capture failed: {err}")),
+            Err(err) => failures.push(format!("operator state capture failed: {err}")),
         }
 
         for service in self.workspace.given.artifact_services() {
@@ -967,59 +966,6 @@ fn required_env(key: &str) -> Result<String> {
     })
 }
 
-#[derive(Debug, Deserialize)]
-struct HaSubnetManifest {
-    feature_subnets: BTreeMap<String, String>,
-}
-
-fn feature_network_subnet(network_scope_key: &str) -> Result<String> {
-    match env::var("PGTM_HA_SUBNET_MANIFEST") {
-        Ok(path) => {
-            feature_network_subnet_from_manifest(Path::new(path.as_str()), network_scope_key)
-        }
-        Err(_) => Ok(fallback_feature_network_subnet(network_scope_key)),
-    }
-}
-
-fn feature_network_subnet_from_manifest(
-    manifest_path: &Path,
-    network_scope_key: &str,
-) -> Result<String> {
-    let content = fs::read_to_string(manifest_path).map_err(|source| HarnessError::Io {
-        path: manifest_path.to_path_buf(),
-        source,
-    })?;
-    let manifest =
-        serde_json::from_str::<HaSubnetManifest>(content.as_str()).map_err(|source| {
-            HarnessError::Json {
-                context: format!("parsing HA subnet manifest `{}`", manifest_path.display()),
-                source,
-            }
-        })?;
-    Ok(manifest
-        .feature_subnets
-        .get(network_scope_key)
-        .cloned()
-        .unwrap_or_else(|| fallback_feature_network_subnet(network_scope_key)))
-}
-
-fn fallback_feature_network_subnet(network_scope_key: &str) -> String {
-    let hash = network_scope_key
-        .as_bytes()
-        .iter()
-        .fold(1_469_598_103_934_665_603_u64, |state, byte| {
-            (state ^ u64::from(*byte)).wrapping_mul(1_099_511_628_211_u64)
-        });
-    let subnet_index = (hash % 4_096) as u16;
-    let third_octet = subnet_index / 16;
-    let fourth_octet = (subnet_index % 16) * 16;
-    format!("10.250.{third_octet}.{fourth_octet}/28")
-}
-
-fn scenario_network_scope_key(feature_name: &str, scenario_name: &str) -> String {
-    format!("{feature_name}::{scenario_name}")
-}
-
 fn build_compose_project(feature_name: &str, run_id: &str) -> String {
     let feature = sanitize(feature_name);
     let run = sanitize(run_id);
@@ -1052,25 +998,27 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
         .map_err(|source| HarnessError::Io {
             path: to.to_path_buf(),
             source,
-        })
+        })?;
+    apply_private_key_permissions(to)
 }
 
 fn materialize_given_fixture(
     given: &HaGivenDefinition,
     materialized_root: &Path,
-    network_scope_key: &str,
 ) -> Result<()> {
     let FixtureMaterialization {
         shared_root,
+        compose_variant,
         copies,
-        renders,
+        runtime_configs,
     } = &given.materialization;
     for entry in copies {
         copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
     }
-    for render in renders {
-        render_fixture_file(materialized_root, render, network_scope_key)?;
+    for runtime_config in runtime_configs {
+        materialize_runtime_config(materialized_root, runtime_config)?;
     }
+    materialize_compose_include_file(materialized_root, *compose_variant)?;
     Ok(())
 }
 
@@ -1079,6 +1027,25 @@ fn write_text_file(path: &Path, content: &str) -> Result<()> {
         path: path.to_path_buf(),
         source,
     })
+}
+
+fn apply_private_key_permissions(path: &Path) -> Result<()> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("key") {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = fs::Permissions::from_mode(0o600);
+        fs::set_permissions(path, permissions).map_err(|source| HarnessError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    }
+
+    Ok(())
 }
 
 fn copy_shared_fixture_entry(
@@ -1141,266 +1108,52 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn render_fixture_file(
+fn materialize_runtime_config(
     materialized_root: &Path,
-    file: &RenderedFixtureFile,
-    network_scope_key: &str,
+    runtime_config: &MemberRuntimeConfigMaterialization,
 ) -> Result<()> {
-    let target_path = materialized_root.join(render_target_relative_path(&file.target));
+    let target_path = materialized_root.join(runtime_config.member.runtime_config_relative_path());
     if let Some(parent) = target_path.parent() {
         create_dir_all(parent)?;
     }
-    let rendered = render_fixture_template(&file.template, network_scope_key)?;
+    let rendered = render_member_runtime_template(&runtime_config.template);
     write_text_file(target_path.as_path(), rendered.as_str())
 }
 
-fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
-    match target {
-        FixtureRenderTarget::ComposeFile => PathBuf::from("compose.yml"),
-        FixtureRenderTarget::MemberRuntimeConfig(member) => {
-            PathBuf::from(member.runtime_config_relative_path())
-        }
-        FixtureRenderTarget::ObserverConfig(member) => {
-            PathBuf::from(member.observer_config_relative_path())
-        }
+fn materialize_compose_include_file(
+    materialized_root: &Path,
+    compose_variant: ComposeVariant,
+) -> Result<()> {
+    let compose_variant_path = compose_variant_absolute_path(compose_variant)?;
+    let rendered = format!(
+        "include:\n  - path: {}\n    project_directory: {}\n",
+        toml_path_string(compose_variant_path.as_path()),
+        toml_path_string(materialized_root),
+    );
+    write_text_file(materialized_root.join("compose.yml").as_path(), rendered.as_str())
+}
+
+fn compose_variant_absolute_path(compose_variant: ComposeVariant) -> Result<PathBuf> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let absolute = repo_root
+        .join("tests/ha/givens")
+        .join(compose_variant.relative_path());
+    if absolute.is_file() {
+        Ok(absolute)
+    } else {
+        Err(HarnessError::message(format!(
+            "static compose variant is missing: {}",
+            absolute.display()
+        )))
     }
 }
 
-fn render_fixture_template(template: &FixtureTemplate, network_scope_key: &str) -> Result<String> {
-    match template {
-        FixtureTemplate::Compose(template) => render_compose_template(*template, network_scope_key),
-        FixtureTemplate::Runtime(template) => Ok(render_member_runtime_template(template)),
-        FixtureTemplate::Observer(template) => Ok(render_observer_template(template)),
-    }
-}
-
-fn render_compose_template(template: ComposeTemplate, network_scope_key: &str) -> Result<String> {
-    let observer_cap_add = match template.observer_net_admin {
-        ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
-        ObserverNetAdmin::Disabled => "",
-    };
-    let dcs_services = render_dcs_services(template.dcs_layout);
-    let dcs_volumes = render_dcs_volumes(template.dcs_layout);
-    let network_subnet = feature_network_subnet(network_scope_key)?;
-    Ok(format!(
-        r#"services:
-{dcs_services}
-
-  node-a:
-    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
-    pull_policy: never
-    cap_add:
-      - NET_ADMIN
-    networks:
-      - ha
-    configs:
-      - source: node_a_runtime
-        target: /etc/pgtuskmaster/runtime.toml
-      - source: pg_hba
-        target: /etc/pgtuskmaster/pg_hba.conf
-      - source: pg_ident
-        target: /etc/pgtuskmaster/pg_ident.conf
-      - source: tls_ca
-        target: /etc/pgtuskmaster/tls/ca.crt
-      - source: tls_node_a_crt
-        target: /etc/pgtuskmaster/tls/node-a.crt
-      - source: tls_node_a_key
-        target: /etc/pgtuskmaster/tls/node-a.key
-    secrets:
-      - source: postgres_superuser_password
-        target: postgres-superuser-password
-      - source: api_admin_token
-        target: api-admin-token
-      - source: api_read_token
-        target: api-read-token
-      - source: replicator_password
-        target: replicator-password
-      - source: rewinder_password
-        target: rewinder-password
-    volumes:
-      - node-a-data:/var/lib/postgresql
-      - node-a-logs:/var/log/pgtuskmaster
-      - ./faults/node-a:/var/lib/pgtuskmaster/faults
-
-  node-b:
-    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
-    pull_policy: never
-    cap_add:
-      - NET_ADMIN
-    networks:
-      - ha
-    configs:
-      - source: node_b_runtime
-        target: /etc/pgtuskmaster/runtime.toml
-      - source: pg_hba
-        target: /etc/pgtuskmaster/pg_hba.conf
-      - source: pg_ident
-        target: /etc/pgtuskmaster/pg_ident.conf
-      - source: tls_ca
-        target: /etc/pgtuskmaster/tls/ca.crt
-      - source: tls_node_b_crt
-        target: /etc/pgtuskmaster/tls/node-b.crt
-      - source: tls_node_b_key
-        target: /etc/pgtuskmaster/tls/node-b.key
-    secrets:
-      - source: postgres_superuser_password
-        target: postgres-superuser-password
-      - source: api_admin_token
-        target: api-admin-token
-      - source: api_read_token
-        target: api-read-token
-      - source: replicator_password
-        target: replicator-password
-      - source: rewinder_password
-        target: rewinder-password
-    volumes:
-      - node-b-data:/var/lib/postgresql
-      - node-b-logs:/var/log/pgtuskmaster
-      - ./faults/node-b:/var/lib/pgtuskmaster/faults
-
-  node-c:
-    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
-    pull_policy: never
-    cap_add:
-      - NET_ADMIN
-    networks:
-      - ha
-    configs:
-      - source: node_c_runtime
-        target: /etc/pgtuskmaster/runtime.toml
-      - source: pg_hba
-        target: /etc/pgtuskmaster/pg_hba.conf
-      - source: pg_ident
-        target: /etc/pgtuskmaster/pg_ident.conf
-      - source: tls_ca
-        target: /etc/pgtuskmaster/tls/ca.crt
-      - source: tls_node_c_crt
-        target: /etc/pgtuskmaster/tls/node-c.crt
-      - source: tls_node_c_key
-        target: /etc/pgtuskmaster/tls/node-c.key
-    secrets:
-      - source: postgres_superuser_password
-        target: postgres-superuser-password
-      - source: api_admin_token
-        target: api-admin-token
-      - source: api_read_token
-        target: api-read-token
-      - source: replicator_password
-        target: replicator-password
-      - source: rewinder_password
-        target: rewinder-password
-    volumes:
-      - node-c-data:/var/lib/postgresql
-      - node-c-logs:/var/log/pgtuskmaster
-      - ./faults/node-c:/var/lib/pgtuskmaster/faults
-
-  observer:
-    image: pgtm-cucumber-test:${{PGTM_CUCUMBER_TEST_RUN_ID:?missing PGTM_CUCUMBER_TEST_RUN_ID}}
-    pull_policy: never
-    entrypoint:
-      - /usr/bin/tail
-    command:
-      - -f
-      - /dev/null
-{observer_cap_add}    networks:
-      - ha
-    configs:
-      - source: observer_node_a
-        target: /etc/pgtuskmaster/observer/node-a.toml
-      - source: observer_node_b
-        target: /etc/pgtuskmaster/observer/node-b.toml
-      - source: observer_node_c
-        target: /etc/pgtuskmaster/observer/node-c.toml
-      - source: pg_hba
-        target: /etc/pgtuskmaster/pg_hba.conf
-      - source: pg_ident
-        target: /etc/pgtuskmaster/pg_ident.conf
-      - source: tls_ca
-        target: /etc/pgtuskmaster/tls/ca.crt
-      - source: tls_observer_crt
-        target: /etc/pgtuskmaster/tls/observer.crt
-      - source: tls_observer_key
-        target: /etc/pgtuskmaster/tls/observer.key
-    secrets:
-      - source: postgres_superuser_password
-        target: postgres-superuser-password
-      - source: api_admin_token
-        target: api-admin-token
-      - source: api_read_token
-        target: api-read-token
-      - source: replicator_password
-        target: replicator-password
-      - source: rewinder_password
-        target: rewinder-password
-
-networks:
-  ha:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: "{network_subnet}"
-
-volumes:
-{dcs_volumes}  node-a-data:
-  node-a-logs:
-  node-b-data:
-  node-b-logs:
-  node-c-data:
-  node-c-logs:
-
-configs:
-  node_a_runtime:
-    file: ./configs/node-a/runtime.toml
-  node_b_runtime:
-    file: ./configs/node-b/runtime.toml
-  node_c_runtime:
-    file: ./configs/node-c/runtime.toml
-  observer_node_a:
-    file: ./configs/observer/node-a.toml
-  observer_node_b:
-    file: ./configs/observer/node-b.toml
-  observer_node_c:
-    file: ./configs/observer/node-c.toml
-  pg_hba:
-    file: ./configs/pg_hba.conf
-  pg_ident:
-    file: ./configs/pg_ident.conf
-  tls_ca:
-    file: ./configs/tls/ca.crt
-  tls_node_a_crt:
-    file: ./configs/tls/node-a.crt
-  tls_node_a_key:
-    file: ./configs/tls/node-a.key
-  tls_node_b_crt:
-    file: ./configs/tls/node-b.crt
-  tls_node_b_key:
-    file: ./configs/tls/node-b.key
-  tls_node_c_crt:
-    file: ./configs/tls/node-c.crt
-  tls_node_c_key:
-    file: ./configs/tls/node-c.key
-  tls_observer_crt:
-    file: ./configs/tls/observer.crt
-  tls_observer_key:
-    file: ./configs/tls/observer.key
-
-secrets:
-  postgres_superuser_password:
-    file: ./secrets/postgres-superuser-password
-  api_admin_token:
-    file: ./secrets/api-admin-token
-  api_read_token:
-    file: ./secrets/api-read-token
-  replicator_password:
-    file: ./secrets/replicator-password
-  rewinder_password:
-    file: ./secrets/rewinder-password
-"#
-    ))
+fn toml_path_string(path: &Path) -> String {
+    format!("{:?}", path.display().to_string())
 }
 
 fn render_member_runtime_template(
-    template: &crate::support::givens::NodeRuntimeTemplate,
+    template: &NodeRuntimeTemplate,
 ) -> String {
     let member = template.binding.member.service_name();
     let dcs_endpoint = template.binding.dcs_service.client_url();
@@ -1503,122 +1256,6 @@ enabled = true
     )
 }
 
-fn render_observer_template(template: &ObserverTemplate) -> String {
-    let member = template.binding.member.service_name();
-    format!(
-        r#"[api]
-base_url = "https://{member}:8443"
-
-[api.auth]
-type = "role_tokens"
-
-[api.auth.tokens]
-read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}
-admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }}
-
-[api.tls]
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-
-[postgres.tls]
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, key = {{ type = "file", path = "/etc/pgtuskmaster/tls/observer.key" }} }}
-"#
-    )
-}
-
-fn render_dcs_services(layout: ThreeNodeDcsLayout) -> String {
-    match layout {
-        ThreeNodeDcsLayout::SharedSingle => r#"  etcd:
-    image: quay.io/coreos/etcd:v3.5.21
-    command:
-      - /usr/local/bin/etcd
-      - --name=etcd
-      - --data-dir=/etcd-data
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://etcd:2379
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-advertise-peer-urls=http://etcd:2380
-      - --initial-cluster=etcd=http://etcd:2380
-      - --initial-cluster-state=new
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "/usr/local/bin/etcdctl",
-          "--endpoints=http://127.0.0.1:2379",
-          "endpoint",
-          "health",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - ha
-    volumes:
-      - etcd-data:/etcd-data"#
-            .to_string(),
-        ThreeNodeDcsLayout::ColocatedThreeMember => {
-            let initial_cluster = DcsMember::ALL
-                .into_iter()
-                .map(|member| format!("{member}={}", member.peer_url()))
-                .collect::<Vec<_>>()
-                .join(",");
-            DcsMember::ALL
-                .into_iter()
-                .map(|member| render_three_member_dcs_service(member, initial_cluster.as_str()))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        }
-    }
-}
-
-fn render_three_member_dcs_service(member: DcsMember, initial_cluster: &str) -> String {
-    let service_name = member.service_name();
-    let client_url = member.client_url();
-    let peer_url = member.peer_url();
-    let volume_name = member.volume_name();
-    format!(
-        r#"  {service_name}:
-    image: quay.io/coreos/etcd:v3.5.21
-    command:
-      - /usr/local/bin/etcd
-      - --name={service_name}
-      - --data-dir=/etcd-data
-      - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls={client_url}
-      - --listen-peer-urls=http://0.0.0.0:2380
-      - --initial-advertise-peer-urls={peer_url}
-      - --initial-cluster={initial_cluster}
-      - --initial-cluster-state=new
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "/usr/local/bin/etcdctl",
-          "--endpoints=http://127.0.0.1:2379",
-          "endpoint",
-          "health",
-        ]
-      interval: 5s
-      timeout: 5s
-      retries: 20
-    networks:
-      - ha
-    volumes:
-      - {volume_name}:/etcd-data"#
-    )
-}
-
-fn render_dcs_volumes(layout: ThreeNodeDcsLayout) -> String {
-    match layout {
-        ThreeNodeDcsLayout::SharedSingle => "  etcd-data:\n".to_string(),
-        ThreeNodeDcsLayout::ColocatedThreeMember => DcsMember::ALL
-            .into_iter()
-            .map(|member| format!("  {}:\n", member.volume_name()))
-            .collect(),
-    }
-}
-
 fn create_fault_directories(root: &Path) -> Result<()> {
     let faults_root = root.join("faults");
     create_dir_all(faults_root.as_path())?;
@@ -1708,14 +1345,14 @@ mod tests {
     }
 
     #[test]
-    fn materializes_plain_fixture_from_shared_assets_and_rendered_outputs() -> Result<()> {
+    fn materializes_plain_fixture_from_shared_assets_and_static_include_compose() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), HaGivenId::Plain)?;
         let output_root = temporary_directory("plain")?;
 
         let result =
             (|| -> Result<()> {
-                materialize_given_fixture(&given, output_root.as_path(), "materializes_plain")?;
+                materialize_given_fixture(&given, output_root.as_path())?;
 
                 let compose =
                     fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1724,9 +1361,11 @@ mod tests {
                             source,
                         }
                     })?;
-                assert_eq!(compose.matches("NET_ADMIN").count(), 4);
-                assert!(compose.contains("ipam:"));
-                assert!(compose.contains("subnet:"));
+                let expected_variant =
+                    compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
+                assert!(compose.contains("include:"));
+                assert!(compose.contains(expected_variant.display().to_string().as_str()));
+                assert!(compose.contains(output_root.display().to_string().as_str()));
 
                 let runtime = fs::read_to_string(
                     output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
@@ -1743,21 +1382,6 @@ mod tests {
                     })?;
                 assert!(runtime.contains(r#"username = "replicator""#));
                 assert!(runtime.contains(r#"username = "rewinder""#));
-
-                let observer = fs::read_to_string(
-                    output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
-                )
-                .map_err(|source| HarnessError::Io {
-                    path: output_root.join(ClusterMember::NodeA.observer_config_relative_path()),
-                    source,
-                })?;
-                toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str())
-                    .map_err(|source| {
-                        HarnessError::message(format!(
-                            "materialized observer config failed to parse: {source}"
-                        ))
-                    })?;
-                assert!(observer.contains(r#"base_url = "https://node-a:8443""#));
                 assert!(output_root.join("configs/tls/ca.crt").is_file());
                 assert!(output_root.join("secrets/replicator-password").is_file());
                 Ok(())
@@ -1775,13 +1399,13 @@ mod tests {
     }
 
     #[test]
-    fn materializes_custom_roles_without_observer_net_admin() -> Result<()> {
+    fn materializes_custom_roles_without_custom_compose_variant() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), HaGivenId::CustomRoles)?;
         let output_root = temporary_directory("custom-roles")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path(), "materializes_custom_roles")?;
+            materialize_given_fixture(&given, output_root.as_path())?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1790,9 +1414,8 @@ mod tests {
                         source,
                     }
                 })?;
-            assert_eq!(compose.matches("NET_ADMIN").count(), 3);
-            assert!(compose.contains("ipam:"));
-            assert!(compose.contains("subnet:"));
+            let expected_variant = compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
+            assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let runtime = fs::read_to_string(
                 output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
@@ -1803,22 +1426,6 @@ mod tests {
             })?;
             assert!(runtime.contains(r#"username = "mirrorbot""#));
             assert!(runtime.contains(r#"username = "rewindbot""#));
-
-            let observer = fs::read_to_string(
-                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
-                source,
-            })?;
-            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(observer.as_str()).map_err(
-                |source| {
-                    HarnessError::message(format!(
-                        "materialized observer config failed to parse: {source}"
-                    ))
-                },
-            )?;
-            assert!(observer.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 
@@ -1840,7 +1447,7 @@ mod tests {
         let output_root = temporary_directory("three-etcd")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path(), "materializes_three_etcd")?;
+            materialize_given_fixture(&given, output_root.as_path())?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1849,17 +1456,9 @@ mod tests {
                         source,
                     }
                 })?;
-            assert!(compose.contains("etcd-a:"));
-            assert!(compose.contains("etcd-b:"));
-            assert!(compose.contains("etcd-c:"));
-            assert!(compose.contains("ipam:"));
-            assert!(compose.contains("subnet:"));
-            assert!(compose.contains("etcd-a=http://etcd-a:2380"));
-            assert!(compose.contains("etcd-b=http://etcd-b:2380"));
-            assert!(compose.contains("etcd-c=http://etcd-c:2380"));
-            assert!(compose.contains("etcd-a-data:/etcd-data"));
-            assert!(compose.contains("etcd-b-data:/etcd-data"));
-            assert!(compose.contains("etcd-c-data:/etcd-data"));
+            let expected_variant =
+                compose_variant_absolute_path(ComposeVariant::ColocatedThreeMemberDcs)?;
+            assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let node_a_runtime = fs::read_to_string(
                 output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
@@ -1890,21 +1489,6 @@ mod tests {
                     ))
                 })?;
             assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
-
-            let node_c_observer = fs::read_to_string(
-                output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeC.observer_config_relative_path()),
-                source,
-            })?;
-            toml::from_str::<pgtuskmaster_rust::config::PgtmConfig>(node_c_observer.as_str())
-                .map_err(|source| {
-                    HarnessError::message(format!(
-                        "materialized observer config failed to parse: {source}"
-                    ))
-                })?;
-            assert!(node_c_observer.contains(r#"base_url = "https://node-c:8443""#));
             Ok(())
         })();
 

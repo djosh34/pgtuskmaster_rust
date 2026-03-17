@@ -1,23 +1,11 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 17 21:29:05 CET 2026
+Generated: Tue Mar 17 10:22:02 PM CET 2026
 
 # Task `.ralph/tasks/story-general-architecture-improvement-finding/08-task-split-process-planning-from-managed-postgres-session-materialization-and-external-tool-execution.md`
 
 ```
 ## Task: Split Process Planning From Managed Postgres Session Materialization And External Tool Execution <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/03-task-delete-observer-compose-rendering-and-collapse-ha-fixtures-to-two-static-compose-variants.md`
-
-```
-## Task: Delete Observer Compose Rendering And Collapse HA Fixtures To Two Static Compose Variants <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 

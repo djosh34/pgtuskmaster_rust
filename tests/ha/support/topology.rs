@@ -2,10 +2,7 @@ use std::fmt;
 
 use pgtuskmaster_rust::state::MemberId;
 
-use crate::support::{
-    error::{HarnessError, Result},
-    faults::OBSERVER_SERVICE_NAME,
-};
+use crate::support::error::{HarnessError, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClusterMember {
@@ -23,22 +20,6 @@ impl ClusterMember {
             Self::NodeA => "node-a",
             Self::NodeB => "node-b",
             Self::NodeC => "node-c",
-        }
-    }
-
-    pub fn observer_config_path(self) -> &'static str {
-        match self {
-            Self::NodeA => "/etc/pgtuskmaster/observer/node-a.toml",
-            Self::NodeB => "/etc/pgtuskmaster/observer/node-b.toml",
-            Self::NodeC => "/etc/pgtuskmaster/observer/node-c.toml",
-        }
-    }
-
-    pub fn observer_config_relative_path(self) -> &'static str {
-        match self {
-            Self::NodeA => "configs/observer/node-a.toml",
-            Self::NodeB => "configs/observer/node-b.toml",
-            Self::NodeC => "configs/observer/node-c.toml",
         }
     }
 
@@ -106,21 +87,6 @@ impl DcsMember {
         }
     }
 
-    pub fn peer_url(self) -> &'static str {
-        match self {
-            Self::EtcdA => "http://etcd-a:2380",
-            Self::EtcdB => "http://etcd-b:2380",
-            Self::EtcdC => "http://etcd-c:2380",
-        }
-    }
-
-    pub fn volume_name(self) -> &'static str {
-        match self {
-            Self::EtcdA => "etcd-a-data",
-            Self::EtcdB => "etcd-b-data",
-            Self::EtcdC => "etcd-c-data",
-        }
-    }
 }
 
 impl fmt::Display for DcsMember {
@@ -160,7 +126,6 @@ impl fmt::Display for DcsService {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ComposeService {
     Member(ClusterMember),
-    Observer,
     Dcs(DcsService),
 }
 
@@ -168,7 +133,6 @@ impl ComposeService {
     pub fn service_name(self) -> &'static str {
         match self {
             Self::Member(member) => member.service_name(),
-            Self::Observer => OBSERVER_SERVICE_NAME,
             Self::Dcs(service) => service.service_name(),
         }
     }

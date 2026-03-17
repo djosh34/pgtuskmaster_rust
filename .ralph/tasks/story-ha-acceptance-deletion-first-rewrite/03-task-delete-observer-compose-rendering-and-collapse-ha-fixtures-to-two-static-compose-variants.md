@@ -1,4 +1,4 @@
-## Task: Delete Observer Compose Rendering And Collapse HA Fixtures To Two Static Compose Variants <status>not_started</status> <passes>false</passes>
+## Task: Delete Observer Compose Rendering And Collapse HA Fixtures To Two Static Compose Variants <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -42,17 +42,17 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Delete the `observer` compose service from the HA fixture model and from harness startup/teardown logic.
-- [ ] Replace rendered compose generation with exactly two checked-in compose variant files plus a tiny include-only per-run compose file.
-- [ ] Remove observer-specific render targets and templates from `tests/ha/support/givens/mod.rs`; do not preserve `ObserverTemplate`-style indirection.
-- [ ] Remove observer-specific topology concepts from `tests/ha/support/topology.rs`, including service/config-path data that only existed for the observer container.
-- [ ] Remove `render_compose_template(...)` and any equivalent large compose string-generation path from `tests/ha/support/world/mod.rs`.
-- [ ] Ensure custom role variants no longer require their own compose variant; only topology differences should decide which compose file is included.
-- [ ] Keep fixture materialization simple enough that a reader can see all compose variants directly on disk without mentally expanding a render function.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Delete the `observer` compose service from the HA fixture model and from harness startup/teardown logic.
+- [x] Replace rendered compose generation with exactly two checked-in compose variant files plus a tiny include-only per-run compose file.
+- [x] Remove observer-specific render targets and templates from `tests/ha/support/givens/mod.rs`; do not preserve `ObserverTemplate`-style indirection.
+- [x] Remove observer-specific topology concepts from `tests/ha/support/topology.rs`, including service/config-path data that only existed for the observer container.
+- [x] Remove `render_compose_template(...)` and any equivalent large compose string-generation path from `tests/ha/support/world/mod.rs`.
+- [x] Ensure custom role variants no longer require their own compose variant; only topology differences should decide which compose file is included.
+- [x] Keep fixture materialization simple enough that a reader can see all compose variants directly on disk without mentally expanding a render function.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan
