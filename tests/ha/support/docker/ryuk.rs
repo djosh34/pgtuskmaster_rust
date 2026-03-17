@@ -1,7 +1,7 @@
 use std::{
     io::{BufRead, BufReader, Write},
     net::TcpStream,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crate::support::{
@@ -12,6 +12,8 @@ use crate::support::{
 const RYUK_IMAGE: &str = "testcontainers/ryuk:0.14.0";
 const RYUK_CONTAINER_PORT: &str = "8080/tcp";
 const RYUK_ACK_TIMEOUT: Duration = Duration::from_secs(5);
+const RYUK_REMOVAL_DEADLINE: Duration = Duration::from_secs(5);
+const RYUK_REMOVAL_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub struct RyukGuard {
@@ -54,26 +56,45 @@ impl RyukGuard {
 
     pub fn close(&mut self) -> Result<()> {
         self.stream.take();
-        self.docker.sleep_for_resource_cleanup();
-        match self
-            .docker
-            .remove_container_force(self.container_id.as_str())
-        {
-            Ok(()) => Ok(()),
-            Err(HarnessError::CommandFailed { stderr, .. })
-                if ryuk_removal_already_completed(stderr.as_str()) =>
-            {
-                Ok(())
+        let deadline = Instant::now() + RYUK_REMOVAL_DEADLINE;
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
             }
-            Err(err) => Err(err),
+            match self
+                .docker
+                .remove_container_force(self.container_id.as_str())
+            {
+                Ok(()) => return Ok(()),
+                Err(HarnessError::CommandFailed { stderr, .. })
+                    if ryuk_removal_already_completed(stderr.as_str()) =>
+                {
+                    return Ok(());
+                }
+                Err(HarnessError::CommandFailed { stderr, .. })
+                    if ryuk_removal_retryable(stderr.as_str()) =>
+                {
+                    std::thread::sleep(RYUK_REMOVAL_RETRY_INTERVAL);
+                }
+                Err(err) => return Err(err),
+            }
         }
+        Err(HarnessError::message(format!(
+            "timed out waiting for ryuk container `{}` removal",
+            self.container_id
+        )))
     }
 }
 
 fn ryuk_removal_already_completed(stderr: &str) -> bool {
     let normalized = stderr.to_ascii_lowercase();
+    normalized.contains("no such container")
+}
+
+fn ryuk_removal_retryable(stderr: &str) -> bool {
+    let normalized = stderr.to_ascii_lowercase();
     normalized.contains("removal of container") && normalized.contains("already in progress")
-        || normalized.contains("no such container")
 }
 
 fn wait_for_host_port(docker: &DockerCli, container_id: &str) -> Result<u16> {
@@ -190,7 +211,7 @@ fn validate_registration_ack(ack_line: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_registration_ack;
+    use super::{ryuk_removal_already_completed, ryuk_removal_retryable, validate_registration_ack};
 
     #[test]
     fn registration_ack_accepts_ack() -> Result<(), String> {
@@ -210,5 +231,25 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn removal_classifier_identifies_already_completed_cases() {
+        assert!(ryuk_removal_already_completed(
+            "Error response from daemon: No such container: abc123"
+        ));
+        assert!(!ryuk_removal_already_completed(
+            "Error response from daemon: removal of container abc123 is already in progress"
+        ));
+    }
+
+    #[test]
+    fn removal_classifier_identifies_retryable_cases() {
+        assert!(ryuk_removal_retryable(
+            "Error response from daemon: removal of container abc123 is already in progress"
+        ));
+        assert!(!ryuk_removal_retryable(
+            "Error response from daemon: No such container: abc123"
+        ));
     }
 }

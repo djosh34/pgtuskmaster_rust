@@ -7,7 +7,9 @@ use std::{
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
     api::NodeState,
-    command::StateDerivedConnectionTargetDto,
+    command::{
+        LocalConnectionMaterialization, PathBackedClientTlsDto, StateDerivedConnectionTargetDto,
+    },
     dcs::{ClusterMemberView, DcsMode, MemberPostgresView},
     ha::types::{AuthorityProjection, PublicationState, TargetRole},
     pginfo::state::Readiness,
@@ -34,16 +36,13 @@ impl SqlExecutionTarget {
     }
 
     fn direct(member_id: ClusterMember) -> Self {
-        Self {
-            state_target: StateDerivedConnectionTargetDto {
-                member_id: member_id.to_string(),
-                postgres_host: member_id.to_string(),
-                postgres_port: 5432,
-            },
-            dsn: format!(
-                "host={member_id} port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtuskmaster/tls/ca.crt sslcert=/etc/pgtuskmaster/tls/observer.crt sslkey=/etc/pgtuskmaster/tls/observer.key"
-            ),
-        }
+        let state_target = StateDerivedConnectionTargetDto {
+            member_id: member_id.to_string(),
+            postgres_host: member_id.to_string(),
+            postgres_port: 5432,
+        };
+        let dsn = materialize_connection_dsn(&state_target, &observer_tls_local_connection());
+        Self { state_target, dsn }
     }
 
     fn member_id(&self) -> &str {
@@ -59,11 +58,14 @@ impl SqlExecutionTarget {
     }
 }
 
-fn direct_sql_dsn(target: &StateDerivedConnectionTargetDto) -> String {
-    format!(
-        "host={} port={} user=postgres dbname=postgres sslmode=verify-full sslrootcert=/etc/pgtuskmaster/tls/ca.crt sslcert=/etc/pgtuskmaster/tls/observer.crt sslkey=/etc/pgtuskmaster/tls/observer.key",
-        target.postgres_host, target.postgres_port
-    )
+fn observer_tls_local_connection() -> LocalConnectionMaterialization {
+    LocalConnectionMaterialization::Tls {
+        paths: PathBackedClientTlsDto {
+            ca_cert_path: Some("/etc/pgtuskmaster/tls/ca.crt".into()),
+            client_cert_path: Some("/etc/pgtuskmaster/tls/observer.crt".into()),
+            client_key_path: Some("/etc/pgtuskmaster/tls/observer.key".into()),
+        },
+    }
 }
 
 fn primary_target_from_output(
@@ -823,7 +825,10 @@ fn ensure_proof_table(world: &mut HaWorld) -> Result<String> {
     let primary = current_writable_primary_target(harness)?;
     let _ = harness
         .sql()
-        .execute(direct_sql_dsn(primary.target()).as_str(), create_sql.as_str())?;
+        .execute(
+            materialize_connection_dsn(primary.target(), &observer_tls_local_connection()).as_str(),
+            create_sql.as_str(),
+        )?;
     harness.record_note("sql.create_proof_table", format!("table={table_name}"))?;
     world.scenario.workload.proof.table = Some(table_name.clone().into());
     Ok(table_name)
@@ -1513,7 +1518,7 @@ fn write_target_for_reference(world: &HaWorld, member_ref: &str) -> Result<SqlEx
     if let Ok(target) = world.require_writable_primary_alias(member_ref) {
         return Ok(SqlExecutionTarget::new(
             target.target().clone(),
-            direct_sql_dsn(target.target()),
+            materialize_connection_dsn(target.target(), &observer_tls_local_connection()),
         ));
     }
 
