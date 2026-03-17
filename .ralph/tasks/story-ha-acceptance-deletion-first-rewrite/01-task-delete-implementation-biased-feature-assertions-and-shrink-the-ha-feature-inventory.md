@@ -1,4 +1,4 @@
-## Task: Delete Implementation-Biased Feature Assertions And Shrink The HA Feature Inventory <status>not_started</status> <passes>false</passes>
+## Task: Delete Implementation-Biased Feature Assertions And Shrink The HA Feature Inventory <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -58,16 +58,16 @@ This task is intentionally deletion-first. Do not preserve old scenario wording 
 </description>
 
 <acceptance_criteria>
-- [ ] Rewrite `tests/ha/features/` so feature text no longer contains workload-start/stop steps, proof-row assertions, dual-primary assertions, primary-history assertions, role/state assertions, log assertions, or blocker-evidence assertions.
-- [ ] Keep only the reduced outcome family in feature text: `cluster becomes healthy`, `cluster becomes unhealthy`, and the narrow switchover-specific `"<node-or-alias>" becomes primary` style check.
-- [ ] Radically reduce the inventory under `tests/ha/features/`; the post-rewrite suite should converge to the 5-file target inventory above unless the codebase proves an even smaller inventory is correct.
-- [ ] Update `tests/ha.rs` so it references only the surviving merged feature files.
-- [ ] Update `tests/nextest_config_contract.rs` so any feature-count expectation matches the reduced inventory.
-- [ ] Document in the surviving feature files which scenarios were intentionally merged or deleted, so the reduction is explicit rather than accidental.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Rewrite `tests/ha/features/` so feature text no longer contains workload-start/stop steps, proof-row assertions, dual-primary assertions, primary-history assertions, role/state assertions, log assertions, or blocker-evidence assertions.
+- [x] Keep only the reduced outcome family in feature text: `cluster becomes healthy`, `cluster becomes unhealthy`, and the narrow switchover-specific `"<node-or-alias>" becomes primary` style check.
+- [x] Radically reduce the inventory under `tests/ha/features/`; the post-rewrite suite should converge to the 5-file target inventory above unless the codebase proves an even smaller inventory is correct.
+- [x] Update `tests/ha.rs` so it references only the surviving merged feature files.
+- [x] Update `tests/nextest_config_contract.rs` so any feature-count expectation matches the reduced inventory.
+- [x] Document in the surviving feature files which scenarios were intentionally merged or deleted, so the reduction is explicit rather than accidental.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

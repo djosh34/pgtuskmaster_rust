@@ -217,3 +217,5 @@ NONE
 .ralph/tasks/bugs/bug-remove-primary-and-replica-api-commands-and-derive-cli-output-from-state.md
 .ralph/tasks/story-general-architecture-improvement-finding/07-task-collapse-duplicate-struct-trees-into-canonical-domain-adts-and-prove-the-struct-count-went-down.md
 .ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md
+NONE
+.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/01-task-delete-implementation-biased-feature-assertions-and-shrink-the-ha-feature-inventory.md

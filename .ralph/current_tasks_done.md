@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 19:56:29 CET 2026
+Generated: Tue Mar 17 08:55:20 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -276,6 +276,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 <priority>high</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md`</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/01-task-delete-implementation-biased-feature-assertions-and-shrink-the-ha-feature-inventory.md`
+
+```
+## Task: Delete Implementation-Biased Feature Assertions And Shrink The HA Feature Inventory <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
 ```
 
 ==============

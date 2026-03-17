@@ -102,12 +102,23 @@ def host_routes():
     return routes
 
 
-feature_names = sorted(
-    directory.name
-    for directory in features_root.iterdir()
-    if directory.is_dir() and (directory / f"{directory.name}.feature").is_file()
-)
-if not feature_names:
+scenario_keys = []
+for directory in sorted(features_root.iterdir()):
+    if not directory.is_dir():
+        continue
+    feature_file = directory / f"{directory.name}.feature"
+    if not feature_file.is_file():
+        continue
+    for raw_line in feature_file.read_text().splitlines():
+        line = raw_line.strip()
+        if not line.startswith("Scenario:"):
+            continue
+        scenario_name = line.removeprefix("Scenario:").strip()
+        if not scenario_name:
+            raise SystemExit(f"empty scenario name in {feature_file}")
+        scenario_keys.append(f"{directory.name}::{scenario_name}")
+
+if not scenario_keys:
     raise SystemExit("no HA feature directories found")
 
 occupied = existing_docker_networks() + host_routes()
@@ -127,25 +138,25 @@ for parent in candidate_parents:
         if any(candidate.overlaps(used) for used in selected):
             continue
         selected.append(candidate)
-        if len(selected) == len(feature_names):
+        if len(selected) == len(scenario_keys):
             break
-    if len(selected) == len(feature_names):
+    if len(selected) == len(scenario_keys):
         break
 
-if len(selected) != len(feature_names):
+if len(selected) != len(scenario_keys):
     raise SystemExit(
-        f"unable to allocate {len(feature_names)} HA /28 subnets without overlap; allocated {len(selected)}"
+        f"unable to allocate {len(scenario_keys)} HA /28 subnets without overlap; allocated {len(selected)}"
     )
 
 manifest = {
     "feature_subnets": {
-        feature_name: str(subnet)
-        for feature_name, subnet in zip(feature_names, selected)
+        scenario_key: str(subnet)
+        for scenario_key, subnet in zip(scenario_keys, selected)
     }
 }
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 print(
-    f"generated HA subnet manifest {manifest_path} with {len(feature_names)} /28 networks",
+    f"generated HA subnet manifest {manifest_path} with {len(scenario_keys)} /28 networks",
     file=sys.stderr,
 )
 PY

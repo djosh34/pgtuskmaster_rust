@@ -39,9 +39,10 @@ pub async fn run_feature(
     install_context(feature_name, feature_path).map_err(|err| err.to_string())?;
 
     let writer = HaWorld::cucumber()
-        .before(|_, _, _, world| {
+        .before(|_, _, scenario, world| {
             async move {
                 world.reset();
+                world.set_scenario_name(scenario.name.clone());
             }
             .boxed_local()
         })
@@ -55,6 +56,7 @@ pub async fn run_feature(
             }
             .boxed_local()
         })
+        .max_concurrent_scenarios(1)
         .with_writer(writer::Basic::stdout().summarized())
         .with_default_cli()
         .run(feature_path)

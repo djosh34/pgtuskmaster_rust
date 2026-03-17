@@ -42,6 +42,7 @@ pub struct HaWorld {
 
 #[derive(Debug, Default)]
 pub struct ScenarioState {
+    pub name: Option<String>,
     pub aliases: AliasRegistry,
     pub workload: WorkloadState,
     pub command: CommandState,
@@ -239,6 +240,17 @@ impl HaWorld {
         self.harness
             .as_ref()
             .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))
+    }
+
+    pub fn set_scenario_name(&mut self, scenario_name: String) {
+        self.scenario.name = Some(scenario_name);
+    }
+
+    pub fn scenario_name(&self) -> Result<&str> {
+        self.scenario
+            .name
+            .as_deref()
+            .ok_or_else(|| HarnessError::message("scenario name has not been initialized"))
     }
 
     pub fn set_harness(&mut self, harness: HarnessShared) {
@@ -454,14 +466,14 @@ pub struct HarnessShared {
 }
 
 impl HarnessShared {
-    pub async fn initialize(given: HaGivenId) -> Result<Self> {
+    pub async fn initialize(given: HaGivenId, scenario_name: &str) -> Result<Self> {
         let feature = feature_metadata()?;
         let docker = DockerCli::discover()?;
         docker.verify_daemon()?;
 
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), given)?;
-        let run_id = build_run_id(feature.feature_name.as_str())?;
+        let run_id = build_run_id(feature.feature_name.as_str(), scenario_name)?;
         let compose = ComposeStack {
             file: PathBuf::new(),
             project: build_compose_project(feature.feature_name.as_str(), run_id.as_str()),
@@ -486,10 +498,12 @@ impl HarnessShared {
         create_dir_all(paths.run_dir.as_path())?;
         create_dir_all(paths.materialized_dir.as_path())?;
         create_dir_all(paths.artifacts_dir.as_path())?;
+        let network_scope_key =
+            scenario_network_scope_key(feature.feature_name.as_str(), scenario_name);
         materialize_given_fixture(
             &given,
             paths.materialized_dir.as_path(),
-            feature.feature_name.as_str(),
+            network_scope_key.as_str(),
         )?;
         create_fault_directories(paths.materialized_dir.as_path())?;
 
@@ -1103,6 +1117,7 @@ impl HarnessShared {
         }
 
         let mut failures = Vec::new();
+        let compose_network = format!("{}_ha", self.compose_project());
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));
@@ -1113,11 +1128,20 @@ impl HarnessShared {
         if let Err(err) = &compose_result {
             failures.push(format!("docker compose down failed: {err}"));
         }
+        let network_result = if compose_result.is_ok() {
+            self.docker
+                .wait_for_network_absent(compose_network.as_str())
+        } else {
+            Ok(())
+        };
+        if let Err(err) = &network_result {
+            failures.push(format!("compose network cleanup failed: {err}"));
+        }
         let ryuk_result = self.ryuk.as_mut().map(RyukGuard::close).transpose();
         if let Err(err) = &ryuk_result {
             failures.push(format!("ryuk cleanup failed: {err}"));
         }
-        if compose_result.is_ok() && ryuk_result.is_ok() {
+        if compose_result.is_ok() && network_result.is_ok() && ryuk_result.is_ok() {
             self.cleaned_up = true;
         }
 
@@ -1271,13 +1295,14 @@ fn container_not_running_error(err: &HarnessError) -> bool {
     matches!(err, HarnessError::CommandFailed { stderr, .. } if stderr.contains("is not running"))
 }
 
-fn build_run_id(feature_name: &str) -> Result<String> {
+fn build_run_id(feature_name: &str, scenario_name: &str) -> Result<String> {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|err| HarnessError::message(format!("system clock error: {err}")))?;
     Ok(format!(
-        "{}-{}-{}",
+        "{}-{}-{}-{}",
         sanitize(feature_name),
+        sanitize(scenario_name),
         timestamp.as_millis(),
         std::process::id()
     ))
@@ -1303,16 +1328,18 @@ struct HaSubnetManifest {
     feature_subnets: BTreeMap<String, String>,
 }
 
-fn feature_network_subnet(feature_name: &str) -> Result<String> {
+fn feature_network_subnet(network_scope_key: &str) -> Result<String> {
     match env::var("PGTM_HA_SUBNET_MANIFEST") {
-        Ok(path) => feature_network_subnet_from_manifest(Path::new(path.as_str()), feature_name),
-        Err(_) => Ok(fallback_feature_network_subnet(feature_name)),
+        Ok(path) => {
+            feature_network_subnet_from_manifest(Path::new(path.as_str()), network_scope_key)
+        }
+        Err(_) => Ok(fallback_feature_network_subnet(network_scope_key)),
     }
 }
 
 fn feature_network_subnet_from_manifest(
     manifest_path: &Path,
-    feature_name: &str,
+    network_scope_key: &str,
 ) -> Result<String> {
     let content = fs::read_to_string(manifest_path).map_err(|source| HarnessError::Io {
         path: manifest_path.to_path_buf(),
@@ -1325,20 +1352,15 @@ fn feature_network_subnet_from_manifest(
                 source,
             }
         })?;
-    manifest
+    Ok(manifest
         .feature_subnets
-        .get(feature_name)
+        .get(network_scope_key)
         .cloned()
-        .ok_or_else(|| {
-            HarnessError::message(format!(
-                "HA subnet manifest `{}` has no subnet for feature `{feature_name}`",
-                manifest_path.display()
-            ))
-        })
+        .unwrap_or_else(|| fallback_feature_network_subnet(network_scope_key)))
 }
 
-fn fallback_feature_network_subnet(feature_name: &str) -> String {
-    let hash = feature_name
+fn fallback_feature_network_subnet(network_scope_key: &str) -> String {
+    let hash = network_scope_key
         .as_bytes()
         .iter()
         .fold(1_469_598_103_934_665_603_u64, |state, byte| {
@@ -1348,6 +1370,10 @@ fn fallback_feature_network_subnet(feature_name: &str) -> String {
     let third_octet = subnet_index / 16;
     let fourth_octet = (subnet_index % 16) * 16;
     format!("10.250.{third_octet}.{fourth_octet}/28")
+}
+
+fn scenario_network_scope_key(feature_name: &str, scenario_name: &str) -> String {
+    format!("{feature_name}::{scenario_name}")
 }
 
 fn build_compose_project(feature_name: &str, run_id: &str) -> String {
@@ -1388,7 +1414,7 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
 fn materialize_given_fixture(
     given: &HaGivenDefinition,
     materialized_root: &Path,
-    feature_name: &str,
+    network_scope_key: &str,
 ) -> Result<()> {
     let FixtureMaterialization {
         shared_root,
@@ -1399,7 +1425,7 @@ fn materialize_given_fixture(
         copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
     }
     for render in renders {
-        render_fixture_file(materialized_root, render, feature_name)?;
+        render_fixture_file(materialized_root, render, network_scope_key)?;
     }
     Ok(())
 }
@@ -1474,13 +1500,13 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
 fn render_fixture_file(
     materialized_root: &Path,
     file: &RenderedFixtureFile,
-    feature_name: &str,
+    network_scope_key: &str,
 ) -> Result<()> {
     let target_path = materialized_root.join(render_target_relative_path(&file.target));
     if let Some(parent) = target_path.parent() {
         create_dir_all(parent)?;
     }
-    let rendered = render_fixture_template(&file.template, feature_name)?;
+    let rendered = render_fixture_template(&file.template, network_scope_key)?;
     write_text_file(target_path.as_path(), rendered.as_str())
 }
 
@@ -1496,22 +1522,22 @@ fn render_target_relative_path(target: &FixtureRenderTarget) -> PathBuf {
     }
 }
 
-fn render_fixture_template(template: &FixtureTemplate, feature_name: &str) -> Result<String> {
+fn render_fixture_template(template: &FixtureTemplate, network_scope_key: &str) -> Result<String> {
     match template {
-        FixtureTemplate::Compose(template) => render_compose_template(*template, feature_name),
+        FixtureTemplate::Compose(template) => render_compose_template(*template, network_scope_key),
         FixtureTemplate::Runtime(template) => Ok(render_member_runtime_template(template)),
         FixtureTemplate::Observer(template) => Ok(render_observer_template(template)),
     }
 }
 
-fn render_compose_template(template: ComposeTemplate, feature_name: &str) -> Result<String> {
+fn render_compose_template(template: ComposeTemplate, network_scope_key: &str) -> Result<String> {
     let observer_cap_add = match template.observer_net_admin {
         ObserverNetAdmin::Enabled => "    cap_add:\n      - NET_ADMIN\n",
         ObserverNetAdmin::Disabled => "",
     };
     let dcs_services = render_dcs_services(template.dcs_layout);
     let dcs_volumes = render_dcs_volumes(template.dcs_layout);
-    let network_subnet = feature_network_subnet(feature_name)?;
+    let network_subnet = feature_network_subnet(network_scope_key)?;
     Ok(format!(
         r#"services:
 {dcs_services}
@@ -2010,7 +2036,9 @@ fn dcs_primary_members(status: &NodeState) -> Vec<String> {
         return Vec::new();
     }
 
-    operator_visible_primary(status).into_iter().collect::<Vec<_>>()
+    operator_visible_primary(status)
+        .into_iter()
+        .collect::<Vec<_>>()
 }
 
 #[cfg(test)]

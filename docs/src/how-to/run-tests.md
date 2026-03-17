@@ -55,14 +55,22 @@ Stable-primary HA steps now validate a writable PostgreSQL route before recordin
 Run specific HA scenarios:
 
 ```bash
-make test-long TESTS="ha_replica_stopped_primary_stays_primary"
+make test-long TESTS="ha_replica_faults_keep_cluster_healthy"
 ```
 
 Multiple scenarios:
 
 ```bash
-make test-long TESTS="ha_replica_stopped_primary_stays_primary ha_primary_killed_then_rejoins_as_replica ha_targeted_switchover_to_degraded_replica_is_rejected"
+make test-long TESTS="ha_replica_faults_keep_cluster_healthy ha_primary_faults_fail_over_then_recover ha_operator_switchovers"
 ```
+
+The current merged HA feature inventory is:
+
+- `ha_replica_faults_keep_cluster_healthy`
+- `ha_primary_faults_fail_over_then_recover`
+- `ha_quorum_loss_and_dcs_loss`
+- `ha_rejoin_and_restart_recovery`
+- `ha_operator_switchovers`
 
 Convert HA logs:
 

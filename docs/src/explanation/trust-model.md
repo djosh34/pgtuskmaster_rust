@@ -66,7 +66,7 @@ This is why user-facing command health may become degraded even though the DCS A
 
 ## Practical example: DCS quorum loss
 
-The HA scenario `ha_dcs_quorum_lost_enters_failsafe` demonstrates the intended result:
+The `ha_quorum_loss_and_dcs_loss` feature includes a scenario where a DCS quorum majority is stopped and the intended result is:
 
 1. A healthy cluster starts with one stable primary.
 2. A DCS quorum majority is stopped.

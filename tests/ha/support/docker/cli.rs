@@ -165,6 +165,21 @@ impl DockerCli {
         Ok(())
     }
 
+    pub fn wait_for_network_absent(&self, network: &str) -> Result<()> {
+        let mut attempts = 0_u8;
+        while attempts < 40 {
+            if !self.network_exists(network)? {
+                return Ok(());
+            }
+            attempts = attempts.saturating_add(1);
+            std::thread::sleep(Duration::from_millis(250));
+        }
+
+        Err(HarnessError::message(format!(
+            "timed out waiting for docker network `{network}` to disappear"
+        )))
+    }
+
     pub fn compose_ps_entries(
         &self,
         compose_file: &Path,
@@ -289,6 +304,29 @@ impl DockerCli {
             format!("removing container `{container}`"),
         )?;
         Ok(())
+    }
+
+    fn network_exists(&self, network: &str) -> Result<bool> {
+        match self.run(
+            [
+                "network".to_string(),
+                "inspect".to_string(),
+                network.to_string(),
+            ],
+            format!("inspecting docker network `{network}`"),
+        ) {
+            Ok(_) => Ok(true),
+            Err(HarnessError::CommandFailed { stderr, .. })
+                if {
+                    let normalized = stderr.to_ascii_lowercase();
+                    normalized.contains("no such network")
+                        || (normalized.contains("network") && normalized.contains("not found"))
+                } =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(err),
+        }
     }
 
     pub fn published_host_port(&self, container: &str, port: &str) -> Result<u16> {
