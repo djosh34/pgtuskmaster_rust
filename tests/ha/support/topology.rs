@@ -54,10 +54,6 @@ impl ClusterMember {
         MemberId(self.service_name().to_string())
     }
 
-    pub fn as_str(self) -> &'static str {
-        self.service_name()
-    }
-
     pub fn local_dcs_member(self) -> DcsMember {
         match self {
             Self::NodeA => DcsMember::EtcdA,

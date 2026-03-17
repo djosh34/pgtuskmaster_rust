@@ -267,17 +267,6 @@ impl DockerCli {
         )
     }
 
-    pub fn container_logs(&self, container: &str) -> Result<String> {
-        self.run_text(
-            [
-                "logs".to_string(),
-                "--timestamps".to_string(),
-                container.to_string(),
-            ],
-            format!("capturing docker logs for container `{container}`"),
-        )
-    }
-
     pub fn kill_container(&self, container: &str) -> Result<()> {
         let _ = self.run(
             ["kill".to_string(), container.to_string()],

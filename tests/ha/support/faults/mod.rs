@@ -114,16 +114,6 @@ while iptables -w -D {chain} -p tcp -s {peer} --sport {port} -j REJECT 2>/dev/nu
     )
 }
 
-pub fn signal_named_process_script(signal: &str, process_name: &str) -> String {
-    let quoted_signal = shell_quote(signal);
-    let quoted_name = shell_quote(process_name);
-    format!(
-        "pkill --signal {signal} --exact {process_name}",
-        signal = quoted_signal,
-        process_name = quoted_name
-    )
-}
-
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

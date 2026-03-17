@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 08:55:20 PM CET 2026
+Generated: Tue Mar 17 21:29:05 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -284,6 +284,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 ```
 ## Task: Delete Implementation-Biased Feature Assertions And Shrink The HA Feature Inventory <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/02-task-delete-scenario-bookkeeping-and-shrink-the-ha-world-and-step-surface.md`
+
+```
+## Task: Delete Scenario Bookkeeping And Shrink The HA World And Step Surface <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 

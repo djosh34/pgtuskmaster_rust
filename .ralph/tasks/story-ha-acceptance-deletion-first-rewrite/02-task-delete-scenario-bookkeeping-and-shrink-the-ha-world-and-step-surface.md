@@ -1,4 +1,4 @@
-## Task: Delete Scenario Bookkeeping And Shrink The HA World And Step Surface <status>not_started</status> <passes>false</passes>
+## Task: Delete Scenario Bookkeeping And Shrink The HA World And Step Surface <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -59,15 +59,15 @@ This task is deliberately destructive. Delete the old bookkeeping first so later
 </description>
 
 <acceptance_criteria>
-- [ ] Delete `tests/ha/support/workload/mod.rs` entirely, or reduce it to nothing more than a tiny replacement that is demonstrably required by later tasks; do not preserve the current workload struct tree.
-- [ ] Rewrite `tests/ha/support/steps/mod.rs` so it no longer exposes proof-row, workload, dual-primary, fencing-cutoff, primary-history, queryability, log, or blocker-evidence step definitions.
-- [ ] Shrink `tests/ha/support/world/mod.rs` so the current scenario bookkeeping struct tree is drastically reduced; remove every struct whose only purpose was to support the deleted step families.
-- [ ] Remove dead exports from `tests/ha/support/mod.rs` and any adjacent support modules after the deletion.
-- [ ] Ensure the remaining world/step boundary is small enough that a reader can identify the surviving scenario state in one short pass.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Delete `tests/ha/support/workload/mod.rs` entirely, or reduce it to nothing more than a tiny replacement that is demonstrably required by later tasks; do not preserve the current workload struct tree.
+- [x] Rewrite `tests/ha/support/steps/mod.rs` so it no longer exposes proof-row, workload, dual-primary, fencing-cutoff, primary-history, queryability, log, or blocker-evidence step definitions.
+- [x] Shrink `tests/ha/support/world/mod.rs` so the current scenario bookkeeping struct tree is drastically reduced; remove every struct whose only purpose was to support the deleted step families.
+- [x] Remove dead exports from `tests/ha/support/mod.rs` and any adjacent support modules after the deletion.
+- [x] Ensure the remaining world/step boundary is small enough that a reader can identify the surviving scenario state in one short pass.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

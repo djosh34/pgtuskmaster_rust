@@ -9,7 +9,6 @@ use std::{
 use cucumber::World;
 use pgtuskmaster_rust::{
     api::NodeState,
-    command::StateDerivedConnectionTargetDto,
     ha::types::{AuthorityProjection, PublicationState},
 };
 use serde::Deserialize;
@@ -19,8 +18,7 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
-        remove_fault_rule_script, signal_named_process_script, BlockerKind, TrafficPath,
-        DATABASE_MEMBERS, FAULT_DIR,
+        remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_metadata,
     givens::{
@@ -31,7 +29,6 @@ use crate::support::{
     observer::{pgtm::PgtmObserver, sql::SqlObserver},
     timeouts::TimeoutModel,
     topology::{ClusterMember, ComposeService, DcsMember},
-    workload::{SqlWorkloadHandle, WorkloadSummary},
 };
 
 #[derive(Debug, Default, World)]
@@ -44,116 +41,21 @@ pub struct HaWorld {
 pub struct ScenarioState {
     pub name: Option<String>,
     pub aliases: AliasRegistry,
-    pub workload: WorkloadState,
-    pub command: CommandState,
-    pub transition: TransitionWindow,
-    pub invariants: InvariantHistory,
+    pub availability: ScenarioAvailability,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MemberAlias(String);
+pub struct AliasName(String);
 
-impl From<&str> for MemberAlias {
+impl From<&str> for AliasName {
     fn from(value: &str) -> Self {
         Self(value.to_string())
     }
 }
 
-impl From<String> for MemberAlias {
+impl From<String> for AliasName {
     fn from(value: String) -> Self {
         Self(value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct MarkerName(String);
-
-impl From<&str> for MarkerName {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for MarkerName {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ProofRow(String);
-
-impl From<&str> for ProofRow {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for ProofRow {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl ProofRow {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ProofTableName(String);
-
-impl From<&str> for ProofTableName {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for ProofTableName {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-impl ProofTableName {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WritablePrimaryTarget {
-    member: ClusterMember,
-    target: StateDerivedConnectionTargetDto,
-}
-
-impl WritablePrimaryTarget {
-    pub fn new(member: ClusterMember, target: StateDerivedConnectionTargetDto) -> Self {
-        Self { member, target }
-    }
-
-    pub fn member(&self) -> ClusterMember {
-        self.member
-    }
-
-    pub fn target(&self) -> &StateDerivedConnectionTargetDto {
-        &self.target
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ScenarioAlias {
-    Member(ClusterMember),
-    WritablePrimary(WritablePrimaryTarget),
-}
-
-impl ScenarioAlias {
-    pub fn member(&self) -> ClusterMember {
-        match self {
-            Self::Member(member) => *member,
-            Self::WritablePrimary(target) => target.member(),
-        }
     }
 }
 
@@ -178,56 +80,17 @@ impl MemberSet {
     pub fn clear(&mut self) {
         self.members.clear();
     }
-
-    pub fn len(&self) -> usize {
-        self.members.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.members.is_empty()
-    }
 }
 
 #[derive(Debug, Default)]
 pub struct AliasRegistry {
-    pub aliases_by_name: BTreeMap<MemberAlias, ScenarioAlias>,
+    pub aliases_by_name: BTreeMap<AliasName, ClusterMember>,
 }
 
 #[derive(Debug, Default)]
-pub struct ProofLedger {
-    pub table: Option<ProofTableName>,
-    pub recorded_rows: Vec<ProofRow>,
-    pub convergence_blocked_members: MemberSet,
-}
-
-#[derive(Debug, Default)]
-pub struct WorkloadState {
-    pub active: Option<SqlWorkloadHandle>,
-    pub last_summary: Option<WorkloadSummary>,
-    pub proof: ProofLedger,
-}
-
-#[derive(Debug, Default)]
-pub struct CommandState {
-    pub last_output: Option<String>,
-}
-
-#[derive(Debug, Default)]
-pub struct ObservationScope {
-    pub observer_unreachable_members: MemberSet,
-}
-
-#[derive(Debug, Default)]
-pub struct TransitionWindow {
-    pub markers: BTreeMap<MarkerName, u128>,
+pub struct ScenarioAvailability {
     pub stopped_members: MemberSet,
-    pub wedged_members: MemberSet,
-    pub observation_scope: ObservationScope,
-}
-
-#[derive(Debug, Default)]
-pub struct InvariantHistory {
-    pub observed_authoritative_primaries: Vec<ClusterMember>,
+    pub observer_unreachable_members: MemberSet,
 }
 
 impl HaWorld {
@@ -257,77 +120,34 @@ impl HaWorld {
         self.harness = Some(harness);
     }
 
-    pub fn record_marker(&mut self, marker: impl Into<MarkerName>, timestamp_ms: u128) {
-        self.scenario
-            .transition
-            .markers
-            .insert(marker.into(), timestamp_ms);
-    }
-
-    pub fn marker(&self, marker: &str) -> Result<u128> {
-        self.scenario
-            .transition
-            .markers
-            .get(&MarkerName::from(marker))
-            .copied()
-            .ok_or_else(|| HarnessError::message(format!("marker `{marker}` was not recorded")))
-    }
-
-    pub fn remember_member_alias(&mut self, alias: impl Into<MemberAlias>, member: ClusterMember) {
+    pub fn remember_member_alias(&mut self, alias: impl Into<AliasName>, member: ClusterMember) {
         self.scenario
             .aliases
             .aliases_by_name
-            .insert(alias.into(), ScenarioAlias::Member(member));
-    }
-
-    pub fn remember_writable_primary_alias(
-        &mut self,
-        alias: impl Into<MemberAlias>,
-        target: WritablePrimaryTarget,
-    ) {
-        self.scenario
-            .aliases
-            .aliases_by_name
-            .insert(alias.into(), ScenarioAlias::WritablePrimary(target));
-    }
-
-    pub fn alias(&self, alias: &str) -> Option<&ScenarioAlias> {
-        self.scenario
-            .aliases
-            .aliases_by_name
-            .get(&MemberAlias::from(alias))
+            .insert(alias.into(), member);
     }
 
     pub fn require_member_alias(&self, alias: &str) -> Result<ClusterMember> {
-        self.alias(alias)
-            .map(ScenarioAlias::member)
+        self.scenario
+            .aliases
+            .aliases_by_name
+            .get(&AliasName::from(alias))
+            .copied()
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
-    }
-
-    pub fn require_writable_primary_alias(&self, alias: &str) -> Result<WritablePrimaryTarget> {
-        self.alias(alias)
-            .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
-            .and_then(|alias_value| match alias_value {
-                ScenarioAlias::WritablePrimary(target) => Ok(target.clone()),
-                ScenarioAlias::Member(member) => Err(HarnessError::message(format!(
-                    "alias `{alias}` only records member `{member}`, not a validated writable primary target"
-                ))),
-            })
     }
 
     pub fn add_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.transition.stopped_members.insert(member);
+        let _ = self.scenario.availability.stopped_members.insert(member);
     }
 
     pub fn remove_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.transition.stopped_members.remove(member);
+        let _ = self.scenario.availability.stopped_members.remove(member);
     }
 
     pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
-            .transition
-            .observation_scope
+            .availability
             .observer_unreachable_members
             .insert(member);
     }
@@ -335,98 +155,26 @@ impl HaWorld {
     pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
         let _ = self
             .scenario
-            .transition
-            .observation_scope
+            .availability
             .observer_unreachable_members
-            .remove(member);
-    }
-
-    pub fn add_wedged_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.transition.wedged_members.insert(member);
-    }
-
-    pub fn remove_wedged_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.transition.wedged_members.remove(member);
-    }
-
-    pub fn add_proof_convergence_blocker(&mut self, member: ClusterMember) {
-        let _ = self
-            .scenario
-            .workload
-            .proof
-            .convergence_blocked_members
-            .insert(member);
-    }
-
-    pub fn remove_proof_convergence_blocker(&mut self, member: ClusterMember) {
-        let _ = self
-            .scenario
-            .workload
-            .proof
-            .convergence_blocked_members
             .remove(member);
     }
 
     pub fn clear_observer_unreachable_members(&mut self) {
         self.scenario
-            .transition
-            .observation_scope
+            .availability
             .observer_unreachable_members
             .clear();
     }
 
-    pub fn clear_proof_convergence_blockers(&mut self) {
-        self.scenario
-            .workload
-            .proof
-            .convergence_blocked_members
-            .clear();
-    }
-
-    pub fn clear_primary_history(&mut self) {
-        self.scenario
-            .invariants
-            .observed_authoritative_primaries
-            .clear();
-    }
-
-    pub fn record_primary_observation(&mut self, member: ClusterMember) {
-        let already_recorded = self
-            .scenario
-            .invariants
-            .observed_authoritative_primaries
-            .iter()
-            .any(|observed| observed == &member);
-        if !already_recorded {
-            self.scenario
-                .invariants
-                .observed_authoritative_primaries
-                .push(member);
-        }
-    }
-
     pub fn cleanup(&mut self) -> Result<()> {
-        let workload_result = self
-            .scenario
-            .workload
-            .active
-            .take()
-            .map(SqlWorkloadHandle::stop)
-            .transpose();
         let cleanup_result = match self.harness.as_mut() {
             Some(harness) => harness.cleanup(),
             None => Ok(()),
         };
         self.reset();
 
-        match (workload_result, cleanup_result) {
-            (Ok(None), Ok(())) | (Ok(Some(_)), Ok(())) => Ok(()),
-            (Err(workload), Ok(())) => Err(workload),
-            (Ok(None), Err(cleanup)) | (Ok(Some(_)), Err(cleanup)) => Err(cleanup),
-            (Err(workload), Err(cleanup)) => Err(HarnessError::message(format!(
-                "{workload}\ncleanup also failed: {cleanup}"
-            ))),
-        }
+        cleanup_result
     }
 }
 
@@ -662,24 +410,6 @@ impl HarnessShared {
         })
     }
 
-    pub fn service_logs(&self, service: ComposeService) -> Result<String> {
-        let container_id = self.service_container_id(service)?;
-        self.docker.container_logs(container_id.as_str())
-    }
-
-    pub fn write_artifact_json(
-        &self,
-        artifact_name: &str,
-        value: &serde_json::Value,
-    ) -> Result<()> {
-        let path = self.artifacts_dir().join(artifact_name);
-        let content = serde_json::to_string_pretty(value).map_err(|source| HarnessError::Json {
-            context: format!("serializing artifact `{artifact_name}`"),
-            source,
-        })?;
-        write_text_file(path.as_path(), content.as_str())
-    }
-
     pub fn stop_service(&self, service: ComposeService) -> Result<()> {
         let container_id = self.service_container_id(service)?;
         self.record_note("docker.stop_service", format!("stopping `{service}`"))?;
@@ -896,92 +626,6 @@ impl HarnessShared {
         self.write_fault_marker(member, marker_path)?;
         self.record_note("fault.wipe_data_dir", format!("member={member}"))?;
         Ok(())
-    }
-
-    pub fn wedge_member_postgres(&self, member: ClusterMember) -> Result<()> {
-        let script = signal_named_process_script("STOP", "postgres");
-        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
-        self.record_note("fault.wedge_postgres", format!("member={member}"))?;
-        Ok(())
-    }
-
-    pub fn unwedge_member_postgres(&self, member: ClusterMember) -> Result<()> {
-        let script = signal_named_process_script("CONT", "postgres");
-        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
-        self.record_note("fault.unwedge_postgres", format!("member={member}"))?;
-        Ok(())
-    }
-
-    pub fn assert_no_dual_primary_evidence(&self) -> Result<()> {
-        self.assert_no_dual_primary_evidence_since(None)
-    }
-
-    pub fn assert_no_dual_primary_evidence_since(&self, since_ms: Option<u128>) -> Result<()> {
-        let timeline = self.timeline_entries()?;
-        let offending = timeline.iter().find_map(|entry| {
-            let timestamp_ms = entry.get("timestamp_ms")?.as_u64()? as u128;
-            if since_ms.is_some_and(|threshold| timestamp_ms < threshold) {
-                return None;
-            }
-            let status = serde_json::from_value::<NodeState>(entry.get("status")?.clone()).ok()?;
-            if !status.dcs.is_quorum() {
-                return None;
-            }
-            let primaries = dcs_primary_members(&status);
-            if primaries.len() > 1 {
-                Some(primaries)
-            } else {
-                None
-            }
-        });
-        match offending {
-            Some(primaries) => Err(HarnessError::message(format!(
-                "timeline captured dual-primary evidence: {}",
-                primaries.join(", ")
-            ))),
-            None => Ok(()),
-        }
-    }
-
-    pub fn assert_member_never_primary_since(
-        &self,
-        member: ClusterMember,
-        since_ms: u128,
-    ) -> Result<()> {
-        let timeline = self.timeline_entries()?;
-        let mut member_was_primary = false;
-        let mut member_relinquished_primary = false;
-        let offending = timeline.iter().find(|entry| {
-            let timestamp_ms = entry
-                .get("timestamp_ms")
-                .and_then(serde_json::Value::as_u64)
-                .map(u128::from);
-            if timestamp_ms.is_none_or(|value| value < since_ms) {
-                return false;
-            }
-            let member_is_primary = entry
-                .get("status")
-                .cloned()
-                .and_then(|status| serde_json::from_value::<NodeState>(status).ok())
-                .and_then(|status| operator_visible_primary(&status))
-                .is_some_and(|primary| primary == member.service_name());
-            if member_is_primary {
-                let regained_primary = member_was_primary && member_relinquished_primary;
-                member_was_primary = true;
-                regained_primary
-            } else {
-                if member_was_primary {
-                    member_relinquished_primary = true;
-                }
-                false
-            }
-        });
-        match offending {
-            Some(_) => Err(HarnessError::message(format!(
-                "timeline captured `{member}` regaining primary after marker {since_ms}"
-            ))),
-            None => Ok(()),
-        }
     }
 
     pub fn clear_all_network_faults(&self) -> Result<()> {
@@ -2031,16 +1675,6 @@ fn operator_visible_primary(status: &NodeState) -> Option<String> {
     }
 }
 
-fn dcs_primary_members(status: &NodeState) -> Vec<String> {
-    if !status.dcs.is_quorum() {
-        return Vec::new();
-    }
-
-    operator_visible_primary(status)
-        .into_iter()
-        .collect::<Vec<_>>()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2286,41 +1920,23 @@ mod tests {
     }
 
     #[test]
-    fn writable_primary_alias_preserves_route_and_member_lookup() -> Result<()> {
+    fn member_alias_round_trips() -> Result<()> {
         let mut world = HaWorld::default();
-        let target = WritablePrimaryTarget::new(
-            ClusterMember::NodeA,
-            StateDerivedConnectionTargetDto {
-                member_id: ClusterMember::NodeA.service_name().to_string(),
-                postgres_host: "node-a".to_string(),
-                postgres_port: 5432,
-            },
-        );
+        world.remember_member_alias("replica", ClusterMember::NodeB);
 
-        world.remember_writable_primary_alias("current_primary", target.clone());
-
-        assert_eq!(
-            world.require_member_alias("current_primary")?,
-            ClusterMember::NodeA
-        );
-        assert_eq!(
-            world.require_writable_primary_alias("current_primary")?,
-            target
-        );
+        assert_eq!(world.require_member_alias("replica")?, ClusterMember::NodeB);
         Ok(())
     }
 
     #[test]
-    fn member_alias_is_rejected_as_writable_primary() -> Result<()> {
-        let mut world = HaWorld::default();
-        world.remember_member_alias("replica", ClusterMember::NodeB);
-
-        match world.require_writable_primary_alias("replica") {
-            Ok(_) => Err(HarnessError::message(
-                "plain member alias unexpectedly passed writable-primary validation",
-            )),
+    fn missing_alias_reports_error() -> Result<()> {
+        let world = HaWorld::default();
+        match world.require_member_alias("missing") {
+            Ok(member) => Err(HarnessError::message(format!(
+                "unexpectedly resolved missing alias to `{member}`"
+            ))),
             Err(err) => {
-                assert!(err.to_string().contains("only records member"));
+                assert!(err.to_string().contains("missing"));
                 Ok(())
             }
         }

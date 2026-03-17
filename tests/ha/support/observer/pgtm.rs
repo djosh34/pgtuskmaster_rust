@@ -22,7 +22,6 @@ pub type ClusterStatusView = NodeState;
 
 #[derive(Clone, Debug)]
 struct SelectedSeed {
-    member: ClusterMember,
     state: ClusterStatusView,
 }
 
@@ -53,19 +52,9 @@ impl PgtmObserver {
         )
     }
 
-    pub fn primary_tls_json(&self) -> Result<RenderedConnectionCommandDto> {
-        self.select_seed_with_primary_view()
-            .map(|(_seed, primary)| primary)
-    }
-
-    pub fn replicas_tls_json(&self) -> Result<RenderedConnectionCommandDto> {
-        self.run_selected_view(
-            ["replicas", "--json", "--tls"].as_slice(),
-            "pgtm replicas --tls",
-        )
-    }
-
-    pub fn state_and_primary_tls_json(&self) -> Result<(ClusterStatusView, RenderedConnectionCommandDto)> {
+    pub fn state_and_primary_tls_json(
+        &self,
+    ) -> Result<(ClusterStatusView, RenderedConnectionCommandDto)> {
         let (seed, primary) = self.select_seed_with_primary_view()?;
         Ok((seed.state, primary))
     }
@@ -125,7 +114,7 @@ impl PgtmObserver {
                         Some(previous) if previous >= score => {}
                         _ => {
                             best_score = Some(score);
-                            best_seed = Some(SelectedSeed { member, state });
+                            best_seed = Some(SelectedSeed { state });
                         }
                     }
                 }
@@ -135,14 +124,9 @@ impl PgtmObserver {
         best_seed.ok_or_else(|| aggregate_seed_failure("pgtm status", &errors))
     }
 
-    fn run_selected_view(&self, args: &[&str], operation: &str) -> Result<RenderedConnectionCommandDto> {
-        let seed = self.select_seed()?;
-        let config = config_path(seed.member);
-        let output = self.run(config, args)?;
-        parse_connection_output(output.as_str(), format!("{operation} via {}", config.display()))
-    }
-
-    fn select_seed_with_primary_view(&self) -> Result<(SelectedSeed, RenderedConnectionCommandDto)> {
+    fn select_seed_with_primary_view(
+        &self,
+    ) -> Result<(SelectedSeed, RenderedConnectionCommandDto)> {
         let mut best_seed = None;
         let mut best_score = None;
         let mut errors = Vec::new();
@@ -168,8 +152,7 @@ impl PgtmObserver {
                         output.as_str(),
                         format!("pgtm primary --tls via {}", config.display()),
                     )
-                })
-            {
+                }) {
                 Ok(primary) => primary,
                 Err(err) => {
                     errors.push(format!("{} primary: {err}", member.service_name()));
@@ -192,7 +175,7 @@ impl PgtmObserver {
                 Some(previous) if previous >= score => {}
                 _ => {
                     best_score = Some(score);
-                    best_seed = Some((SelectedSeed { member, state }, primary));
+                    best_seed = Some((SelectedSeed { state }, primary));
                 }
             }
         }
