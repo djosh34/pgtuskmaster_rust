@@ -58,6 +58,10 @@ impl RyukGuard {
         self.stream.take();
         let deadline = Instant::now() + RYUK_REMOVAL_DEADLINE;
         loop {
+            let now = Instant::now();
+            if now >= deadline {
+                break;
+            }
             match self
                 .docker
                 .remove_container_force(self.container_id.as_str())
@@ -69,13 +73,17 @@ impl RyukGuard {
                     return Ok(());
                 }
                 Err(HarnessError::CommandFailed { stderr, .. })
-                    if ryuk_removal_retryable(stderr.as_str()) && Instant::now() < deadline =>
+                    if ryuk_removal_retryable(stderr.as_str()) =>
                 {
                     std::thread::sleep(RYUK_REMOVAL_RETRY_INTERVAL);
                 }
                 Err(err) => return Err(err),
             }
         }
+        Err(HarnessError::message(format!(
+            "timed out waiting for ryuk container `{}` removal",
+            self.container_id
+        )))
     }
 }
 

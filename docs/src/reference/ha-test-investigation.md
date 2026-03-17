@@ -124,4 +124,4 @@ This shifts cleanup from time-based guessing to state-based completion.
 
 1. **Run repeated HA suite in CI soak mode** (same commit, many repetitions) to confirm cleanup-flake reduction.
 2. **Refactor member-state tracking to one canonical state model** in `HaWorld`.
-3. **Consolidate SQL target builders into one path** to reduce helper drift and simplify step assertions.
+3. **Finish SQL target builder consolidation into one path** to reduce helper drift and simplify step assertions (this pass removed duplicate direct-DSN formatting, but multiple target selection paths still remain).
