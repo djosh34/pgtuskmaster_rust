@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 10:22:02 PM CET 2026
+Generated: Tue Mar 17 11:41:01 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -308,6 +308,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 ```
 ## Task: Delete Observer Compose Rendering And Collapse HA Fixtures To Two Static Compose Variants <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/04-task-rebuild-the-ha-observation-surface-around-host-side-pgtm-json-and-minimal-outcomes.md`
+
+```
+## Task: Rebuild The HA Observation Surface Around Host-Side `pgtm` JSON And Minimal Outcomes <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 

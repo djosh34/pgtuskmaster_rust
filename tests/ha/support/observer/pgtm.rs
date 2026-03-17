@@ -1,22 +1,19 @@
 use std::{
     fs,
-    future::Future,
     net::SocketAddr,
     path::{Path, PathBuf},
-    time::Duration,
 };
 
 use pgtuskmaster_rust::{
     api::{AcceptedResponse, NodeState},
-    dcs::MemberPostgresView,
-    ha::types::{AuthorityProjection, PublicationState},
-    state::{MemberId, SwitchoverState},
+    command::{CommandOutputDto, StateCommandOutputDto},
 };
-use reqwest::{Certificate, Client, StatusCode, Url};
 
 use crate::support::{
+    config::{configured_executable, harness_settings},
     docker::cli::DockerCli,
     error::{HarnessError, Result},
+    process::{self, CommandSpec},
     topology::ClusterMember,
 };
 
@@ -29,17 +26,57 @@ pub struct PrimaryRoutingTarget {
 }
 
 #[derive(Clone, Debug)]
-struct SelectedSeed {
-    state: ClusterStatusView,
+pub enum MemberCommandOutcome<T> {
+    Observed(T),
+    Failed(String),
 }
 
 #[derive(Clone, Debug)]
-struct MemberApiClient {
-    client: Client,
-    base_url: Url,
-    read_token: String,
-    admin_token: String,
-    ca_cert_path: PathBuf,
+pub struct MemberStateObservation {
+    pub member: ClusterMember,
+    pub outcome: MemberCommandOutcome<StateCommandOutputDto>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ClusterStateObservation {
+    members: Vec<MemberStateObservation>,
+}
+
+impl MemberStateObservation {
+    pub fn output(&self) -> Option<&StateCommandOutputDto> {
+        match &self.outcome {
+            MemberCommandOutcome::Observed(output) => Some(output),
+            MemberCommandOutcome::Failed(_) => None,
+        }
+    }
+
+    pub fn state(&self) -> Option<&NodeState> {
+        self.output().map(|output| &output.state)
+    }
+
+    pub fn failure(&self) -> Option<&str> {
+        match &self.outcome {
+            MemberCommandOutcome::Observed(_) => None,
+            MemberCommandOutcome::Failed(message) => Some(message.as_str()),
+        }
+    }
+}
+
+impl ClusterStateObservation {
+    pub fn members(&self) -> &[MemberStateObservation] {
+        self.members.as_slice()
+    }
+
+    pub fn member(&self, member: ClusterMember) -> Result<&MemberStateObservation> {
+        self.members
+            .iter()
+            .find(|observation| observation.member == member)
+            .ok_or_else(|| {
+                HarnessError::message(format!(
+                    "cluster observation did not include member `{member}`"
+                ))
+            })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -65,18 +102,39 @@ impl PgtmObserver {
         }
     }
 
-    pub fn state(&self) -> Result<ClusterStatusView> {
-        self.select_seed().map(|seed| seed.state)
+    pub fn observe_states(&self) -> Result<ClusterStateObservation> {
+        let members = ClusterMember::ALL
+            .into_iter()
+            .map(|member| self.observe_state_via_member(member))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(ClusterStateObservation { members })
     }
 
     pub fn state_via_member(&self, member: ClusterMember) -> Result<ClusterStatusView> {
-        let client = self.member_api_client(member)?;
-        self.fetch_state(&client, member)
+        let observation = self.observe_state_via_member(member)?;
+        match observation.outcome {
+            MemberCommandOutcome::Observed(output) => Ok(output.state),
+            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
+                "pgtm status via `{member}` failed: {message}"
+            ))),
+        }
     }
 
-    pub fn state_and_primary_target(&self) -> Result<(ClusterStatusView, PrimaryRoutingTarget)> {
-        let (seed, primary) = self.select_seed_with_primary_view()?;
-        Ok((seed.state, primary))
+    pub fn primary_routing_target(
+        &self,
+        primary_member: ClusterMember,
+    ) -> Result<PrimaryRoutingTarget> {
+        let published_port = self.member_published_port(primary_member, "5432/tcp")?;
+        Ok(PrimaryRoutingTarget {
+            member: primary_member,
+            dsn: host_postgres_dsn(
+                primary_member,
+                published_port,
+                self.ca_cert_path().as_path(),
+                self.observer_cert_path().as_path(),
+                self.observer_key_path().as_path(),
+            ),
+        })
     }
 
     pub fn switchover_request_via_member(
@@ -84,210 +142,100 @@ impl PgtmObserver {
         member: ClusterMember,
         target: Option<ClusterMember>,
     ) -> Result<String> {
-        let client = self.member_api_client(member)?;
-        let request = match target {
-            Some(target_member) => SwitchoverState::Specific(MemberId(
-                target_member.service_name().to_string(),
-            )),
-            None => SwitchoverState::AnyHealthyReplica,
-        };
-        let url = client.base_url.join("switchover").map_err(|source| {
-            HarnessError::message(format!(
-                "building switchover URL for `{member}` failed: {source}"
-            ))
-        })?;
-        let response = run_async(
-            client
-                .client
-                .post(url)
-                .bearer_auth(client.admin_token.as_str())
-                .json(&request)
-                .send(),
-        )?
-        .map_err(|source| {
-            HarnessError::message(format!(
-                "pgtm switchover request via `{member}` failed: {source}"
-            ))
-        })?;
-        let accepted = decode_json_response::<AcceptedResponse>(
-            response,
-            StatusCode::ACCEPTED,
-            format!("pgtm switchover request via `{member}`"),
+        let runtime_config = self.materialize_host_observer_config(member)?;
+        let request_args = target
+            .into_iter()
+            .flat_map(|target_member| {
+                [
+                    "--switchover-to".to_string(),
+                    target_member.service_name().to_string(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let output = self.run_command_via_member(
+            member,
+            runtime_config.as_path(),
+            ["switchover".to_string(), "request".to_string()]
+                .into_iter()
+                .chain(request_args)
+                .collect::<Vec<_>>(),
+            "pgtm switchover request",
+            extract_switchover_output,
         )?;
-        serde_json::to_string(&accepted).map_err(|source| {
-            HarnessError::message(format!("serializing switchover response failed: {source}"))
-        })
-    }
-
-    fn select_seed(&self) -> Result<SelectedSeed> {
-        let mut best_seed = None;
-        let mut best_score = None;
-        let mut errors = Vec::new();
-        for member in ClusterMember::ALL {
-            match self.state_via_member(member) {
-                Ok(state) => {
-                    let score = status_score(&state);
-                    match best_score {
-                        Some(previous) if previous >= score => {}
-                        _ => {
-                            best_score = Some(score);
-                            best_seed = Some(SelectedSeed { state });
-                        }
-                    }
-                }
-                Err(err) => errors.push(format!("{}: {err}", member.service_name())),
+        match output {
+            MemberCommandOutcome::Observed(accepted) => {
+                serde_json::to_string(&accepted).map_err(|source| {
+                    HarnessError::message(format!(
+                        "serializing switchover response failed: {source}"
+                    ))
+                })
             }
+            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
+                "pgtm switchover request via `{member}` failed: {message}"
+            ))),
         }
-        best_seed.ok_or_else(|| aggregate_seed_failure("pgtm status", &errors))
     }
 
-    fn select_seed_with_primary_view(&self) -> Result<(SelectedSeed, PrimaryRoutingTarget)> {
-        let mut best_seed = None;
-        let mut best_score = None;
-        let mut errors = Vec::new();
-
-        for member in ClusterMember::ALL {
-            let client = match self.member_api_client(member) {
-                Ok(client) => client,
-                Err(err) => {
-                    errors.push(format!("{} client: {err}", member.service_name()));
-                    continue;
-                }
-            };
-            let state = match self.fetch_state(&client, member) {
-                Ok(state) => state,
-                Err(err) => {
-                    errors.push(format!("{} status: {err}", member.service_name()));
-                    continue;
-                }
-            };
-            let primary = match self.primary_routing_target(&state, client.ca_cert_path.as_path()) {
-                Ok(primary) => primary,
-                Err(err) => {
-                    errors.push(format!("{} primary: {err}", member.service_name()));
-                    continue;
-                }
-            };
-
-            if !status_matches_primary_target(&state, &primary) {
-                errors.push(format!(
-                    "{} inconsistent: status primary={:?}, primary target={:?}",
-                    member.service_name(),
-                    status_primary_member(&state),
-                    Some(primary.member.service_name().to_string()),
-                ));
-                continue;
-            }
-
-            let score = status_score(&state);
-            match best_score {
-                Some(previous) if previous >= score => {}
-                _ => {
-                    best_score = Some(score);
-                    best_seed = Some((SelectedSeed { state }, primary));
-                }
-            }
-        }
-
-        best_seed.ok_or_else(|| aggregate_seed_failure("pgtm status/primary consistency", &errors))
+    fn observe_state_via_member(&self, member: ClusterMember) -> Result<MemberStateObservation> {
+        let outcome = match self.materialize_host_observer_config(member) {
+            Ok(runtime_config) => self.run_command_via_member(
+                member,
+                runtime_config.as_path(),
+                vec!["status".to_string()],
+                "pgtm status",
+                extract_state_command_output,
+            )?,
+            Err(err) => MemberCommandOutcome::Failed(err.to_string()),
+        };
+        Ok(MemberStateObservation { member, outcome })
     }
 
-    fn member_api_client(&self, member: ClusterMember) -> Result<MemberApiClient> {
-        let ca_cert_path = self.ca_cert_path();
-        let published_api_port = self.member_published_port(member, "8443/tcp")?;
-        let ca_cert = Certificate::from_pem(
-            fs::read(ca_cert_path.as_path())
-                .map_err(|source| HarnessError::Io {
-                    path: ca_cert_path.clone(),
-                    source,
-                })?
-                .as_slice(),
-        )
-        .map_err(|source| {
-            HarnessError::message(format!(
-                "parsing HA CA certificate for `{member}` failed: {source}"
-            ))
-        })?;
-        let client = Client::builder()
-            .timeout(Duration::from_millis(5_000))
-            .pool_max_idle_per_host(0)
-            .add_root_certificate(ca_cert)
-            .resolve(
-                member.service_name(),
-                SocketAddr::from(([127, 0, 0, 1], published_api_port)),
-            )
-            .build()
-            .map_err(|source| {
-                HarnessError::message(format!(
-                    "building host-side HA API client for `{member}` failed: {source}"
-                ))
-            })?;
-        let base_url = Url::parse(
-            format!("https://{}:{published_api_port}/", member.service_name()).as_str(),
-        )
-        .map_err(|source| {
-            HarnessError::message(format!(
-                "building host API URL for `{member}` failed: {source}"
-            ))
-        })?;
-
-        Ok(MemberApiClient {
-            client,
-            base_url,
-            read_token: read_secret(self.read_token_path().as_path())?,
-            admin_token: read_secret(self.admin_token_path().as_path())?,
-            ca_cert_path,
-        })
-    }
-
-    fn fetch_state(&self, client: &MemberApiClient, member: ClusterMember) -> Result<ClusterStatusView> {
-        let url = client.base_url.join("state").map_err(|source| {
-            HarnessError::message(format!(
-                "building state URL for `{member}` failed: {source}"
-            ))
-        })?;
-        let response = run_async(
-            client
-                .client
-                .get(url)
-                .bearer_auth(client.read_token.as_str())
-                .send(),
-        )?
-        .map_err(|source| {
-            HarnessError::message(format!("pgtm status via `{member}` failed: {source}"))
-        })?;
-        decode_json_response::<NodeState>(
-            response,
-            StatusCode::OK,
-            format!("pgtm status via `{member}`"),
-        )
-    }
-
-    fn primary_routing_target(
+    fn run_command_via_member<T>(
         &self,
-        state: &ClusterStatusView,
-        ca_cert_path: &Path,
-    ) -> Result<PrimaryRoutingTarget> {
-        let primary_member = status_primary_member(state)
-            .as_deref()
-            .map(ClusterMember::parse)
-            .transpose()?
-            .ok_or_else(|| {
-                HarnessError::message(
-                    "seed state does not currently expose an authoritative primary",
-                )
-            })?;
-        let published_port = self.member_published_port(primary_member, "5432/tcp")?;
-        Ok(PrimaryRoutingTarget {
-            member: primary_member,
-            dsn: host_postgres_dsn(
-                primary_member,
-                published_port,
-                ca_cert_path,
-                self.observer_cert_path().as_path(),
-                self.observer_key_path().as_path(),
-            ),
-        })
+        member: ClusterMember,
+        runtime_config: &Path,
+        command_args: Vec<String>,
+        context_label: &str,
+        decode_output: fn(CommandOutputDto) -> Result<T>,
+    ) -> Result<MemberCommandOutcome<T>> {
+        let binary = resolve_pgtm_binary()?;
+        let args = [
+            "--config".to_string(),
+            runtime_config.display().to_string(),
+            "--json".to_string(),
+        ]
+        .into_iter()
+        .chain(command_args)
+        .collect::<Vec<_>>();
+        let context = format!("{context_label} via `{member}`");
+        let output = process::run(
+            CommandSpec::new(binary.clone(), context.clone())
+                .env("PATH", "")
+                .args(args.as_slice()),
+        );
+        match output {
+            Ok(stdout) => {
+                let rendered = stdout.stdout_text(format!("{context} stdout"))?;
+                let dto = serde_json::from_str::<CommandOutputDto>(rendered.as_str()).map_err(
+                    |source| HarnessError::Json {
+                        context: context.clone(),
+                        source,
+                    },
+                )?;
+                decode_output(dto).map(MemberCommandOutcome::Observed)
+            }
+            Err(HarnessError::CommandFailed {
+                executable,
+                context,
+                status,
+                stdout,
+                stderr,
+            }) => Ok(MemberCommandOutcome::Failed(format!(
+                "command `{}` failed while {context}: status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                executable.display()
+            ))),
+            Err(err) => Err(err),
+        }
     }
 
     fn member_published_port(&self, member: ClusterMember, port: &str) -> Result<u16> {
@@ -318,60 +266,86 @@ impl PgtmObserver {
     fn observer_key_path(&self) -> PathBuf {
         self.materialized_dir.join("configs/tls/observer.key")
     }
-}
 
-fn decode_json_response<T>(
-    response: reqwest::Response,
-    expected_status: StatusCode,
-    context: String,
-) -> Result<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let status = response.status();
-    let body = run_async(response.text())?.map_err(|source| {
-        HarnessError::message(format!("{context} response body read failed: {source}"))
-    })?;
-    if status != expected_status {
-        return Err(HarnessError::message(format!(
-            "{context} returned status {} with body {body}",
-            status.as_u16()
-        )));
+    fn host_observer_config_path(&self, member: ClusterMember) -> PathBuf {
+        self.materialized_dir
+            .join("configs/observer")
+            .join(format!("{}-pgtm.toml", member.service_name()))
     }
-    serde_json::from_str(body.as_str()).map_err(|source| HarnessError::Json { context, source })
+
+    fn materialize_host_observer_config(&self, member: ClusterMember) -> Result<PathBuf> {
+        let published_api_port = self.member_published_port(member, "8443/tcp")?;
+        let config_path = self.host_observer_config_path(member);
+        if let Some(parent) = config_path.parent() {
+            fs::create_dir_all(parent).map_err(|source| HarnessError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let rendered = render_host_observer_config(
+            member,
+            SocketAddr::from(([127, 0, 0, 1], published_api_port)),
+            self.ca_cert_path().as_path(),
+            self.read_token_path().as_path(),
+            self.admin_token_path().as_path(),
+            self.observer_cert_path().as_path(),
+            self.observer_key_path().as_path(),
+        );
+        fs::write(config_path.as_path(), rendered).map_err(|source| HarnessError::Io {
+            path: config_path.clone(),
+            source,
+        })?;
+        Ok(config_path)
+    }
 }
 
-fn run_async<F>(future: F) -> Result<F::Output>
-where
-    F: Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let result = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|source| {
-                HarnessError::message(format!(
-                    "building helper tokio runtime for HA observer failed: {source}"
-                ))
-            })
-            .map(|runtime| runtime.block_on(future));
-        let _ = sender.send(result);
-    });
-    receiver.recv().map_err(|source| {
-        HarnessError::message(format!(
-            "waiting for HA observer async helper thread failed: {source}"
-        ))
-    })?
+fn resolve_pgtm_binary() -> Result<PathBuf> {
+    let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
+        .map(PathBuf::from)
+        .filter(|path| path.exists());
+    let candidate = match env_candidate {
+        Some(path) => path,
+        None => {
+            let settings = harness_settings()?;
+            configured_executable(
+                settings.pgtm.executable_candidates.as_slice(),
+                "pgtm.executable_candidates",
+                "pgtm",
+            )?
+        }
+    };
+    process::ensure_absolute_executable(candidate.as_path())?;
+    Ok(candidate)
 }
 
-fn read_secret(path: &Path) -> Result<String> {
-    let raw = fs::read_to_string(path).map_err(|source| HarnessError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(raw.trim().to_string())
+fn extract_state_command_output(output: CommandOutputDto) -> Result<StateCommandOutputDto> {
+    match output {
+        CommandOutputDto::State { output } => Ok(*output),
+        other => Err(HarnessError::message(format!(
+            "expected `pgtm status --json` output, observed command payload `{}`",
+            command_label(&other)
+        ))),
+    }
+}
+
+fn extract_switchover_output(output: CommandOutputDto) -> Result<AcceptedResponse> {
+    match output {
+        CommandOutputDto::Switchover { output } => Ok(output),
+        other => Err(HarnessError::message(format!(
+            "expected `pgtm switchover request --json` output, observed command payload `{}`",
+            command_label(&other)
+        ))),
+    }
+}
+
+fn command_label(output: &CommandOutputDto) -> &'static str {
+    match output {
+        CommandOutputDto::State { .. } => "state",
+        CommandOutputDto::Primary { .. } => "primary",
+        CommandOutputDto::Replicas { .. } => "replicas",
+        CommandOutputDto::Switchover { .. } => "switchover",
+        CommandOutputDto::ReloadCertificates { .. } => "reload_certificates",
+    }
 }
 
 fn host_postgres_dsn(
@@ -395,46 +369,36 @@ fn host_postgres_dsn(
     .join(" ")
 }
 
-fn aggregate_seed_failure(operation: &str, errors: &[String]) -> HarnessError {
-    HarnessError::message(format!(
-        "{operation} failed for every seed member:\n{}",
-        errors.join("\n")
-    ))
-}
+fn render_host_observer_config(
+    member: ClusterMember,
+    resolve_to: SocketAddr,
+    ca_cert_path: &Path,
+    read_token_path: &Path,
+    admin_token_path: &Path,
+    observer_cert_path: &Path,
+    observer_key_path: &Path,
+) -> String {
+    format!(
+        r#"[api]
+base_url = "https://{}:{}"
+expected_transport = "https"
+resolve_to = "{resolve_to}"
+auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "{}" }}, admin_token = {{ type = "file", path = "{}" }} }} }}
+tls = {{ ca_cert = {{ path = "{}" }}, identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }} }}
 
-fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
-    let reported_primary_count = status
-        .dcs
-        .members()
-        .filter(|(_member_id, member)| {
-            matches!(member.postgres(), MemberPostgresView::Primary { .. })
-        })
-        .count();
-    let discovered_member_count = status.dcs.member_count();
-    (
-        usize::from(status.dcs.is_quorum()),
-        usize::from(matches!(
-            &status.ha.publication,
-            PublicationState::Projected(AuthorityProjection::Primary(_))
-        )),
-        usize::from(status.dcs.is_quorum() && reported_primary_count == 1),
-        discovered_member_count,
+[postgres.tls]
+ca_cert = {{ path = "{}" }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }}
+"#,
+        member.service_name(),
+        resolve_to.port(),
+        read_token_path.display(),
+        admin_token_path.display(),
+        ca_cert_path.display(),
+        observer_cert_path.display(),
+        observer_key_path.display(),
+        ca_cert_path.display(),
+        observer_cert_path.display(),
+        observer_key_path.display(),
     )
-}
-
-fn status_matches_primary_target(
-    status: &ClusterStatusView,
-    primary: &PrimaryRoutingTarget,
-) -> bool {
-    status_primary_member(status).as_deref() == Some(primary.member.service_name())
-}
-
-fn status_primary_member(status: &ClusterStatusView) -> Option<String> {
-    match &status.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.0.clone())
-        }
-        PublicationState::Unknown
-        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
-    }
 }

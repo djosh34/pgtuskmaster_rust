@@ -1,4 +1,7 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::BTreeSet,
+    time::{Duration, Instant},
+};
 
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
@@ -13,6 +16,7 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
+    observer::pgtm::{ClusterStateObservation, MemberCommandOutcome},
     topology::ClusterMember,
     world::{HaWorld, HarnessShared, MemberSet},
 };
@@ -367,10 +371,16 @@ async fn wait_for_replicas(
     phase: &str,
     expected_replicas: usize,
 ) -> Result<Vec<ClusterMember>> {
-    let expected_online = online_expected_count(world);
-    poll_for_status(world, phase, PollKind::Startup, |status| {
-        require_visible_members(status, expected_online)?;
-        let replicas = replica_members(status);
+    let expected_members = online_member_ids(world);
+    poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
+        let primary = compatible_primary_from_observation(
+            observation,
+            expected_members.as_slice(),
+            expected_members.len(),
+            None,
+        )?;
+        let primary_state = require_observed_member_state(observation, primary)?;
+        let replicas = replica_members(primary_state);
         if replicas.len() == expected_replicas {
             Ok(replicas)
         } else {
@@ -388,10 +398,16 @@ async fn wait_for_minimum_replicas(
     phase: &str,
     minimum_replicas: usize,
 ) -> Result<Vec<ClusterMember>> {
-    let expected_online = online_expected_count(world);
-    poll_for_status(world, phase, PollKind::Startup, |status| {
-        require_visible_members(status, expected_online)?;
-        let replicas = replica_members(status);
+    let expected_members = online_member_ids(world);
+    poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
+        let primary = compatible_primary_from_observation(
+            observation,
+            expected_members.as_slice(),
+            expected_members.len(),
+            None,
+        )?;
+        let primary_state = require_observed_member_state(observation, primary)?;
+        let replicas = replica_members(primary_state);
         if replicas.len() >= minimum_replicas {
             Ok(replicas)
         } else {
@@ -410,10 +426,9 @@ async fn wait_for_authoritative_single_primary(
     kind: PollKind,
     expected_online: usize,
     exact_primary: Option<ClusterMember>,
-    different_from: Option<ClusterMember>,
+    _different_from: Option<ClusterMember>,
 ) -> Result<ClusterMember> {
-    let expected_primary = exact_primary;
-    let previous_primary = different_from;
+    let relevant_members = online_member_ids(world);
     let deadline = {
         let harness = world.harness()?;
         Instant::now() + kind.deadline(harness)
@@ -426,38 +441,21 @@ async fn wait_for_authoritative_single_primary(
 
     while Instant::now() < deadline {
         let attempt: Result<ClusterMember> = (|| {
-            let (status, primary_target) = {
+            let observation = {
                 let harness = world.harness()?;
-                let (status, primary_target) = harness.observer().state_and_primary_target()?;
-                harness.record_status_snapshot(phase, &status)?;
-                (status, primary_target)
+                let observation = harness.observer().observe_states()?;
+                record_cluster_observation(harness, phase, &observation)?;
+                observation
             };
-            require_visible_members(&status, expected_online)?;
-            let primary = single_primary(&status)?;
-            if let Some(expected_primary) = expected_primary.as_ref() {
-                if primary != *expected_primary {
-                    Err(HarnessError::message(format!(
-                        "expected `{expected_primary}` to be primary, observed `{primary}`"
-                    )))?;
-                }
-            }
-            if let Some(previous_primary) = previous_primary.as_ref() {
-                if primary == *previous_primary {
-                    Err(HarnessError::message(format!(
-                        "expected a different primary than `{previous_primary}`, observed `{primary}`"
-                    )))?;
-                }
-            }
-            {
-                let harness = world.harness()?;
-                probe_writable_primary(harness, primary_target.dsn.as_str())?;
-            }
-            if primary_target.member != primary {
-                Err(HarnessError::message(format!(
-                    "DCS-reported primary was `{primary}`, but writable-primary routing resolved to `{}`",
-                    primary_target.member
-                )))?;
-            }
+            let primary = compatible_primary_from_observation(
+                &observation,
+                relevant_members.as_slice(),
+                expected_online,
+                exact_primary,
+            )?;
+            let harness = world.harness()?;
+            let primary_target = harness.observer().primary_routing_target(primary)?;
+            probe_writable_primary(harness, primary_target.dsn.as_str())?;
             Ok(primary)
         })();
         match attempt {
@@ -485,6 +483,8 @@ async fn wait_for_authoritative_single_primary(
 }
 
 async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
+    let relevant_members = online_member_ids(world);
+    let expected_online = relevant_members.len();
     let deadline = {
         let harness = world.harness()?;
         Instant::now() + harness.timeouts.failover_deadline
@@ -498,13 +498,25 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
     while Instant::now() < deadline {
         let attempt: Result<()> = (|| {
             let harness = world.harness()?;
-            for member_id in online_member_ids(world) {
-                let status = harness.observer().state_via_member(member_id)?;
-                let snapshot_label = format!("primary.none.{member_id}");
-                harness.record_status_snapshot(snapshot_label.as_str(), &status)?;
-                require_no_authoritative_primary(&status)?;
+            let observation = harness.observer().observe_states()?;
+            record_cluster_observation(harness, "primary.none", &observation)?;
+            match compatible_primary_from_observation(
+                &observation,
+                relevant_members.as_slice(),
+                expected_online,
+                None,
+            ) {
+                Ok(primary) => {
+                    let primary_target = harness.observer().primary_routing_target(primary)?;
+                    match probe_writable_primary(harness, primary_target.dsn.as_str()) {
+                        Ok(()) => Err(HarnessError::message(format!(
+                            "cluster still exposes a compatible writable primary `{primary}`"
+                        ))),
+                        Err(_) => Ok(()),
+                    }
+                }
+                Err(_) => Ok(()),
             }
-            Ok(())
         })();
         match attempt {
             Ok(()) => return Ok(()),
@@ -664,14 +676,14 @@ fn member_slot_is_api_switchover_eligible(member: &ClusterMemberView) -> bool {
     }
 }
 
-async fn poll_for_status<T, F>(
+async fn poll_for_cluster_observation<T, F>(
     world: &mut HaWorld,
     phase: &str,
     kind: PollKind,
     mut check: F,
 ) -> Result<T>
 where
-    F: FnMut(&NodeState) -> Result<T>,
+    F: FnMut(&ClusterStateObservation) -> Result<T>,
 {
     let deadline = {
         let harness = world.harness()?;
@@ -684,17 +696,17 @@ where
     let mut last_error = None;
 
     while Instant::now() < deadline {
-        let status_result = {
+        let observation_result = {
             let harness = world.harness()?;
-            harness.observer().state()
+            harness.observer().observe_states()
         };
-        match status_result {
-            Ok(status) => {
+        match observation_result {
+            Ok(observation) => {
                 {
                     let harness = world.harness()?;
-                    harness.record_status_snapshot(phase, &status)?;
+                    record_cluster_observation(harness, phase, &observation)?;
                 }
-                match check(&status) {
+                match check(&observation) {
                     Ok(value) => return Ok(value),
                     Err(err) => last_error = Some(err.to_string()),
                 }
@@ -721,6 +733,129 @@ where
     )))
 }
 
+fn record_cluster_observation(
+    harness: &HarnessShared,
+    phase: &str,
+    observation: &ClusterStateObservation,
+) -> Result<()> {
+    observation
+        .members()
+        .iter()
+        .try_for_each(|member| match &member.outcome {
+            MemberCommandOutcome::Observed(output) => harness.record_status_snapshot(
+                format!("{phase}.{}", member.member.service_name()).as_str(),
+                &output.state,
+            ),
+            MemberCommandOutcome::Failed(message) => harness.record_note(
+                format!("{phase}.{}", member.member.service_name()).as_str(),
+                format!("status_failed={message}"),
+            ),
+        })
+}
+
+fn compatible_primary_from_observation(
+    observation: &ClusterStateObservation,
+    relevant_members: &[ClusterMember],
+    expected_online: usize,
+    exact_primary: Option<ClusterMember>,
+) -> Result<ClusterMember> {
+    let states = relevant_member_states(observation, relevant_members)?;
+    let primary = compatible_authoritative_primary(states.as_slice())?;
+    let primary_state = require_observed_member_state(observation, primary)?;
+    match authoritative_primary(primary_state) {
+        Some(observed_primary) if observed_primary == primary => {}
+        Some(observed_primary) => {
+            return Err(HarnessError::message(format!(
+                "primary member `{primary}` self-reported `{observed_primary}` instead"
+            )));
+        }
+        None => {
+            return Err(HarnessError::message(format!(
+                "primary member `{primary}` did not self-report authoritative primary; authority={}",
+                format_authority(primary_state),
+            )));
+        }
+    }
+    require_visible_members(primary_state, expected_online)?;
+    if let Some(expected_primary) = exact_primary {
+        if primary != expected_primary {
+            return Err(HarnessError::message(format!(
+                "expected `{expected_primary}` to be primary, observed `{primary}`"
+            )));
+        }
+    }
+    Ok(primary)
+}
+
+fn relevant_member_states<'a>(
+    observation: &'a ClusterStateObservation,
+    relevant_members: &[ClusterMember],
+) -> Result<Vec<(ClusterMember, &'a NodeState)>> {
+    relevant_members
+        .iter()
+        .copied()
+        .map(|member| {
+            require_observed_member_state(observation, member).map(|state| (member, state))
+        })
+        .collect::<Result<Vec<_>>>()
+}
+
+fn require_observed_member_state(
+    observation: &ClusterStateObservation,
+    member: ClusterMember,
+) -> Result<&NodeState> {
+    observation
+        .member(member)?
+        .state()
+        .ok_or_else(|| HarnessError::message(member_observation_failure(observation, member)))
+}
+
+fn member_observation_failure(
+    observation: &ClusterStateObservation,
+    member: ClusterMember,
+) -> String {
+    observation
+        .member(member)
+        .ok()
+        .and_then(|observation| observation.failure())
+        .map(|failure| {
+            format!(
+                "expected `pgtm status --json` via `{member}` to succeed, but it failed: {failure}"
+            )
+        })
+        .unwrap_or_else(|| format!("expected `pgtm status --json` via `{member}` to succeed"))
+}
+
+fn compatible_authoritative_primary(
+    states: &[(ClusterMember, &NodeState)],
+) -> Result<ClusterMember> {
+    let observed_primaries = states
+        .iter()
+        .filter_map(|(_member, state)| authoritative_primary(state))
+        .collect::<BTreeSet<_>>();
+    match observed_primaries.len() {
+        0 => Err(HarnessError::message(format!(
+            "cluster has no compatible authoritative primary; observations={}",
+            format_observed_authorities(states),
+        ))),
+        1 => observed_primaries.into_iter().next().ok_or_else(|| {
+            HarnessError::message("authoritative primary set disappeared unexpectedly")
+        }),
+        _ => Err(HarnessError::message(format!(
+            "cluster reports conflicting authoritative primaries; observations={}",
+            format_observed_authorities(states),
+        ))),
+    }
+}
+
+fn format_observed_authorities(states: &[(ClusterMember, &NodeState)]) -> String {
+    states
+        .iter()
+        .map(|(member, state)| format!("{member}={}", format_authority(state)))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn record_alias(
     world: &mut HaWorld,
     alias: &str,
@@ -738,16 +873,6 @@ fn resolve_member_reference(world: &HaWorld, member_ref: &str) -> Result<Cluster
     world
         .require_member_alias(member_ref)
         .or_else(|_| ClusterMember::parse(member_ref))
-}
-
-fn single_primary(status: &NodeState) -> Result<ClusterMember> {
-    authoritative_primary(status).ok_or_else(|| {
-        HarnessError::message(format!(
-            "cluster has no authoritative primary; authority={} warnings={}",
-            format_authority(status),
-            format_warnings(status),
-        ))
-    })
 }
 
 fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
@@ -770,21 +895,6 @@ fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
             "expected at least {expected} visible members, observed {visible}; warnings={}",
             format_warnings(status)
         )))
-    }
-}
-
-fn require_no_authoritative_primary(status: &NodeState) -> Result<()> {
-    match &status.ha.publication {
-        PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => Ok(()),
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Err(HarnessError::message(format!(
-                "expected no authoritative primary, but `{}` was still published",
-                epoch.holder.0
-            )))
-        }
-        PublicationState::Unknown => Err(HarnessError::message(
-            "expected an explicit no-primary authority result, but authority remained `unknown`",
-        )),
     }
 }
 

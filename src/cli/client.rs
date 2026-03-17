@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -29,6 +29,7 @@ pub struct CliApiClientConfig {
     pub timeout_ms: u64,
     pub auth: CliAuthConfig,
     pub tls: CliTlsConfig,
+    pub resolve_to: Option<SocketAddr>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,6 +53,17 @@ impl CliApiClient {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .pool_max_idle_per_host(0);
+        let http = match config.resolve_to {
+            Some(resolve_to) => {
+                let host = config.base_url.host_str().ok_or_else(|| {
+                    CliError::RequestBuild(
+                        "API URL did not include a hostname for custom resolution".to_string(),
+                    )
+                })?;
+                http.resolve(host, resolve_to)
+            }
+            None => http,
+        };
         let http = apply_tls_config(http, &config.tls)?;
         let http = http
             .build()

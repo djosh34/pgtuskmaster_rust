@@ -221,3 +221,4 @@ NONE
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/01-task-delete-implementation-biased-feature-assertions-and-shrink-the-ha-feature-inventory.md
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/02-task-delete-scenario-bookkeeping-and-shrink-the-ha-world-and-step-surface.md
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/03-task-delete-observer-compose-rendering-and-collapse-ha-fixtures-to-two-static-compose-variants.md
+.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/04-task-rebuild-the-ha-observation-surface-around-host-side-pgtm-json-and-minimal-outcomes.md

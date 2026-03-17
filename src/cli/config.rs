@@ -59,6 +59,7 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
                 admin_token: optional_token_source(admin_token),
             },
             tls: api_client_tls,
+            resolve_to: resolve_api_resolution(config_source.as_ref()),
         },
         postgres_client_tls,
         api_auth_enabled,
@@ -179,6 +180,14 @@ fn validate_effective_api_url(
         )),
         _ => Ok(()),
     }
+}
+
+fn resolve_api_resolution(
+    config_source: Option<&OperatorConfigSource>,
+) -> Option<std::net::SocketAddr> {
+    config_source
+        .and_then(|source| source.operator.as_ref())
+        .and_then(|operator| operator.api.resolve_to)
 }
 
 fn resolve_config_auth(

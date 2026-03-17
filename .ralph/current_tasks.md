@@ -1,23 +1,11 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 17 10:22:02 PM CET 2026
+Generated: Tue Mar 17 11:41:01 PM CET 2026
 
 # Task `.ralph/tasks/story-general-architecture-improvement-finding/08-task-split-process-planning-from-managed-postgres-session-materialization-and-external-tool-execution.md`
 
 ```
 ## Task: Split Process Planning From Managed Postgres Session Materialization And External Tool Execution <status>not_started</status> <passes>false</passes>
-
-<priority>high</priority>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/04-task-rebuild-the-ha-observation-surface-around-host-side-pgtm-json-and-minimal-outcomes.md`
-
-```
-## Task: Rebuild The HA Observation Surface Around Host-Side `pgtm` JSON And Minimal Outcomes <status>not_started</status> <passes>false</passes>
 
 <priority>high</priority>
 

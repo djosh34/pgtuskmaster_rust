@@ -1,4 +1,4 @@
-## Task: Rebuild The HA Observation Surface Around Host-Side `pgtm` JSON And Minimal Outcomes <status>not_started</status> <passes>false</passes>
+## Task: Rebuild The HA Observation Surface Around Host-Side `pgtm` JSON And Minimal Outcomes <status>done</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -53,16 +53,16 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Remove the observer-container exec path from `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/observer/sql.rs`.
-- [ ] Rebuild the observation path so it queries each node individually from the host and parses JSON into `Option<dto>` results.
-- [ ] Keep serde DTO usage to at most one DTO per command; reuse existing production DTOs where they already express the JSON shape correctly.
-- [ ] Remove `SelectedSeed`, "best seed" selection, and any equivalent host-side heuristics that are only needed by the old observer model.
-- [ ] Implement only the reduced outcome step family on top of the new observation surface: `cluster becomes healthy`, `cluster becomes unhealthy`, and `"<alias>" becomes primary`.
-- [ ] Ensure these outcome steps use the same direct observation model that later invariant runners will use.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Remove the observer-container exec path from `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/observer/sql.rs`.
+- [x] Rebuild the observation path so it queries each node individually from the host and parses JSON into `Option<dto>` results.
+- [x] Keep serde DTO usage to at most one DTO per command; reuse existing production DTOs where they already express the JSON shape correctly.
+- [x] Remove `SelectedSeed`, "best seed" selection, and any equivalent host-side heuristics that are only needed by the old observer model.
+- [x] Implement only the reduced outcome step family on top of the new observation surface: `cluster becomes healthy`, `cluster becomes unhealthy`, and `"<alias>" becomes primary`.
+- [x] Ensure these outcome steps use the same direct observation model that later invariant runners will use.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

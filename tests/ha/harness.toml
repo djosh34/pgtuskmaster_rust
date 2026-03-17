@@ -3,3 +3,17 @@ executable_candidates = [
   "/usr/bin/docker",
   "/usr/local/bin/docker",
 ]
+
+[pgtm]
+executable_candidates = [
+  "/tmp/pgtuskmaster_rust-target/debug/pgtm",
+  "/usr/local/bin/pgtm",
+  "/usr/bin/pgtm",
+]
+
+[psql]
+executable_candidates = [
+  "/usr/lib/postgresql/16/bin/psql",
+  "/usr/bin/psql",
+  "/usr/local/bin/psql",
+]

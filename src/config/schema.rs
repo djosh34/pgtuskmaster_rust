@@ -23,9 +23,15 @@ pub enum InlineOrPath {
 pub enum SecretSource {
     #[default]
     None,
-    Env { env: String },
-    File { path: PathBuf },
-    String { value: String },
+    Env {
+        env: String,
+    },
+    File {
+        path: PathBuf,
+    },
+    String {
+        value: String,
+    },
 }
 
 impl SecretSource {
@@ -806,7 +812,10 @@ pub struct RoleTokens {
 }
 
 impl RoleTokens {
-    pub fn new(read_token: impl Into<String>, admin_token: impl Into<String>) -> Result<Self, String> {
+    pub fn new(
+        read_token: impl Into<String>,
+        admin_token: impl Into<String>,
+    ) -> Result<Self, String> {
         let read_token = read_token.into();
         let admin_token = admin_token.into();
         if read_token.trim().is_empty() {
@@ -865,6 +874,7 @@ pub struct PgtmApiConfig {
     pub base_url: Option<String>,
     pub advertised_url: Option<String>,
     pub expected_transport: Option<PgtmApiTransportExpectation>,
+    pub resolve_to: Option<std::net::SocketAddr>,
     #[serde(default)]
     pub auth: PgtmApiAuthConfig,
     #[serde(default)]

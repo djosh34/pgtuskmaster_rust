@@ -24,7 +24,10 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
-    observer::{pgtm::PgtmObserver, sql::SqlObserver},
+    observer::{
+        pgtm::{MemberCommandOutcome, PgtmObserver},
+        sql::SqlObserver,
+    },
     timeouts::TimeoutModel,
     topology::{ClusterMember, ComposeService},
 };
@@ -468,7 +471,12 @@ impl HarnessShared {
         let peer_ip = self
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
-        self.block_member_path_to_address(member, path, peer_ip.as_str(), peer_service.service_name())
+        self.block_member_path_to_address(
+            member,
+            path,
+            peer_ip.as_str(),
+            peer_service.service_name(),
+        )
     }
 
     pub fn unblock_member_path_to_host(
@@ -734,7 +742,10 @@ impl HarnessShared {
         let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result = match self.observer().state() {
+            let result = match self
+                .observer()
+                .state_via_member(ClusterMember::SEED_PRIMARY)
+            {
                 Ok(status) => {
                     self.record_status_snapshot("bootstrap.seed_primary", &status)?;
                     validate_seed_primary(&status)
@@ -844,16 +855,32 @@ impl HarnessShared {
                 })?
                 .as_str(),
         )?;
-        match self.observer().state() {
-            Ok(state) => write_text_file(
-                self.artifacts_dir().join("operator-state.json").as_path(),
-                serde_json::to_string_pretty(&state)
-                    .map_err(|source| HarnessError::Json {
-                        context: "serializing operator state payload".to_string(),
-                        source,
-                    })?
-                    .as_str(),
-            )?,
+        match self.observer().observe_states() {
+            Ok(states) => {
+                let serialized = states
+                    .members()
+                    .iter()
+                    .map(|observation| match &observation.outcome {
+                        MemberCommandOutcome::Observed(output) => serde_json::json!({
+                            "member": observation.member.service_name(),
+                            "state": output,
+                        }),
+                        MemberCommandOutcome::Failed(message) => serde_json::json!({
+                            "member": observation.member.service_name(),
+                            "failure": message,
+                        }),
+                    })
+                    .collect::<Vec<_>>();
+                write_text_file(
+                    self.artifacts_dir().join("operator-state.json").as_path(),
+                    serde_json::to_string_pretty(&serialized)
+                        .map_err(|source| HarnessError::Json {
+                            context: "serializing operator state payload".to_string(),
+                            source,
+                        })?
+                        .as_str(),
+                )?
+            }
             Err(err) => failures.push(format!("operator state capture failed: {err}")),
         }
 
@@ -1002,10 +1029,7 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     apply_private_key_permissions(to)
 }
 
-fn materialize_given_fixture(
-    given: &HaGivenDefinition,
-    materialized_root: &Path,
-) -> Result<()> {
+fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path) -> Result<()> {
     let FixtureMaterialization {
         shared_root,
         compose_variant,
@@ -1130,7 +1154,10 @@ fn materialize_compose_include_file(
         toml_path_string(compose_variant_path.as_path()),
         toml_path_string(materialized_root),
     );
-    write_text_file(materialized_root.join("compose.yml").as_path(), rendered.as_str())
+    write_text_file(
+        materialized_root.join("compose.yml").as_path(),
+        rendered.as_str(),
+    )
 }
 
 fn compose_variant_absolute_path(compose_variant: ComposeVariant) -> Result<PathBuf> {
@@ -1152,9 +1179,7 @@ fn toml_path_string(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-fn render_member_runtime_template(
-    template: &NodeRuntimeTemplate,
-) -> String {
+fn render_member_runtime_template(template: &NodeRuntimeTemplate) -> String {
     let member = template.binding.member.service_name();
     let dcs_endpoint = template.binding.dcs_service.client_url();
     let replicator = template.postgres_roles.replicator.as_str();
@@ -1350,42 +1375,41 @@ mod tests {
         let given = resolve_given(repo_root.as_path(), HaGivenId::Plain)?;
         let output_root = temporary_directory("plain")?;
 
-        let result =
-            (|| -> Result<()> {
-                materialize_given_fixture(&given, output_root.as_path())?;
+        let result = (|| -> Result<()> {
+            materialize_given_fixture(&given, output_root.as_path())?;
 
-                let compose =
-                    fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                        HarnessError::Io {
-                            path: output_root.join("compose.yml"),
-                            source,
-                        }
-                    })?;
-                let expected_variant =
-                    compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
-                assert!(compose.contains("include:"));
-                assert!(compose.contains(expected_variant.display().to_string().as_str()));
-                assert!(compose.contains(output_root.display().to_string().as_str()));
-
-                let runtime = fs::read_to_string(
-                    output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                )
-                .map_err(|source| HarnessError::Io {
-                    path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                    source,
+            let compose =
+                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
+                    HarnessError::Io {
+                        path: output_root.join("compose.yml"),
+                        source,
+                    }
                 })?;
-                toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(runtime.as_str())
-                    .map_err(|source| {
-                        HarnessError::message(format!(
-                            "materialized node runtime config failed to parse: {source}"
-                        ))
-                    })?;
-                assert!(runtime.contains(r#"username = "replicator""#));
-                assert!(runtime.contains(r#"username = "rewinder""#));
-                assert!(output_root.join("configs/tls/ca.crt").is_file());
-                assert!(output_root.join("secrets/replicator-password").is_file());
-                Ok(())
-            })();
+            let expected_variant = compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
+            assert!(compose.contains("include:"));
+            assert!(compose.contains(expected_variant.display().to_string().as_str()));
+            assert!(compose.contains(output_root.display().to_string().as_str()));
+
+            let runtime = fs::read_to_string(
+                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+            )
+            .map_err(|source| HarnessError::Io {
+                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
+                source,
+            })?;
+            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(runtime.as_str()).map_err(
+                |source| {
+                    HarnessError::message(format!(
+                        "materialized node runtime config failed to parse: {source}"
+                    ))
+                },
+            )?;
+            assert!(runtime.contains(r#"username = "replicator""#));
+            assert!(runtime.contains(r#"username = "rewinder""#));
+            assert!(output_root.join("configs/tls/ca.crt").is_file());
+            assert!(output_root.join("secrets/replicator-password").is_file());
+            Ok(())
+        })();
 
         let cleanup_result = cleanup_directory(output_root.as_path());
         match (result, cleanup_result) {

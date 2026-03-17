@@ -86,7 +86,6 @@ impl DcsMember {
             Self::EtcdC => "http://etcd-c:2379",
         }
     }
-
 }
 
 impl fmt::Display for DcsMember {

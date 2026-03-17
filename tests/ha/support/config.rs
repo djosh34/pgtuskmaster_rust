@@ -8,11 +8,13 @@ static HARNESS_SETTINGS: OnceLock<HarnessSettings> = OnceLock::new();
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct HarnessSettings {
-    pub docker: DockerSettings,
+    pub docker: ExecutableDiscoverySettings,
+    pub pgtm: ExecutableDiscoverySettings,
+    pub psql: ExecutableDiscoverySettings,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct DockerSettings {
+pub struct ExecutableDiscoverySettings {
     pub executable_candidates: Vec<PathBuf>,
 }
 
@@ -42,4 +44,20 @@ fn load_harness_settings() -> Result<HarnessSettings> {
             path.display()
         ))
     })
+}
+
+pub fn configured_executable(
+    candidates: &[PathBuf],
+    config_field: &str,
+    label: &str,
+) -> Result<PathBuf> {
+    let candidate = candidates
+        .iter()
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "{label} binary was not found in tests/ha/harness.toml {config_field}"
+            ))
+        })?;
+    Ok(candidate.clone())
 }
