@@ -9,8 +9,8 @@ use crate::{
 };
 
 use super::state::{
-    HaControlPlane, HaObservedState, HaState, HaStateChannel, HaWorkerBootstrap,
-    HaWorkerCadence, HaWorkerCtx,
+    HaControlPlane, HaObservedState, HaState, HaStateChannel, HaWorkerBootstrap, HaWorkerCadence,
+    HaWorkerCtx,
 };
 
 pub(crate) struct HaRuntimeRequest {

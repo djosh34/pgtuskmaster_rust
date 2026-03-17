@@ -425,7 +425,6 @@ impl PublicationState {
     }
 }
 
-
 impl PlannedActions {
     pub(crate) fn from_plan(value: &ReconcilePlan) -> Self {
         Self {

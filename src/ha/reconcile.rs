@@ -48,9 +48,7 @@ fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> ReconcileP
                 | super::types::SwitchoverState::Specific(_),
             ),
             true,
-        ) => {
-            ReconcilePlan::coordination(CoordinationAction::ClearSwitchover)
-        }
+        ) => ReconcilePlan::coordination(CoordinationAction::ClearSwitchover),
         (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
             ReconcilePlan::default()
         }
@@ -257,7 +255,9 @@ fn leadership_held_by_self(world: &WorldView) -> bool {
         .global
         .coordination
         .as_quorum()
-        .is_some_and(|coordination| matches!(coordination.leadership, LeadershipView::HeldBySelf(_)))
+        .is_some_and(|coordination| {
+            matches!(coordination.leadership, LeadershipView::HeldBySelf(_))
+        })
 }
 
 #[cfg(test)]
@@ -274,8 +274,8 @@ mod tests {
     use crate::ha::types::{
         ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
         LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
-        PeerKnowledge, PrimaryObservation, PublicationState, QuorumCoordinationState,
-        StorageState, SwitchoverState, WalPosition,
+        PeerKnowledge, PrimaryObservation, PublicationState, QuorumCoordinationState, StorageState,
+        SwitchoverState, WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {
@@ -396,7 +396,7 @@ mod tests {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Offline,
-                process: ProcessAssessment::Idle,
+            process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::Projected(AuthorityProjection::NoPrimary(

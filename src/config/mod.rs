@@ -25,7 +25,6 @@ pub use schema::{
     PostgresLoggingConfig, PostgresNetworkConfig, PostgresPathsConfig, PostgresRewindConfig,
     PostgresRoleConfig, PostgresRoleName, PostgresRolePrivilege, PostgresRoleSlots,
     PostgresRolesConfig, ProcessConfig, ProcessTimeoutsConfig, RoleAuthConfig, RoleTokens,
-    RuntimeConfig, SecretSource, TokenAuth,
-    StderrSinkConfig, TlsClientAuthConfig, TlsClientIdentityConfig, TlsServerConfig,
-    TlsServerIdentityConfig,
+    RuntimeConfig, SecretSource, StderrSinkConfig, TlsClientAuthConfig, TlsClientIdentityConfig,
+    TlsServerConfig, TlsServerIdentityConfig, TokenAuth,
 };

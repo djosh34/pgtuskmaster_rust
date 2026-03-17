@@ -13,9 +13,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::{
     api::{
-        controller::{
-            delete_switchover, post_switchover, SwitchoverRequest,
-        },
+        controller::{delete_switchover, post_switchover, SwitchoverRequest},
         ApiCertificateReloadStep, ApiError, NodeState, PostgresCertificateReloadStep,
         PostgresReloadSignal, ReloadCertificatesResponse,
     },
@@ -215,14 +213,7 @@ fn build_app_state(
     let auth = resolve_auth_state(&ctx.auth, &ctx.runtime_config.latest())?;
     let bind = ctx.bind.clone();
     let transport = ctx.transport.clone();
-    Ok((
-        bind,
-        transport,
-        ApiAppState {
-            auth,
-            ..ctx
-        },
-    ))
+    Ok((bind, transport, ApiAppState { auth, ..ctx }))
 }
 
 fn router_from_state(app_state: ApiAppState) -> Router {
@@ -421,25 +412,24 @@ fn resolve_auth_state(
     match configured {
         ApiAuthState::Disabled => match &cfg.api.auth {
             ApiAuthConfig::Disabled => Ok(ApiAuthState::Disabled),
-            ApiAuthConfig::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
-                read_token: resolve_runtime_token(
-                    "api.security.auth.role_tokens.read_token",
-                    &tokens.read_token,
-                )?,
-                admin_token: resolve_runtime_token(
-                    "api.security.auth.role_tokens.admin_token",
-                    &tokens.admin_token,
-                )?,
-            })),
+            ApiAuthConfig::RoleTokens(tokens) => {
+                Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
+                    read_token: resolve_runtime_token(
+                        "api.security.auth.role_tokens.read_token",
+                        &tokens.read_token,
+                    )?,
+                    admin_token: resolve_runtime_token(
+                        "api.security.auth.role_tokens.admin_token",
+                        &tokens.admin_token,
+                    )?,
+                }))
+            }
         },
         ApiAuthState::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(tokens.clone())),
     }
 }
 
-fn resolve_runtime_token(
-    field: &str,
-    raw: &SecretSource,
-) -> Result<SecretSource, WorkerError> {
+fn resolve_runtime_token(field: &str, raw: &SecretSource) -> Result<SecretSource, WorkerError> {
     if matches!(raw, SecretSource::None) {
         return Ok(SecretSource::None);
     }
@@ -493,8 +483,8 @@ mod tests {
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiObservedState,
-        ApiReloadCertificatesHandle, ApiRuntimeCtx,
+        build_router, ApiAuthState, ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle,
+        ApiRuntimeCtx,
     };
 
     struct ChildGuard(Option<Child>);

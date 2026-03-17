@@ -7,12 +7,12 @@ pub mod output;
 pub mod status;
 pub mod switchover;
 
+use crate::config::SecretSource;
 use args::{Cli, Command, SwitchoverCommand};
 use config::resolve_operator_context;
 use connect::{run_primary, run_replicas};
 use error::CliError;
 use switchover::{run_clear as run_switchover_clear, run_request as run_switchover_request};
-use crate::config::SecretSource;
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
     let context = resolve_operator_context(&cli)?;

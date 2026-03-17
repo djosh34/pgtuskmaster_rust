@@ -6,8 +6,8 @@ use crate::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
     command::{
-        CommandOutputDto, StateCommandOutputDto, StateHealthDto, StateProjectionDto,
-        StateQueryOriginDto, StateWarningDto, switchover_projection,
+        switchover_projection, CommandOutputDto, StateCommandOutputDto, StateHealthDto,
+        StateProjectionDto, StateQueryOriginDto, StateWarningDto,
     },
     dcs::ClusterMemberView,
     ha::types::{AuthorityProjection, PublicationState},
@@ -118,19 +118,18 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
 pub(crate) fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
     let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
         code: "degraded_dcs_mode".to_string(),
-        message: format!(
-            "seed node reports {} DCS mode",
-            dcs_mode_label(&state.dcs)
-        ),
+        message: format!("seed node reports {} DCS mode", dcs_mode_label(&state.dcs)),
     });
-    let no_primary_warning = authority_primary_member(state).is_none().then(|| StateWarningDto {
-        code: "no_primary".to_string(),
-        message: "seed node does not currently project an authoritative primary".to_string(),
-    });
-    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
-            code: "no_members".to_string(),
-            message: "seed node does not currently expose any DCS member slots".to_string(),
+    let no_primary_warning = authority_primary_member(state)
+        .is_none()
+        .then(|| StateWarningDto {
+            code: "no_primary".to_string(),
+            message: "seed node does not currently project an authoritative primary".to_string(),
         });
+    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
+        code: "no_members".to_string(),
+        message: "seed node does not currently expose any DCS member slots".to_string(),
+    });
 
     [
         degraded_mode_warning,

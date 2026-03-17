@@ -5,10 +5,7 @@ pub(crate) mod startup;
 pub mod worker;
 
 use crate::{
-    dcs::DcsSnapshot,
-    ha::state::HaState,
-    pginfo::state::PgInfoState,
-    process::state::ProcessState,
+    dcs::DcsSnapshot, ha::state::HaState, pginfo::state::PgInfoState, process::state::ProcessState,
     state::NodeIdentity,
 };
 

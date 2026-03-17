@@ -105,7 +105,7 @@ The exact SQL and access path depend on your deployment, but the goal is:
 Repeat `pgtm status -v` from at least one surviving node's operator config. You want:
 
 - agreement on the same leader
-- no sustained dual-primary evidence
+- no conflicting primary reports across the nodes you sampled
 - no node stuck in `fail_safe`
 - the new node no longer bouncing through startup transitions
 

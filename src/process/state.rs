@@ -9,15 +9,14 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgSslMode,
     state::{
-        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError,
-        WorkerStatus,
+        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
     },
 };
 
 use super::jobs::{
     ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
-    PromoteSpec, StartPostgresSpec,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec,
+    StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,8 +106,7 @@ pub(crate) struct MandatoryPostgresRoleCredential {
     pub(crate) auth: RoleAuthConfig,
 }
 
-pub(crate) type MandatoryPostgresRuntimeRoles =
-    PostgresRoleSlots<MandatoryPostgresRoleCredential>;
+pub(crate) type MandatoryPostgresRuntimeRoles = PostgresRoleSlots<MandatoryPostgresRoleCredential>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReplicaAccessRuntime {

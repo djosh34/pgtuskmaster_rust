@@ -887,8 +887,7 @@ mod tests {
         PostgresLoggingConfig, RuntimeConfig,
     };
     use crate::logging::{
-        LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogSink, LogTransport,
-        TestSink,
+        LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogSink, LogTransport, TestSink,
     };
 
     use crate::state::WorkerError;
@@ -972,12 +971,8 @@ mod tests {
     where
         E: crate::logging::LoggableEvent,
     {
-        crate::logging::core::QueuedRecord::from_event(
-            1,
-            sample_context(),
-            event.into_log_event(),
-        )
-        .into_record()
+        crate::logging::core::QueuedRecord::from_event(1, sample_context(), event.into_log_event())
+            .into_record()
     }
 
     fn sample_context() -> LogContext {
@@ -1315,6 +1310,7 @@ mod tests {
         };
         use crate::dev_support::ports::allocate_ports;
         use crate::logging::LogRecord;
+        use crate::pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus};
         use crate::process::jobs::{
             PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
         };
@@ -1327,9 +1323,6 @@ mod tests {
         use crate::state::{
             new_state_channel, JobId, MemberId, PgEndpoint, TimelineId, WalLsn, WorkerError,
             WorkerStatus,
-        };
-        use crate::{
-            pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         };
 
         use super::super::{
@@ -1939,10 +1932,9 @@ mod tests {
                 std::collections::BTreeMap::from([(
                     MemberId("node-b".to_string()),
                     ClusterMemberView {
-                        postgres_endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 9)
-                            .map_err(|err| {
-                                WorkerError::Message(format!("test dcs target failed: {err}"))
-                            })?,
+                        postgres_endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 9).map_err(
+                            |err| WorkerError::Message(format!("test dcs target failed: {err}")),
+                        )?,
                         postgres: PgInfoState::Primary {
                             common: PgInfoCommon {
                                 worker: WorkerStatus::Running,

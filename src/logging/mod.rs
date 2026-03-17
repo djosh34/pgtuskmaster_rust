@@ -1,5 +1,5 @@
-pub(crate) mod event;
 mod core;
+pub(crate) mod event;
 
 pub(crate) mod postgres_ingest;
 pub(crate) mod tailer;

@@ -151,9 +151,7 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     let (host, port) = match &info.endpoint {
         PgEndpoint::Tcp { host, port } => (host.clone(), *port),
-        PgEndpoint::UnixSocket { socket_dir, port } => {
-            (socket_dir.display().to_string(), *port)
-        }
+        PgEndpoint::UnixSocket { socket_dir, port } => (socket_dir.display().to_string(), *port),
     };
     let mut pairs = vec![
         ("host".to_string(), host),

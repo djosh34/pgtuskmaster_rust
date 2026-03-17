@@ -13,11 +13,21 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum CommandOutputDto {
-    State { output: Box<StateCommandOutputDto> },
-    Primary { output: RenderedConnectionCommandDto },
-    Replicas { output: RenderedConnectionCommandDto },
-    Switchover { output: AcceptedResponse },
-    ReloadCertificates { output: ReloadCertificatesResponse },
+    State {
+        output: Box<StateCommandOutputDto>,
+    },
+    Primary {
+        output: RenderedConnectionCommandDto,
+    },
+    Replicas {
+        output: RenderedConnectionCommandDto,
+    },
+    Switchover {
+        output: AcceptedResponse,
+    },
+    ReloadCertificates {
+        output: ReloadCertificatesResponse,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,9 +163,7 @@ pub fn materialize_connection_dsn(
                 ("sslkey", paths.client_key_path.as_ref()),
             ]
             .into_iter()
-            .filter_map(|(key, path)| {
-                path.map(|value| (key, value.to_string_lossy().into_owned()))
-            })
+            .filter_map(|(key, path)| path.map(|value| (key, value.to_string_lossy().into_owned())))
             .collect::<Vec<_>>();
             [("sslmode", "verify-full".to_string())]
                 .into_iter()
@@ -255,11 +263,7 @@ fn sorted_state_rows(state: &NodeState, verbose: bool) -> Vec<Vec<String>> {
         .members()
         .map(|(member_id, member)| state_row(state, member_id, member, verbose))
         .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        right[1]
-            .cmp(&left[1])
-            .then_with(|| left[0].cmp(&right[0]))
-    });
+    rows.sort_by(|left, right| right[1].cmp(&left[1]).then_with(|| left[0].cmp(&right[0])));
     rows
 }
 

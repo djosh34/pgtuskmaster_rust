@@ -10,8 +10,8 @@ use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::{
     config::{
-        DcsAuthConfig, DcsClientConfig, DcsEndpoint, DcsTlsConfig, resolve_inline_or_path_bytes,
-        resolve_secret_string,
+        resolve_inline_or_path_bytes, resolve_secret_string, DcsAuthConfig, DcsClientConfig,
+        DcsEndpoint, DcsTlsConfig,
     },
     state::{LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, SwitchoverState, WorkerError},
 };
@@ -19,7 +19,7 @@ use crate::{
 use super::{
     command::DcsCommand,
     log_event::DcsLogEvent,
-    state::{DcsMemberState, DcsRuntimeCtx, build_local_member_state, current_snapshot},
+    state::{build_local_member_state, current_snapshot, DcsMemberState, DcsRuntimeCtx},
 };
 
 const ETCD_TIMEOUT: Duration = Duration::from_secs(2);

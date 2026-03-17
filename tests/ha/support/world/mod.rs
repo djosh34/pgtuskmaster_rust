@@ -24,6 +24,7 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
+    invariant::PrimaryCountInvariantRunner,
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -101,9 +102,12 @@ impl HaWorld {
     }
 
     pub fn harness(&self) -> Result<&HarnessShared> {
-        self.harness
+        let harness = self
+            .harness
             .as_ref()
-            .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))
+            .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))?;
+        harness.ensure_background_invariants_healthy()?;
+        Ok(harness)
     }
 
     pub fn set_scenario_name(&mut self, scenario_name: String) {
@@ -210,6 +214,7 @@ pub struct HarnessShared {
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
+    primary_count_invariant: Option<PrimaryCountInvariantRunner>,
     cleaned_up: bool,
 }
 
@@ -286,6 +291,7 @@ impl HarnessShared {
             timeouts,
             service_container_ids,
             timeline: Mutex::new(Vec::new()),
+            primary_count_invariant: None,
             cleaned_up: false,
         };
         harness.record_note(
@@ -295,6 +301,15 @@ impl HarnessShared {
                 harness.cucumber_test_image_run_id
             ),
         )?;
+        if let Err(err) = harness.start_primary_count_invariant() {
+            let cleanup_error = harness.cleanup().err();
+            return match cleanup_error {
+                None => Err(err),
+                Some(cleanup) => Err(HarnessError::message(format!(
+                    "{err}\ncleanup after invariant startup failure also failed: {cleanup}"
+                ))),
+            };
+        }
         if let Err(err) = harness.bootstrap_cluster().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
@@ -346,6 +361,12 @@ impl HarnessShared {
             self.compose.project.clone(),
             self.materialized_dir().to_path_buf(),
         )
+    }
+
+    pub fn ensure_background_invariants_healthy(&self) -> Result<()> {
+        self.primary_count_invariant
+            .as_ref()
+            .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
     }
 
     pub fn sql(&self) -> SqlObserver {
@@ -772,6 +793,11 @@ impl HarnessShared {
 
         let mut failures = Vec::new();
         let compose_network = format!("{}_ha", self.compose_project());
+        if let Some(runner) = self.primary_count_invariant.as_mut() {
+            if let Err(err) = runner.stop() {
+                failures.push(format!("primary-count invariant cleanup failed: {err}"));
+            }
+        }
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));
@@ -958,6 +984,18 @@ impl HarnessShared {
             .artifact_services()
             .into_iter()
             .find(|service| service.service_name() == service_name)
+    }
+
+    fn start_primary_count_invariant(&mut self) -> Result<()> {
+        self.primary_count_invariant = Some(PrimaryCountInvariantRunner::start(
+            self.observer(),
+            self.artifacts_dir().to_path_buf(),
+            self.timeouts.poll_interval,
+        )?);
+        self.record_note(
+            "invariant.primary_count.start",
+            "started perpetual self-reported primary-count runner",
+        )
     }
 }
 

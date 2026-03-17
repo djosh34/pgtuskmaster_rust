@@ -589,11 +589,7 @@ impl LogSender {
         if event.severity.number() < self.min_app_severity_number {
             return Ok(());
         }
-        let record = QueuedRecord::from_event(
-            system_now_unix_nanos(),
-            self.context.clone(),
-            event,
-        );
+        let record = QueuedRecord::from_event(system_now_unix_nanos(), self.context.clone(), event);
         match &self.mode {
             LogSenderMode::Disabled => Ok(()),
             LogSenderMode::Queue(sender) => {

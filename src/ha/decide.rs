@@ -7,8 +7,7 @@ use super::types::{
     FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView,
     LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
     PostgresState, ProcessAssessment, PublicationGoal, PublicationState, QuorumCoordinationState,
-    RecoveryPlan, StorageState,
-    SwitchoverState, TargetRole, WalPosition, WorldView,
+    RecoveryPlan, StorageState, SwitchoverState, TargetRole, WalPosition, WorldView,
 };
 use crate::state::LeaseEpoch;
 
@@ -345,13 +344,16 @@ fn publication_epoch(publication: &PublicationState) -> Option<LeaseEpoch> {
 }
 
 fn no_quorum_fence(world: &WorldView) -> NoPrimaryFence {
-    match (&world.local.postgres, publication_epoch(&world.local.publication)) {
-        (PostgresState::Primary { committed_lsn }, Some(epoch)) => NoPrimaryFence::Cutoff(
-            FenceCutoff {
+    match (
+        &world.local.postgres,
+        publication_epoch(&world.local.publication),
+    ) {
+        (PostgresState::Primary { committed_lsn }, Some(epoch)) => {
+            NoPrimaryFence::Cutoff(FenceCutoff {
                 epoch,
                 committed_lsn: *committed_lsn,
-            },
-        ),
+            })
+        }
         _ => NoPrimaryFence::None,
     }
 }
@@ -372,13 +374,10 @@ fn resolve_switchover(
 ) -> ResolvedSwitchover {
     match &coordination.switchover {
         SwitchoverState::None => ResolvedSwitchover::NotRequested,
-        SwitchoverState::AnyHealthyReplica => best_switchover_target(
-            &coordination.peers,
-            self_peer,
-            self_id,
-            allow_self_target,
-        )
-        .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed),
+        SwitchoverState::AnyHealthyReplica => {
+            best_switchover_target(&coordination.peers, self_peer, self_id, allow_self_target)
+                .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed)
+        }
         SwitchoverState::Specific(member_id) => {
             if member_id == self_id {
                 if allow_self_target && switchover_target_is_valid(self_peer) {

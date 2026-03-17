@@ -24,7 +24,12 @@ pub(crate) async fn run_primary(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_primary_view(&state, queried_via, &context.postgres_client_tls, options.tls)?;
+    let view = resolve_primary_view(
+        &state,
+        queried_via,
+        &context.postgres_client_tls,
+        options.tls,
+    )?;
     output::render_command_output(&CommandOutputDto::Primary { output: view }, options.json)
 }
 
@@ -33,8 +38,12 @@ pub(crate) async fn run_replicas(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let view =
-        resolve_replicas_view(&state, queried_via, &context.postgres_client_tls, options.tls)?;
+    let view = resolve_replicas_view(
+        &state,
+        queried_via,
+        &context.postgres_client_tls,
+        options.tls,
+    )?;
     output::render_command_output(&CommandOutputDto::Replicas { output: view }, options.json)
 }
 

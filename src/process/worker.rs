@@ -678,9 +678,7 @@ pub(crate) async fn start_job(
     };
     ctx.runtime
         .log
-        .send(ProcessLogEvent::Started {
-            job_kind,
-        })
+        .send(ProcessLogEvent::Started { job_kind })
         .map_err(|err| {
             WorkerError::Message(format!("process job started log send failed: {err}"))
         })?;

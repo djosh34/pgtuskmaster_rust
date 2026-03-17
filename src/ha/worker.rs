@@ -502,7 +502,7 @@ fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId>
     dcs.members().find_map(|(member_id, member)| {
         (member.postgres_target().host() == host.as_str()
             && member.postgres_target().port() == *port)
-        .then_some(member_id.clone())
+            .then_some(member_id.clone())
     })
 }
 
@@ -543,9 +543,9 @@ fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> Lea
         }
         MemberPostgresView::Unknown { .. } | MemberPostgresView::Replica { .. } => {
             LeadershipView::HeldByPeer {
-            epoch,
-            state: PeerLeaderState::Recovering,
-        }
+                epoch,
+                state: PeerLeaderState::Recovering,
+            }
         }
     }
 }
@@ -555,11 +555,11 @@ fn observed_primary_member(dcs: &DcsQuorumState, self_id: &MemberId) -> Option<O
         ((*member_id != *self_id)
             && matches!(member.postgres(), MemberPostgresView::Primary { .. })
             && member.postgres().readiness() == Readiness::Ready)
-        .then(|| ObservedPrimary {
-            member: member_id.clone(),
-            timeline: member_timeline(member),
-            system_identifier: member_system_identifier(member),
-        })
+            .then(|| ObservedPrimary {
+                member: member_id.clone(),
+                timeline: member_timeline(member),
+                system_identifier: member_system_identifier(member),
+            })
     })
 }
 

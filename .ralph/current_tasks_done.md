@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 11:41:01 PM CET 2026
+Generated: Wed Mar 18 00:13:19 CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -320,6 +320,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 ```
 ## Task: Rebuild The HA Observation Surface Around Host-Side `pgtm` JSON And Minimal Outcomes <status>done</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/05-task-add-a-perpetual-self-reported-primary-count-invariant-runner.md`
+
+```
+## Task: Add A Perpetual Self-Reported Primary-Count Invariant Runner <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 

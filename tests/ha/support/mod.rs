@@ -3,6 +3,7 @@ pub mod docker;
 mod error;
 pub mod faults;
 pub mod givens;
+mod invariant;
 pub mod observer;
 mod process;
 pub mod runner;

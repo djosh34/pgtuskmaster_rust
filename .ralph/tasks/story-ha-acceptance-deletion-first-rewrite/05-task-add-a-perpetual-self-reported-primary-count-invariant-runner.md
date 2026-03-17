@@ -1,4 +1,4 @@
-## Task: Add A Perpetual Self-Reported Primary-Count Invariant Runner <status>not_started</status> <passes>false</passes>
+## Task: Add A Perpetual Self-Reported Primary-Count Invariant Runner <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -34,16 +34,16 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Add a perpetual HA invariant runner that continuously samples all nodes' self-reported status and enforces the allowed primary-count set `{0, 1}`.
-- [ ] Start this runner automatically for every HA scenario and stop/clean it up deterministically at scenario end.
-- [ ] Fail the scenario immediately when the invariant is violated; do not wait for a later step to notice.
-- [ ] Delete `assert_no_dual_primary_evidence`, transition-window primary-history dependence, and any equivalent feature-local dual-primary assertion machinery after the runner replaces it.
-- [ ] Remove all feature text that explicitly asserts "no dual primary evidence"; this property must now live only in the perpetual runner.
-- [ ] Persist enough structured failure evidence that the violating sample can be inspected without grepping logs.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Add a perpetual HA invariant runner that continuously samples all nodes' self-reported status and enforces the allowed primary-count set `{0, 1}`.
+- [x] Start this runner automatically for every HA scenario and stop/clean it up deterministically at scenario end.
+- [x] Fail the scenario immediately when the invariant is violated; do not wait for a later step to notice.
+- [x] Delete `assert_no_dual_primary_evidence`, transition-window primary-history dependence, and any equivalent feature-local dual-primary assertion machinery after the runner replaces it.
+- [x] Remove all feature text that explicitly asserts "no dual primary evidence"; this property must now live only in the perpetual runner.
+- [x] Persist enough structured failure evidence that the violating sample can be inspected without grepping logs.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

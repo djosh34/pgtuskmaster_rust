@@ -120,7 +120,9 @@ impl PgInfoState {
 
     pub(crate) fn committed_wal(&self) -> Option<ObservedWalPosition> {
         match self {
-            Self::Primary { common, wal_lsn, .. } => Some(ObservedWalPosition {
+            Self::Primary {
+                common, wal_lsn, ..
+            } => Some(ObservedWalPosition {
                 timeline: common.timeline,
                 lsn: *wal_lsn,
             }),
@@ -131,9 +133,7 @@ impl PgInfoState {
     pub(crate) fn replay_wal(&self) -> Option<ObservedWalPosition> {
         match self {
             Self::Replica {
-                common,
-                replay_lsn,
-                ..
+                common, replay_lsn, ..
             } => Some(ObservedWalPosition {
                 timeline: common.timeline,
                 lsn: *replay_lsn,
@@ -145,9 +145,7 @@ impl PgInfoState {
     pub(crate) fn follow_wal(&self) -> Option<ObservedWalPosition> {
         match self {
             Self::Replica {
-                common,
-                follow_lsn,
-                ..
+                common, follow_lsn, ..
             } => follow_lsn.map(|lsn| ObservedWalPosition {
                 timeline: common.timeline,
                 lsn,

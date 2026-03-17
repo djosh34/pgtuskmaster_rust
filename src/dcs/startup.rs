@@ -5,15 +5,15 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
-        NodeIdentity, PgEndpoint, StateSubscriber, SwitchoverState, WorkerError, new_state_channel,
+        new_state_channel, NodeIdentity, PgEndpoint, StateSubscriber, SwitchoverState, WorkerError,
     },
 };
 
 use super::{
-    DcsHandle,
     command::dcs_command_channel,
     state::{DcsRuntimeCtx, DcsSnapshot},
     worker::DcsError,
+    DcsHandle,
 };
 
 pub(crate) type DcsAdvertisedEndpoints = PgEndpoint;
