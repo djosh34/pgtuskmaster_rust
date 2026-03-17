@@ -9,7 +9,7 @@ use crate::{
 };
 
 use super::state::{
-    HaControlPlane, HaNodeIdentity, HaObservedState, HaState, HaStateChannel, HaWorkerBootstrap,
+    HaControlPlane, HaObservedState, HaState, HaStateChannel, HaWorkerBootstrap,
     HaWorkerCadence, HaWorkerCtx,
 };
 
@@ -59,10 +59,7 @@ pub(crate) fn bootstrap(request: HaRuntimeRequest) -> HaRuntimeBundle {
             process_intent_inbox: request.process_control.intents,
             dcs_handle: request.dcs_handle,
         },
-        identity: HaNodeIdentity {
-            scope: request.identity.scope.0,
-            self_id: request.identity.member_id,
-        },
+        identity: request.identity,
     });
 
     HaRuntimeBundle {

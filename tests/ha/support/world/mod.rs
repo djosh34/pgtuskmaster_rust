@@ -10,7 +10,6 @@ use cucumber::World;
 use pgtuskmaster_rust::{
     api::NodeState,
     command::StateDerivedConnectionTargetDto,
-    dcs::MemberPostgresView,
     ha::types::{AuthorityProjection, PublicationState},
 };
 use serde::Deserialize;
@@ -911,6 +910,9 @@ impl HarnessShared {
                 return None;
             }
             let status = serde_json::from_value::<NodeState>(entry.get("status")?.clone()).ok()?;
+            if !status.dcs.is_quorum() {
+                return None;
+            }
             let primaries = dcs_primary_members(&status);
             if primaries.len() > 1 {
                 Some(primaries)
@@ -1765,15 +1767,15 @@ wal_keep_size = "128MB"
 
 [postgres.roles.mandatory.superuser]
 username = "postgres"
-auth = {{ type = "password", password = {{ path = "/run/secrets/postgres-superuser-password" }} }}
+auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/postgres-superuser-password" }} }}
 
 [postgres.roles.mandatory.replicator]
 username = "{replicator}"
-auth = {{ type = "password", password = {{ path = "/run/secrets/replicator-password" }} }}
+auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/replicator-password" }} }}
 
 [postgres.roles.mandatory.rewinder]
 username = "{rewinder}"
-auth = {{ type = "password", password = {{ path = "/run/secrets/rewinder-password" }} }}
+auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/rewinder-password" }} }}
 
 [dcs]
 endpoints = ["{dcs_endpoint}"]
@@ -1815,11 +1817,11 @@ mode = "append"
 [api]
 listen_addr = "0.0.0.0:8443"
 transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }} }} }}
-auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }}
+auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}, admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }} }} }}
 
 [pgtm.api]
 base_url = "https://{member}:8443"
-auth = {{ type = "role_tokens", read_token = {{ path = "/run/secrets/api-read-token" }}, admin_token = {{ path = "/run/secrets/api-admin-token" }} }}
+auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}, admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }} }} }}
 tls = {{ ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
 
 [pgtm.postgres.tls]
@@ -1839,15 +1841,17 @@ base_url = "https://{member}:8443"
 
 [api.auth]
 type = "role_tokens"
-read_token = {{ path = "/run/secrets/api-read-token" }}
-admin_token = {{ path = "/run/secrets/api-admin-token" }}
+
+[api.auth.tokens]
+read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}
+admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }}
 
 [api.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
 
 [postgres.tls]
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, key = {{ path = "/etc/pgtuskmaster/tls/observer.key" }} }}
+identity = {{ cert = {{ path = "/etc/pgtuskmaster/tls/observer.crt" }}, key = {{ type = "file", path = "/etc/pgtuskmaster/tls/observer.key" }} }}
 "#
     )
 }
@@ -1955,11 +1959,7 @@ fn create_fault_directories(root: &Path) -> Result<()> {
 }
 
 fn validate_seed_primary(status: &NodeState) -> Result<()> {
-    let discovered_member_count = status
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default();
+    let discovered_member_count = status.dcs.member_count();
     if discovered_member_count != 1 {
         return Err(HarnessError::message(format!(
             "expected exactly one discovered member during bootstrap, observed {}; warnings={}",
@@ -1985,13 +1985,7 @@ fn format_bootstrap_warnings(status: &NodeState) -> String {
     if operator_visible_primary(status).is_none() {
         warnings.push("no_primary".to_string());
     }
-    if status
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default()
-        == 0
-    {
+    if status.dcs.member_count() == 0 {
         warnings.push("no_members".to_string());
     }
     if warnings.is_empty() {
@@ -2012,14 +2006,11 @@ fn operator_visible_primary(status: &NodeState) -> Option<String> {
 }
 
 fn dcs_primary_members(status: &NodeState) -> Vec<String> {
-    status
-        .dcs
-        .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.members())
-        .filter(|(_member_id, slot)| matches!(slot.postgres(), MemberPostgresView::Primary { .. }))
-        .map(|(member_id, _slot)| member_id.0.clone())
-        .collect::<Vec<_>>()
+    if !status.dcs.is_quorum() {
+        return Vec::new();
+    }
+
+    operator_visible_primary(status).into_iter().collect::<Vec<_>>()
 }
 
 #[cfg(test)]

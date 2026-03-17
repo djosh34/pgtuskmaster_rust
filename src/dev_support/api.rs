@@ -3,16 +3,13 @@ use std::collections::BTreeMap;
 use axum::Router;
 
 use crate::{
-    api::worker::{
-        build_router, ApiAuthState, ApiBindConfig, ApiClusterIdentity, ApiControlPlane,
-        ApiObservedState, ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
-    },
+    api::{startup::ApiRuntimeRequest, worker::ApiObservedState},
     config::RuntimeConfig,
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::state::ProcessState,
-    state::{new_state_channel, WorkerStatus},
+    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName, WorkerStatus},
 };
 
 use super::HarnessError;
@@ -43,28 +40,21 @@ fn build_test_router_with_state(
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-    let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
-        .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
-    build_router(ApiServerCtx {
-        identity: ApiClusterIdentity {
-            cluster_name: cfg.cluster.name.clone(),
-            scope: cfg.cluster.scope.clone(),
-            member_id: cfg.cluster.member_id.clone(),
+    let runtime = crate::api::startup::bootstrap(ApiRuntimeRequest {
+        identity: NodeIdentity {
+            cluster_name: ClusterName(cfg.cluster.name.clone()),
+            scope: ScopeName(cfg.cluster.scope.clone()),
+            member_id: MemberId(cfg.cluster.member_id.clone()),
         },
-        observed,
-        control: ApiControlPlane {
-            runtime_config,
-            dcs_handle: crate::dcs::DcsHandle::closed(),
-        },
-        serving: ApiServingPlan {
-            bind: ApiBindConfig::listen(cfg.api.listen_addr),
-            auth: ApiAuthState::Disabled,
-            transport: transport.clone(),
-            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
-        },
+        runtime_config,
+        dcs_handle: crate::dcs::DcsHandle::closed(),
+        observed_state: observed,
         log: LogSender::disabled(),
     })
-    .map_err(|err| HarnessError::InvalidInput(err.to_string()))
+    .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
+    runtime
+        .into_router()
+        .map_err(|err| HarnessError::InvalidInput(err.to_string()))
 }
 
 fn sample_pg_state() -> PgInfoState {

@@ -10,12 +10,16 @@ fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) ->
     let auth = match (read_token, admin_token) {
         (None, None) => ApiAuthConfig::Disabled,
         (read_token, admin_token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: read_token.map(|token| SecretSource::Inline {
-                content: token.to_string(),
-            }),
-            admin_token: admin_token.map(|token| SecretSource::Inline {
-                content: token.to_string(),
-            }),
+            read_token: read_token
+                .map(|token| SecretSource::String {
+                    value: token.to_string(),
+                })
+                .unwrap_or(SecretSource::None),
+            admin_token: admin_token
+                .map(|token| SecretSource::String {
+                    value: token.to_string(),
+                })
+                .unwrap_or(SecretSource::None),
         }),
     };
 

@@ -5,7 +5,11 @@ pub(crate) mod startup;
 pub mod worker;
 
 use crate::{
-    dcs::DcsView, ha::state::HaState, pginfo::state::PgInfoState, process::state::ProcessState,
+    dcs::DcsSnapshot,
+    ha::state::HaState,
+    pginfo::state::PgInfoState,
+    process::state::ProcessState,
+    state::NodeIdentity,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -59,12 +63,13 @@ pub struct ReloadCertificatesResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct NodeState {
-    pub cluster_name: String,
-    pub scope: String,
-    pub self_member_id: String,
+pub struct NodeSnapshot {
+    #[serde(flatten)]
+    pub identity: NodeIdentity,
     pub pg: PgInfoState,
     pub process: ProcessState,
-    pub dcs: DcsView,
+    pub dcs: DcsSnapshot,
     pub ha: HaState,
 }
+
+pub type NodeState = NodeSnapshot;

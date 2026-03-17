@@ -4,12 +4,13 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    config::{PostgresRoleName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    config::{PostgresRoleName, PostgresRoleSlots, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::DcsView,
     logging::LogSender,
     pginfo::state::PgSslMode,
     state::{
-        JobId, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
+        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError,
+        WorkerStatus,
     },
 };
 
@@ -106,12 +107,8 @@ pub(crate) struct MandatoryPostgresRoleCredential {
     pub(crate) auth: RoleAuthConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MandatoryPostgresRuntimeRoles {
-    pub(crate) superuser: MandatoryPostgresRoleCredential,
-    pub(crate) replicator: MandatoryPostgresRoleCredential,
-    pub(crate) rewinder: MandatoryPostgresRoleCredential,
-}
+pub(crate) type MandatoryPostgresRuntimeRoles =
+    PostgresRoleSlots<MandatoryPostgresRoleCredential>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReplicaAccessRuntime {
@@ -155,10 +152,7 @@ pub(crate) struct ProcessCadence {
     pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessNodeIdentity {
-    pub(crate) self_id: MemberId,
-}
+pub(crate) type ProcessNodeIdentity = NodeIdentity;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedState {

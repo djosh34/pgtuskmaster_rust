@@ -55,8 +55,8 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
             base_url,
             timeout_ms: cli.timeout_ms,
             auth: CliAuthConfig {
-                read_token,
-                admin_token,
+                read_token: optional_token_source(read_token),
+                admin_token: optional_token_source(admin_token),
             },
             tls: api_client_tls,
         },
@@ -191,12 +191,9 @@ fn resolve_config_auth(
     if let Some(operator) = source.operator.as_ref() {
         return match &operator.api.auth {
             PgtmApiAuthConfig::Disabled => Ok((None, None, false)),
-            PgtmApiAuthConfig::RoleTokens {
-                read_token,
-                admin_token,
-            } => Ok((
-                resolve_optional_secret("pgtm.api.auth.read_token", read_token.as_ref())?,
-                resolve_optional_secret("pgtm.api.auth.admin_token", admin_token.as_ref())?,
+            PgtmApiAuthConfig::RoleTokens(tokens) => Ok((
+                resolve_optional_secret("pgtm.api.auth.read_token", Some(&tokens.read_token))?,
+                resolve_optional_secret("pgtm.api.auth.admin_token", Some(&tokens.admin_token))?,
                 true,
             )),
         };
@@ -323,8 +320,8 @@ fn inline_or_path_to_path_buf(source: &InlineOrPath) -> Option<PathBuf> {
 
 fn secret_to_path_buf(source: &SecretSource) -> Option<PathBuf> {
     match source {
-        SecretSource::Path(path) | SecretSource::PathConfig { path } => Some(path.clone()),
-        SecretSource::Inline { .. } | SecretSource::Env { .. } => None,
+        SecretSource::File { path } => Some(path.clone()),
+        SecretSource::None | SecretSource::Env { .. } | SecretSource::String { .. } => None,
     }
 }
 
@@ -348,6 +345,13 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
+}
+
+fn optional_token_source(value: Option<String>) -> SecretSource {
+    match value {
+        Some(token) => SecretSource::String { value: token },
+        None => SecretSource::None,
+    }
 }
 
 fn api_requires_client_cert(source: &OperatorConfigSource) -> bool {
@@ -410,7 +414,7 @@ access = { hba = { content = "local all all trust" }, ident = { content = "# emp
 local_database = "postgres"
 rewind = { database = "postgres", transport = { ssl_mode = "prefer" } }
 tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }, extra = {} }
+roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
@@ -464,8 +468,10 @@ base_url = "https://127.0.0.1:8443"
 
 [api.auth]
 type = "role_tokens"
-read_token = { content = "read-token" }
-admin_token = { content = "admin-token" }
+
+[api.auth.tokens]
+read_token = { type = "string", value = "read-token" }
+admin_token = { type = "string", value = "admin-token" }
 
 [api.tls]
 ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }
@@ -484,10 +490,20 @@ ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE--
         };
         let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
         let _ = std::fs::remove_file(path);
-        if ctx.api_client.auth.read_token.as_deref() != Some("read-token") {
+        let read_token = crate::config::resolve_secret_string(
+            "api.auth.read_token",
+            &ctx.api_client.auth.read_token,
+        )
+        .map_err(|err| err.to_string())?;
+        if read_token != "read-token" {
             return Err("read token did not resolve".to_string());
         }
-        if ctx.api_client.auth.admin_token.as_deref() != Some("admin-token") {
+        let admin_token = crate::config::resolve_secret_string(
+            "api.auth.admin_token",
+            &ctx.api_client.auth.admin_token,
+        )
+        .map_err(|err| err.to_string())?;
+        if admin_token != "admin-token" {
             return Err("admin token did not resolve".to_string());
         }
         if ctx.api_client.tls.ca_cert_pem.is_none() {
@@ -534,7 +550,7 @@ base_url = "http://127.0.0.1:8080"
 
 [postgres.tls]
 ca_cert = {{ path = "{}" }}
-identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }}
 "##,
                 ca_path.display(),
                 cert_path.display(),

@@ -502,6 +502,7 @@ fn dispatch_tracing_record_event(record: &LogRecord) {
 
 #[derive(Clone)]
 enum LogSenderMode {
+    #[cfg_attr(not(test), allow(dead_code))]
     Disabled,
     Queue(mpsc::UnboundedSender<QueuedRecord>),
 }
@@ -566,6 +567,7 @@ impl LogSender {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn disabled() -> Self {
         Self {
             context: LogContext {

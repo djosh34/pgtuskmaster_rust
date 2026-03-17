@@ -6,7 +6,7 @@ use std::{
 };
 
 use pgtm_log_derive::LogValue;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{defaults, endpoint::DcsEndpoint};
 
@@ -18,33 +18,44 @@ pub enum InlineOrPath {
     Inline { content: String },
 }
 
-#[derive(Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case", tag = "type")]
 pub enum SecretSource {
-    Path(PathBuf),
-    PathConfig { path: PathBuf },
-    Inline { content: String },
+    #[default]
+    None,
     Env { env: String },
+    File { path: PathBuf },
+    String { value: String },
+}
+
+impl SecretSource {
+    pub fn is_none(&self) -> bool {
+        matches!(self, Self::None)
+    }
+
+    pub fn as_ref(&self) -> Option<&Self> {
+        match self {
+            Self::None => None,
+            Self::Env { .. } | Self::File { .. } | Self::String { .. } => Some(self),
+        }
+    }
 }
 
 impl fmt::Debug for SecretSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Path(path) => f
-                .debug_tuple("SecretSource")
-                .field(&format_args!("path({})", path.display()))
-                .finish(),
-            Self::PathConfig { path } => f
-                .debug_tuple("SecretSource")
-                .field(&format_args!("path({})", path.display()))
-                .finish(),
-            Self::Inline { .. } => f
-                .debug_tuple("SecretSource")
-                .field(&"<inline redacted>")
-                .finish(),
+            Self::None => f.debug_tuple("SecretSource").field(&"none").finish(),
             Self::Env { env } => f
                 .debug_tuple("SecretSource")
                 .field(&format_args!("env({env})"))
+                .finish(),
+            Self::File { path } => f
+                .debug_tuple("SecretSource")
+                .field(&format_args!("file({})", path.display()))
+                .finish(),
+            Self::String { .. } => f
+                .debug_tuple("SecretSource")
+                .field(&"<string redacted>")
                 .finish(),
         }
     }
@@ -297,11 +308,19 @@ pub struct PostgresRoleConfig {
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MandatoryPostgresRolesConfig {
-    pub superuser: PostgresRoleConfig,
-    pub replicator: PostgresRoleConfig,
-    pub rewinder: PostgresRoleConfig,
+pub struct PostgresRoleSlots<T> {
+    pub superuser: T,
+    pub replicator: T,
+    pub rewinder: T,
 }
+
+impl<T> PostgresRoleSlots<T> {
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        [&self.superuser, &self.replicator, &self.rewinder].into_iter()
+    }
+}
+
+pub type MandatoryPostgresRolesConfig = PostgresRoleSlots<PostgresRoleConfig>;
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -771,20 +790,58 @@ impl Default for ApiConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ApiAuthConfig {
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", content = "tokens")]
+pub enum TokenAuth {
     #[default]
     Disabled,
-    RoleTokens(ApiRoleTokensConfig),
+    RoleTokens(RoleTokens),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct ApiRoleTokensConfig {
-    pub read_token: Option<SecretSource>,
-    pub admin_token: Option<SecretSource>,
+pub struct RoleTokens {
+    pub read_token: SecretSource,
+    pub admin_token: SecretSource,
 }
+
+impl RoleTokens {
+    pub fn new(read_token: impl Into<String>, admin_token: impl Into<String>) -> Result<Self, String> {
+        let read_token = read_token.into();
+        let admin_token = admin_token.into();
+        if read_token.trim().is_empty() {
+            return Err("read token must not be empty".to_string());
+        }
+        if admin_token.trim().is_empty() {
+            return Err("admin token must not be empty".to_string());
+        }
+        Ok(Self {
+            read_token: SecretSource::String { value: read_token },
+            admin_token: SecretSource::String { value: admin_token },
+        })
+    }
+
+    pub fn read_bearer_header(&self) -> String {
+        format!("Bearer {}", resolve_role_token_value(&self.read_token))
+    }
+
+    pub fn admin_bearer_header(&self) -> String {
+        format!("Bearer {}", resolve_role_token_value(&self.admin_token))
+    }
+}
+
+fn resolve_role_token_value(source: &SecretSource) -> String {
+    match source {
+        SecretSource::String { value } => value.clone(),
+        SecretSource::None => String::new(),
+        SecretSource::Env { env } => env.clone(),
+        SecretSource::File { path } => path.display().to_string(),
+    }
+}
+
+pub type ApiAuthConfig = TokenAuth;
+pub type PgtmApiAuthConfig = TokenAuth;
+pub type ApiRoleTokensConfig = RoleTokens;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -812,17 +869,6 @@ pub struct PgtmApiConfig {
     pub auth: PgtmApiAuthConfig,
     #[serde(default)]
     pub tls: PgtmClientTlsConfig,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum PgtmApiAuthConfig {
-    #[default]
-    Disabled,
-    RoleTokens {
-        read_token: Option<SecretSource>,
-        admin_token: Option<SecretSource>,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]

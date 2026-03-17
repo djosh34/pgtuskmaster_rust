@@ -1,18 +1,19 @@
 use std::cmp::Ordering;
 
-use crate::{dcs::DcsMode, state::MemberId};
+use crate::state::MemberId;
 
 use super::types::{
     ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
     FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView,
     LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
-    PostgresState, ProcessState, PublicationGoal, PublicationState, RecoveryPlan, StorageState,
+    PostgresState, ProcessAssessment, PublicationGoal, PublicationState, RecoveryPlan,
+    StorageState,
     SwitchoverState, TargetRole, WalPosition, WorldView,
 };
-use crate::state::{LeaseEpoch, SwitchoverTarget};
+use crate::state::LeaseEpoch;
 
 pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
-    if world.global.coordination.mode != DcsMode::Coordinated {
+    if !world.global.coordination.dcs.is_quorum() {
         return decide_degraded(world);
     }
 
@@ -130,22 +131,7 @@ fn decide_as_lease_holder(
     epoch: LeaseEpoch,
 ) -> DesiredState {
     let publication = leader_publication(world, self_id, &epoch);
-    if !matches!(world.local.postgres, PostgresState::Primary { .. })
-        && matches!(
-            world.global.switchover,
-            SwitchoverState::Requested(super::types::SwitchoverRequest {
-                target: SwitchoverTarget::AnyHealthyReplica,
-            })
-        )
-    {
-        return DesiredState {
-            role: TargetRole::Leader(epoch),
-            publication,
-            clear_switchover: true,
-        };
-    }
-    let allow_self_switchover_target =
-        !matches!(world.local.postgres, PostgresState::Primary { .. });
+    let allow_self_switchover_target = false;
 
     match resolve_switchover(world, self_id, allow_self_switchover_target) {
         ResolvedSwitchover::NotRequested => DesiredState {
@@ -278,10 +264,10 @@ fn follow_goal(world: &WorldView, leader: MemberId) -> FollowGoal {
     FollowGoal { leader, recovery }
 }
 
-fn rewind_failed_and_requires_basebackup(process: &ProcessState) -> bool {
+fn rewind_failed_and_requires_basebackup(process: &ProcessAssessment) -> bool {
     matches!(
         process,
-        ProcessState::Failed(super::types::JobFailure {
+        ProcessAssessment::Failed(super::types::JobFailure {
             job: crate::process::jobs::ActiveJobKind::PgRewind,
             recovery: FailureRecovery::FallbackToBasebackup,
         })
@@ -359,33 +345,31 @@ fn resolve_switchover(
 ) -> ResolvedSwitchover {
     match &world.global.switchover {
         SwitchoverState::None => ResolvedSwitchover::NotRequested,
-        SwitchoverState::Requested(request) => match &request.target {
-            SwitchoverTarget::AnyHealthyReplica => best_switchover_target(
-                &world.global.peers,
-                &world.global.self_peer,
-                self_id,
-                allow_self_target,
-            )
-            .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed),
-            SwitchoverTarget::Specific(member_id) => {
-                if member_id == self_id {
-                    if allow_self_target && switchover_target_is_valid(&world.global.self_peer) {
-                        ResolvedSwitchover::Proceed(member_id.clone())
-                    } else {
-                        ResolvedSwitchover::Abandon
-                    }
-                } else if world
-                    .global
-                    .peers
-                    .get(member_id)
-                    .is_some_and(switchover_target_is_valid)
-                {
+        SwitchoverState::AnyHealthyReplica => best_switchover_target(
+            &world.global.peers,
+            &world.global.self_peer,
+            self_id,
+            allow_self_target,
+        )
+        .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed),
+        SwitchoverState::Specific(member_id) => {
+            if member_id == self_id {
+                if allow_self_target && switchover_target_is_valid(&world.global.self_peer) {
                     ResolvedSwitchover::Proceed(member_id.clone())
                 } else {
                     ResolvedSwitchover::Abandon
                 }
+            } else if world
+                .global
+                .peers
+                .get(member_id)
+                .is_some_and(switchover_target_is_valid)
+            {
+                ResolvedSwitchover::Proceed(member_id.clone())
+            } else {
+                ResolvedSwitchover::Abandon
             }
-        },
+        }
     }
 }
 
@@ -524,17 +508,17 @@ mod tests {
 
     use super::{best_failover_candidate, decide};
     use crate::{
-        dcs::DcsMode,
-        state::{LeaseEpoch, MemberId, SwitchoverTarget, UnixMillis},
+        dcs::DcsSnapshot,
+        state::{LeaseEpoch, MemberId, UnixMillis},
     };
 
     use super::super::types::{
         ApiVisibility, AuthorityProjection, Candidacy, CoordinationState, DataDirState,
         DesiredState, DivergenceState, ElectionEligibility, FollowGoal, GlobalKnowledge,
         IdleReason, IneligibleReason, LeadershipView, LocalDataState, LocalKnowledge,
-        NoPrimaryFence, NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge,
-        PeerLeaderState, PostgresState, PrimaryObservation, ProcessState, PublicationGoal,
-        PublicationState, RecoveryPlan, ReplicationState, StorageState, SwitchoverRequest,
+        NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge,
+        PeerLeaderState, PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal,
+        PublicationState, RecoveryPlan, ReplicationState, StorageState,
         SwitchoverState, TargetRole, WalPosition, WorldView,
     };
 
@@ -550,7 +534,11 @@ mod tests {
             local,
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    mode: DcsMode::Coordinated,
+                    dcs: DcsSnapshot::quorum(
+                        None,
+                        SwitchoverState::None,
+                        BTreeMap::new(),
+                    ),
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -601,7 +589,7 @@ mod tests {
                         lsn: 42,
                     }),
                 },
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
@@ -644,7 +632,7 @@ mod tests {
             LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
                 postgres: PostgresState::Offline,
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -679,7 +667,7 @@ mod tests {
                     DivergenceState::RewindPossible,
                 )),
                 postgres: PostgresState::Offline,
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -717,7 +705,7 @@ mod tests {
             LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
                 postgres: PostgresState::Offline,
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -748,7 +736,7 @@ mod tests {
             LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
                 postgres: PostgresState::Primary { committed_lsn: 42 },
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -766,9 +754,7 @@ mod tests {
             holder: self_id.clone(),
             generation: 7,
         });
-        world.global.switchover = SwitchoverState::Requested(SwitchoverRequest {
-            target: SwitchoverTarget::AnyHealthyReplica,
-        });
+        world.global.switchover = SwitchoverState::AnyHealthyReplica;
         world.global.peers = BTreeMap::from([(
             MemberId("node-b".to_string()),
             PeerKnowledge {
@@ -794,7 +780,7 @@ mod tests {
     }
 
     #[test]
-    fn lease_holder_replica_can_self_select_for_generic_switchover_after_winning_lease() {
+    fn lease_holder_replica_keeps_handoff_target_for_generic_switchover_after_winning_lease() {
         let self_id = MemberId("node-c".to_string());
         let epoch = LeaseEpoch {
             holder: self_id.clone(),
@@ -810,7 +796,7 @@ mod tests {
                         lsn: 50,
                     }),
                 },
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -825,22 +811,15 @@ mod tests {
             promote_peer(50),
         );
         world.global.coordination.leadership = LeadershipView::HeldBySelf(epoch.clone());
-        world.global.switchover = SwitchoverState::Requested(SwitchoverRequest {
-            target: SwitchoverTarget::AnyHealthyReplica,
-        });
+        world.global.switchover = SwitchoverState::AnyHealthyReplica;
         world.global.peers = BTreeMap::from([(MemberId("node-a".to_string()), promote_peer(40))]);
 
         assert_eq!(
             decide(&world, &self_id),
             DesiredState {
-                role: TargetRole::Leader(epoch.clone()),
-                publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
-                    NoPrimaryProjection::Recovering {
-                        epoch: Some(epoch),
-                        fence: NoPrimaryFence::None,
-                    },
-                )),
-                clear_switchover: true,
+                role: TargetRole::DemotingForSwitchover(MemberId("node-a".to_string())),
+                publication: PublicationGoal::KeepCurrent,
+                clear_switchover: false,
             }
         );
     }

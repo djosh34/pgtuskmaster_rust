@@ -88,7 +88,7 @@ async fn run_workers(
     let worker_poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
 
     let pginfo = crate::pginfo::startup::bootstrap(crate::pginfo::startup::PgInfoRuntimeRequest {
-        self_id: identity.member_id.clone(),
+        identity: identity.clone(),
         probe: crate::pginfo::state::PgProbeTarget::local_from_config(&cfg, &process_plan),
         poll_interval: worker_poll_interval,
         log: log.clone(),

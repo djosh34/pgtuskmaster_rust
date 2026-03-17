@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 12:10:36 AM CET 2026
+Generated: Tue Mar 17 02:33:18 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 
@@ -254,6 +254,17 @@ Generated: Tue Mar 17 12:10:36 AM CET 2026
 <priority>high</priority>
 
 <description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/07-task-collapse-duplicate-struct-trees-into-canonical-domain-adts-and-prove-the-struct-count-went-down.md`
+
+```
+## Task: Collapse Duplicate Struct Trees Into Canonical Domain ADTs And Prove The Struct Count Went Down <status>not_started</status> <passes>true</passes>
+
+<priority>high</priority>
+<blocked_by>Full completion of `.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md`</blocked_by>
 ```
 
 ==============

@@ -5,7 +5,7 @@ use tokio_postgres::NoTls;
 
 use crate::config::{
     resolve_secret_string, ManagedPostgresRoleKey, PostgresRoleName, PostgresRolePrivilege,
-    RoleAuthConfig, RuntimeConfig,
+    PostgresRoleSlots, RoleAuthConfig, RuntimeConfig,
 };
 
 const MANAGED_EXTRA_ROLE_COMMENT_PREFIX: &str = "pgtuskmaster:managed-extra:";
@@ -32,12 +32,7 @@ pub(crate) struct DesiredManagedRoleSet {
     pub(crate) extra: BTreeMap<ManagedPostgresRoleKey, ExtraManagedRoleSpec>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MandatoryManagedRoleSet {
-    pub(crate) superuser: ManagedRoleSpec,
-    pub(crate) replicator: ManagedRoleSpec,
-    pub(crate) rewinder: ManagedRoleSpec,
-}
+pub(crate) type MandatoryManagedRoleSet = PostgresRoleSlots<ManagedRoleSpec>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExtraManagedRoleSpec {
@@ -148,12 +143,6 @@ impl DesiredManagedRoleSet {
         self.extra
             .values()
             .filter(|extra| extra.spec.drop_policy == ManagedRoleDropPolicy::DropWhenAbsent)
-    }
-}
-
-impl MandatoryManagedRoleSet {
-    fn iter(&self) -> impl Iterator<Item = &ManagedRoleSpec> {
-        [&self.superuser, &self.replicator, &self.rewinder].into_iter()
     }
 }
 
@@ -401,8 +390,8 @@ mod tests {
     use super::render_managed_role_reconciliation_sql;
 
     fn inline_password(password: &str) -> SecretSource {
-        SecretSource::Inline {
-            content: password.to_string(),
+        SecretSource::String {
+            value: password.to_string(),
         }
     }
 

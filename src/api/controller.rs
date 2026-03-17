@@ -1,39 +1,21 @@
 use crate::{
-    api::{AcceptedResponse, ApiError, ApiResult, NodeState},
-    config::RuntimeConfig,
-    dcs::{ClusterMemberView, DcsHandle, DcsMode, DcsView, MemberPostgresView},
+    api::{AcceptedResponse, ApiError, ApiResult},
+    dcs::{ClusterMemberView, DcsHandle, DcsSnapshot},
     ha::{
         state::HaState,
         types::{AuthorityProjection, PublicationState},
     },
-    pginfo::state::{PgInfoState, Readiness},
-    process::state::ProcessState,
-    state::{MemberId, SwitchoverTarget},
+    pginfo::state::Readiness,
+    state::{MemberId, SwitchoverState},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct SwitchoverRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) switchover_to: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct NodeStateSnapshot {
-    pub(crate) cluster_name: String,
-    pub(crate) scope: String,
-    pub(crate) self_member_id: String,
-    pub(crate) pg: PgInfoState,
-    pub(crate) process: ProcessState,
-    pub(crate) dcs: DcsView,
-    pub(crate) ha: HaState,
-}
+pub(crate) type SwitchoverRequest = SwitchoverState;
 
 pub(crate) async fn post_switchover(
     _scope: &str,
     self_id: &MemberId,
     handle: &DcsHandle,
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     ha: &HaState,
     input: SwitchoverRequest,
 ) -> ApiResult<AcceptedResponse> {
@@ -55,25 +37,13 @@ pub(crate) async fn delete_switchover(
     Ok(AcceptedResponse { accepted: true })
 }
 
-pub(crate) fn build_node_state(_cfg: &RuntimeConfig, snapshot: NodeStateSnapshot) -> NodeState {
-    NodeState {
-        cluster_name: snapshot.cluster_name,
-        scope: snapshot.scope,
-        self_member_id: snapshot.self_member_id,
-        pg: snapshot.pg,
-        process: snapshot.process,
-        dcs: snapshot.dcs,
-        ha: snapshot.ha,
-    }
-}
-
 fn validate_switchover_request(
     self_id: &MemberId,
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     ha: &HaState,
     input: SwitchoverRequest,
-) -> ApiResult<SwitchoverTarget> {
-    if dcs.mode() != DcsMode::Coordinated {
+) -> ApiResult<SwitchoverState> {
+    if !dcs.is_quorum() {
         return Err(ApiError::bad_request(
             "switchover requests require coordinated DCS state".to_string(),
         ));
@@ -89,20 +59,18 @@ fn validate_switchover_request(
         }
     }
 
-    let target = match input.switchover_to {
-        None => {
-            return Ok(SwitchoverTarget::AnyHealthyReplica);
+    let target_member_id = match input {
+        SwitchoverState::None => {
+            return Err(ApiError::bad_request(
+                "switchover request must choose a target state".to_string(),
+            ));
         }
-        Some(member_id) => member_id,
+        SwitchoverState::AnyHealthyReplica => {
+            return Ok(SwitchoverState::AnyHealthyReplica);
+        }
+        SwitchoverState::Specific(member_id) => member_id,
     };
-    let target = target.trim();
-    if target.is_empty() {
-        return Err(ApiError::bad_request(
-            "switchover_to must not be empty".to_string(),
-        ));
-    }
-
-    let target_member_id = MemberId(target.to_string());
+    let target = target_member_id.0.trim().to_string();
     if &target_member_id == self_id {
         return Err(ApiError::bad_request(format!(
             "switchover_to member `{target}` is already the leader"
@@ -110,8 +78,7 @@ fn validate_switchover_request(
     }
 
     let target_member = dcs
-        .cluster()
-        .and_then(|cluster| cluster.member(&target_member_id))
+        .member(&target_member_id)
         .ok_or_else(|| ApiError::bad_request(format!("unknown switchover_to member `{target}`")))?;
     if !member_slot_is_eligible_target(target_member) {
         return Err(ApiError::bad_request(format!(
@@ -119,13 +86,10 @@ fn validate_switchover_request(
         )));
     }
 
-    Ok(SwitchoverTarget::Specific(target_member_id))
+    Ok(SwitchoverState::Specific(target_member_id))
 }
 
 fn member_slot_is_eligible_target(value: &ClusterMemberView) -> bool {
-    match value.postgres() {
-        MemberPostgresView::Unknown { readiness, .. } => readiness == &Readiness::Ready,
-        MemberPostgresView::Primary { .. } => false,
-        MemberPostgresView::Replica { readiness, .. } => readiness == &Readiness::Ready,
-    }
+    let postgres = value.postgres();
+    postgres.readiness() == Readiness::Ready && !postgres.is_primary()
 }

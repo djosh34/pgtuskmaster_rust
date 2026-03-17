@@ -9,10 +9,13 @@ pub struct LeaseEpoch {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SwitchoverTarget {
+pub enum SwitchoverState {
+    None,
     AnyHealthyReplica,
     Specific(MemberId),
 }
+
+pub type SwitchoverTarget = SwitchoverState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedWalPosition {

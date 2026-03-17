@@ -9,7 +9,7 @@ use crate::{
         CommandOutputDto, StateCommandOutputDto, StateHealthDto, StateProjectionDto,
         StateQueryOriginDto, StateWarningDto, switchover_projection,
     },
-    dcs::{ClusterMemberView, DcsMode},
+    dcs::ClusterMemberView,
     ha::types::{AuthorityProjection, PublicationState},
 };
 
@@ -36,7 +36,7 @@ pub(crate) async fn fetch_seed_state(
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let state = client.get_state().await?;
     let queried_via = StateQueryOriginDto {
-        member_id: state.self_member_id.clone(),
+        member_id: state.identity.member_id.0.clone(),
         api_url: client.base_url().to_string(),
     };
     Ok((state, queried_via))
@@ -71,18 +71,14 @@ pub(crate) fn build_state_projection(
         StateHealthDto::Degraded
     };
     StateProjectionDto {
-        cluster_name: state.cluster_name.clone(),
-        scope: state.scope.clone(),
+        cluster_name: state.identity.cluster_name.0.clone(),
+        scope: state.identity.scope.0.clone(),
         queried_via,
         health,
         verbose,
-        discovered_member_count: state
-            .dcs
-            .cluster()
-            .map(|cluster| cluster.member_count())
-            .unwrap_or(0),
+        discovered_member_count: state.dcs.member_count(),
         warnings,
-        switchover: switchover_projection(state.dcs.cluster()),
+        switchover: switchover_projection(&state.dcs),
     }
 }
 
@@ -120,24 +116,18 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
 }
 
 pub(crate) fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
-    let degraded_mode_warning = (state.dcs.mode() != DcsMode::Coordinated).then(|| StateWarningDto {
+    let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
         code: "degraded_dcs_mode".to_string(),
         message: format!(
             "seed node reports {} DCS mode",
-            dcs_mode_label(state.dcs.mode())
+            dcs_mode_label(&state.dcs)
         ),
     });
     let no_primary_warning = authority_primary_member(state).is_none().then(|| StateWarningDto {
         code: "no_primary".to_string(),
         message: "seed node does not currently project an authoritative primary".to_string(),
     });
-    let no_members_warning = (state
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or(0)
-        == 0)
-        .then(|| StateWarningDto {
+    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
             code: "no_members".to_string(),
             message: "seed node does not currently expose any DCS member slots".to_string(),
         });
@@ -166,10 +156,6 @@ pub(crate) fn member_is_ready_replica(member: &ClusterMemberView) -> bool {
     member.postgres().is_ready_replica()
 }
 
-fn dcs_mode_label(mode: DcsMode) -> &'static str {
-    match mode {
-        DcsMode::Coordinated => "coordinated",
-        DcsMode::Degraded => "degraded",
-        DcsMode::NotTrusted => "not_trusted",
-    }
+fn dcs_mode_label(snapshot: &crate::dcs::DcsView) -> &'static str {
+    snapshot.mode_label()
 }

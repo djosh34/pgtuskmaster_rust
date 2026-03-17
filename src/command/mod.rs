@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
-    dcs::{ClusterMemberView, DcsMode, MemberPostgresView, SwitchoverView},
+    dcs::{ClusterMemberView, MemberPostgresView, SwitchoverView},
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::Readiness,
-    state::{MemberId, SwitchoverTarget},
+    state::{MemberId, SwitchoverState},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,13 +252,7 @@ fn render_state_command_text(output: &StateCommandOutputDto) -> String {
 fn sorted_state_rows(state: &NodeState, verbose: bool) -> Vec<Vec<String>> {
     let mut rows = state
         .dcs
-        .cluster()
-        .into_iter()
-        .flat_map(|cluster| {
-            cluster
-                .member_ids()
-                .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
-        })
+        .members()
         .map(|(member_id, member)| state_row(state, member_id, member, verbose))
         .collect::<Vec<_>>();
     rows.sort_by(|left, right| {
@@ -275,13 +269,13 @@ fn state_row(
     member: &ClusterMemberView,
     verbose: bool,
 ) -> Vec<String> {
-    let is_self = member_id.0 == state.self_member_id;
+    let is_self = member_id == &state.identity.member_id;
     if verbose {
         vec![
             member_id.0.clone(),
             yes_no(is_self),
             member_role_label(member.postgres()).to_string(),
-            dcs_mode_label(state.dcs.mode()).to_string(),
+            dcs_mode_label(&state.dcs).to_string(),
             authority_primary_member(state).unwrap_or_else(|| "-".to_string()),
             readiness_label(&member.postgres().readiness()).to_string(),
             if is_self {
@@ -296,7 +290,7 @@ fn state_row(
             member_id.0.clone(),
             yes_no(is_self),
             member_role_label(member.postgres()).to_string(),
-            dcs_mode_label(state.dcs.mode()).to_string(),
+            dcs_mode_label(&state.dcs).to_string(),
             readiness_label(&member.postgres().readiness()).to_string(),
             "-".to_string(),
         ]
@@ -354,10 +348,12 @@ fn authority_primary_member(state: &NodeState) -> Option<String> {
 }
 
 fn member_role_label(member: &MemberPostgresView) -> &'static str {
-    match member {
-        MemberPostgresView::Unknown { .. } => "unknown",
-        MemberPostgresView::Primary { .. } => "primary",
-        MemberPostgresView::Replica { .. } => "replica",
+    if member.is_primary() {
+        "primary"
+    } else if member.upstream().is_some() || member.is_ready_replica() {
+        "replica"
+    } else {
+        "unknown"
     }
 }
 
@@ -369,25 +365,20 @@ fn readiness_label(readiness: &Readiness) -> &'static str {
     }
 }
 
-fn dcs_mode_label(mode: DcsMode) -> &'static str {
-    match mode {
-        DcsMode::Coordinated => "coordinated",
-        DcsMode::Degraded => "degraded",
-        DcsMode::NotTrusted => "not_trusted",
-    }
+fn dcs_mode_label(snapshot: &crate::dcs::DcsView) -> &'static str {
+    snapshot.mode_label()
 }
 
-pub fn switchover_projection(
-    cluster: Option<&crate::dcs::ClusterView>,
-) -> Option<StateSwitchoverDto> {
-    match cluster.map(crate::dcs::ClusterView::switchover) {
-        Some(SwitchoverView::Requested(target)) => Some(StateSwitchoverDto {
+pub fn switchover_projection(snapshot: &crate::dcs::DcsView) -> Option<StateSwitchoverDto> {
+    match snapshot.switchover() {
+        Some(SwitchoverView::AnyHealthyReplica) => Some(StateSwitchoverDto {
             pending: true,
-            target_member_id: match target {
-                SwitchoverTarget::AnyHealthyReplica => None,
-                SwitchoverTarget::Specific(member_id) => Some(member_id.0.clone()),
-            },
+            target_member_id: None,
         }),
-        Some(SwitchoverView::None) | None => None,
+        Some(SwitchoverView::Specific(member_id)) => Some(StateSwitchoverDto {
+            pending: true,
+            target_member_id: Some(member_id.0.clone()),
+        }),
+        Some(SwitchoverState::None) | None => None,
     }
 }

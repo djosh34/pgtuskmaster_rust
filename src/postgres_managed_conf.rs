@@ -405,8 +405,11 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
-        pginfo::state::{PgConnInfo, PgSslMode},
-        state::{PgConnectTarget, PgTcpTarget},
+        pginfo::{
+            conninfo::PgClientTls,
+            state::{PgConnInfo, PgSslMode},
+        },
+        state::PgEndpoint,
     };
 
     use super::{
@@ -430,10 +433,7 @@ mod tests {
             },
             start_intent: ManagedPostgresStartIntent::replica(
                 PgConnInfo {
-                    target: PgConnectTarget::Tcp(PgTcpTarget::new(
-                        "leader.internal".to_string(),
-                        5432,
-                    )?),
+                    endpoint: PgEndpoint::tcp("leader.internal".to_string(), 5432)?,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: Some("node-b".to_string()),
@@ -441,6 +441,12 @@ mod tests {
                     ssl_mode: PgSslMode::Require,
                     ssl_root_cert: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
+                    tls: PgClientTls {
+                        mode: PgSslMode::Require,
+                        root_cert: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
+                        client_cert: None,
+                        client_key: None,
+                    },
                 },
                 ManagedStandbyAuth::PasswordPassfile {
                     path: managed_standby_passfile_path(
@@ -614,10 +620,7 @@ mod tests {
         assert_eq!(
             ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
-                    target: PgConnectTarget::Tcp(PgTcpTarget::new(
-                        "leader.internal".to_string(),
-                        5432,
-                    )?),
+                    endpoint: PgEndpoint::tcp("leader.internal".to_string(), 5432)?,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -625,6 +628,12 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     ssl_root_cert: None,
                     options: None,
+                    tls: PgClientTls {
+                        mode: PgSslMode::Prefer,
+                        root_cert: None,
+                        client_cert: None,
+                        client_key: None,
+                    },
                 },
                 ManagedStandbyAuth::PasswordPassfile {
                     path: PathBuf::from("/var/lib/postgresql/data")

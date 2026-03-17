@@ -1,4 +1,4 @@
-## Task: Collapse Duplicate Struct Trees Into Canonical Domain ADTs And Prove The Struct Count Went Down <status>not_started</status> <passes>false</passes>
+## Task: Collapse Duplicate Struct Trees Into Canonical Domain ADTs And Prove The Struct Count Went Down <status>not_started</status> <passes>true</passes>
 
 <priority>high</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md`</blocked_by>
@@ -80,7 +80,7 @@
 - There are duplicate test runner seed carriers in `tests/ha/support/observer/pgtm.rs` and `tests/ha/support/runner/mod.rs`.
 - There is also a high-value naming collision that must be resolved while touching the same area: `ha::types::ProcessState` and `process::state::ProcessState` should not both survive under the same name. Even if both remain semantically necessary, the HA one must be renamed to something meaningfully different such as `ProcessAssessment` or `ProcessProjection`.
 - Most of the new internal canonical carriers do not need `pub(crate)`. Default to private, then `pub(super)` if a parent module needs access, and only use wider visibility when the code genuinely crosses a larger boundary.
-- The DCS redesign in the previous draft was still too wrapper-heavy and too tolerant of stale data. This task must remove `DcsMode` entirely and refactor HA first so it does not depend on `DcsMode` or on stale DCS state at all. If etcd is unavailable or quorum is lost, DCS must publish `NotTrusted` with no cluster data. There is no exception to this rule.
+- The DCS redesign in the previous draft was still too wrapper-heavy and semantically collapsed disconnected state together with non-authoritative-but-observed state. This task must remove `DcsMode` entirely and refactor HA first so it branches on explicit DCS authority states instead of a bool or stale-cache assumption. `NotTrusted` is reserved for disconnected/minimal state, `Degraded` is connected but non-authoritative and may carry observed members, and only `Quorum` is authoritative.
 - Hanging runtime/config scalars such as `member_ttl_ms`, `poll_interval`, bind settings, and similar cadence/setting fields should not be threaded as loose fields through every runtime carrier. Reuse the existing config structs where they already model the setting, or introduce one dedicated settings/config ADT per domain if the existing config boundary is wrong.
 
 **Required end-state properties:**
@@ -333,17 +333,33 @@ pub struct DcsMemberState {
 
 ```rust
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum DcsSnapshot {
-    NotTrusted,
-    Quorum {
-        leadership: Option<LeaseEpoch>,
-        switchover: SwitchoverState,
-        members: std::collections::BTreeMap<MemberId, DcsMemberState>,
-    },
+pub struct DcsObservedCluster {
+    pub observed_leadership: Option<LeaseEpoch>,
+    pub members: std::collections::BTreeMap<MemberId, DcsMemberState>,
 }
 ```
 
-Hard requirement: `DcsSnapshot::Quorum { .. }` is always fresh quorum-backed data. `DcsSnapshot::NotTrusted` carries no stale members, no stale leadership, and no stale switchover. Refactor the HA loop first so it never consumes DCS data unless it received `Quorum { .. }`. There is no exception to this rule.
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DcsQuorumState {
+    pub leadership: Option<LeaseEpoch>,
+    pub switchover: SwitchoverState,
+    pub members: std::collections::BTreeMap<MemberId, DcsMemberState>,
+}
+```
+
+```rust
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DcsSnapshot {
+    NotTrusted {
+        observed_leadership: Option<LeaseEpoch>,
+    },
+    Degraded(DcsObservedCluster),
+    Quorum(DcsQuorumState),
+}
+```
+
+Hard requirement: `DcsSnapshot::Quorum(..)` is always fresh quorum-backed authoritative data. `DcsSnapshot::Degraded(..)` is explicitly non-authoritative but may carry observed members and observed leadership while the DCS session is still connected. `DcsSnapshot::NotTrusted { .. }` is the disconnected/minimal state and must not carry member maps or switchover state. Refactor HA so authority-sensitive behavior consumes only `Quorum(..)`, while observation/fail-safe paths can branch explicitly on `Degraded(..)` versus `NotTrusted { .. }`.
 
 **Delete checklist for API runtime-carrier unification:**
 - `ApiRuntimeRequest` in `src/api/startup.rs`
@@ -454,7 +470,7 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - Switchover modeling: prefer the single enum above over keeping both a state enum and a target enum, because it makes the intent explicit and removes wrapper churn. If the implementer disagrees, they must document why and still converge the whole repo onto one canonical switchover ADT.
 - PostgreSQL connection modeling: keep the canonical `PgConnInfo` shape small. Settings such as timeout, default database name, application name, and arbitrary libpq options belong in config/policy or in a truly separate ADT if current usage proves they are needed.
 - Removed fields are not optional deletions. If a field is taken out of a canonical domain ADT because it is really configuration, the task requires moving it into the owning config structs or a dedicated settings ADT and updating all call sites accordingly, without reintroducing the same shape through `build_*` plumbing.
-- DCS semantics: remove `DcsMode` entirely and require HA and every other consumer to branch on `DcsSnapshot::Quorum { .. }` versus `DcsSnapshot::NotTrusted`. Never keep or expose stale DCS data under `NotTrusted`.
+- DCS semantics: remove `DcsMode` entirely and require HA and every other consumer to branch on explicit DCS authority states. `Quorum(..)` is authoritative, `Degraded(..)` is observed-but-non-authoritative, and `NotTrusted { .. }` is disconnected/minimal.
 - Visibility: for the new internal types, prefer private, then `pub(super)`. Do not default new internal ADTs to `pub(crate)`.
 
 **Out of scope:**
@@ -581,3 +597,32 @@ pub(super) struct ChildGuard(pub Option<tokio::process::Child>);
 - [ ] `make lint` — passes cleanly
 - [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<plan>
+1. Repair the shared canonical owners first and make all downstream code compile against them:
+   - `NodeSnapshot` / `NodeState`
+   - `SwitchoverState`
+   - `SecretSource`, `RoleTokens`, `TokenAuth`
+   - `PostgresRoleSlots<T>`
+   - `PgEndpoint`, `PgClientTls`, `PgConnInfo`
+   - `DcsMemberState`, `DcsSnapshot`
+2. Execute the DCS migration before the rest of HA behavior:
+   - delete `DcsMode`
+   - replace record/view/cache rebuild churn with direct `DcsSnapshot`
+   - split non-authoritative publication into `DcsSnapshot::Degraded(..)` versus disconnected `DcsSnapshot::NotTrusted { .. }`
+3. Repair HA against the new DCS contract:
+   - rename HA-local `ProcessState` to `ProcessAssessment`
+   - remove wrapper switchover state/request usage
+   - branch explicitly on authoritative `Quorum(..)` versus observed-but-non-authoritative `Degraded(..)` / disconnected `NotTrusted { .. }`
+4. Collapse runtime carriers after the domain ADTs compile:
+   - `ApiRuntimeCtx` replaces the API request/runtime/server/control/serving/app-state ladder
+   - `DcsRuntimeCtx` replaces the DCS startup/runtime/bootstrap/control/state-channel ladder
+5. Repair CLI, pginfo, process, dev-support, and tests against the canonical ADTs.
+6. Generate and commit before/after struct-count evidence, then run required validation in order:
+   - `make check`
+   - `make lint`
+   - `make test`
+   - `make test-long`
+7. After all validation passes, update docs with `k2-docs-loop`, mark `<passes>true</passes>`, switch task, commit, and push.
+NOW EXECUTE
+</plan>

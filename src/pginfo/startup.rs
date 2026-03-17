@@ -2,16 +2,16 @@ use std::time::Duration;
 
 use crate::{
     logging::LogSender,
-    state::{new_state_channel, MemberId, WorkerError},
+    state::{new_state_channel, NodeIdentity, WorkerError},
 };
 
 use super::state::{
     PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerBootstrap,
-    PgInfoWorkerCtx, PgNodeIdentity, PgProbeTarget,
+    PgInfoWorkerCtx, PgProbeTarget,
 };
 
 pub(crate) struct PgInfoRuntimeRequest {
-    pub(crate) self_id: MemberId,
+    pub(crate) identity: NodeIdentity,
     pub(crate) probe: PgProbeTarget,
     pub(crate) poll_interval: Duration,
     pub(crate) log: LogSender,
@@ -36,9 +36,7 @@ pub(crate) fn bootstrap(request: PgInfoRuntimeRequest) -> PgInfoRuntimeBundle {
     PgInfoRuntimeBundle {
         state,
         worker: PgInfoWorker(PgInfoWorkerCtx::new(PgInfoWorkerBootstrap {
-            identity: PgNodeIdentity {
-                self_id: request.self_id,
-            },
+            identity: request.identity,
             probe: request.probe,
             cadence: PgInfoCadence {
                 poll_interval: request.poll_interval,

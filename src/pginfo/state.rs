@@ -1,4 +1,4 @@
-use std::{path::PathBuf, time::Duration};
+use std::time::Duration;
 
 use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
@@ -8,8 +8,8 @@ pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
 use crate::state::StatePublisher;
 use crate::state::{
-    MemberId, PgConnectTarget, PgUnixTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
-    WorkerError, WorkerStatus,
+    MemberId, NodeIdentity, ObservedWalPosition, PgEndpoint, SystemIdentifier, TimelineId,
+    UnixMillis, WalLsn, WorkerError, WorkerStatus,
 };
 use crate::{config::RuntimeConfig, logging::LogSender, process::state::ProcessRuntimePlan};
 
@@ -89,6 +89,85 @@ impl PgInfoState {
         self.common().last_refresh_at
     }
 
+    pub(crate) fn readiness(&self) -> Readiness {
+        self.common().readiness.clone()
+    }
+
+    pub(crate) fn system_identifier(&self) -> Option<SystemIdentifier> {
+        self.common().system_identifier
+    }
+
+    pub(crate) fn timeline(&self) -> Option<TimelineId> {
+        self.common().timeline
+    }
+
+    pub(crate) fn is_primary(&self) -> bool {
+        matches!(self, Self::Primary { .. })
+    }
+
+    pub(crate) fn is_ready_replica(&self) -> bool {
+        matches!(
+            self,
+            Self::Replica {
+                common: PgInfoCommon {
+                    readiness: Readiness::Ready,
+                    ..
+                },
+                ..
+            }
+        )
+    }
+
+    pub(crate) fn committed_wal(&self) -> Option<ObservedWalPosition> {
+        match self {
+            Self::Primary { common, wal_lsn, .. } => Some(ObservedWalPosition {
+                timeline: common.timeline,
+                lsn: *wal_lsn,
+            }),
+            Self::Unknown { .. } | Self::Replica { .. } => None,
+        }
+    }
+
+    pub(crate) fn replay_wal(&self) -> Option<ObservedWalPosition> {
+        match self {
+            Self::Replica {
+                common,
+                replay_lsn,
+                ..
+            } => Some(ObservedWalPosition {
+                timeline: common.timeline,
+                lsn: *replay_lsn,
+            }),
+            Self::Unknown { .. } | Self::Primary { .. } => None,
+        }
+    }
+
+    pub(crate) fn follow_wal(&self) -> Option<ObservedWalPosition> {
+        match self {
+            Self::Replica {
+                common,
+                follow_lsn,
+                ..
+            } => follow_lsn.map(|lsn| ObservedWalPosition {
+                timeline: common.timeline,
+                lsn,
+            }),
+            Self::Unknown { .. } | Self::Primary { .. } => None,
+        }
+    }
+
+    pub(crate) fn upstream(&self) -> Option<&MemberId> {
+        match self {
+            Self::Replica {
+                upstream: Some(upstream),
+                ..
+            } => Some(&upstream.member_id),
+            Self::Unknown { .. } | Self::Primary { .. } | Self::Replica { upstream: None, .. } => {
+                None
+            }
+        }
+    }
+
     pub(crate) fn starting() -> Self {
         Self::Unknown {
             common: PgInfoCommon {
@@ -112,7 +191,7 @@ impl PgInfoState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoWorkerCtx {
-    pub(crate) identity: PgNodeIdentity,
+    pub(crate) identity: NodeIdentity,
     pub(crate) probe: PgProbeTarget,
     pub(crate) cadence: PgInfoCadence,
     pub(crate) state_channel: PgInfoStateChannel,
@@ -120,25 +199,8 @@ pub(crate) struct PgInfoWorkerCtx {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgNodeIdentity {
-    pub(crate) self_id: MemberId,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgLocalProbeTarget {
-    pub(crate) socket_dir: PathBuf,
-    pub(crate) port: u16,
-    pub(crate) user: String,
-    pub(crate) dbname: String,
-    pub(crate) application_name: Option<String>,
-    pub(crate) connect_timeout_s: Option<u32>,
-    pub(crate) ssl_mode: PgSslMode,
-    pub(crate) ssl_root_cert: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PgProbeTarget {
-    Local(PgLocalProbeTarget),
+    Local(PgConnInfo),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -158,7 +220,7 @@ pub(crate) struct PgInfoRuntime {
 }
 
 pub(crate) struct PgInfoWorkerBootstrap {
-    pub(crate) identity: PgNodeIdentity,
+    pub(crate) identity: NodeIdentity,
     pub(crate) probe: PgProbeTarget,
     pub(crate) cadence: PgInfoCadence,
     pub(crate) state_channel: PgInfoStateChannel,
@@ -189,9 +251,11 @@ impl PgProbeTarget {
         cfg: &RuntimeConfig,
         process_plan: &ProcessRuntimePlan,
     ) -> Self {
-        Self::Local(PgLocalProbeTarget {
-            socket_dir: process_plan.postgres.paths.socket_dir.clone(),
-            port: process_plan.postgres.port,
+        Self::Local(PgConnInfo {
+            endpoint: PgEndpoint::UnixSocket {
+                socket_dir: process_plan.postgres.paths.socket_dir.clone(),
+                port: process_plan.postgres.port,
+            },
             user: cfg
                 .postgres
                 .roles
@@ -200,28 +264,24 @@ impl PgProbeTarget {
                 .username
                 .as_str()
                 .to_owned(),
-            dbname: cfg.postgres.local_database.clone(),
+            dbname: "postgres".to_string(),
             application_name: None,
-            connect_timeout_s: Some(cfg.postgres.connect_timeout_s),
+            connect_timeout_s: None,
             ssl_mode: crate::config::defaults::default_pg_ssl_mode(),
             ssl_root_cert: None,
+            options: None,
+            tls: super::conninfo::PgClientTls {
+                mode: crate::config::defaults::default_pg_ssl_mode(),
+                root_cert: None,
+                client_cert: None,
+                client_key: None,
+            },
         })
     }
 
     pub(crate) fn to_conninfo(&self) -> PgConnInfo {
         match self {
-            Self::Local(target) => PgConnInfo {
-                target: PgConnectTarget::Unix(PgUnixTarget {
-                    socket_dir: target.socket_dir.clone(),
-                }),
-                user: target.user.clone(),
-                dbname: target.dbname.clone(),
-                application_name: target.application_name.clone(),
-                connect_timeout_s: target.connect_timeout_s,
-                ssl_mode: target.ssl_mode,
-                ssl_root_cert: target.ssl_root_cert.clone(),
-                options: None,
-            },
+            Self::Local(target) => target.clone(),
         }
     }
 }

@@ -1,8 +1,8 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::state::{PgConnectTarget, PgTcpTarget, PgUnixTarget};
+use crate::{config::SecretSource, state::PgEndpoint};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
@@ -61,7 +61,7 @@ impl Serialize for PgSslMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgConnInfo {
-    pub target: PgConnectTarget,
+    pub endpoint: PgEndpoint,
     pub user: String,
     pub dbname: String,
     pub application_name: Option<String>,
@@ -69,47 +69,92 @@ pub struct PgConnInfo {
     pub ssl_mode: PgSslMode,
     pub ssl_root_cert: Option<PathBuf>,
     pub options: Option<String>,
+    pub tls: PgClientTls,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PgClientTls {
+    pub mode: PgSslMode,
+    pub root_cert: Option<PathBuf>,
+    pub client_cert: Option<PathBuf>,
+    pub client_key: Option<SecretSource>,
+}
+
+impl fmt::Display for PgConnInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(render_pg_conninfo(self).as_str())
+    }
+}
+
+impl FromStr for PgConnInfo {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let entries = parse_conninfo_entries(input)?;
+        let host = entries
+            .get("host")
+            .cloned()
+            .ok_or_else(|| "missing required conninfo key `host`".to_string())?;
+        let port = entries
+            .get("port")
+            .ok_or_else(|| "missing required conninfo key `port`".to_string())?
+            .parse::<u16>()
+            .map_err(|err| format!("invalid conninfo port: {err}"))?;
+        let mode = entries
+            .get("sslmode")
+            .and_then(|value| PgSslMode::parse(value.as_str()))
+            .ok_or_else(|| "missing or invalid conninfo key `sslmode`".to_string())?;
+        let endpoint = if host.starts_with('/') {
+            PgEndpoint::UnixSocket {
+                socket_dir: PathBuf::from(host),
+                port,
+            }
+        } else {
+            PgEndpoint::tcp(host, port)?
+        };
+        Ok(Self {
+            endpoint,
+            user: entries
+                .get("user")
+                .cloned()
+                .ok_or_else(|| "missing required conninfo key `user`".to_string())?,
+            dbname: entries
+                .get("dbname")
+                .cloned()
+                .ok_or_else(|| "missing required conninfo key `dbname`".to_string())?,
+            application_name: entries.get("application_name").cloned(),
+            connect_timeout_s: entries
+                .get("connect_timeout")
+                .map(|value| {
+                    value
+                        .parse::<u32>()
+                        .map_err(|err| format!("invalid conninfo connect_timeout: {err}"))
+                })
+                .transpose()?,
+            ssl_mode: mode,
+            ssl_root_cert: entries.get("sslrootcert").map(PathBuf::from),
+            options: entries.get("options").cloned(),
+            tls: PgClientTls {
+                mode,
+                root_cert: entries.get("sslrootcert").map(PathBuf::from),
+                client_cert: None,
+                client_key: None,
+            },
+        })
+    }
 }
 
 pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
-    let entries = parse_conninfo_entries(input)?;
-    let get_required = |key: &str| {
-        entries
-            .get(key)
-            .cloned()
-            .ok_or_else(|| format!("missing required conninfo key `{key}`"))
-    };
-
-    let port = get_required("port")?
-        .parse::<u16>()
-        .map_err(|err| format!("invalid conninfo port: {err}"))?;
-    let host = get_required("host")?;
-    let ssl_mode_raw = get_required("sslmode")?;
-    let ssl_mode = PgSslMode::parse(ssl_mode_raw.as_str())
-        .ok_or_else(|| format!("unsupported conninfo sslmode `{ssl_mode_raw}`"))?;
-    let connect_timeout_s = entries
-        .get("connect_timeout")
-        .map(|value| {
-            value
-                .parse::<u32>()
-                .map_err(|err| format!("invalid conninfo connect_timeout: {err}"))
-        })
-        .transpose()?;
-
-    Ok(PgConnInfo {
-        target: parse_connect_target(host, port)?,
-        user: get_required("user")?,
-        dbname: get_required("dbname")?,
-        application_name: entries.get("application_name").cloned(),
-        connect_timeout_s,
-        ssl_mode,
-        ssl_root_cert: entries.get("sslrootcert").map(PathBuf::from),
-        options: entries.get("options").cloned(),
-    })
+    input.parse()
 }
 
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
-    let (host, port) = render_connect_target(&info.target);
+    let (host, port) = match &info.endpoint {
+        PgEndpoint::Tcp { host, port } => (host.clone(), *port),
+        PgEndpoint::UnixSocket { socket_dir, port } => {
+            (socket_dir.display().to_string(), *port)
+        }
+    };
     let mut pairs = vec![
         ("host".to_string(), host),
         ("port".to_string(), port.to_string()),
@@ -136,22 +181,6 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
         .map(|(key, value)| format!("{key}={}", render_value(&value)))
         .collect::<Vec<String>>()
         .join(" ")
-}
-
-fn parse_connect_target(host: String, port: u16) -> Result<PgConnectTarget, String> {
-    if host.starts_with('/') {
-        return Ok(PgConnectTarget::Unix(PgUnixTarget {
-            socket_dir: PathBuf::from(host),
-        }));
-    }
-    PgTcpTarget::new(host, port).map(PgConnectTarget::Tcp)
-}
-
-fn render_connect_target(target: &PgConnectTarget) -> (String, u16) {
-    match target {
-        PgConnectTarget::Tcp(target) => (target.host().to_string(), target.port()),
-        PgConnectTarget::Unix(target) => (target.socket_dir.display().to_string(), 5432),
-    }
 }
 
 fn render_value(value: &str) -> String {
@@ -251,12 +280,12 @@ fn parse_conninfo_entries(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_pg_conninfo, render_pg_conninfo, PgConnInfo, PgSslMode};
-    use crate::state::{PgConnectTarget, PgTcpTarget};
+    use super::{parse_pg_conninfo, render_pg_conninfo, PgClientTls, PgConnInfo, PgSslMode};
+    use crate::state::PgTcpTarget;
 
     fn sample_conninfo() -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            target: PgTcpTarget::new("127.0.0.1".to_string(), 5432).map(PgConnectTarget::Tcp)?,
+            endpoint: PgTcpTarget::new("127.0.0.1".to_string(), 5432)?,
             user: "postgres".to_string(),
             dbname: "postgres".to_string(),
             application_name: Some("ha worker".to_string()),
@@ -264,6 +293,12 @@ mod tests {
             ssl_mode: PgSslMode::Require,
             ssl_root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
             options: Some("-c search_path=public".to_string()),
+            tls: PgClientTls {
+                mode: PgSslMode::Require,
+                root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
+                client_cert: None,
+                client_key: None,
+            },
         })
     }
 

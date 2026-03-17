@@ -12,6 +12,7 @@ use config::resolve_operator_context;
 use connect::{run_primary, run_replicas};
 use error::CliError;
 use switchover::{run_clear as run_switchover_clear, run_request as run_switchover_request};
+use crate::config::SecretSource;
 
 pub async fn run(cli: Cli) -> Result<String, CliError> {
     let context = resolve_operator_context(&cli)?;
@@ -19,7 +20,7 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
     let command = cli.command.clone().unwrap_or(Command::Status);
     if context.api_auth_enabled
         && matches!(command, Command::Switchover(_))
-        && context.api_client.auth.admin_token.is_none()
+        && matches!(context.api_client.auth.admin_token, SecretSource::None)
     {
         return Err(CliError::Config(
             "admin token is required for switchover commands when API auth is enabled".to_string(),

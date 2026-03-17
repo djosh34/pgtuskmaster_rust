@@ -58,6 +58,7 @@ impl DcsHandle {
         target: SwitchoverTarget,
     ) -> Result<(), DcsHandleError> {
         match target {
+            SwitchoverTarget::None => self.clear_switchover(),
             SwitchoverTarget::AnyHealthyReplica => self.publish_switchover_any(),
             SwitchoverTarget::Specific(member_id) => self.publish_switchover_to(member_id),
         }

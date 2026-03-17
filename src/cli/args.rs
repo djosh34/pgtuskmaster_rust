@@ -52,9 +52,9 @@ pub enum SwitchoverCommand {
     Request(SwitchoverRequestArgs),
 }
 
-#[derive(Clone, Debug, Args)]
+#[derive(Clone, Debug, Args, PartialEq, Eq)]
 pub struct SwitchoverRequestArgs {
-    #[arg(long)]
+    #[arg(long = "switchover-to")]
     pub switchover_to: Option<String>,
 }
 

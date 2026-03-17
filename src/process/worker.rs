@@ -1131,9 +1131,9 @@ fn build_command(
         }
         ProcessExecutionKind::BaseBackup(spec) => {
             validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
-            validate_non_empty_pg_connect_target(
-                "basebackup.source_conninfo.target",
-                &spec.source.conninfo.target,
+            validate_non_empty_pg_endpoint(
+                "basebackup.source_conninfo.endpoint",
+                &spec.source.conninfo.endpoint,
             )?;
             if spec.source.conninfo.user.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
@@ -1163,9 +1163,9 @@ fn build_command(
         }
         ProcessExecutionKind::PgRewind(spec) => {
             validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
-            validate_non_empty_pg_connect_target(
-                "pg_rewind.source_conninfo.target",
-                &spec.source.conninfo.target,
+            validate_non_empty_pg_endpoint(
+                "pg_rewind.source_conninfo.endpoint",
+                &spec.source.conninfo.endpoint,
             )?;
             if spec.source.conninfo.user.trim().is_empty() {
                 return Err(ProcessError::InvalidSpec(
@@ -1307,7 +1307,7 @@ fn materialize_execution_request(
             wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
             let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
             let source = basebackup_source_from_member(
-                &ctx.identity.self_id,
+                &ctx.identity.member_id,
                 &ctx.plan,
                 source_member_id,
                 source_member,
@@ -1322,7 +1322,7 @@ fn materialize_execution_request(
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
             let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
             let source = rewind_source_from_member(
-                &ctx.identity.self_id,
+                &ctx.identity.member_id,
                 &ctx.plan,
                 source_member_id,
                 source_member,
@@ -1403,7 +1403,7 @@ fn replica_start_intent(
 ) -> Result<ManagedPostgresStartIntent, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
     let source = basebackup_source_from_member(
-        &ctx.identity.self_id,
+        &ctx.identity.member_id,
         &ctx.plan,
         source_member_id,
         source_member,
@@ -1447,7 +1447,7 @@ fn resolve_source_member<'a>(
     dcs: &'a DcsView,
     leader: &'a MemberId,
 ) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
-    let cluster = dcs.cluster().ok_or_else(|| {
+    let cluster = dcs.coordinated().ok_or_else(|| {
         ProcessError::InvalidSpec(
             "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
                 .to_string(),
@@ -1543,13 +1543,15 @@ fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), P
     Ok(())
 }
 
-fn validate_non_empty_pg_connect_target(
+fn validate_non_empty_pg_endpoint(
     field: &str,
-    value: &crate::state::PgConnectTarget,
+    value: &crate::state::PgEndpoint,
 ) -> Result<(), ProcessError> {
     let is_empty = match value {
-        crate::state::PgConnectTarget::Tcp(target) => target.host().trim().is_empty(),
-        crate::state::PgConnectTarget::Unix(target) => target.socket_dir.as_os_str().is_empty(),
+        crate::state::PgEndpoint::Tcp { host, .. } => host.trim().is_empty(),
+        crate::state::PgEndpoint::UnixSocket { socket_dir, .. } => {
+            socket_dir.as_os_str().is_empty()
+        }
     };
     if is_empty {
         return Err(ProcessError::InvalidSpec(format!(
@@ -1792,7 +1794,9 @@ mod tests {
                 },
                 config: cfg.process.clone(),
                 identity: ProcessNodeIdentity {
-                    self_id: MemberId(cfg.cluster.member_id.clone()),
+                    cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
+                    scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
+                    member_id: MemberId(cfg.cluster.member_id.clone()),
                 },
                 observed: ProcessObservedState {
                     runtime_config,

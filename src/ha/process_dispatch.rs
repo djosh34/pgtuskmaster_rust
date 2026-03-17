@@ -28,8 +28,8 @@ pub(crate) fn dispatch_process_action(
 ) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
     let request = ProcessIntentRequest {
         id: process_job_id(
-            &ctx.identity.scope,
-            &ctx.identity.self_id,
+            ctx.identity.scope.as_str(),
+            &ctx.identity.member_id,
             action,
             action_index,
             ha_tick,

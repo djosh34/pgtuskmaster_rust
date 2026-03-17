@@ -5,13 +5,13 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 pub(crate) use crate::api::{AcceptedResponse, NodeState as NodeStateResponse};
-use crate::cli::error::CliError;
+use crate::{
+    cli::error::CliError,
+    config::{RoleTokens, SecretSource},
+    state::{MemberId, SwitchoverState},
+};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CliAuthConfig {
-    pub read_token: Option<String>,
-    pub admin_token: Option<String>,
-}
+pub type CliAuthConfig = RoleTokens;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CliTlsConfig {
@@ -45,12 +45,7 @@ enum AuthRole {
     Admin,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SwitchoverRequestInput {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    switchover_to: Option<String>,
-}
+type SwitchoverRequestInput = SwitchoverState;
 
 impl CliApiClient {
     pub fn from_config(config: CliApiClientConfig) -> Result<Self, CliError> {
@@ -65,8 +60,8 @@ impl CliApiClient {
         Ok(Self {
             base_url: config.base_url,
             http,
-            read_token: normalize_token(config.auth.read_token),
-            admin_token: normalize_token(config.auth.admin_token),
+            read_token: normalize_token(&config.auth.read_token),
+            admin_token: normalize_token(&config.auth.admin_token),
         })
     }
 
@@ -89,7 +84,10 @@ impl CliApiClient {
         &self,
         switchover_to: Option<String>,
     ) -> Result<AcceptedResponse, CliError> {
-        let body = SwitchoverRequestInput { switchover_to };
+        let body = match switchover_to {
+            Some(member_id) => SwitchoverRequestInput::Specific(MemberId(member_id)),
+            None => SwitchoverRequestInput::AnyHealthyReplica,
+        };
         self.send_json_with_body(
             Method::POST,
             "/switchover",
@@ -239,9 +237,12 @@ where
     serde_json::from_str(&body).map_err(|err| CliError::Decode(err.to_string()))
 }
 
-fn normalize_token(raw: Option<String>) -> Option<String> {
-    raw.and_then(|value| {
-        let trimmed = value.trim();
-        (!trimmed.is_empty()).then(|| trimmed.to_string())
-    })
+fn normalize_token(raw: &SecretSource) -> Option<String> {
+    match raw {
+        SecretSource::String { value } => {
+            let trimmed = value.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        }
+        SecretSource::None | SecretSource::Env { .. } | SecretSource::File { .. } => None,
+    }
 }

@@ -253,8 +253,8 @@ mod tests {
     };
 
     fn inline_password(value: &str) -> SecretSource {
-        SecretSource::Inline {
-            content: value.to_string(),
+        SecretSource::String {
+            value: value.to_string(),
         }
     }
 

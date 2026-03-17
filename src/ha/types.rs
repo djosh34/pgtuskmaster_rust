@@ -3,13 +3,15 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::DcsMode,
+    dcs::DcsSnapshot,
     process::{
         jobs::{ActiveJobKind, ProcessIntent},
         state::{JobOutcome, ProcessState as WorkerProcessState},
     },
-    state::{LeaseEpoch, MemberId, SwitchoverTarget, TimelineId, UnixMillis, WalLsn},
+    state::{LeaseEpoch, MemberId, TimelineId, UnixMillis, WalLsn},
 };
+
+pub use crate::state::SwitchoverState;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FenceCutoff {
@@ -27,7 +29,7 @@ pub struct WorldView {
 pub struct LocalKnowledge {
     pub data_dir: DataDirState,
     pub postgres: PostgresState,
-    pub process: ProcessState,
+    pub process: ProcessAssessment,
     pub storage: StorageState,
     pub managed_roles_reconciled: bool,
     pub publication: PublicationState,
@@ -82,7 +84,7 @@ pub enum ReplicationState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ProcessState {
+pub enum ProcessAssessment {
     Idle,
     Running(ActiveJobKind),
     Failed(JobFailure),
@@ -152,7 +154,7 @@ pub struct GlobalKnowledge {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CoordinationState {
-    pub mode: DcsMode,
+    pub dcs: DcsSnapshot,
     pub leadership: LeadershipView,
     pub primary: PrimaryObservation,
 }
@@ -196,17 +198,6 @@ pub struct ObservedPrimary {
     pub member: MemberId,
     pub timeline: Option<u64>,
     pub system_identifier: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum SwitchoverState {
-    None,
-    Requested(SwitchoverRequest),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SwitchoverRequest {
-    pub target: SwitchoverTarget,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,7 +358,7 @@ impl WorldView {
             local: LocalKnowledge {
                 data_dir: DataDirState::Missing,
                 postgres: PostgresState::Offline,
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -381,7 +372,9 @@ impl WorldView {
             },
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    mode: DcsMode::NotTrusted,
+                    dcs: DcsSnapshot::NotTrusted {
+                        observed_leadership: None,
+                    },
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -491,7 +484,7 @@ impl ReconcilePlan {
     }
 }
 
-impl From<&WorkerProcessState> for ProcessState {
+impl From<&WorkerProcessState> for ProcessAssessment {
     fn from(value: &WorkerProcessState) -> Self {
         match value {
             WorkerProcessState::Running { active, .. } => Self::Running(active.kind.clone()),

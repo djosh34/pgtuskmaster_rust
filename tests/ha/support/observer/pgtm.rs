@@ -3,7 +3,7 @@ use std::path::Path;
 use pgtuskmaster_rust::{
     api::NodeState,
     command::{CommandOutputDto, RenderedConnectionCommandDto},
-    dcs::{DcsMode, MemberPostgresView},
+    dcs::MemberPostgresView,
     ha::types::{AuthorityProjection, PublicationState},
 };
 use serde::de::DeserializeOwned;
@@ -54,7 +54,8 @@ impl PgtmObserver {
     }
 
     pub fn primary_tls_json(&self) -> Result<RenderedConnectionCommandDto> {
-        self.run_selected_view(["primary", "--json", "--tls"].as_slice(), "pgtm primary --tls")
+        self.select_seed_with_primary_view()
+            .map(|(_seed, primary)| primary)
     }
 
     pub fn replicas_tls_json(&self) -> Result<RenderedConnectionCommandDto> {
@@ -65,11 +66,7 @@ impl PgtmObserver {
     }
 
     pub fn state_and_primary_tls_json(&self) -> Result<(ClusterStatusView, RenderedConnectionCommandDto)> {
-        let seed = self.select_seed()?;
-        let config = config_path(seed.member);
-        let output = self.run(config, ["primary", "--json", "--tls"].as_slice())?;
-        let primary =
-            parse_connection_output(output.as_str(), format!("pgtm primary --tls via {}", config.display()))?;
+        let (seed, primary) = self.select_seed_with_primary_view()?;
         Ok((seed.state, primary))
     }
 
@@ -144,6 +141,64 @@ impl PgtmObserver {
         let output = self.run(config, args)?;
         parse_connection_output(output.as_str(), format!("{operation} via {}", config.display()))
     }
+
+    fn select_seed_with_primary_view(&self) -> Result<(SelectedSeed, RenderedConnectionCommandDto)> {
+        let mut best_seed = None;
+        let mut best_score = None;
+        let mut errors = Vec::new();
+
+        for member in config_paths() {
+            let config = config_path(member);
+            let state = match self.run(config, &["status", "--json"]).and_then(|output| {
+                parse_state_output(
+                    output.as_str(),
+                    format!("pgtm status via {}", config.display()),
+                )
+            }) {
+                Ok(state) => state,
+                Err(err) => {
+                    errors.push(format!("{} status: {err}", member.service_name()));
+                    continue;
+                }
+            };
+            let primary = match self
+                .run(config, ["primary", "--json", "--tls"].as_slice())
+                .and_then(|output| {
+                    parse_connection_output(
+                        output.as_str(),
+                        format!("pgtm primary --tls via {}", config.display()),
+                    )
+                })
+            {
+                Ok(primary) => primary,
+                Err(err) => {
+                    errors.push(format!("{} primary: {err}", member.service_name()));
+                    continue;
+                }
+            };
+
+            if !status_matches_primary_target(&state, &primary) {
+                errors.push(format!(
+                    "{} inconsistent: status primary={:?}, primary target={:?}",
+                    member.service_name(),
+                    status_primary_member(&state),
+                    primary_target_member(&primary),
+                ));
+                continue;
+            }
+
+            let score = status_score(&state);
+            match best_score {
+                Some(previous) if previous >= score => {}
+                _ => {
+                    best_score = Some(score);
+                    best_seed = Some((SelectedSeed { member, state }, primary));
+                }
+            }
+        }
+
+        best_seed.ok_or_else(|| aggregate_seed_failure("pgtm status/primary consistency", &errors))
+    }
 }
 
 fn config_paths() -> [ClusterMember; 3] {
@@ -211,25 +266,43 @@ fn aggregate_seed_failure(operation: &str, errors: &[String]) -> HarnessError {
 fn status_score(status: &ClusterStatusView) -> (usize, usize, usize, usize) {
     let reported_primary_count = status
         .dcs
-        .cluster()
-        .into_iter()
-        .flat_map(|cluster| cluster.members())
+        .members()
         .filter(|(_member_id, member)| {
             matches!(member.postgres(), MemberPostgresView::Primary { .. })
         })
         .count();
-    let discovered_member_count = status
-        .dcs
-        .cluster()
-        .map(|cluster| cluster.member_count())
-        .unwrap_or_default();
+    let discovered_member_count = status.dcs.member_count();
     (
-        usize::from(status.dcs.mode() == DcsMode::Coordinated),
+        usize::from(status.dcs.is_quorum()),
         usize::from(matches!(
             &status.ha.publication,
             PublicationState::Projected(AuthorityProjection::Primary(_))
         )),
-        usize::from(reported_primary_count == 1),
+        usize::from(status.dcs.is_quorum() && reported_primary_count == 1),
         discovered_member_count,
     )
+}
+
+fn status_matches_primary_target(
+    status: &ClusterStatusView,
+    primary: &RenderedConnectionCommandDto,
+) -> bool {
+    status_primary_member(status) == primary_target_member(primary)
+}
+
+fn status_primary_member(status: &ClusterStatusView) -> Option<String> {
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            Some(epoch.holder.0.clone())
+        }
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
+    }
+}
+
+fn primary_target_member(primary: &RenderedConnectionCommandDto) -> Option<String> {
+    match primary.state.targets.as_slice() {
+        [target] => Some(target.member_id.clone()),
+        _ => None,
+    }
 }

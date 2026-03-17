@@ -2,12 +2,13 @@ use thiserror::Error;
 
 use crate::{
     dcs::{ClusterMemberView, MemberPostgresView},
+    pginfo::conninfo::PgClientTls,
     pginfo::state::PgConnInfo,
     process::{
         jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
         state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
     },
-    state::{MemberId, PgConnectTarget},
+    state::MemberId,
 };
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -80,7 +81,7 @@ fn remote_conninfo(
     runtime: &ProcessRuntimePlan,
 ) -> PgConnInfo {
     PgConnInfo {
-        target: PgConnectTarget::Tcp(member.postgres_target().clone()),
+        endpoint: member.postgres_target().clone(),
         user: role.username.as_str().to_owned(),
         dbname: runtime.replica_access.dbname.clone(),
         application_name: None,
@@ -88,5 +89,11 @@ fn remote_conninfo(
         ssl_mode: runtime.replica_access.ssl_mode,
         ssl_root_cert: runtime.replica_access.ssl_root_cert.clone(),
         options: None,
+        tls: PgClientTls {
+            mode: runtime.replica_access.ssl_mode,
+            root_cert: runtime.replica_access.ssl_root_cert.clone(),
+            client_cert: None,
+            client_key: None,
+        },
     }
 }

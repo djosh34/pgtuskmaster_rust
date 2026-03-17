@@ -47,3 +47,4 @@
     - [pgtm CLI](reference/pgtm-cli.md)
     - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)
     - [Runtime Configuration](reference/runtime-configuration.md)
+    - [TLS Configuration Reference](reference/tls-configuration.md)

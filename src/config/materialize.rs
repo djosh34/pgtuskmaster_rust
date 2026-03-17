@@ -55,14 +55,15 @@ pub fn resolve_secret_string(
     secret: &SecretSource,
 ) -> Result<String, ConfigMaterializeError> {
     let value = match secret {
-        SecretSource::Path(path) | SecretSource::PathConfig { path } => {
+        SecretSource::None => String::new(),
+        SecretSource::File { path } => {
             std::fs::read_to_string(path).map_err(|source| ConfigMaterializeError::Io {
                 field: field.to_string(),
                 path: path.clone(),
                 source,
             })?
         }
-        SecretSource::Inline { content } => content.clone(),
+        SecretSource::String { value } => value.clone(),
         SecretSource::Env { env } => {
             let value = std::env::var(env).map_err(|err| match err {
                 std::env::VarError::NotPresent => ConfigMaterializeError::MissingEnv {
@@ -83,6 +84,10 @@ pub fn resolve_secret_string(
             value
         }
     };
+
+    if matches!(secret, SecretSource::None) {
+        return Ok(String::new());
+    }
 
     Ok(value.trim_end_matches(['\n', '\r']).to_string())
 }

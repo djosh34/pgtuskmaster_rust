@@ -23,8 +23,9 @@ pub use schema::{
     PgtmApiTransportExpectation, PgtmClientTlsConfig, PgtmConfig, PgtmPostgresConfig,
     PostgresAccessConfig, PostgresBinaryName, PostgresClientTransportConfig, PostgresConfig,
     PostgresLoggingConfig, PostgresNetworkConfig, PostgresPathsConfig, PostgresRewindConfig,
-    PostgresRoleConfig, PostgresRoleName, PostgresRolePrivilege, PostgresRolesConfig,
-    ProcessConfig, ProcessTimeoutsConfig, RoleAuthConfig, RuntimeConfig, SecretSource,
+    PostgresRoleConfig, PostgresRoleName, PostgresRolePrivilege, PostgresRoleSlots,
+    PostgresRolesConfig, ProcessConfig, ProcessTimeoutsConfig, RoleAuthConfig, RoleTokens,
+    RuntimeConfig, SecretSource, TokenAuth,
     StderrSinkConfig, TlsClientAuthConfig, TlsClientIdentityConfig, TlsServerConfig,
     TlsServerIdentityConfig,
 };

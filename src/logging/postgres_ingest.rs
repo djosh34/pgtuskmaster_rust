@@ -1305,10 +1305,7 @@ mod tests {
         use tokio::sync::mpsc;
         use tokio::time::Instant;
 
-        use crate::dcs::{
-            ClusterMemberView, ClusterView, DcsView, LeadershipObservation, MemberPostgresView,
-            SwitchoverView,
-        };
+        use crate::dcs::{ClusterMemberView, DcsView, SwitchoverView};
         use crate::dev_support::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
@@ -1327,7 +1324,13 @@ mod tests {
             ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
-        use crate::state::{new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError};
+        use crate::state::{
+            new_state_channel, JobId, MemberId, PgEndpoint, TimelineId, WalLsn, WorkerError,
+            WorkerStatus,
+        };
+        use crate::{
+            pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        };
 
         use super::super::{
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
@@ -1453,7 +1456,9 @@ mod tests {
                     },
                     config: cfg.process.clone(),
                     identity: ProcessNodeIdentity {
-                        self_id: MemberId(cfg.cluster.member_id.clone()),
+                        cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
+                        scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
+                        member_id: MemberId(cfg.cluster.member_id.clone()),
                     },
                     observed: ProcessObservedState {
                         runtime_config,
@@ -1928,26 +1933,38 @@ mod tests {
             let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
-            let dcs = DcsView::Coordinated(ClusterView::new(
+            let dcs = DcsView::quorum(
+                None,
+                SwitchoverView::None,
                 std::collections::BTreeMap::from([(
                     MemberId("node-b".to_string()),
-                    ClusterMemberView::new(
-                        MemberPostgresView::Primary {
-                            readiness: crate::pginfo::state::Readiness::Ready,
-                            system_identifier: None,
-                            committed_wal: crate::state::ObservedWalPosition {
+                    ClusterMemberView {
+                        postgres_endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 9)
+                            .map_err(|err| {
+                                WorkerError::Message(format!("test dcs target failed: {err}"))
+                            })?,
+                        postgres: PgInfoState::Primary {
+                            common: PgInfoCommon {
+                                worker: WorkerStatus::Running,
+                                sql: SqlStatus::Healthy,
+                                readiness: Readiness::Ready,
                                 timeline: Some(TimelineId(1)),
-                                lsn: WalLsn(0),
+                                system_identifier: None,
+                                pg_config: PgConfig {
+                                    port: Some(9),
+                                    hot_standby: None,
+                                    primary_conninfo: None,
+                                    primary_slot_name: None,
+                                    extra: std::collections::BTreeMap::new(),
+                                },
+                                last_refresh_at: None,
                             },
+                            wal_lsn: WalLsn(0),
+                            slots: Vec::new(),
                         },
-                        crate::state::PgTcpTarget::new("127.0.0.1".to_string(), 9).map_err(
-                            |err| WorkerError::Message(format!("test dcs target failed: {err}")),
-                        )?,
-                    ),
+                    },
                 )]),
-                LeadershipObservation::Open,
-                SwitchoverView::None,
-            ));
+            );
             let (mut ctx, _process_state_subscriber) =
                 build_process_worker_ctx(&cfg, test_log.sender(), dcs, rx);
 

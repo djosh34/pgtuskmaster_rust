@@ -8,3 +8,4 @@ This chapter contains exact descriptions of the runtime's public contracts and d
 - [pgtm CLI](pgtm-cli.md) - Operator CLI reference for state inspection, connection helpers, and switchover control.
 - [pgtuskmaster CLI](pgtuskmaster-cli.md) - Daemon binary synopsis and runtime behavior.
 - [Runtime Configuration](runtime-configuration.md) - TOML configuration schema and validation rules.
+- [TLS Configuration Reference](tls-configuration.md) - Exact TLS schema shapes across runtime and operator config surfaces.

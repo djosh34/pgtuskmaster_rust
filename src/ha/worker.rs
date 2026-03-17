@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use crate::{
-    dcs::{ClusterMemberView, DcsView, MemberPostgresView, SwitchoverView},
+    dcs::{ClusterMemberView, DcsView, MemberPostgresView},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
-    state::{LeaseEpoch, MemberId, PgConnectTarget, WorkerError, WorkerStatus},
+    state::{LeaseEpoch, MemberId, PgEndpoint, WorkerError, WorkerStatus},
 };
 
 use super::{
@@ -18,9 +18,9 @@ use super::{
         CoordinationState, DataDirState, DesiredState, DivergenceState, ElectionEligibility,
         GlobalKnowledge, IneligibleReason, LeadershipView, LocalAction, LocalDataState,
         LocalKnowledge, ObservationState, ObservedPrimary, PeerKnowledge, PeerLeaderState,
-        PostgresState, PrimaryObservation, ProcessState, PublicationGoal, PublicationState,
-        ReconcilePlan, ReplicationState, StaleLeaseReason, StorageState, SwitchoverRequest,
-        SwitchoverState, WalPosition, WorldView,
+        PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal, PublicationState,
+        ReconcilePlan, ReplicationState, StaleLeaseReason, StorageState, SwitchoverState,
+        WalPosition, WorldView,
     },
 };
 
@@ -49,7 +49,7 @@ pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
     let now = (ctx.cadence.now)()?;
     let world = observe(ctx, now)?;
-    let desired = decide(&world, &ctx.identity.self_id);
+    let desired = decide(&world, &ctx.identity.member_id);
     let plan = reconcile(&world, &desired);
     let next_state = build_next_state(&ctx.state_channel.current, &world, &desired, &plan);
 
@@ -70,7 +70,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
     let data_dir_path = config.postgres.paths.data_dir.clone();
-    let observed_primary = observed_primary_member(&dcs, &ctx.identity.self_id);
+    let observed_primary = observed_primary_member(&dcs, &ctx.identity.member_id);
     let observation = ObservationState {
         pg_observed_at: pg.last_refresh_at().unwrap_or(now),
         last_start_success_at: last_start_success_at(&process),
@@ -79,7 +79,7 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
         last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
     };
     let (fallback_local_timeline, fallback_local_system_identifier) =
-        local_member_identity_fallback(&dcs, &ctx.identity.self_id, &observation);
+        local_member_identity_fallback(&dcs, &ctx.identity.member_id, &observation);
     let local_data_timeline = pg_timeline(&pg).or(fallback_local_timeline);
     let local_system_identifier = pg_system_identifier(&pg).or(fallback_local_system_identifier);
 
@@ -91,19 +91,19 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
             &observed_primary,
         ),
         postgres: build_local_postgres_state(&pg, &dcs),
-        process: ProcessState::from(&process),
+        process: ProcessAssessment::from(&process),
         storage: build_storage_state(
             &dcs,
             &pg,
             config.ha.lease_ttl_ms,
-            &ctx.identity.self_id,
+            &ctx.identity.member_id,
             now,
         ),
         managed_roles_reconciled: ctx.state_channel.current.managed_roles_reconciled,
         publication: ctx.state_channel.current.publication.clone(),
         observation,
     };
-    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.identity.self_id);
+    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.identity.member_id);
 
     Ok(WorldView { local, global })
 }
@@ -117,7 +117,7 @@ fn local_member_identity_fallback(
         return (None, None);
     }
 
-    let member = dcs.cluster().and_then(|cluster| cluster.member(self_id));
+    let member = dcs.member(self_id);
     (
         member.and_then(member_timeline),
         member.and_then(member_system_identifier),
@@ -357,7 +357,7 @@ fn build_storage_state(
     self_id: &MemberId,
     now: crate::state::UnixMillis,
 ) -> StorageState {
-    let self_member = dcs.cluster().and_then(|cluster| cluster.member(self_id));
+    let self_member = dcs.member(self_id);
     let pg_observation_stale = pg
         .last_refresh_at()
         .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms);
@@ -380,38 +380,21 @@ fn build_global_knowledge(
 ) -> GlobalKnowledge {
     let leadership = build_leadership_view(dcs, self_id);
     let peers = dcs
-        .cluster()
-        .map(|cluster| {
-            cluster
-                .members()
-                .filter(|(member_id, _)| *member_id != self_id)
-                .map(|(member_id, member)| {
-                    (member_id.clone(), build_peer_knowledge_from_member(member))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+        .members()
+        .filter(|(member_id, _)| *member_id != self_id)
+        .map(|(member_id, member)| (member_id.clone(), build_peer_knowledge_from_member(member)))
+        .collect();
     let primary = observed_primary_member(dcs, self_id)
         .map(PrimaryObservation::Observed)
         .unwrap_or(PrimaryObservation::Absent);
 
     GlobalKnowledge {
         coordination: CoordinationState {
-            mode: dcs.mode(),
+            dcs: dcs.clone(),
             leadership,
             primary,
         },
-        switchover: dcs
-            .cluster()
-            .map(|cluster| match cluster.switchover() {
-                SwitchoverView::None => SwitchoverState::None,
-                SwitchoverView::Requested(target) => {
-                    SwitchoverState::Requested(SwitchoverRequest {
-                        target: target.clone(),
-                    })
-                }
-            })
-            .unwrap_or(SwitchoverState::None),
+        switchover: dcs.switchover().cloned().unwrap_or(SwitchoverState::None),
         peers,
         self_peer: build_self_peer(pg, local_data_dir),
     }
@@ -419,39 +402,35 @@ fn build_global_knowledge(
 
 fn build_peer_knowledge_from_member(member: &ClusterMemberView) -> PeerKnowledge {
     let api = ApiVisibility::Reachable;
+    let readiness = member.postgres().readiness();
     let eligibility = match member.postgres() {
-        MemberPostgresView::Unknown { readiness, .. } => {
-            if readiness == &Readiness::Ready {
+        MemberPostgresView::Unknown { .. } => {
+            if readiness == Readiness::Ready {
                 ElectionEligibility::BootstrapEligible
             } else {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             }
         }
-        MemberPostgresView::Primary {
-            readiness,
-            committed_wal,
-            ..
-        } => {
-            if readiness != &Readiness::Ready {
+        MemberPostgresView::Primary { .. } => {
+            if readiness != Readiness::Ready {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             } else {
-                wal_position(committed_wal.timeline, Some(committed_wal.lsn))
+                member
+                    .postgres()
+                    .committed_wal()
+                    .and_then(|value| wal_position(value.timeline, Some(value.lsn)))
                     .map(ElectionEligibility::PromoteEligible)
                     .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
             }
         }
-        MemberPostgresView::Replica {
-            readiness,
-            replay_wal,
-            follow_wal,
-            ..
-        } => {
-            if readiness != &Readiness::Ready {
+        MemberPostgresView::Replica { .. } => {
+            if readiness != Readiness::Ready {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             } else {
-                replay_wal
-                    .as_ref()
-                    .or(follow_wal.as_ref())
+                member
+                    .postgres()
+                    .replay_wal()
+                    .or_else(|| member.postgres().follow_wal())
                     .and_then(|value| wal_position(value.timeline, Some(value.lsn)))
                     .map(ElectionEligibility::PromoteEligible)
                     .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
@@ -505,16 +484,14 @@ fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId>
         PgInfoState::Replica { common, .. } => common.pg_config.primary_conninfo.as_ref(),
         _ => None,
     }?;
-    let PgConnectTarget::Tcp(primary_target) = &primary_conninfo.target else {
+    let PgEndpoint::Tcp { host, port } = &primary_conninfo.endpoint else {
         return None;
     };
 
-    dcs.cluster().and_then(|cluster| {
-        cluster.members().find_map(|(member_id, member)| {
-            (member.postgres_target().host() == primary_target.host()
-                && member.postgres_target().port() == primary_target.port())
-            .then_some(member_id.clone())
-        })
+    dcs.members().find_map(|(member_id, member)| {
+        (member.postgres_target().host() == host.as_str()
+            && member.postgres_target().port() == *port)
+        .then_some(member_id.clone())
     })
 }
 
@@ -526,10 +503,7 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
         return LeadershipView::HeldBySelf(epoch);
     }
 
-    match dcs
-        .cluster()
-        .and_then(|cluster| cluster.member(&epoch.holder))
-    {
+    match dcs.member(&epoch.holder) {
         None => LeadershipView::StaleObservedLease {
             epoch,
             reason: StaleLeaseReason::HolderMissing,
@@ -540,7 +514,7 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
 
 fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> LeadershipView {
     match member.postgres() {
-        MemberPostgresView::Primary { readiness, .. } if readiness == &Readiness::Ready => {
+        MemberPostgresView::Primary { .. } if member.postgres().readiness() == Readiness::Ready => {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::PrimaryReady,
@@ -550,36 +524,30 @@ fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> Lea
             epoch,
             state: PeerLeaderState::Recovering,
         },
-        MemberPostgresView::Unknown { readiness, .. } if readiness == &Readiness::Ready => {
+        MemberPostgresView::Unknown { .. } if member.postgres().readiness() == Readiness::Ready => {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::Unreachable,
             }
         }
-        MemberPostgresView::Unknown { .. } => LeadershipView::StaleObservedLease {
+        MemberPostgresView::Unknown { .. } | MemberPostgresView::Replica { .. } => {
+            LeadershipView::HeldByPeer {
             epoch,
-            reason: StaleLeaseReason::HolderNotReady,
-        },
-        MemberPostgresView::Replica { .. } => LeadershipView::StaleObservedLease {
-            epoch,
-            reason: StaleLeaseReason::HolderNotPrimary,
-        },
+            state: PeerLeaderState::Recovering,
+        }
+        }
     }
 }
 
 fn observed_primary_member(dcs: &DcsView, self_id: &MemberId) -> Option<ObservedPrimary> {
-    dcs.cluster().and_then(|cluster| {
-        cluster.members().find_map(|(member_id, member)| {
-            ((*member_id != *self_id)
-                && matches!(
-                    member.postgres(),
-                    MemberPostgresView::Primary { readiness, .. } if readiness == &Readiness::Ready
-                ))
-            .then(|| ObservedPrimary {
-                member: member_id.clone(),
-                timeline: member_timeline(member),
-                system_identifier: member_system_identifier(member),
-            })
+    dcs.members().find_map(|(member_id, member)| {
+        ((*member_id != *self_id)
+            && matches!(member.postgres(), MemberPostgresView::Primary { .. })
+            && member.postgres().readiness() == Readiness::Ready)
+        .then(|| ObservedPrimary {
+            member: member_id.clone(),
+            timeline: member_timeline(member),
+            system_identifier: member_system_identifier(member),
         })
     })
 }
@@ -620,18 +588,13 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::{
-            ClusterMemberView, ClusterView, DcsView, LeadershipObservation, MemberPostgresView,
-            SwitchoverView,
-        },
+        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        pginfo::conninfo::PgClientTls,
         pginfo::state::PgConnInfo,
     };
     use crate::{
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
-        state::{
-            PgConnectTarget, PgTcpTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
-            WorkerStatus,
-        },
+        state::{PgTcpTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus},
     };
 
     use super::*;
@@ -666,7 +629,7 @@ mod tests {
         let mut state = replica_pg_state(67_272_104, Some(67_272_104));
         if let PgInfoState::Replica { common, .. } = &mut state {
             common.pg_config.primary_conninfo = Some(PgConnInfo {
-                target: PgConnectTarget::Tcp(PgTcpTarget::new(host.to_string(), port)?),
+                endpoint: PgTcpTarget::new(host.to_string(), port)?,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: Some("node-a".to_string()),
@@ -674,28 +637,45 @@ mod tests {
                 ssl_mode: crate::pginfo::state::PgSslMode::Require,
                 ssl_root_cert: None,
                 options: None,
+                tls: PgClientTls {
+                    mode: crate::pginfo::state::PgSslMode::Require,
+                    root_cert: None,
+                    client_cert: None,
+                    client_key: None,
+                },
             });
         }
         Ok(state)
     }
 
     fn dcs_view_for_member(member_id: &str, host: &str, port: u16) -> Result<DcsView, String> {
-        let target = PgTcpTarget::new(host.to_string(), port)?;
-        Ok(DcsView::Coordinated(ClusterView::new(
+        Ok(DcsView::quorum(
+            None,
+            SwitchoverState::None,
             BTreeMap::from([(
                 MemberId(member_id.to_string()),
-                ClusterMemberView::new(
-                    MemberPostgresView::Unknown {
-                        readiness: Readiness::Ready,
-                        timeline: Some(TimelineId(7)),
-                        system_identifier: Some(SystemIdentifier(41)),
+                ClusterMemberView {
+                    postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+                    postgres: MemberPostgresView::Unknown {
+                        common: PgInfoCommon {
+                            worker: WorkerStatus::Running,
+                            sql: SqlStatus::Healthy,
+                            readiness: Readiness::Ready,
+                            timeline: Some(TimelineId(7)),
+                            system_identifier: Some(SystemIdentifier(41)),
+                            pg_config: PgConfig {
+                                port: None,
+                                hot_standby: None,
+                                primary_conninfo: None,
+                                primary_slot_name: None,
+                                extra: BTreeMap::new(),
+                            },
+                            last_refresh_at: Some(UnixMillis(123)),
+                        },
                     },
-                    target,
-                ),
+                },
             )]),
-            LeadershipObservation::Open,
-            SwitchoverView::None,
-        )))
+        ))
     }
 
     #[test]

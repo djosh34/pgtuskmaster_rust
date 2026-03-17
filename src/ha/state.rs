@@ -8,7 +8,7 @@ use crate::{
     dcs::{DcsHandle, DcsView},
     pginfo::state::PgInfoState,
     process::state::{ProcessIntentRequest, ProcessState},
-    state::{MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
+    state::{NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::types::{AuthorityProjectionState, IdleReason, PlannedActions, TargetRole, WorldView};
@@ -25,12 +25,12 @@ pub struct HaState {
     pub planned_actions: PlannedActions,
 }
 
-pub(crate) struct HaWorkerCtx {
+pub(crate) struct HaRuntimeCtx {
     pub(crate) cadence: HaWorkerCadence,
     pub(crate) state_channel: HaStateChannel,
     pub(crate) observed: HaObservedState,
     pub(crate) control: HaControlPlane,
-    pub(crate) identity: HaNodeIdentity,
+    pub(crate) identity: NodeIdentity,
 }
 
 pub(crate) struct HaWorkerCadence {
@@ -55,19 +55,8 @@ pub(crate) struct HaControlPlane {
     pub(crate) dcs_handle: DcsHandle,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct HaNodeIdentity {
-    pub(crate) scope: String,
-    pub(crate) self_id: MemberId,
-}
-
-pub(crate) struct HaWorkerBootstrap {
-    pub(crate) cadence: HaWorkerCadence,
-    pub(crate) state_channel: HaStateChannel,
-    pub(crate) observed: HaObservedState,
-    pub(crate) control: HaControlPlane,
-    pub(crate) identity: HaNodeIdentity,
-}
+pub(crate) type HaWorkerCtx = HaRuntimeCtx;
+pub(crate) type HaWorkerBootstrap = HaRuntimeCtx;
 
 impl HaState {
     pub(crate) fn initial(worker: WorkerStatus) -> Self {
@@ -84,9 +73,9 @@ impl HaState {
     }
 }
 
-impl HaWorkerCtx {
+impl HaRuntimeCtx {
     pub(crate) fn new(bootstrap: HaWorkerBootstrap) -> Self {
-        let HaWorkerBootstrap {
+        let HaRuntimeCtx {
             cadence,
             state_channel,
             observed,

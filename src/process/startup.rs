@@ -65,7 +65,9 @@ pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle 
             },
             config: request.config,
             identity: ProcessNodeIdentity {
-                self_id: request.identity.member_id,
+                cluster_name: request.identity.cluster_name,
+                scope: request.identity.scope,
+                member_id: request.identity.member_id,
             },
             observed: ProcessObservedState {
                 runtime_config: request.runtime_config,

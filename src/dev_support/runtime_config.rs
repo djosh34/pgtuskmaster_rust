@@ -58,8 +58,8 @@ pub fn sample_binary_paths() -> BinaryResolutionConfig {
 }
 
 fn sample_password_secret() -> SecretSource {
-    SecretSource::Inline {
-        content: "secret-password".to_string(),
+    SecretSource::String {
+        value: "secret-password".to_string(),
     }
 }
 
@@ -626,12 +626,12 @@ mod tests {
         let cfg = RuntimeConfigBuilder::new()
             .with_api_auth(crate::config::ApiAuthConfig::RoleTokens(
                 ApiRoleTokensConfig {
-                    read_token: Some(crate::config::SecretSource::Inline {
-                        content: "read-token".to_string(),
-                    }),
-                    admin_token: Some(crate::config::SecretSource::Inline {
-                        content: "admin-token".to_string(),
-                    }),
+                    read_token: crate::config::SecretSource::String {
+                        value: "read-token".to_string(),
+                    },
+                    admin_token: crate::config::SecretSource::String {
+                        value: "admin-token".to_string(),
+                    },
                 },
             ))
             .with_dcs_init(Some(DcsInitConfig {
@@ -643,12 +643,12 @@ mod tests {
         assert_eq!(
             cfg.api.auth,
             crate::config::ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                read_token: Some(crate::config::SecretSource::Inline {
-                    content: "read-token".to_string(),
-                }),
-                admin_token: Some(crate::config::SecretSource::Inline {
-                    content: "admin-token".to_string(),
-                }),
+                read_token: crate::config::SecretSource::String {
+                    value: "read-token".to_string(),
+                },
+                admin_token: crate::config::SecretSource::String {
+                    value: "admin-token".to_string(),
+                },
             })
         );
         assert_eq!(

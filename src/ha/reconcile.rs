@@ -1,6 +1,6 @@
 use super::types::{
     CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
-    IdleReason, LeadershipView, LocalAction, LocalDataState, PostgresState, ProcessState,
+    IdleReason, LeadershipView, LocalAction, LocalDataState, PostgresState, ProcessAssessment,
     PublicationAction, PublicationGoal, PublicationState, ReconcilePlan, RecoveryPlan, TargetRole,
     WorldView,
 };
@@ -12,8 +12,10 @@ pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> ReconcileP
     let publication_plan = reconcile_publication(&world.local.publication, desired);
     let switchover_plan = reconcile_switchover(world, desired);
     let role_plan = match &world.local.process {
-        ProcessState::Running(_) => ReconcilePlan::default(),
-        ProcessState::Idle | ProcessState::Failed(_) => reconcile_role(world, &desired.role),
+        ProcessAssessment::Running(_) => ReconcilePlan::default(),
+        ProcessAssessment::Idle | ProcessAssessment::Failed(_) => {
+            reconcile_role(world, &desired.role)
+        }
     };
 
     publication_plan.merge(switchover_plan).merge(role_plan)
@@ -33,7 +35,11 @@ fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> 
 
 fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> ReconcilePlan {
     match (&world.global.switchover, desired.clear_switchover) {
-        (super::types::SwitchoverState::Requested(_), true) => {
+        (
+            super::types::SwitchoverState::AnyHealthyReplica
+            | super::types::SwitchoverState::Specific(_),
+            true,
+        ) => {
             ReconcilePlan::coordination(CoordinationAction::ClearSwitchover)
         }
         (super::types::SwitchoverState::None, _) | (_, false) => ReconcilePlan::default(),
@@ -247,7 +253,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::DcsMode,
+        dcs::DcsSnapshot,
         process::jobs::ShutdownMode,
         state::{LeaseEpoch, MemberId, UnixMillis},
     };
@@ -265,7 +271,11 @@ mod tests {
             local,
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    mode: DcsMode::Coordinated,
+                    dcs: DcsSnapshot::quorum(
+                        None,
+                        SwitchoverState::None,
+                        BTreeMap::new(),
+                    ),
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
                 },
@@ -291,7 +301,7 @@ mod tests {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Offline,
-            process: ProcessState::Idle,
+            process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
@@ -321,7 +331,7 @@ mod tests {
             local: LocalKnowledge {
                 data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
                 postgres: PostgresState::Offline,
-                process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
                 storage: StorageState::Healthy,
                 managed_roles_reconciled: false,
                 publication: PublicationState::unknown(),
@@ -335,7 +345,11 @@ mod tests {
             },
             global: GlobalKnowledge {
                 coordination: CoordinationState {
-                    mode: DcsMode::Coordinated,
+                    dcs: DcsSnapshot::quorum(
+                        None,
+                        SwitchoverState::None,
+                        BTreeMap::new(),
+                    ),
                     leadership: LeadershipView::HeldBySelf(LeaseEpoch {
                         holder: MemberId("node-a".to_string()),
                         generation: 5,
@@ -370,7 +384,7 @@ mod tests {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
             postgres: PostgresState::Offline,
-            process: ProcessState::Idle,
+                process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
@@ -403,7 +417,7 @@ mod tests {
         let world = world(LocalKnowledge {
             data_dir: DataDirState::Missing,
             postgres: PostgresState::Offline,
-            process: ProcessState::Idle,
+            process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
@@ -435,7 +449,7 @@ mod tests {
                     lsn: 42,
                 }),
             },
-            process: ProcessState::Idle,
+            process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
@@ -473,7 +487,7 @@ mod tests {
                     lsn: 84,
                 }),
             },
-            process: ProcessState::Idle,
+            process: ProcessAssessment::Idle,
             storage: StorageState::Healthy,
             managed_roles_reconciled: false,
             publication: PublicationState::unknown(),

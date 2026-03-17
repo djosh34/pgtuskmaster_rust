@@ -292,7 +292,7 @@ ident = { content = "empty" }
 
 [postgres]
 tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }, extra = {} }
+roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
@@ -361,11 +361,11 @@ ident = { content = "empty" }
 
 [postgres]
 tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }, extra = {} }
+roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
 
 [dcs]
 endpoints = ["http://127.0.0.1:2379"]
-client = { auth = { type = "basic", username = "", password = { content = "secret-password" } } }
+client = { auth = { type = "basic", username = "", password = { type = "string", value = "secret-password" } } }
 
 [process.binaries.overrides]
 initdb = "/usr/bin/initdb"
@@ -421,7 +421,7 @@ ident = { content = "empty" }
 
 [postgres]
 tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { content = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { content = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { content = "secret-password" } } } }, extra = {} }
+roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
 
 [dcs]
 endpoints = ["https://127.0.0.1:2379"]

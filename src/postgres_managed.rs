@@ -318,7 +318,7 @@ fn render_libpq_passfile_entry(
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
     const STREAMING_REPLICATION_DATABASE: &str = "replication";
-    let (host, port) = passfile_target_fields(&conninfo.target);
+    let (host, port) = passfile_target_fields(&conninfo.endpoint);
 
     if [
         host.as_str(),
@@ -344,11 +344,11 @@ fn render_libpq_passfile_entry(
     ))
 }
 
-fn passfile_target_fields(target: &crate::state::PgConnectTarget) -> (String, u16) {
-    match target {
-        crate::state::PgConnectTarget::Tcp(target) => (target.host().to_string(), target.port()),
-        crate::state::PgConnectTarget::Unix(target) => {
-            (target.socket_dir.display().to_string(), 5432)
+fn passfile_target_fields(endpoint: &crate::state::PgEndpoint) -> (String, u16) {
+    match endpoint {
+        crate::state::PgEndpoint::Tcp { host, port } => (host.clone(), *port),
+        crate::state::PgEndpoint::UnixSocket { socket_dir, port } => {
+            (socket_dir.display().to_string(), *port)
         }
     }
 }
@@ -627,12 +627,15 @@ mod tests {
             pg16::{prepare_pgdata_dir, spawn_pg16, PgHandle, PgInstanceSpec},
             ports::allocate_ports,
         },
-        pginfo::{conninfo::PgSslMode, state::PgConnInfo},
+        pginfo::{
+            conninfo::{PgClientTls, PgSslMode},
+            state::PgConnInfo,
+        },
         postgres_managed_conf::{
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
             ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
-        state::{PgConnectTarget, PgTcpTarget},
+        state::PgEndpoint,
     };
 
     use super::{
@@ -727,7 +730,7 @@ mod tests {
         let cfg = sample_runtime_config(data_dir.clone());
         let replica_start = ManagedPostgresStartIntent::replica(
             PgConnInfo {
-                target: tcp_connect_target("leader.internal", 5432)?,
+                endpoint: tcp_connect_target("leader.internal", 5432)?,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: None,
@@ -735,6 +738,12 @@ mod tests {
                 ssl_mode: PgSslMode::Prefer,
                 ssl_root_cert: None,
                 options: None,
+                tls: PgClientTls {
+                    mode: PgSslMode::Prefer,
+                    root_cert: None,
+                    client_cert: None,
+                    client_key: None,
+                },
             },
             sample_password_standby_auth(&data_dir),
             None,
@@ -795,7 +804,7 @@ mod tests {
             &cfg,
             &ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
-                    target: tcp_connect_target("leader.internal", 5432)?,
+                    endpoint: tcp_connect_target("leader.internal", 5432)?,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -803,6 +812,12 @@ mod tests {
                     ssl_mode: PgSslMode::Prefer,
                     ssl_root_cert: None,
                     options: None,
+                    tls: PgClientTls {
+                        mode: PgSslMode::Prefer,
+                        root_cert: None,
+                        client_cert: None,
+                        client_key: None,
+                    },
                 },
                 sample_password_standby_auth(&data_dir),
                 None,
@@ -1149,7 +1164,7 @@ mod tests {
                 &runtime_config,
                 &ManagedPostgresStartIntent::replica(
                     PgConnInfo {
-                        target: tcp_connect_target("127.0.0.1", primary_port)
+                        endpoint: tcp_connect_target("127.0.0.1", primary_port)
                             .map_err(real_test_error)?,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
@@ -1158,6 +1173,12 @@ mod tests {
                         ssl_mode: PgSslMode::Prefer,
                         ssl_root_cert: None,
                         options: None,
+                        tls: PgClientTls {
+                            mode: PgSslMode::Prefer,
+                            root_cert: None,
+                            client_cert: None,
+                            client_key: None,
+                        },
                     },
                     sample_password_standby_auth(&replica_data),
                     None,
@@ -1414,7 +1435,7 @@ mod tests {
 
     fn sample_replica_conninfo_for_port(port: u16) -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            target: tcp_connect_target("leader.internal", port)?,
+            endpoint: tcp_connect_target("leader.internal", port)?,
             user: "replicator".to_string(),
             dbname: "postgres".to_string(),
             application_name: None,
@@ -1422,6 +1443,12 @@ mod tests {
             ssl_mode: PgSslMode::Prefer,
             ssl_root_cert: None,
             options: None,
+            tls: PgClientTls {
+                mode: PgSslMode::Prefer,
+                root_cert: None,
+                client_cert: None,
+                client_key: None,
+            },
         })
     }
 
@@ -1431,8 +1458,8 @@ mod tests {
         }
     }
 
-    fn tcp_connect_target(host: &str, port: u16) -> Result<PgConnectTarget, String> {
-        PgTcpTarget::new(host.to_string(), port).map(PgConnectTarget::Tcp)
+    fn tcp_connect_target(host: &str, port: u16) -> Result<PgEndpoint, String> {
+        PgEndpoint::tcp(host.to_string(), port)
     }
 
     fn append_to_file(path: &Path, contents: &str) -> Result<(), io::Error> {

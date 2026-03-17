@@ -6,6 +6,6 @@ pub(crate) mod worker;
 
 pub(crate) use command::DcsHandle;
 pub use state::{
-    ClusterMemberView, ClusterView, DcsMode, DcsView, LeadershipObservation, MemberPostgresView,
-    NotTrustedView, SwitchoverView,
+    ClusterMemberView, ClusterView, DcsAuthority, DcsSnapshot, DcsView, MemberPostgresView,
+    SwitchoverView,
 };

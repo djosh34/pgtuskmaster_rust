@@ -14,31 +14,23 @@ use tower_http::trace::TraceLayer;
 use crate::{
     api::{
         controller::{
-            build_node_state, delete_switchover, post_switchover, NodeStateSnapshot,
-            SwitchoverRequest,
+            delete_switchover, post_switchover, SwitchoverRequest,
         },
         ApiCertificateReloadStep, ApiError, NodeState, PostgresCertificateReloadStep,
         PostgresReloadSignal, ReloadCertificatesResponse,
     },
-    config::{ApiAuthConfig, RuntimeConfig},
+    config::{ApiAuthConfig, RoleTokens, RuntimeConfig, SecretSource, TokenAuth},
     dcs::{DcsHandle, DcsView},
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::PgInfoState,
     process::postmaster::{reload_managed_postmaster, ManagedPostmasterTarget},
     process::state::ProcessState,
-    state::{StateSubscriber, WorkerError},
+    state::{NodeIdentity, StateSubscriber, WorkerError},
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ApiClusterIdentity {
-    pub(crate) cluster_name: String,
-    pub(crate) scope: String,
-    pub(crate) member_id: String,
-}
-
 #[derive(Clone, Debug)]
-#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum ApiObservedState {
     Unavailable,
     Live {
@@ -49,17 +41,9 @@ pub(crate) enum ApiObservedState {
     },
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ResolvedApiRoleTokens {
-    read_token: Option<String>,
-    admin_token: Option<String>,
-}
+pub(crate) type ResolvedApiRoleTokens = RoleTokens;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ApiAuthState {
-    Disabled,
-    RoleTokens(ResolvedApiRoleTokens),
-}
+pub(crate) type ApiAuthState = TokenAuth;
 
 #[derive(Clone, Debug)]
 pub(crate) enum ApiBindConfig {
@@ -160,38 +144,20 @@ enum ReloadCertificatesError {
     Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
 }
 
-pub struct ApiServerCtx {
-    pub(crate) identity: ApiClusterIdentity,
-    pub(crate) observed: ApiObservedState,
-    pub(crate) control: ApiControlPlane,
-    pub(crate) serving: ApiServingPlan,
-    pub(crate) log: LogSender,
-}
-
 #[derive(Clone)]
-pub(crate) struct ApiControlPlane {
+pub(crate) struct ApiRuntimeCtx {
+    pub(crate) identity: NodeIdentity,
+    pub(crate) observed: ApiObservedState,
     pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs_handle: DcsHandle,
-}
-
-#[derive(Clone)]
-pub(crate) struct ApiServingPlan {
     pub(crate) bind: ApiBindConfig,
-    pub(crate) auth: ApiAuthState,
+    pub(crate) auth: TokenAuth,
     pub(crate) transport: ApiServerTransport,
     pub(crate) reload_certificates: ApiReloadCertificatesHandle,
+    pub(crate) _log: LogSender,
 }
 
-#[derive(Clone)]
-struct ApiAppState {
-    identity: ApiClusterIdentity,
-    runtime_config: StateSubscriber<RuntimeConfig>,
-    dcs_handle: DcsHandle,
-    state: ApiObservedState,
-    auth: ApiAuthState,
-    reload_certificates: ApiReloadCertificatesHandle,
-    _log: LogSender,
-}
+type ApiAppState = ApiRuntimeCtx;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequiredRole {
@@ -237,42 +203,26 @@ impl From<ApiError> for ApiHttpError {
     }
 }
 
-pub(crate) fn build_router(ctx: ApiServerCtx) -> Result<Router, WorkerError> {
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn build_router(ctx: ApiRuntimeCtx) -> Result<Router, WorkerError> {
     let (_bind, _transport, app_state) = build_app_state(ctx)?;
     Ok(router_from_state(app_state))
 }
 
 fn build_app_state(
-    ctx: ApiServerCtx,
+    ctx: ApiRuntimeCtx,
 ) -> Result<(ApiBindConfig, ApiServerTransport, ApiAppState), WorkerError> {
-    let ApiServerCtx {
-        identity,
-        observed,
-        control,
-        serving,
-        log,
-    } = ctx;
-    let ApiControlPlane {
-        runtime_config,
-        dcs_handle,
-    } = control;
-    let ApiServingPlan {
+    let auth = resolve_auth_state(&ctx.auth, &ctx.runtime_config.latest())?;
+    let bind = ctx.bind.clone();
+    let transport = ctx.transport.clone();
+    Ok((
         bind,
-        auth,
         transport,
-        reload_certificates,
-    } = serving;
-    let auth = resolve_auth_state(&auth, &runtime_config.latest())?;
-    let app_state = ApiAppState {
-        identity,
-        runtime_config,
-        dcs_handle,
-        state: observed,
-        auth,
-        reload_certificates,
-        _log: log,
-    };
-    Ok((bind, transport, app_state))
+        ApiAppState {
+            auth,
+            ..ctx
+        },
+    ))
 }
 
 fn router_from_state(app_state: ApiAppState) -> Router {
@@ -299,7 +249,7 @@ fn router_from_state(app_state: ApiAppState) -> Router {
         .with_state(app_state)
 }
 
-pub async fn run(ctx: ApiServerCtx) -> Result<(), WorkerError> {
+pub(super) async fn run(ctx: ApiRuntimeCtx) -> Result<(), WorkerError> {
     let (bind, transport, app_state) = build_app_state(ctx)?;
     let app = router_from_state(app_state);
 
@@ -325,37 +275,33 @@ async fn get_state(State(state): State<ApiAppState>) -> Result<Json<NodeState>, 
         process,
         dcs,
         ha,
-    } = &state.state
+    } = &state.observed
     else {
         return Err(ApiHttpError::service_unavailable(
             "state subscribers unavailable",
         ));
     };
-    let runtime_config = state.runtime_config.latest();
-    let snapshot = NodeStateSnapshot {
-        cluster_name: state.identity.cluster_name.clone(),
-        scope: state.identity.scope.clone(),
-        self_member_id: state.identity.member_id.clone(),
+    Ok(Json(NodeState {
+        identity: state.identity.clone(),
         pg: pg.latest(),
         process: process.latest(),
         dcs: dcs.latest(),
         ha: ha.latest(),
-    };
-    Ok(Json(build_node_state(&runtime_config, snapshot)))
+    }))
 }
 
 async fn post_switchover_handler(
     State(state): State<ApiAppState>,
     Json(request): Json<SwitchoverRequest>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
-    let ApiObservedState::Live { dcs, ha, .. } = &state.state else {
+    let ApiObservedState::Live { dcs, ha, .. } = &state.observed else {
         return Err(ApiHttpError::service_unavailable(
             "state subscribers unavailable",
         ));
     };
     let response = post_switchover(
         state.identity.scope.as_str(),
-        &crate::state::MemberId(state.identity.member_id.clone()),
+        &state.identity.member_id,
         &state.dcs_handle,
         &dcs.latest(),
         &ha.latest(),
@@ -430,7 +376,10 @@ fn authorize_request(
         return AuthDecision::Allowed;
     };
 
-    if tokens.read_token.is_none() && tokens.admin_token.is_none() {
+    let read_token = token_string(&tokens.read_token);
+    let admin_token = token_string(&tokens.admin_token);
+
+    if read_token.is_none() && admin_token.is_none() {
         return AuthDecision::Allowed;
     }
 
@@ -438,32 +387,20 @@ fn authorize_request(
         return AuthDecision::Unauthorized;
     };
 
-    if tokens
-        .admin_token
-        .as_deref()
-        .is_some_and(|expected| expected == token)
-    {
+    if admin_token.is_some_and(|expected| expected == token) {
         return AuthDecision::Allowed;
     }
 
     match required_role {
         RequiredRole::Read => {
-            if tokens
-                .read_token
-                .as_deref()
-                .is_some_and(|expected| expected == token)
-            {
+            if read_token.is_some_and(|expected| expected == token) {
                 AuthDecision::Allowed
             } else {
                 AuthDecision::Unauthorized
             }
         }
         RequiredRole::Admin => {
-            if tokens
-                .read_token
-                .as_deref()
-                .is_some_and(|expected| expected == token)
-            {
+            if read_token.is_some_and(|expected| expected == token) {
                 AuthDecision::Forbidden
             } else {
                 AuthDecision::Unauthorized
@@ -484,18 +421,16 @@ fn resolve_auth_state(
     match configured {
         ApiAuthState::Disabled => match &cfg.api.auth {
             ApiAuthConfig::Disabled => Ok(ApiAuthState::Disabled),
-            ApiAuthConfig::RoleTokens(tokens) => {
-                Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
-                    read_token: resolve_runtime_token(
-                        "api.security.auth.role_tokens.read_token",
-                        tokens.read_token.as_ref(),
-                    )?,
-                    admin_token: resolve_runtime_token(
-                        "api.security.auth.role_tokens.admin_token",
-                        tokens.admin_token.as_ref(),
-                    )?,
-                }))
-            }
+            ApiAuthConfig::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
+                read_token: resolve_runtime_token(
+                    "api.security.auth.role_tokens.read_token",
+                    &tokens.read_token,
+                )?,
+                admin_token: resolve_runtime_token(
+                    "api.security.auth.role_tokens.admin_token",
+                    &tokens.admin_token,
+                )?,
+            })),
         },
         ApiAuthState::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(tokens.clone())),
     }
@@ -503,19 +438,28 @@ fn resolve_auth_state(
 
 fn resolve_runtime_token(
     field: &str,
-    raw: Option<&crate::config::SecretSource>,
-) -> Result<Option<String>, WorkerError> {
-    let Some(raw) = raw else {
-        return Ok(None);
-    };
+    raw: &SecretSource,
+) -> Result<SecretSource, WorkerError> {
+    if matches!(raw, SecretSource::None) {
+        return Ok(SecretSource::None);
+    }
 
     let value = crate::config::resolve_secret_string(field, raw)
         .map_err(|err| WorkerError::Message(err.to_string()))?;
     let trimmed = value.trim();
-    if trimmed.is_empty() {
-        Ok(None)
+    Ok(if trimmed.is_empty() {
+        SecretSource::None
     } else {
-        Ok(Some(trimmed.to_string()))
+        SecretSource::String {
+            value: trimmed.to_string(),
+        }
+    })
+}
+
+fn token_string(raw: &SecretSource) -> Option<&str> {
+    match raw {
+        SecretSource::String { value } => Some(value.as_str()),
+        SecretSource::None | SecretSource::Env { .. } | SecretSource::File { .. } => None,
     }
 }
 
@@ -549,8 +493,8 @@ mod tests {
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiClusterIdentity, ApiControlPlane,
-        ApiObservedState, ApiReloadCertificatesHandle, ApiServerCtx, ApiServingPlan,
+        build_router, ApiAuthState, ApiBindConfig, ApiObservedState,
+        ApiReloadCertificatesHandle, ApiRuntimeCtx,
     };
 
     struct ChildGuard(Option<Child>);
@@ -620,12 +564,12 @@ mod tests {
                     },
                 },
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: Some(SecretSource::Inline {
-                        content: "read-secret".to_string(),
-                    }),
-                    admin_token: Some(SecretSource::Inline {
-                        content: "admin-secret".to_string(),
-                    }),
+                    read_token: SecretSource::String {
+                        value: "read-secret".to_string(),
+                    },
+                    admin_token: SecretSource::String {
+                        value: "admin-secret".to_string(),
+                    },
                 }),
                 ..api
             })
@@ -650,12 +594,12 @@ mod tests {
                     },
                 },
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: Some(SecretSource::Inline {
-                        content: "read-secret".to_string(),
-                    }),
-                    admin_token: Some(SecretSource::Inline {
-                        content: "admin-secret".to_string(),
-                    }),
+                    read_token: SecretSource::String {
+                        value: "read-secret".to_string(),
+                    },
+                    admin_token: SecretSource::String {
+                        value: "admin-secret".to_string(),
+                    },
                 }),
                 ..api
             })
@@ -667,12 +611,12 @@ mod tests {
             .with_postgres_data_dir(data_dir)
             .transform_api(|api| crate::config::ApiConfig {
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: Some(SecretSource::Inline {
-                        content: "read-secret".to_string(),
-                    }),
-                    admin_token: Some(SecretSource::Inline {
-                        content: "admin-secret".to_string(),
-                    }),
+                    read_token: SecretSource::String {
+                        value: "read-secret".to_string(),
+                    },
+                    admin_token: SecretSource::String {
+                        value: "admin-secret".to_string(),
+                    },
                 }),
                 ..api
             })
@@ -692,11 +636,11 @@ mod tests {
         ));
         let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
             .map_err(|err| err.to_string())?;
-        let app = build_router(ApiServerCtx {
-            identity: ApiClusterIdentity {
-                cluster_name: cfg.cluster.name.clone(),
-                scope: cfg.cluster.scope.clone(),
-                member_id: cfg.cluster.member_id.clone(),
+        let app = build_router(ApiRuntimeCtx {
+            identity: crate::state::NodeIdentity {
+                cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
+                scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
+                member_id: crate::state::MemberId(cfg.cluster.member_id.clone()),
             },
             observed: ApiObservedState::Live {
                 pg,
@@ -704,17 +648,13 @@ mod tests {
                 dcs,
                 ha,
             },
-            control: ApiControlPlane {
-                runtime_config,
-                dcs_handle: DcsHandle::closed(),
-            },
-            serving: ApiServingPlan {
-                bind: ApiBindConfig::listen(cfg.api.listen_addr),
-                auth: ApiAuthState::Disabled,
-                transport: transport.clone(),
-                reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
-            },
-            log: LogSender::disabled(),
+            runtime_config,
+            dcs_handle: DcsHandle::closed(),
+            bind: ApiBindConfig::listen(cfg.api.listen_addr),
+            auth: ApiAuthState::Disabled,
+            transport: transport.clone(),
+            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
+            _log: LogSender::disabled(),
         })
         .map_err(|err| err.to_string())?;
         Ok((app, cfg_publisher))

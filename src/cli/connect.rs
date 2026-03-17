@@ -51,8 +51,7 @@ fn resolve_primary_view(
     })?;
     let member = state
         .dcs
-        .cluster()
-        .and_then(|cluster| cluster.member(&crate::state::MemberId(primary_id.clone())))
+        .member(&crate::state::MemberId(primary_id.clone()))
         .ok_or_else(|| {
             CliError::Resolution(format!(
                 "authoritative primary `{primary_id}` is not present in the DCS member slots"
@@ -76,13 +75,7 @@ fn resolve_replicas_view(
 ) -> Result<RenderedConnectionCommandDto, CliError> {
     let targets = state
         .dcs
-        .cluster()
-        .into_iter()
-        .flat_map(|cluster| {
-            cluster
-                .member_ids()
-                .filter_map(|member_id| cluster.member(member_id).map(|member| (member_id, member)))
-        })
+        .members()
         .filter(|(_member_id, member)| member_is_ready_replica(member))
         .map(|(member_id, member)| build_connection_target(member_id.0.as_str(), member))
         .collect::<Result<Vec<_>, _>>()?;
