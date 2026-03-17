@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+    dcs::{ClusterMemberView, DcsQuorumState, DcsView, MemberPostgresView},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
@@ -19,8 +19,8 @@ use super::{
         GlobalKnowledge, IneligibleReason, LeadershipView, LocalAction, LocalDataState,
         LocalKnowledge, ObservationState, ObservedPrimary, PeerKnowledge, PeerLeaderState,
         PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal, PublicationState,
-        ReconcilePlan, ReplicationState, StaleLeaseReason, StorageState, SwitchoverState,
-        WalPosition, WorldView,
+        QuorumCoordinationState, ReconcilePlan, ReplicationState, StorageState, WalPosition,
+        WorldView,
     },
 };
 
@@ -70,7 +70,9 @@ fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
     let data_dir_path = config.postgres.paths.data_dir.clone();
-    let observed_primary = observed_primary_member(&dcs, &ctx.identity.member_id);
+    let observed_primary = dcs
+        .quorum_state()
+        .and_then(|quorum| observed_primary_member(quorum, &ctx.identity.member_id));
     let observation = ObservationState {
         pg_observed_at: pg.last_refresh_at().unwrap_or(now),
         last_start_success_at: last_start_success_at(&process),
@@ -378,24 +380,33 @@ fn build_global_knowledge(
     local_data_dir: &DataDirState,
     self_id: &MemberId,
 ) -> GlobalKnowledge {
-    let leadership = build_leadership_view(dcs, self_id);
-    let peers = dcs
-        .members()
-        .filter(|(member_id, _)| *member_id != self_id)
-        .map(|(member_id, member)| (member_id.clone(), build_peer_knowledge_from_member(member)))
-        .collect();
-    let primary = observed_primary_member(dcs, self_id)
-        .map(PrimaryObservation::Observed)
-        .unwrap_or(PrimaryObservation::Absent);
+    let coordination = dcs
+        .quorum_state()
+        .map(|quorum| {
+            let leadership = build_leadership_view(quorum, self_id);
+            let peers = quorum
+                .members()
+                .filter(|(member_id, _)| *member_id != self_id)
+                .map(|(member_id, member)| {
+                    (member_id.clone(), build_peer_knowledge_from_member(member))
+                })
+                .collect();
+            let primary = observed_primary_member(quorum, self_id)
+                .map(PrimaryObservation::Observed)
+                .unwrap_or(PrimaryObservation::Absent);
+
+            CoordinationState::Quorum(Box::new(QuorumCoordinationState {
+                dcs: quorum.clone(),
+                leadership,
+                primary,
+                switchover: quorum.switchover.clone(),
+                peers,
+            }))
+        })
+        .unwrap_or(CoordinationState::NoQuorum);
 
     GlobalKnowledge {
-        coordination: CoordinationState {
-            dcs: dcs.clone(),
-            leadership,
-            primary,
-        },
-        switchover: dcs.switchover().cloned().unwrap_or(SwitchoverState::None),
-        peers,
+        coordination,
         self_peer: build_self_peer(pg, local_data_dir),
     }
 }
@@ -495,8 +506,8 @@ fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId>
     })
 }
 
-fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
-    let Some(epoch) = dcs.observed_leadership().cloned() else {
+fn build_leadership_view(dcs: &DcsQuorumState, self_id: &MemberId) -> LeadershipView {
+    let Some(epoch) = dcs.leadership.clone() else {
         return LeadershipView::Open;
     };
     if epoch.holder == *self_id {
@@ -504,9 +515,9 @@ fn build_leadership_view(dcs: &DcsView, self_id: &MemberId) -> LeadershipView {
     }
 
     match dcs.member(&epoch.holder) {
-        None => LeadershipView::StaleObservedLease {
+        None => LeadershipView::HeldByPeer {
             epoch,
-            reason: StaleLeaseReason::HolderMissing,
+            state: PeerLeaderState::Unreachable,
         },
         Some(member) => classify_foreign_leader(member, epoch),
     }
@@ -539,7 +550,7 @@ fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> Lea
     }
 }
 
-fn observed_primary_member(dcs: &DcsView, self_id: &MemberId) -> Option<ObservedPrimary> {
+fn observed_primary_member(dcs: &DcsQuorumState, self_id: &MemberId) -> Option<ObservedPrimary> {
     dcs.members().find_map(|(member_id, member)| {
         ((*member_id != *self_id)
             && matches!(member.postgres(), MemberPostgresView::Primary { .. })
@@ -594,7 +605,10 @@ mod tests {
     };
     use crate::{
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
-        state::{PgTcpTarget, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus},
+        state::{
+            PgTcpTarget, SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
+            WorkerStatus,
+        },
     };
 
     use super::*;

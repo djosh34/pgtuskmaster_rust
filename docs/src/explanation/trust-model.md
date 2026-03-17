@@ -1,70 +1,87 @@
 # Trust Model and DCS Coordination Modes
 
-The trust model defines when a node considers the distributed consensus store (DCS) safe enough for high-availability decisions. It uses three coordination modes that gate all failover behavior.
+The current DCS trust model is intentionally binary at the public boundary. A node either has quorum and may publish authoritative cluster data, or it does not and must withhold that data.
 
-## Coordination Modes
+## DCS modes
 
-A node operates in exactly one of three modes at any time:
+The public DCS snapshot in `src/dcs/state.rs` uses exactly two variants:
 
-- **NotTrusted**: The DCS transport is unreachable. The node retains its last observed cluster snapshot but refuses coordinated actions.
-- **Degraded**: The DCS is reachable, but the node lacks sufficient confidence for authoritative decisions. This occurs when the node cannot see its own member record or the minimal member-count rule fails.
-- **Coordinated**: The DCS is reachable, the node's member record is visible, and the minimal member-count rule passes. Normal leader/follower logic is permitted.
+- **Quorum**: the node can publish authoritative DCS membership, leadership, and switchover state
+- **NoQuorum**: the node must not publish that cluster payload
+
+This is a change from the older three-state explanations that described separate degraded and not-trusted public modes. Today those distinctions are not modeled as separate public DCS variants.
 
 ```mermaid
 graph TD
-    A[Start] --> B{Is etcd reachable?}
-    B -->|No| C[NotTrusted]
-    B -->|Yes| D{Is local member record present?}
-    D -->|No| E[Degraded]
-    D -->|Yes| F{Does member-count rule pass?}
-    F -->|No| E[Degraded]
-    F -->|Yes| G[Coordinated]
+    A[Start] --> B{etcd reachable?}
+    B -->|No| C[NoQuorum]
+    B -->|Yes| D{has_member_quorum?}
+    D -->|No| C
+    D -->|Yes| E[Quorum]
 ```
 
-## Mode Evaluation Logic
+## How the mode is chosen
 
-The `evaluate_mode()` function in `src/dcs/state.rs` determines the mode in this strict order:
+`current_snapshot(...)` publishes:
 
-1. If etcd is unreachable → **NotTrusted**
-2. If the local node's member record is absent from DCS → **Degraded**
-3. If the member-count rule fails → **Degraded**
-4. Otherwise → **Coordinated**
+- `NoQuorum` when etcd is unreachable
+- `NoQuorum` when `has_member_quorum(...)` is false
+- `Quorum(...)` otherwise
 
-### Member-Count Rule
+The current member-count rule is minimal rather than majority-based:
 
-The `has_member_quorum()` function in `src/dcs/state.rs` implements a minimal safety rule, not majority quorum mathematics:
+- 0 members -> no quorum
+- 1 member -> quorum
+- 2 or more members -> require at least 2 members
 
-- 1 visible member → coordinated
-- 2+ visible members → require at least 2 members for coordinated mode
+This is the rule that decides whether the public DCS surface may expose cluster data at all.
 
-This distinguishes single-node deployments (where one member suffices) from multi-member deployments (where seeing only one member signals a problem).
+## What changes at the boundary
 
-## Freshness and Self-Visibility
+When the snapshot is `Quorum`, the public DCS view contains:
 
-**Self-visibility** is a critical safety property: a node must see its own member record in the authoritative DCS cache to enter coordinated mode. This prevents a node from making authoritative decisions when it is partitioned from the cluster's view of itself.
+- members
+- leadership
+- switchover state
 
-**Freshness** is operationally defined by `ha.lease_ttl_ms` (default 10 seconds). If the node's PostgreSQL observation age exceeds this threshold, the node deletes its DCS member entry and releases any leadership lease.
+When the snapshot is `NoQuorum`, those public accessors yield no cluster payload:
 
-## HA Decision Gating
+- no members
+- no leadership
+- no switchover
 
-The mode directly gates high-availability decisions in `src/ha/decide.rs`:
+That is the important safety property for this codebase: loss of authority withdraws public topology instead of exposing stale observations.
 
-- **Coordinated**: Normal leader/follower logic executes. Elections, promotions, and switchovers are permitted.
-- **Degraded** or **NotTrusted**: The system immediately enters fail-safe behavior. Primaries may be forced to stop, replicas continue following their last known upstream, and the operator-visible primary is withdrawn.
+## HA behavior
 
-## Practical Example: DCS Quorum Loss
+The HA engine mirrors the same binary split with `CoordinationState::NoQuorum` and `CoordinationState::Quorum(...)`.
 
-The test scenario in tests/ha/features/ha_dcs_quorum_lost_enters_failsafe demonstrates the model's consequences:
+When DCS falls to `NoQuorum`, HA does not continue ordinary leadership behavior. Instead it:
 
-1. A healthy cluster with one stable primary
-2. DCS quorum majority stops
-3. Nodes lose coordinated mode and withdraw the operator-visible primary
-4. All running nodes report fail-safe status
-5. No dual-primary anomalies appear during transition
-6. DCS quorum restoration returns the cluster to coordinated mode and one stable primary
+- withdraws the operator-visible primary
+- routes into fail-safe behavior
+- keeps primaries from remaining authoritatively writable without quorum
 
-This shows the model's conservative nature: it withdraws authority before allowing dangerous ambiguity.
+This is why user-facing command health may become degraded even though the DCS ADT itself is now only `quorum` or `no_quorum`.
 
-## Design Rationale
+## Practical example: DCS quorum loss
 
-The model favors simplicity and safety over complex quorum calculations. It avoids majority mathematics, instead using explicit etcd reachability, self-visibility, and a minimal member-count rule. This makes behavior predictable and easy to reason about during network partitions and DCS outages.
+The HA scenario `ha_dcs_quorum_lost_enters_failsafe` demonstrates the intended result:
+
+1. A healthy cluster starts with one stable primary.
+2. A DCS quorum majority is stopped.
+3. The operator-visible primary disappears.
+4. Running nodes report fail-safe behavior.
+5. Quorum returns.
+6. One stable authoritative primary returns.
+
+The system chooses to withdraw authority rather than preserve stale cluster visibility through the outage.
+
+## Design rationale
+
+This model makes the public contract simpler and safer:
+
+- quorum means the published DCS payload is authoritative
+- no quorum means the payload is withheld
+
+More detailed failure causes still exist in logs, worker state, and higher-level warnings, but they do not appear as separate public DCS topology modes.

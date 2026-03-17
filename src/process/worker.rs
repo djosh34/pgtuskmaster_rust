@@ -1447,7 +1447,7 @@ fn resolve_source_member<'a>(
     dcs: &'a DcsView,
     leader: &'a MemberId,
 ) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
-    let cluster = dcs.coordinated().ok_or_else(|| {
+    let cluster = dcs.quorum_state().ok_or_else(|| {
         ProcessError::InvalidSpec(
             "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
                 .to_string(),

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    dcs::DcsSnapshot,
+    dcs::DcsQuorumState,
     process::{
         jobs::{ActiveJobKind, ProcessIntent},
         state::{JobOutcome, ProcessState as WorkerProcessState},
@@ -123,17 +123,13 @@ pub enum AuthorityProjection {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoPrimaryProjection {
+    NoQuorum {
+        fence: NoPrimaryFence,
+    },
     LeaseOpen,
     Recovering {
         epoch: Option<LeaseEpoch>,
         fence: NoPrimaryFence,
-    },
-    DcsDegraded {
-        fence: NoPrimaryFence,
-    },
-    StaleObservedLease {
-        epoch: LeaseEpoch,
-        reason: StaleLeaseReason,
     },
     SwitchoverRejected(SwitchoverBlocker),
 }
@@ -147,16 +143,22 @@ pub enum NoPrimaryFence {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GlobalKnowledge {
     pub coordination: CoordinationState,
-    pub switchover: SwitchoverState,
-    pub peers: BTreeMap<MemberId, PeerKnowledge>,
     pub self_peer: PeerKnowledge,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CoordinationState {
-    pub dcs: DcsSnapshot,
+pub enum CoordinationState {
+    NoQuorum,
+    Quorum(Box<QuorumCoordinationState>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuorumCoordinationState {
+    pub dcs: DcsQuorumState,
     pub leadership: LeadershipView,
     pub primary: PrimaryObservation,
+    pub switchover: SwitchoverState,
+    pub peers: BTreeMap<MemberId, PeerKnowledge>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,10 +169,6 @@ pub enum LeadershipView {
         epoch: LeaseEpoch,
         state: PeerLeaderState,
     },
-    StaleObservedLease {
-        epoch: LeaseEpoch,
-        reason: StaleLeaseReason,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,13 +176,6 @@ pub enum PeerLeaderState {
     PrimaryReady,
     Recovering,
     Unreachable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum StaleLeaseReason {
-    HolderMissing,
-    HolderNotPrimary,
-    HolderNotReady,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +286,7 @@ pub enum PublicationGoal {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NoPrimaryReason {
-    DcsDegraded,
+    NoQuorum,
     LeaseOpen,
     Recovering,
     SwitchoverRejected(SwitchoverBlocker),
@@ -352,6 +343,23 @@ pub struct WalPosition {
 
 pub type AuthorityProjectionState = PublicationState;
 
+impl CoordinationState {
+    pub(crate) fn as_quorum(&self) -> Option<&QuorumCoordinationState> {
+        match self {
+            Self::Quorum(state) => Some(state.as_ref()),
+            Self::NoQuorum => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_quorum_mut(&mut self) -> Option<&mut QuorumCoordinationState> {
+        match self {
+            Self::Quorum(state) => Some(state.as_mut()),
+            Self::NoQuorum => None,
+        }
+    }
+}
+
 impl WorldView {
     pub(crate) fn initial() -> Self {
         Self {
@@ -371,15 +379,7 @@ impl WorldView {
                 },
             },
             global: GlobalKnowledge {
-                coordination: CoordinationState {
-                    dcs: DcsSnapshot::NotTrusted {
-                        observed_leadership: None,
-                    },
-                    leadership: LeadershipView::Open,
-                    primary: PrimaryObservation::Absent,
-                },
-                switchover: SwitchoverState::None,
-                peers: BTreeMap::new(),
+                coordination: CoordinationState::NoQuorum,
                 self_peer: PeerKnowledge {
                     eligibility: ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
                     api: ApiVisibility::Reachable,

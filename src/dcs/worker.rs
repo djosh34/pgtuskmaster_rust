@@ -34,6 +34,8 @@ pub(crate) enum DcsError {
     Decode { key: String, message: String },
     #[error("store I/O error: {0}")]
     Io(String),
+    #[error("leader lease expired: {0}")]
+    LeaderLeaseExpired(String),
 }
 
 struct ConnectedSession {
@@ -153,6 +155,17 @@ pub(super) async fn run(mut ctx: DcsRuntimeCtx) -> Result<(), WorkerError> {
 
             match outcome {
                 Ok(()) => publish_current_view(&mut ctx, true)?,
+                Err(DcsError::LeaderLeaseExpired(cause)) => {
+                    match handle_leader_lease_expired(&mut ctx, connected, cause.as_str()).await {
+                        Ok(()) => publish_current_view(&mut ctx, true)?,
+                        Err(err) => {
+                            handle_connected_failure(&mut ctx, connected, &err).await?;
+                            session = None;
+                            reconnect_at = Instant::now() + RECONNECT_BACKOFF;
+                            publish_current_view(&mut ctx, false)?;
+                        }
+                    }
+                }
                 Err(err) => {
                     handle_connected_failure(&mut ctx, connected, &err).await?;
                     session = None;
@@ -514,7 +527,7 @@ async fn refresh_leader_keepalive(session: &mut ConnectedSession) -> Result<(), 
             lease.next_keepalive_at = Instant::now() + leader_keepalive_interval(lease.ttl_seconds);
             Ok(())
         }
-        Some(_) => Err(DcsError::Io(format!(
+        Some(_) => Err(DcsError::LeaderLeaseExpired(format!(
             "leader lease keepalive reported expired lease `{}`",
             lease.lease_id
         ))),
@@ -538,6 +551,29 @@ async fn handle_connected_failure(
         .map_err(|log_err| {
             WorkerError::Message(format!("dcs watch failure log emit failed: {log_err}"))
         })
+}
+
+async fn handle_leader_lease_expired(
+    ctx: &mut DcsRuntimeCtx,
+    session: &mut ConnectedSession,
+    cause: &str,
+) -> Result<(), DcsError> {
+    session.leader_lease = None;
+    ctx.leadership = None;
+    ctx.log
+        .send(DcsLogEvent::LeaderLeaseExpired {
+            cause: cause.to_string(),
+        })
+        .map_err(|log_err| DcsError::Io(format!("dcs lease-expiry log emit failed: {log_err}")))?;
+    load_snapshot(
+        ctx.identity.scope.as_str(),
+        &mut session.client,
+        &mut ctx.members,
+        &mut ctx.leadership,
+        &mut ctx.switchover,
+    )
+    .await?;
+    Ok(())
 }
 
 fn handle_initial_connect_failure(
@@ -582,6 +618,9 @@ fn connected_failure_event(err: &DcsError) -> DcsLogEvent {
         DcsError::Io(cause) => DcsLogEvent::ConnectedStepStoreIoFailed {
             cause: cause.clone(),
         },
+        DcsError::LeaderLeaseExpired(cause) => DcsLogEvent::LeaderLeaseExpired {
+            cause: cause.clone(),
+        },
         DcsError::Decode { key, message } => DcsLogEvent::ConnectedStepDecodeFailed {
             cause: format!("key `{key}` decode failed: {message}"),
         },
@@ -594,6 +633,9 @@ fn connected_failure_event(err: &DcsError) -> DcsLogEvent {
 fn initial_connect_failure_event(err: &DcsError) -> DcsLogEvent {
     match err {
         DcsError::Io(cause) => DcsLogEvent::InitialConnectStoreIoFailed {
+            cause: cause.clone(),
+        },
+        DcsError::LeaderLeaseExpired(cause) => DcsLogEvent::LeaderLeaseExpired {
             cause: cause.clone(),
         },
         DcsError::Decode { key, message } => DcsLogEvent::InitialConnectDecodeFailed {

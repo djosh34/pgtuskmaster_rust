@@ -10,7 +10,7 @@ The `ha` section of `GET /state` exposes the current high-availability engine st
 ha: {
   "worker": WorkerStatus,
   "tick": u64,
-  "required_roles_ready": bool,
+  "managed_roles_reconciled": bool,
   "publication": PublicationState,
   "role": TargetRole,
   "world": WorldView,
@@ -21,7 +21,7 @@ ha: {
 
 - `worker` - Current HA worker status
 - `tick` - Monotonic reconciliation counter
-- `required_roles_ready` - Whether local required PostgreSQL roles are ready
+- `managed_roles_reconciled` - Whether local managed PostgreSQL roles are currently reconciled
 - `publication` - Operator-facing authority projection
 - `role` - Target local HA role for this node
 - `world` - Derived local/global worldview used for the current decision
@@ -37,7 +37,7 @@ Variants:
 - `leader` - Hold lease and act as primary
 - `candidate` - Attempt to acquire lease
 - `follower` - Replicate from a leader
-- `fail_safe` - Enter safety mode due to degraded trust
+- `fail_safe` - Enter safety mode when authority is withdrawn, especially in no-quorum paths
 - `demoting_for_switchover` - Release leadership for a specific target
 - `fenced` - Stop unsafe primary behavior
 - `idle` - Wait for conditions before acting
@@ -66,8 +66,7 @@ Variants:
 
 - `lease_open` - No lease currently held
 - `recovering` - Cluster is recovering; may include epoch and fence
-- `dcs_degraded` - DCS trust is not full quorum; may include fence
-- `stale_observed_lease` - Observed lease holder is invalid; carries epoch and reason
+- `no_quorum` - DCS authority is absent; may include fence
 - `switchover_rejected` - Switchover target is invalid; carries blocker reason
 
 ### Fence Information
@@ -129,31 +128,35 @@ Fields:
 
 - `data_dir: DataDirState` - Local data directory status
 - `postgres: PostgresState` - Observed PostgreSQL runtime state
-- `process: ProcessState` - Current process worker status
+- `process: ProcessAssessment` - Current process worker assessment
 - `storage: StorageState` - Storage health assessment
-- `required_roles_ready: bool` - Whether required roles exist
+- `managed_roles_reconciled: bool` - Whether managed roles are currently reconciled
 - `publication: PublicationState` - Last published authority
 - `observation: ObservationState` - Timing metadata for PostgreSQL state changes
 
 ### GlobalKnowledge Fields
 
-- `coordination: CoordinationState` - DCS lease and trust status
-- `switchover: SwitchoverState` - Active switchover requests
-- `peers: BTreeMap<MemberId, PeerKnowledge>` - Observed peer status
+- `coordination: CoordinationState` - DCS authority, lease, and quorum-derived coordination status
 - `self_peer: PeerKnowledge` - This node's eligibility and visibility
 
 ### CoordinationState
 
-- `trust: DcsTrust` - DCS trust level (full_quorum, degraded, not_trusted)
+- `no_quorum` - DCS authority is absent; no authoritative topology is available
+- `quorum` - Wraps `QuorumCoordinationState`
+
+### QuorumCoordinationState
+
+- `dcs: DcsQuorumState` - Authoritative DCS payload for the quorum snapshot
 - `leadership: LeadershipView` - Current lease holder view
 - `primary: PrimaryObservation` - Observed primary member
+- `switchover: SwitchoverState` - Active switchover request within quorum
+- `peers: BTreeMap<MemberId, PeerKnowledge>` - Observed peer status derived from the quorum snapshot
 
 ### LeadershipView
 
 - `open` - No lease currently held
 - `held_by_self` - This node holds the lease
 - `held_by_peer` - Another node holds the lease; includes epoch and leader state
-- `stale_observed_lease` - Observed lease is invalid; includes epoch and reason
 
 ### PrimaryObservation
 

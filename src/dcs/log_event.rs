@@ -28,6 +28,14 @@ pub(crate) enum DcsLogEvent {
     ConnectedStepAlreadyExists { cause: String },
 
     #[log_event(
+        name = "dcs.leader_lease_expired",
+        severity = "warn",
+        result = "failed",
+        message = "dcs leader lease expired"
+    )]
+    LeaderLeaseExpired { cause: String },
+
+    #[log_event(
         name = "dcs.initial_connect_store_io_failed",
         severity = "warn",
         result = "failed",

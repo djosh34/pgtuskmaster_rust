@@ -1,6 +1,17 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 17 02:33:18 AM CET 2026
+Generated: Tue Mar 17 03:48:08 CET 2026
+
+# Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
+
+```
+## Bug: DCS must never report stale cluster data outside authoritative quorum <status>done</status> <passes>true</passes>
+
+<description>
+The intended product invariant is stricter than the behavior that was reintroduced during `.ralph/tasks/story-general-architecture-improvement-finding/07-task-collapse-duplicate-struct-trees-into-canonical-domain-adts-and-prove-the-struct-count-went-down.md`: DCS has only two meaningful states, and stale or reused cluster data is never allowed outside authoritative quorum.
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
 

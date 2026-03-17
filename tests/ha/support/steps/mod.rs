@@ -460,32 +460,12 @@ async fn exactly_one_primary_exists_across_running_nodes_as(
 ) -> Result<()> {
     let expected_online = parse_count(expected_online.as_str())?;
     let intended_online = online_member_ids(world);
-    let primary = poll_for_status(
+    let primary_target = wait_for_authoritative_primary_across_running_nodes(
         world,
         format!("primary.across.{expected_online}.{alias}").as_str(),
         PollKind::Recovery,
-        |status| {
-            require_visible_members(status, expected_online)?;
-            let primary = single_primary(status)?;
-            if intended_online
-                .iter()
-                .any(|member_id| member_id == &primary)
-            {
-                Ok(primary)
-            } else {
-                Err(HarnessError::message(format!(
-                    "expected operator-visible primary within {:?}, observed `{primary}`",
-                    intended_online
-                )))
-            }
-        },
-    )
-    .await?;
-    let primary_target = wait_for_primary_resolution_for_member(
-        world,
-        format!("primary.across.primary.{expected_online}.{alias}").as_str(),
-        PollKind::Recovery,
-        Some(primary),
+        expected_online,
+        intended_online.as_slice(),
     )
     .await?;
     world.remember_writable_primary_alias(alias.as_str(), primary_target.clone());
@@ -1368,6 +1348,68 @@ async fn wait_for_primary_resolution_for_member(
         "{} deadline expired while waiting for an authoritative pgtm primary target; last observed error: {}",
         kind.label(),
         last_error.unwrap_or_else(|| "no primary-resolution attempt ran".to_string())
+    )))
+}
+
+async fn wait_for_authoritative_primary_across_running_nodes(
+    world: &mut HaWorld,
+    phase: &str,
+    kind: PollKind,
+    expected_online: usize,
+    intended_online: &[ClusterMember],
+) -> Result<WritablePrimaryTarget> {
+    let deadline = {
+        let harness = world.harness()?;
+        Instant::now() + kind.deadline(harness)
+    };
+    let poll_interval = {
+        let harness = world.harness()?;
+        harness.timeouts.poll_interval
+    };
+    let mut last_error = None;
+
+    while Instant::now() < deadline {
+        let attempt: Result<WritablePrimaryTarget> = (|| {
+            let (status, primary) = {
+                let harness = world.harness()?;
+                let (status, primary) = harness.observer().state_and_primary_tls_json()?;
+                harness.record_status_snapshot(phase, &status)?;
+                (status, primary_target_from_output(primary)?)
+            };
+            require_visible_members(&status, expected_online)?;
+            let authority_member = single_primary(&status)?;
+            if !intended_online.iter().any(|member_id| member_id == &authority_member) {
+                Err(HarnessError::message(format!(
+                    "expected operator-visible primary within {:?}, observed `{authority_member}`",
+                    intended_online
+                )))?;
+            }
+            {
+                let harness = world.harness()?;
+                probe_writable_primary(harness, &primary)?;
+            }
+            let resolved_member = ClusterMember::parse(primary.member_id())?;
+            if resolved_member != authority_member {
+                Err(HarnessError::message(format!(
+                    "operator state resolved primary `{authority_member}`, but primary routing resolved `{resolved_member}`"
+                )))?;
+            }
+            Ok(WritablePrimaryTarget::new(
+                resolved_member,
+                primary.state_target().clone(),
+            ))
+        })();
+        match attempt {
+            Ok(primary) => return Ok(primary),
+            Err(err) => last_error = Some(err.to_string()),
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Err(HarnessError::message(format!(
+        "{} deadline expired while waiting for one authoritative primary across running nodes; last observed error: {}",
+        kind.label(),
+        last_error.unwrap_or_else(|| "no authoritative primary attempt ran".to_string())
     )))
 }
 

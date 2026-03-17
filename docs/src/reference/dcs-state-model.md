@@ -1,135 +1,163 @@
 # DCS State Model
 
-This page documents the DCS data model after the single-owner rewrite. The important distinction is:
+The cluster state exposed by the distributed coordination service is a two-state algebraic data type. A node either has quorum and can publish authoritative cluster data, or it has no quorum and must withhold that data.
 
-- `DcsView` is the only public read-only surface exposed outside `src/dcs`
-- internal record, cache, key, and etcd-adapter types stay private to the DCS component
-
-## Trust Model
-
-`DcsTrust` has three variants:
-
-- `FullQuorum`
-- `Degraded`
-- `NotTrusted`
-
-Trust evaluation follows this order:
-
-1. If the backing store is unhealthy, trust is `NotTrusted`.
-2. If the local member is missing from the observed member map, trust is `Degraded`.
-3. If the observed member set does not meet quorum expectations, trust is `Degraded`.
-5. Otherwise trust is `FullQuorum`.
-
-The current implementation derives freshness from the etcd-backed member keys that remain live under their own leases, not from a public `updated_at` field.
-
-## Core Types
-
-### Public `DcsView`
-
-`DcsView` contains:
-
-- `worker`
-- `trust`
-- `members: BTreeMap<MemberId, DcsMemberView>`
-- `leader: DcsLeaderStateView`
-- `switchover: DcsSwitchoverStateView`
-- `last_observed_at`
-
-### Public member view
-
-`DcsMemberView` contains:
-
-- `member_id`
-- `lease.ttl_ms`
-- `routing.postgres.host`
-- `routing.postgres.port`
-- optional `routing.api.url`
-- `postgres`
-
-The public PostgreSQL view is one of:
-
-- `Unknown { readiness, timeline }`
-- `Primary { readiness, committed_wal }`
-- `Replica { readiness, upstream, replay_wal, follow_wal }`
-
-These are observation shapes, not raw etcd records.
-
-### Public leader view
-
-`DcsLeaderStateView` is either:
-
-- `Unheld`
-- `Held { holder, generation }`
-
-`/{scope}/leader` is not a plain persistent key. In the etcd-backed store it is attached to an etcd lease whose TTL is derived from `ha.lease_ttl_ms`.
-
-- while the owner keeps renewing the lease, the key stays present
-- if the owner releases leadership explicitly, it revokes its own lease and etcd deletes the key
-- if the owner dies hard and stops renewing, etcd expires the lease and deletes the key automatically
-
-That means a missing leader member record does not itself force `FailSafe`. The authoritative signal for dead leadership is the disappearance of the lease-backed leader key from the watched DCS cache.
-
-`generation` turns the leader record into a lease epoch rather than just a member label. Operators and the HA API use that epoch to distinguish one leadership term from the next even when the same member regains leadership.
-
-### Public switchover view
-
-`DcsSwitchoverStateView` is either:
-
-- `None`
-- `Requested { target }`
-
-`target` is one of:
-
-- `AnyHealthyReplica`
-- `Specific(MemberId)`
-
-The request stays in DCS while the HA loop coordinates the handoff, and clears only when the system decides the request is complete or an operator clears it explicitly.
-
-### Internal-only cache and record types
-
-Inside `src/dcs`, the worker still maintains private `*Record` and `*Cache` types such as `MemberRecord`, `LeaderLeaseRecord`, `SwitchoverRecord`, and `DcsCache`. Those types are implementation details and are not part of the architectural boundary anymore.
-
-## Key Layout
-
-All DCS keys are scoped under the configured cluster scope:
+## Type hierarchy
 
 ```text
-/{scope}/leader
-/{scope}/switchover
-/{scope}/config
-/{scope}/init
-/{scope}/member/{member_id}
+DcsSnapshot
+- NoQuorum
+- Quorum(DcsQuorumState)
+
+DcsQuorumState
+- leadership: Option<LeaseEpoch>
+- switchover: SwitchoverState
+- members: BTreeMap<MemberId, DcsMemberState>
+
+DcsMemberState
+- postgres_endpoint: PgEndpoint
+- postgres: PgInfoState
+
+DcsAuthority
+- NoQuorum
+- Quorum
 ```
 
-The key parser remains internal to `src/dcs`; non-DCS modules do not construct or interpret these raw paths directly.
+## Authority and public data visibility
 
-## Watch and Cache Updates
+`DcsAuthority` mirrors the active `DcsSnapshot` variant.
 
-The DCS worker applies parsed updates into the cache:
+### NoQuorum
 
-- member puts and deletes update the internal member-record map
-- leader puts and deletes update the internal leader record
-- switchover puts and deletes update the internal switchover record
-- init-lock puts and deletes update the internal init-lock record
+```text
+DcsSnapshot::NoQuorum
+```
 
-The local worker also republishes its own member record from current PostgreSQL state while the store is healthy.
+Public accessors expose no cluster payload:
 
-For the etcd-backed implementation, lease expiry is visible through the normal watch path. When etcd deletes `/{scope}/leader` because the lease expired or was revoked, the watch-fed cache removes the leader record and the HA loop sees that update through normal `DcsView` publication.
+- `mode_label()` returns `"no_quorum"`
+- `authority()` returns `DcsAuthority::NoQuorum`
+- `is_quorum()` returns `false`
+- `leadership()` returns `None`
+- `switchover()` returns `None`
+- `members()` iterates zero items
+- `member_ids()` iterates zero items
+- `member_count()` returns `0`
+- `member(_)` returns `None`
+- `quorum_state()` returns `None`
 
-## Runtime Fields That Affect DCS Meaning
+This is the main safety guarantee of the current model: outside authoritative quorum, the public DCS surface does not expose stale members, stale leadership, or stale switchover state.
 
-The DCS state model is not independent of runtime config. In particular:
+### Quorum
 
-- `dcs.endpoints` choose the coordination backend endpoints
-- `cluster.scope` determines the prefix for all keys
-- `ha.lease_ttl_ms` determines member freshness and the etcd leader-lease TTL
+```text
+DcsSnapshot::Quorum(DcsQuorumState {
+    leadership: Option<LeaseEpoch>,
+    switchover: SwitchoverState,
+    members: BTreeMap<MemberId, DcsMemberState>,
+})
+```
 
-In the shipped docker cluster config, `ha.lease_ttl_ms` is `10000`.
+Public accessors expose the authoritative cluster payload:
 
-## Operator Reading Notes
+- `mode_label()` returns `"quorum"`
+- `authority()` returns `DcsAuthority::Quorum`
+- `is_quorum()` returns `true`
+- `leadership()` returns `Some(&LeaseEpoch)` or `None` when the lease is open
+- `switchover()` returns `Some(&SwitchoverState)`; the no-request case is represented by `SwitchoverState::None`
+- `members()` iterates `(&MemberId, &DcsMemberState)` pairs
+- `member_ids()` iterates `&MemberId` values
+- `member_count()` returns the number of quorum-visible members
+- `member(member_id)` returns `Some(&DcsMemberState)` when the member exists
+- `quorum_state()` returns `Some(&DcsQuorumState)`
 
-The DCS state model answers a different question from the debug API and the HA API:
+## Member payload
 
-- this page defines the DCS-owned storage model and the public `DcsView`
-- the debug/API state surfaces show one node's current published snapshot of that view
-- HA derives a separate `WorldView` from the read-only DCS snapshot rather than from raw etcd paths
+`DcsMemberState` is the public per-member payload inside a quorum snapshot.
+
+```text
+pub struct DcsMemberState {
+    pub postgres_endpoint: PgEndpoint,
+    pub postgres: PgInfoState,
+}
+```
+
+- `postgres_endpoint` is the advertised PostgreSQL endpoint for the member
+- `postgres` is the current PostgreSQL observation for that member
+
+These fields are public and serializable as part of the published snapshot and API surface. The etcd-backed store still uses internal DCS record types rather than writing `DcsMemberState` directly.
+
+## Constructing snapshots
+
+### Initial state
+
+`DcsSnapshot::starting()` returns `NoQuorum`.
+
+### Quorum snapshot from parts
+
+```text
+DcsSnapshot::quorum(
+    leadership: Option<LeaseEpoch>,
+    switchover: SwitchoverState,
+    members: BTreeMap<MemberId, DcsMemberState>,
+) -> DcsSnapshot
+```
+
+## Quorum logic
+
+`current_snapshot(...)` computes the published DCS view.
+
+It returns `NoQuorum` when either of these conditions is true:
+
+- the etcd client is not reachable
+- `has_member_quorum(members)` is false
+
+`has_member_quorum(...)` uses the current minimal rule:
+
+- zero members -> false
+- one member -> true
+- two or more members -> require at least two members
+
+This is not majority math over the whole deployment. It is the current rule used to decide whether the public snapshot may expose cluster data at all.
+
+## Authority transitions
+
+The worker records `DcsLogEvent::CoordinationModeTransition` when the published authority changes. The event includes the previous and next labels, which makes `no_quorum <-> quorum` transitions visible in logs.
+
+The worker also has a dedicated `LeaderLeaseExpired` path. When the node's own leader keepalive reports an expired lease, the worker drops only that owned leader lease, reloads the authoritative snapshot, and republishes based on the reloaded state instead of forcing a full disconnected `NoQuorum` transition first.
+
+## Internal state versus published state
+
+The DCS runtime still keeps internal in-memory fields for:
+
+- `members`
+- `leadership`
+- `switchover`
+
+Those internal values can exist even when the published snapshot is `NoQuorum`. They are implementation detail, not public authority. The public contract is that cluster topology is withheld until quorum is restored.
+
+## Downstream consumption
+
+The HA layer mirrors this split with:
+
+- `CoordinationState::NoQuorum`
+- `CoordinationState::Quorum(Box<QuorumCoordinationState>)`
+
+When the published DCS view is `NoQuorum`, HA routes into fail-safe and projects `NoPrimaryProjection::NoQuorum`.
+
+The CLI status command derives warnings from that same published view:
+
+- `degraded_dcs_mode` when `!state.dcs.is_quorum()`
+- `no_members` when `member_count() == 0`
+- `no_primary` when there is no authoritative primary projection
+
+That means operator-facing command health can still be degraded while the DCS snapshot itself remains a strict two-state model.
+
+## Example sequence
+
+1. The worker connects to etcd and loads a valid snapshot -> publishes `Quorum`.
+2. The node loses etcd reachability or member quorum -> publishes `NoQuorum`.
+3. HA withdraws the operator-visible primary and enters fail-safe behavior.
+4. Etcd connectivity and member quorum recover -> the worker republishes `Quorum`.
+
+During step 2 and step 3, public DCS accessors intentionally yield empty results instead of stale cluster state.

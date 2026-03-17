@@ -34,15 +34,26 @@ fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> 
 }
 
 fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> ReconcilePlan {
-    match (&world.global.switchover, desired.clear_switchover) {
+    match (
+        world
+            .global
+            .coordination
+            .as_quorum()
+            .map(|coordination| &coordination.switchover),
+        desired.clear_switchover,
+    ) {
         (
-            super::types::SwitchoverState::AnyHealthyReplica
-            | super::types::SwitchoverState::Specific(_),
+            Some(
+                super::types::SwitchoverState::AnyHealthyReplica
+                | super::types::SwitchoverState::Specific(_),
+            ),
             true,
         ) => {
             ReconcilePlan::coordination(CoordinationAction::ClearSwitchover)
         }
-        (super::types::SwitchoverState::None, _) | (_, false) => ReconcilePlan::default(),
+        (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
+            ReconcilePlan::default()
+        }
     }
 }
 
@@ -242,10 +253,11 @@ fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> ReconcilePlan
 }
 
 fn leadership_held_by_self(world: &WorldView) -> bool {
-    matches!(
-        world.global.coordination.leadership,
-        LeadershipView::HeldBySelf(_)
-    )
+    world
+        .global
+        .coordination
+        .as_quorum()
+        .is_some_and(|coordination| matches!(coordination.leadership, LeadershipView::HeldBySelf(_)))
 }
 
 #[cfg(test)]
@@ -253,7 +265,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::DcsSnapshot,
+        dcs::DcsQuorumState,
         process::jobs::ShutdownMode,
         state::{LeaseEpoch, MemberId, UnixMillis},
     };
@@ -262,25 +274,25 @@ mod tests {
     use crate::ha::types::{
         ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
         LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
-        PeerKnowledge, PrimaryObservation, PublicationState, StorageState, SwitchoverState,
-        WalPosition,
+        PeerKnowledge, PrimaryObservation, PublicationState, QuorumCoordinationState,
+        StorageState, SwitchoverState, WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {
         WorldView {
             local,
             global: GlobalKnowledge {
-                coordination: CoordinationState {
-                    dcs: DcsSnapshot::quorum(
-                        None,
-                        SwitchoverState::None,
-                        BTreeMap::new(),
-                    ),
+                coordination: CoordinationState::Quorum(Box::new(QuorumCoordinationState {
+                    dcs: DcsQuorumState {
+                        leadership: None,
+                        switchover: SwitchoverState::None,
+                        members: BTreeMap::new(),
+                    },
                     leadership: LeadershipView::Open,
                     primary: PrimaryObservation::Absent,
-                },
-                switchover: SwitchoverState::None,
-                peers: BTreeMap::new(),
+                    switchover: SwitchoverState::None,
+                    peers: BTreeMap::new(),
+                })),
                 self_peer: PeerKnowledge {
                     eligibility: super::super::types::ElectionEligibility::Ineligible(
                         IneligibleReason::StartingUp,
@@ -292,9 +304,9 @@ mod tests {
     }
 
     #[test]
-    fn degraded_failsafe_keeps_stale_lease_instead_of_releasing_it() {
+    fn no_quorum_failsafe_republishes_projection() {
         let publication = PublicationGoal::Publish(AuthorityProjection::NoPrimary(
-            NoPrimaryProjection::DcsDegraded {
+            NoPrimaryProjection::NoQuorum {
                 fence: NoPrimaryFence::None,
             },
         ));
@@ -344,20 +356,20 @@ mod tests {
                 },
             },
             global: GlobalKnowledge {
-                coordination: CoordinationState {
-                    dcs: DcsSnapshot::quorum(
-                        None,
-                        SwitchoverState::None,
-                        BTreeMap::new(),
-                    ),
+                coordination: CoordinationState::Quorum(Box::new(QuorumCoordinationState {
+                    dcs: DcsQuorumState {
+                        leadership: None,
+                        switchover: SwitchoverState::None,
+                        members: BTreeMap::new(),
+                    },
                     leadership: LeadershipView::HeldBySelf(LeaseEpoch {
                         holder: MemberId("node-a".to_string()),
                         generation: 5,
                     }),
                     primary: PrimaryObservation::Absent,
-                },
-                switchover: SwitchoverState::None,
-                peers: BTreeMap::new(),
+                    switchover: SwitchoverState::None,
+                    peers: BTreeMap::new(),
+                })),
                 self_peer: PeerKnowledge {
                     eligibility: super::super::types::ElectionEligibility::Ineligible(
                         IneligibleReason::StartingUp,

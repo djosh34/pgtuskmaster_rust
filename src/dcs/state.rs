@@ -32,42 +32,16 @@ impl DcsMemberState {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DcsAuthority {
-    NotTrusted,
-    Degraded,
+    NoQuorum,
     Quorum,
 }
 
 impl DcsAuthority {
     pub fn label(self) -> &'static str {
         match self {
-            Self::NotTrusted => "not_trusted",
-            Self::Degraded => "degraded",
-            Self::Quorum => "coordinated",
+            Self::NoQuorum => "no_quorum",
+            Self::Quorum => "quorum",
         }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DcsObservedCluster {
-    pub observed_leadership: Option<LeaseEpoch>,
-    pub members: BTreeMap<MemberId, DcsMemberState>,
-}
-
-impl DcsObservedCluster {
-    pub fn members(&self) -> impl Iterator<Item = (&MemberId, &DcsMemberState)> {
-        self.members.iter()
-    }
-
-    pub fn member_ids(&self) -> impl Iterator<Item = &MemberId> {
-        self.members.keys()
-    }
-
-    pub fn member_count(&self) -> usize {
-        self.members.len()
-    }
-
-    pub fn member(&self, member_id: &MemberId) -> Option<&DcsMemberState> {
-        self.members.get(member_id)
     }
 }
 
@@ -99,18 +73,13 @@ impl DcsQuorumState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DcsSnapshot {
-    NotTrusted {
-        observed_leadership: Option<LeaseEpoch>,
-    },
-    Degraded(DcsObservedCluster),
+    NoQuorum,
     Quorum(DcsQuorumState),
 }
 
 impl DcsSnapshot {
     pub fn starting() -> Self {
-        Self::NotTrusted {
-            observed_leadership: None,
-        }
+        Self::NoQuorum
     }
 
     pub fn quorum(
@@ -127,8 +96,7 @@ impl DcsSnapshot {
 
     pub fn authority(&self) -> DcsAuthority {
         match self {
-            Self::NotTrusted { .. } => DcsAuthority::NotTrusted,
-            Self::Degraded(_) => DcsAuthority::Degraded,
+            Self::NoQuorum => DcsAuthority::NoQuorum,
             Self::Quorum(_) => DcsAuthority::Quorum,
         }
     }
@@ -141,20 +109,17 @@ impl DcsSnapshot {
         matches!(self, Self::Quorum(_))
     }
 
-    pub fn observed_leadership(&self) -> Option<&LeaseEpoch> {
+    pub fn leadership(&self) -> Option<&LeaseEpoch> {
         match self {
-            Self::NotTrusted {
-                observed_leadership,
-            } => observed_leadership.as_ref(),
-            Self::Degraded(cluster) => cluster.observed_leadership.as_ref(),
+            Self::NoQuorum => None,
             Self::Quorum(cluster) => cluster.leadership.as_ref(),
         }
     }
 
-    pub fn coordinated(&self) -> Option<&DcsQuorumState> {
+    pub fn quorum_state(&self) -> Option<&DcsQuorumState> {
         match self {
             Self::Quorum(cluster) => Some(cluster),
-            Self::NotTrusted { .. } | Self::Degraded(_) => None,
+            Self::NoQuorum => None,
         }
     }
 
@@ -179,28 +144,23 @@ impl DcsSnapshot {
             .and_then(|members| members.get(member_id))
     }
 
-    pub fn leadership(&self) -> Option<&LeaseEpoch> {
-        self.observed_leadership()
-    }
-
     pub fn switchover(&self) -> Option<&SwitchoverState> {
         match self {
-            Self::NotTrusted { .. } | Self::Degraded(_) => None,
+            Self::NoQuorum => None,
             Self::Quorum(cluster) => Some(&cluster.switchover),
         }
     }
 
     fn members_map(&self) -> Option<&BTreeMap<MemberId, DcsMemberState>> {
         match self {
-            Self::NotTrusted { .. } => None,
-            Self::Degraded(cluster) => Some(&cluster.members),
+            Self::NoQuorum => None,
             Self::Quorum(cluster) => Some(&cluster.members),
         }
     }
 }
 
 pub type DcsView = DcsSnapshot;
-pub type ClusterView = DcsObservedCluster;
+pub type ClusterView = DcsQuorumState;
 pub type ClusterMemberView = DcsMemberState;
 pub type SwitchoverView = SwitchoverState;
 pub type MemberPostgresView = PgInfoState;
@@ -240,16 +200,11 @@ pub(crate) fn current_snapshot(
     members: &BTreeMap<MemberId, DcsMemberState>,
 ) -> DcsSnapshot {
     if !etcd_reachable {
-        return DcsSnapshot::NotTrusted {
-            observed_leadership: leadership.clone(),
-        };
+        return DcsSnapshot::NoQuorum;
     }
 
     if !has_member_quorum(members) {
-        return DcsSnapshot::Degraded(DcsObservedCluster {
-            observed_leadership: leadership.clone(),
-            members: members.clone(),
-        });
+        return DcsSnapshot::NoQuorum;
     }
 
     DcsSnapshot::Quorum(DcsQuorumState {
