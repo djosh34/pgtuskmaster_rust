@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 18 09:49:54 PM CET 2026
+Generated: Wed Mar 18 10:20:13 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-long-runs-leak-docker-networks-and-exhaust-address-pools.md`
 
@@ -32,6 +32,18 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 <description>
 `cargo nextest run --workspace --all-targets --profile default --no-tests fail` failed during verification while linking test `ha`.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-primary-count-invariant-swallows-observer-failures.md`
+
+```
+## Bug: Primary-count invariant swallows observer failures <status>not_started</status> <passes>false</passes>
+
+<description>
+`tests/ha/support/invariants/primary_count.rs` currently converts `observer.state_via_member(member)` failures into `Ok((member, false))` inside `observe_member_primary`.
+That means the background invariant can silently treat broken observation as "not primary" instead of surfacing a real failure, which hides harness/observer regressions and can report an incorrect zero-primary state.
 ```
 
 ==============
@@ -203,6 +215,17 @@ The codebase still has several early-error-flattening patterns:
 <description>
 `tests/ha/support/invariants/write_convergence.rs` currently drops connection and task results with `let _ = ...` in the member worker loop.
 This hides reconnect failures and completed task errors instead of surfacing them through the invariant health checks.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/write-convergence-invariant-swallows-connect-errors.md`
+
+```
+## Bug: Write convergence invariant swallows connect errors <status>not_started</status> <passes>false</passes>
+
+<description>
+`tests/ha/support/invariants/write_convergence.rs` currently drops `connect_member` failures in `run_member_worker` with `let _ = err;` and then just sleeps and retries.
 ```
 
 ==============

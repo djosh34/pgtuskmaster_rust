@@ -5,7 +5,7 @@ model_verbosity = "high"
 model_supports_reasoning_summaries = true
 
 [features]
-multi_agent = true
+multi_agent = false
 #runtime_metrics = true
 
 [profiles.spark]

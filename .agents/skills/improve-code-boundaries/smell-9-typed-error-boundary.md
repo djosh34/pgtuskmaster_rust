@@ -1,241 +1,548 @@
 # Smell 9: Typed Error Boundary, Not String Buckets
 
-This smell is about preserving the real error shape until the outermost boundary instead of converting everything to `String` early.
+This smell is about one very specific reduction:
 
-The preferred shape is:
+- before: internal code keeps doing `map_err(|err| ... err.to_string())`, `map_err(|err| format!(...))`, or `Err(format!(...))`
+- after: internal code returns typed errors, the error enum carries the real source with `thiserror`, and the application code gets much smaller
 
-1. keep source errors typed
-2. add context with struct variants, not sentence strings
-3. use `#[from]` or manual `From` impls where a source maps cleanly to one variant
-4. render only once at the edge that talks to humans
+Read every example below literally:
 
-Do not return `Result<_, String>` if the failure has real structure. Do not build error prose in the middle of the control flow if the caller may need to branch on the cause.
+- `Before` means the shape that exists in this repo today
+- `After` means the target shape we want after the boundary is cleaned up
+- the win is not abstract "better typing"
+- the win is that the string-building `map_err` glue mostly disappears
+
+If code is still inside the program, it should usually return a typed error. Human prose belongs at the outer display/log/HTTP boundary, not in the middle of control flow.
+
+## Core Rule
+
+Keep the source error typed until the edge.
+
+That usually means:
+
+1. return `Result<T, FooError>`, not `Result<T, String>`
+2. store the real source error in the enum
+3. use `#[from]` when one source maps cleanly to one variant
+4. use `#[source]` plus context fields when the same source type can fail in several operations
+5. render once at the final boundary that talks to a human
+
+The important distinction is:
+
+- `#[from]` removes the conversion completely when the mapping is one-to-one
+- `#[source]` still keeps the real error typed even when you need operation-specific context
+- both are better than `err.to_string()`
+
+Do not stop thinking too early:
+
+- if `map_err(|source| FooError::Bar { source })` is still present, that may be acceptable as a temporary reduction
+- but it may also mean the boundary is still wrong
+- very often the real fix is to move the semantic distinction into the error type or into smaller helper boundaries so the caller can use `?` all the way through
 
 ## Detection Checklist
 
 Look for these signals:
 
-- `Result<_, String>` return types in helpers or internal modules
-- enum variants like `Message(String)`, `Error(String)`, `Failed(String)`, `InvalidInput(String)`, `Resolution(String)`, or `Transport(String)` that hold no real invariant
-- `map_err(|err| err.to_string())`, `format!("{err}")`, or `format!(...)` used before the final display/log boundary
-- `Vec<String>` aggregating failures that could stay typed
-- `thiserror` types that exist, but their fields are still `String` instead of source errors or structured context
-- one helper translating several distinct failures into one generic variant
-- code that re-parses message text later because the original cause was discarded
+- `Result<_, String>` in internal helpers or modules
+- error enums with `Message(String)`, `Config(String)`, `Transport(String)`, `Decode(String)`, `Failed(String)`, or similar string buckets
+- `map_err(|err| err.to_string())`
+- `map_err(|err| format!(...))`
+- `Err(format!(...))`
+- `Vec<String>` used to accumulate failures that could stay typed
+- a typed source error already exists, but the caller immediately flattens it into text
+- repeated `map_err` closures whose only job is to build another sentence
+
+## Before And After Must Be Obvious
+
+When you document or review this smell, always show all four pieces together:
+
+1. the `Before` application code
+2. the `Before` error type
+3. the `After` application code
+4. the `After` error type
+
+If you skip either the application code or the error type, the example becomes fuzzy.
+
+## Example 1: `src/api/worker.rs`
+
+This is the smallest complete example in the repo.
+
+### Before: actual error type in the repo today
+
+```rust
+#[derive(Debug, thiserror::Error)]
+enum ReloadCertificatesError {
+    #[error("api certificate reload failed: {message}")]
+    Api { message: String },
+    #[error("postgres certificate reload failed: {0}")]
+    Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
+}
+```
+
+### Before: actual application code in the repo today
+
+```rust
+async fn reload(
+    &self,
+    cfg: &RuntimeConfig,
+) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
+    match self {
+        Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
+        Self::Https { server_config } => match &cfg.api.transport {
+            crate::config::ApiTransportConfig::Http => Err(ReloadCertificatesError::Api {
+                message: "api cert reload requires https transport".to_string(),
+            }),
+            crate::config::ApiTransportConfig::Https { tls } => {
+                let reloaded = crate::tls::build_api_server_config(tls).map_err(|err| {
+                    ReloadCertificatesError::Api {
+                        message: err.to_string(),
+                    }
+                })?;
+                server_config.reload_from_config(reloaded);
+                Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
+            }
+        },
+    }
+}
+```
+
+### After: target error type
+
+```rust
+#[derive(Debug, thiserror::Error)]
+enum ReloadCertificatesError {
+    #[error("api certificate reload requires https transport")]
+    ApiTransportMismatch,
+    #[error(transparent)]
+    ApiTls(#[from] crate::tls::TlsConfigError),
+    #[error("postgres certificate reload failed: {0}")]
+    Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
+}
+```
+
+### After: target application code
+
+```rust
+async fn reload(
+    &self,
+    cfg: &RuntimeConfig,
+) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
+    match self {
+        Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
+        Self::Https { server_config } => match &cfg.api.transport {
+            crate::config::ApiTransportConfig::Http => {
+                Err(ReloadCertificatesError::ApiTransportMismatch)
+            }
+            crate::config::ApiTransportConfig::Https { tls } => {
+                let reloaded = crate::tls::build_api_server_config(tls)?;
+                server_config.reload_from_config(reloaded);
+                Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
+            }
+        },
+    }
+}
+```
+
+### What got smaller
+
+- `map_err(|err| ReloadCertificatesError::Api { message: err.to_string() })` disappeared
+- `TlsConfigError` stays typed instead of being flattened into a sentence
+- the application code now uses plain `?`
+- this is the ideal smell-9 cleanup: less code and better information
+
+## Example 2: `tests/ha/support/invariants/write_convergence.rs`
+
+This is a much stronger smell-9 example because the problem is not just `map_err`.
+
+The real problem is:
+
+- the observation type stores `message: String`
+- the function keeps merging error text with `format!(...)`
+- `previous_error` is already flattened to `Option<String>`
+- once the code does that, every new failure path has to become more string glue
+
+### Before: actual error types in the repo today
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum WriteConvergenceInvariantError {
+    #[error("write-convergence invariant failed: {0}")]
+    Failed(String),
+}
+
+enum MemberCountObservation {
+    Observed {
+        member: ClusterMember,
+        count: u64,
+    },
+    Failed {
+        member: ClusterMember,
+        message: String,
+    },
+}
+```
+
+### Before: actual application code in the repo today
+
+```rust
+async fn read_member_count_via_fresh_connection(
+    member: &MemberObservationTarget,
+    connect_timeout: Duration,
+    previous_error: Option<String>,
+) -> MemberCountObservation {
+    let routing_target = match resolve_observation_routing_target(member) {
+        Ok(routing_target) => routing_target,
+        Err(err) => {
+            return MemberCountObservation::Failed {
+                member: member.routing_target.member,
+                message: previous_error.map_or(err.clone(), |previous| {
+                    format!(
+                        "existing observation failed: {previous}; refresh routing failed: {err}"
+                    )
+                }),
+            };
+        }
+    };
+    match connect_member(&routing_target, connect_timeout).await {
+        Ok((client, connection_task)) => {
+            let count_result = read_count(client.as_ref(), connect_timeout).await;
+            connection_task.abort();
+            match count_result {
+                Ok(count) => MemberCountObservation::Observed {
+                    member: member.routing_target.member,
+                    count,
+                },
+                Err(err) => MemberCountObservation::Failed {
+                    member: member.routing_target.member,
+                    message: previous_error.map_or_else(
+                        || err.to_string(),
+                        |previous| format!(
+                            "existing observation failed: {previous}; fresh reconnect read failed: {err}"
+                        ),
+                    ),
+                },
+            }
+        }
+        Err(err) => MemberCountObservation::Failed {
+            member: member.routing_target.member,
+            message: previous_error.map_or_else(
+                || err.clone(),
+                |previous| {
+                    format!(
+                        "existing observation failed: {previous}; fresh reconnect failed: {err}"
+                    )
+                },
+            ),
+        },
+    }
+}
+```
+
+### Why this before is bad
+
+- the failure boundary is already `String`
+- `previous_error` is no longer a cause, it is just prose
+- the code cannot use `#[from]` because the helpers do not return operation-specific typed errors
+- every branch is forced to build sentences manually
+
+This is exactly the wrong instinct:
+
+- flatten first
+- then concatenate more text on top
+- then try to explain the mess with more formatting
+
+### After: much cleaner error types
+
+```rust
+#[derive(Debug, thiserror::Error)]
+#[error("refresh routing failed")]
+struct RefreshRoutingError(#[from] crate::support::error::HarnessError);
+
+#[derive(Debug, thiserror::Error)]
+#[error("fresh reconnect failed")]
+struct FreshReconnectError(#[from] ConnectMemberError);
+
+#[derive(Debug, thiserror::Error)]
+#[error("fresh reconnect read failed")]
+struct FreshReconnectReadError(#[from] ReadCountError);
+
+#[derive(Debug, thiserror::Error)]
+enum MemberCountObservationError {
+    #[error(transparent)]
+    RefreshRouting(#[from] RefreshRoutingError),
+
+    #[error(transparent)]
+    FreshReconnect(#[from] FreshReconnectError),
+
+    #[error(transparent)]
+    FreshReconnectRead(#[from] FreshReconnectReadError),
+
+    #[error("existing observation failed, and refresh observation also failed")]
+    ExistingAndFresh {
+        #[source]
+        previous: Box<MemberCountObservationError>,
+        #[source]
+        fresh: Box<MemberCountObservationError>,
+    },
+}
+
+enum MemberCountObservation {
+    Observed {
+        member: ClusterMember,
+        count: u64,
+    },
+    Failed {
+        member: ClusterMember,
+        error: MemberCountObservationError,
+    },
+}
+
+impl MemberCountObservation {
+    fn render(&self) -> String {
+        match self {
+            Self::Observed { member, count } => format!("`{member}`={count}"),
+            Self::Failed { member, error } => format!("`{member}` error={error}"),
+        }
+    }
+}
+```
+
+### After: much cleaner application code
+
+```rust
+fn resolve_observation_routing_target(
+    member: &MemberObservationTarget,
+) -> Result<PostgresRoutingTarget, RefreshRoutingError> {
+    Ok(member.observer.postgres_routing_target(member.routing_target.member)?)
+}
+
+async fn reconnect_and_read_member_count(
+    member: &MemberObservationTarget,
+    connect_timeout: Duration,
+) -> Result<u64, MemberCountObservationError> {
+    let routing_target = resolve_observation_routing_target(member)?;
+    let (client, connection_task) = connect_member(&routing_target, connect_timeout).await?;
+    let count = read_count(client.as_ref(), connect_timeout).await?;
+    connection_task.abort();
+    Ok(count)
+}
+
+async fn read_member_count_via_fresh_connection(
+    member: &MemberObservationTarget,
+    connect_timeout: Duration,
+    previous_error: Option<MemberCountObservationError>,
+) -> MemberCountObservation {
+    match reconnect_and_read_member_count(member, connect_timeout).await {
+        Ok(count) => MemberCountObservation::Observed {
+            member: member.routing_target.member,
+            count,
+        },
+        Err(fresh) => MemberCountObservation::Failed {
+            member: member.routing_target.member,
+            error: previous_error.map_or(fresh, |previous| {
+                MemberCountObservationError::ExistingAndFresh {
+                    previous: Box::new(previous),
+                    fresh: Box::new(fresh),
+                }
+            }),
+        },
+    }
+}
+```
+
+### What got much cleaner
+
+- the top-level refresh flow no longer has any `map_err`
+- the top-level refresh flow no longer has any `to_string()`
+- the top-level refresh flow no longer has any `format!(...)`
+- the observation keeps a typed `error`, not a `message: String`
+- `#[from]` works because each helper now owns one semantic operation and one error type
+- the human-readable sentence is rendered once in `MemberCountObservation::render`
+
+This is the important challenge:
+
+- no, you are not stuck with typed `map_err` slop forever
+- if the code still needs it everywhere, the boundary is probably still wrong
+- the real move is often to split one multi-step function into smaller typed operations so `#[from]` can collapse the glue all at once
+
+## Example 3: `src/cli/error.rs` and `src/cli/client.rs`
+
+This is a string-bucket boundary. The enum is typed only in name. The payloads are still strings.
+
+### Before: actual error type in the repo today
+
+```rust
+#[derive(Debug, Error)]
+pub enum CliError {
+    #[error("config error: {0}")]
+    Config(String),
+    #[error("transport error: {0}")]
+    Transport(String),
+    #[error("api request failed with status {status}: {body}")]
+    ApiStatus { status: u16, body: String },
+    #[error("response decode failed: {0}")]
+    Decode(String),
+    #[error("request build failed: {0}")]
+    RequestBuild(String),
+    #[error("resolution error: {0}")]
+    Resolution(String),
+    #[error("output serialization failed: {0}")]
+    Output(String),
+}
+```
+
+### Before: actual application code in the repo today
+
+```rust
+let url = self
+    .base_url
+    .join(path)
+    .map_err(|err| CliError::RequestBuild(format!("compose URL failed: {err}")))?;
+
+let response = request
+    .send()
+    .await
+    .map_err(|err| CliError::Transport(err.to_string()))?;
+
+let body = response
+    .text()
+    .await
+    .map_err(|err| CliError::Transport(err.to_string()))?;
+
+serde_json::from_str(&body).map_err(|err| CliError::Decode(err.to_string()))
+```
+
+### After: target error type
+
+```rust
+#[derive(Debug, thiserror::Error)]
+pub enum CliError {
+    #[error(transparent)]
+    Config(#[from] CliConfigError),
+
+    #[error("api request failed with status {status}: {body}")]
+    ApiStatus { status: u16, body: String },
+
+    #[error(transparent)]
+    Transport(#[from] reqwest::Error),
+
+    #[error("compose URL for `{path}` failed")]
+    ComposeUrl {
+        path: &'static str,
+        #[source]
+        source: url::ParseError,
+    },
+
+    #[error(transparent)]
+    Decode(#[from] serde_json::Error),
+
+    #[error("parse CA certificate failed")]
+    ParseCaCert {
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error("parse client identity failed")]
+    ParseClientIdentity {
+        #[source]
+        source: reqwest::Error,
+    },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CliConfigError {
+    #[error("load operator config failed")]
+    LoadOperatorConfig(#[from] crate::config::ConfigError),
+
+    #[error("read CLI config file {path}")]
+    ReadConfigFile {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("materialize `{field}` failed")]
+    Materialize {
+        field: &'static str,
+        #[source]
+        source: crate::config::ConfigMaterializeError,
+    },
+}
+```
+
+### After: target application code
+
+```rust
+let url = self
+    .base_url
+    .join(path)
+    .map_err(|source| CliError::ComposeUrl { path, source })?;
+
+let response = request.send().await?;
+let body = response.text().await?;
+
+serde_json::from_str(&body).map_err(CliError::from)
+```
+
+### What got smaller
+
+- `Transport(err.to_string())` disappeared
+- `Decode(err.to_string())` disappeared
+- the enum now carries `reqwest::Error`, `url::ParseError`, and `serde_json::Error`
+- the call sites use `?` again instead of text conversion closures
 
 ## What Good Looks Like
 
-A good error boundary usually has one of these shapes:
-
-- `#[derive(thiserror::Error)] enum FooError { #[error("...")] Io(#[from] std::io::Error), #[error("...")] Parse { field: String, #[source] source: ParseError } }`
-- one small enum per module, with `#[from]` for the sources that map cleanly
-- contextual fields like `path: PathBuf`, `member: MemberId`, `field: &'static str`, `op: &'static str`, or `status: u16`
-- one final rendering edge for CLI output, logs, or HTTP responses
-
-## Example A: The Repo Already Has Typed Error Boundaries
-
-The repo already has several good examples to copy:
-
-- `src/dev_support/mod.rs` uses distinct machine-readable variants like `Io`, `SpawnFailure`, `StartupTimeout`, `EarlyExit`, `ShutdownTimeout`, and `StalePath`
-- `src/process/postmaster.rs` keeps path, pid, and signal context as data instead of collapsing them into prose
-- `src/config/parser.rs` keeps `Io` and `Parse` typed at the ingestion edge
-- `src/logging/core/runtime.rs` keeps separate error families instead of one generic bucket
-- `tests/ha/support/error.rs` is a presentation boundary where `Message(String)` can remain the exception
-
-The rule to copy is the boundary shape, not the exact variant names: preserve the source error and structured context until the outermost display boundary.
-
-Real repo examples to copy from:
-
-- `src/process/postmaster.rs` already models failures as real variants:
-
-```rust
-ReadPidFile { pid_file: PathBuf, message: String },
-InvalidPid { pid_file: PathBuf, value: String, message: String },
-SignalDelivery { pid: u32, signal: &'static str, message: String },
-```
-
-- `src/config/parser.rs` already keeps config failures typed:
-
-```rust
-Io { path: String, #[source] source: std::io::Error },
-Parse { path: String, #[source] source: toml::de::Error },
-Validation { field: &'static str, message: String },
-```
-
-- `src/logging/core/runtime.rs` already splits the internal logging error families:
-
-```rust
-Json(String),
-SinkIo(String),
-FileSinkInit { path: PathBuf, cause: String },
-```
-
-- `src/pginfo/conninfo.rs` is still stringly at the parse edge:
-
-```rust
-type Err = String;
-```
-
-- `tests/ha/support/invariants/write_convergence.rs` collapses distinct failures into one bucket:
-
-```rust
-Failed(String),
-```
-
-- `src/ha/worker.rs` is a live orchestration example of the anti-pattern:
-
-```rust
-changed.map_err(|err| WorkerError::Message(format!("ha pg subscriber closed: {err}")))?;
-```
-
-## Example B: The Wrong Shape Is Stringly From the Start
-
-A smell usually looks like this:
-
-```rust
-pub enum WorkerError {
-    Message(String),
-}
-```
-
-or:
-
-```rust
-fn resolve_thing(...) -> Result<T, String> {
-    source.map_err(|err| err.to_string())?;
-    Err(format!("failed to resolve {name}"))
-}
-```
-
-That is a signal that the code is losing the distinction between:
-
-- source failure
-- validation failure
-- transport failure
-- timeout
-- invariant violation
-
-If callers need to branch on those causes later, the string bucket is the wrong boundary.
-
-## Example C: Structured Context Beats Sentence Strings
-
-Prefer this:
+A good smell-9 boundary usually has one of these shapes:
 
 ```rust
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
-    #[error("config file failed at {path}")]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+enum FooError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 
-    #[error("invalid url in {field}")]
-    Url {
+    #[error("parse `{field}` failed")]
+    Parse {
         field: &'static str,
         #[source]
-        source: url::ParseError,
+        source: ParseError,
     },
 }
 ```
 
-over this:
-
-```rust
-Err(format!("invalid url in {field}: {err}"))
-```
-
-The first version keeps the data usable for logging, retries, status mapping, and tests. The second one forces text parsing if anyone wants the cause.
-
-## Example D: How `#[from]` Removes Boilerplate
-
-Once you have a typed variant, `#[from]` lets the helper return the source error directly:
-
 ```rust
 #[derive(Debug, thiserror::Error)]
-pub enum ConfigError {
-    #[error("config file failed at {path}")]
-    Io {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
+enum BarError {
+    #[error(transparent)]
+    Config(#[from] crate::config::ConfigError),
 
-    #[error("invalid url in {field}")]
-    Url {
-        field: &'static str,
-        #[source]
-        source: url::ParseError,
-    },
-}
-
-fn load_config(path: &Path) -> Result<String, ConfigError> {
-    let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(raw)
-}
-```
-
-If the source maps one-to-one to the variant, `#[from]` removes even more glue:
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("worker failed")]
-    Worker(#[from] WorkerError),
-}
-
-fn run_worker() -> Result<(), RuntimeError> {
-    do_worker_stuff()?;
-    Ok(())
-}
-```
-
-That is the target shape:
-
-- helper returns `Result<_, WorkerError>`
-- outer layer has `RuntimeError::Worker(#[from] WorkerError)`
-- the caller uses `?` instead of `map_err(|err| err.to_string())`
-- `Display` still renders one human message at the boundary
-
-Concrete repo translation examples:
-
-```rust
-#[derive(Debug, thiserror::Error)]
-pub enum RuntimeError {
-    #[error("worker failed")]
+    #[error(transparent)]
     Worker(#[from] WorkerError),
 }
 ```
 
-```rust
-fn run_worker() -> Result<(), RuntimeError> {
-    do_worker_stuff()?;
-    Ok(())
-}
-```
+The key is not the exact variant names.
 
-That same pattern is what `src/runtime/node.rs`, `src/api/worker.rs`, `src/process/planner.rs`, and `src/pginfo/state.rs` should lean on:
+The key is:
 
-- source helper returns the typed source error
-- outer enum wraps it with `#[from]`
-- caller uses `?`
-- only the final `Display` boundary renders text
+- source stays typed
+- `?` becomes possible again
+- `map_err(|err| err.to_string())` disappears
+- rendering happens once at the edge
 
-## How to Untangle Smell 9
+And one more rule:
 
-1. Find the first `String` conversion in the error path.
-2. Ask whether downstream code needs to branch on the cause.
-3. If yes, replace the string bucket with a typed enum variant.
-4. If the source maps cleanly to one variant, add `#[from]`.
-5. If the error needs context, store the context as fields, not prose.
-6. If multiple distinct failures are being collapsed, split them into separate variants.
-7. Once `#[from]` is in place, let `?` carry the typed source through instead of hand-writing `map_err` glue.
-8. Keep only the final human-readable rendering at the boundary that talks to users, logs, or HTTP clients.
-9. Re-run `make check`, then follow any remaining `String` conversions until the boundary is actually clean.
+- if a typed `map_err` is still present, ask whether it is describing a real boundary or compensating for a badly-shaped one
+
+## How To Untangle Smell 9
+
+1. Find the first place where a typed error becomes `String`.
+2. Replace the string bucket with a typed enum variant.
+3. If one source maps cleanly to one variant, add `#[from]`.
+4. If the same source type can fail in different operations, keep it typed with `#[source]` and add context fields or operation-specific variants.
+5. Rewrite the call site so `?` handles the one-to-one cases.
+6. Keep the remaining conversions small and typed.
+7. Render the final message only at the human-facing boundary.
+8. Re-run `make check`.
 
 ## Preferred Repo Direction
 
@@ -243,20 +550,20 @@ In this repo, prefer:
 
 - typed source errors in `src/`
 - typed harness errors in `tests/ha/support/`
-- `String` only at the very outermost boundary when the output is genuinely human-facing
-- `From` and `#[from]` for one-to-one error wrapping
-- `PathBuf`, `MemberId`, `url::ParseError`, `std::io::Error`, `serde_json::Error`, and similar concrete types over free-form text
-- `#[from]` on source-carrying variants whenever the mapping is direct
-- `?` at the call site instead of `map_err(|err| err.to_string())` once the enum supports it
+- `#[from]` wherever the mapping is direct
+- `#[source]` where extra context is needed
+- `thiserror` instead of manual string buckets
+- `String` only at the real presentation boundary
 
 Avoid:
 
 - `Result<_, String>` in internal code
-- `Message(String)` catch-alls unless the module is already purely a presentation boundary
-- converting to `String` and then converting back to structure elsewhere
-- aggregating failures into `Vec<String>` if the caller can still use typed cases
+- `Message(String)` as the default answer to every failure
+- repeated `map_err(|err| err.to_string())`
+- repeated `map_err(|err| format!(...))`
+- converting to prose in the middle and then pretending the error is still typed
 
 This is related to smell 4, but different:
 
-- smell 4 is about early presentation strings
-- smell 9 is about early error flattening
+- smell 4 is about rendering output too early
+- smell 9 is about flattening errors too early
