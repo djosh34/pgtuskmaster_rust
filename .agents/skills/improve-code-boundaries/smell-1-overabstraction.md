@@ -8,6 +8,7 @@ The bad version is not "there are several types." The bad version is:
 - the wrapper chain adds nesting but not invariants
 - helper functions exist mostly to move the same facts around
 - downstream users could have matched on the original type directly
+- helper methods or free functions only forward to the next helper and do not change behavior
 
 Do not search for `build_` by name and stop there. Study what the functions actually do.
 
@@ -241,6 +242,34 @@ These are signature smells:
 - `_runtime_config` is passed at all even though this helper does not use it
 
 When you see paths, dirs, ports, timings, durations, TLS settings, or hostnames sprayed through helper functions, stop and ask whether they belong in one module context or one validated shared config instead.
+
+## Example D: a passthrough helper that only forwards to the next function
+
+This is the same smell in function form:
+
+```rust
+async fn read_member_count(
+    member: &MemberObservationTarget,
+    query_timeout: Duration,
+) -> MemberCountObservation {
+    read_member_count_via_fresh_connection(member, query_timeout, None).await
+}
+```
+
+Why this is a smell:
+
+- it does no work of its own
+- it adds a second name without adding a second invariant
+- it hides the real owner of the retry-specific `previous_error` argument
+- it makes callers pay for an extra layer that can be removed
+
+How to untangle this example:
+
+1. Check all callers of both functions first.
+2. If every caller can call the inner helper directly, delete the wrapper.
+3. If the wrapper name is the better name, rename the inner helper to that name and delete the wrapper.
+4. Re-evaluate the signature on the remaining helper and remove any argument that only existed to feed the dead passthrough layer.
+5. Apply the same rule to methods. If `self.foo()` only returns `self.bar(...)`, one of those names is probably dead glue.
 
 ## Decision rule for smell 1
 

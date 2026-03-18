@@ -14,7 +14,7 @@ The goal is narrow and strict:
 - reduce code
 - remove transitions and wrappers that do not add real invariants
 
-This skill is not for taste-only refactors. Use it when the current shape forces extra conversions, extra nesting, extra helper signatures, repeated validation, duplicate parse/render logic, premature string building, or A-talks-to-B-talks-back-to-A request plumbing.
+This skill is not for taste-only refactors. Use it when the current shape forces extra conversions, extra nesting, extra helper signatures, repeated validation, duplicate parse/render logic, premature string building, useless pass-through helpers, or A-talks-to-B-talks-back-to-A request plumbing.
 
 ## Core rule
 
@@ -56,6 +56,7 @@ All of the following are concrete smell signals:
 - helper functions that require config-like values in their signature: paths, dirs, ports, hostnames, timings, durations, TLS pieces, max counts
 - multiple config-like structs that mainly carry paths, ports, hostnames, timings, durations, TLS pieces, limits, or similar environment values
 - request/bootstrap/context/channel/cadence structs that just rename fields and repackage the same data
+- functions or methods that only forward to the next helper with the same arguments, or with one fixed argument, and add no invariant
 - validation repeated after config has supposedly already been loaded
 - direct use of serde/TOML shapes outside the config-ingestion boundary
 - raw data kept as `String` and parsed later in another layer
@@ -87,10 +88,14 @@ When you see these, ask:
   Read [smell-6-raw-dto-boundary.md](smell-6-raw-dto-boundary.md).
 - Smell 7: stop overengineering
   Read [smell-7-stop-overengineering.md](smell-7-stop-overengineering.md).
+- Smell 8: too much in one file
+  Read [smell-8-too-much-in-one-file.md](smell-8-too-much-in-one-file.md).
+- Smell 9: typed error boundary, not string buckets
+  Read [smell-9-typed-error-boundary.md](smell-9-typed-error-boundary.md).
 
 ## Smell 1 rules
 
-Use smell 1 when a local type converts into another local type that adds little or no information.
+Use smell 1 when a local type converts into another local type that adds little or no information, or when a function or method exists only to pass through to the next layer.
 
 Strong indicators:
 
@@ -101,6 +106,14 @@ Strong indicators:
 When you remove the converted-to type and re-run `make check`, each failure tells you what the fake boundary was pretending to provide. Most of the time the answer is "nothing a direct match on the original type could not already provide."
 
 If there is hybrid drift, do not give up. Replace both sides with one flatter type.
+
+Pass-through helpers are the same smell in function form:
+
+- if a helper only forwards arguments and returns the next helper's result, it is not a boundary
+- if the wrapper name is better, rename the inner helper to that name and delete the wrapper
+- if the inner helper name is better, delete the wrapper and call the inner helper directly from the original callers
+- if the wrapper always passes one fixed argument, keep that argument only on the helper that actually consumes it
+- this rule applies to methods too; a method that only returns another method call is usually dead glue
 
 ## Smell 2 rules
 
@@ -206,6 +219,45 @@ Preferred workflow:
 4. if everything still passes, you overengineered it, so keep it removed
 5. if tests fail for a behavior that should matter but was not covered before, add the missing test and then re-simplify
 
+## Smell 8 rules
+
+Use smell 8 when a single file has become a coordination center for several unrelated responsibilities.
+
+The signal is not line count by itself (but any file 600+ lines is too long). The signal is that one file now owns too many separate concerns:
+
+- parsing, validation, orchestration, and rendering live together
+- several private structs or enums only exist to support one local workflow
+- multiple functions keep crossing the same file boundary just to hand data back and forth
+- unrelated code blocks are only nearby because the file grew over time
+
+The right response is usually to split the file into smaller files or modules, then keep the post-split communication surface as small as possible.
+
+Preferred workflow:
+
+1. identify one file that is doing too much
+2. split out one cohesive responsibility into a new file
+3. keep the new file's helper types private unless there is a real external invariant to expose
+4. follow other improvement steps to create shared type/boundary post new file creation
+5. run `make check`
+6. follow the compile failures to see which shared facts are actually needed
+7. if the split caused unnecessary chatter, adjust the boundary until the modules mostly stop talking to each other
+
+Good signs after the split:
+
+- fewer public types
+- fewer cross-file helper calls
+- smaller signatures
+- local enums and structs that stay local
+
+Bad signs after the split:
+
+- a new manager type that only rebundles fields
+- a new façade that exists just to hide the file split
+- more indirection than the original file had
+- shared types created only to avoid importing one private helper into another file
+
+The right split usually makes the code smaller, easier to understand and more local. It should not replace one bloated file with one bloated abstraction.
+
 ## Hard constraints while using this skill
 
 - Solve one boundary issue per run. Do not mix three unrelated cleanups.
@@ -236,6 +288,8 @@ These are strong candidates already present in this repository:
   raw poll data crosses a boundary before being fully normalized
 - `src/ha/types.rs` plus `src/ha/worker.rs` and `src/ha/reconcile.rs`
   timing and remembered-state bookkeeping may be carrying more behavior than the tests actually need
+- `src/dev_support/mod.rs`, `src/process/postmaster.rs`, `src/config/parser.rs`, and `src/logging/core/runtime.rs`
+  typed errors already exist here; use them as the model for removing `String` buckets from internal boundaries
 
 ## Completion standard
 
