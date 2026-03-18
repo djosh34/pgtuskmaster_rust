@@ -130,12 +130,6 @@ impl HaWorld {
 }
 
 #[derive(Debug)]
-struct BackgroundInvariants {
-    primary_count: PrimaryCountInvariantRunner,
-    write_convergence: Mutex<WriteConvergenceState>,
-}
-
-#[derive(Debug)]
 enum WriteConvergenceState {
     NotStarted,
     Starting(WriteConvergenceStartup),
@@ -181,7 +175,8 @@ pub struct HarnessShared {
     service_container_ids: Mutex<BTreeMap<String, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
     cleaned_up: bool,
-    background_invariants: BackgroundInvariants,
+    primary_count_invariant: PrimaryCountInvariantRunner,
+    write_convergence_state: Mutex<WriteConvergenceState>,
 }
 
 impl HarnessShared {
@@ -231,7 +226,7 @@ impl HarnessShared {
             compose_project.clone(),
             materialized_dir.clone(),
         );
-        let background_invariants = BackgroundInvariants::start_primary_count(
+        let primary_count_invariant = PrimaryCountInvariantRunner::start(
             observer.clone(),
             timeouts.poll_interval,
             timeouts.failover_deadline,
@@ -254,7 +249,8 @@ impl HarnessShared {
             service_container_ids: Mutex::new(BTreeMap::new()),
             timeline: Mutex::new(Vec::new()),
             cleaned_up: false,
-            background_invariants,
+            primary_count_invariant,
+            write_convergence_state: Mutex::new(WriteConvergenceState::NotStarted),
         };
         harness.record_startup_phase(
             StartupPhase::WorkspaceReady,
@@ -332,12 +328,71 @@ impl HarnessShared {
     }
 
     pub fn ensure_primary_count_healthy(&self) -> Result<()> {
-        self.background_invariants.ensure_primary_count_healthy()
+        self.primary_count_invariant.ensure_healthy()
     }
 
     pub fn ensure_accepted_writes_healthy(&self) -> Result<()> {
-        self.background_invariants
-            .ensure_accepted_writes_healthy(self)
+        let pending_startup = {
+            let mut state = self
+                .write_convergence_state
+                .lock()
+                .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+            match std::mem::replace(&mut *state, WriteConvergenceState::NotStarted) {
+                WriteConvergenceState::Running(runner) => {
+                    *state = WriteConvergenceState::Running(runner);
+                    return match &*state {
+                        WriteConvergenceState::Running(runner) => {
+                            runner.ensure_healthy().map_err(HarnessError::from)
+                        }
+                        _ => unreachable!("write-convergence state must remain running"),
+                    };
+                }
+                WriteConvergenceState::Failed(message) => {
+                    *state = WriteConvergenceState::Failed(message.clone());
+                    return Err(HarnessError::message(message.clone()));
+                }
+                WriteConvergenceState::NotStarted => {
+                    *state = WriteConvergenceState::NotStarted;
+                    return Err(HarnessError::message(
+                        "write-convergence invariant was not started during harness bootstrap",
+                    ));
+                }
+                WriteConvergenceState::Starting(startup) => startup,
+            }
+        };
+
+        let (settled_state, elapsed) = wait_for_write_convergence_attachment(pending_startup);
+
+        let mut state = self
+            .write_convergence_state
+            .lock()
+            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+        let startup_detail = match &settled_state {
+            WriteConvergenceState::Running(_) => {
+                format!("accepted-write convergence attached after {:?}", elapsed)
+            }
+            WriteConvergenceState::Failed(message) => format!(
+                "accepted-write convergence attachment failed after {:?}: {message}",
+                elapsed
+            ),
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+                unreachable!("write-convergence attachment must settle into a final state")
+            }
+        };
+        self.record_startup_phase(StartupPhase::InvariantWriteConvergence, startup_detail)?;
+        *state = settled_state;
+
+        match &*state {
+            WriteConvergenceState::Running(runner) => {
+                runner.ensure_healthy().map_err(HarnessError::from)
+            }
+            WriteConvergenceState::Failed(message) => Err(HarnessError::message(message.clone())),
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+                Err(HarnessError::message(
+                    "write-convergence invariant startup did not settle into a running state",
+                ))
+            }
+        }
     }
 
     fn record_startup_phase(&self, phase: StartupPhase, detail: impl Into<String>) -> Result<()> {
@@ -983,116 +1038,19 @@ impl HarnessShared {
     }
 
     fn start_write_convergence_invariant(&self) -> Result<()> {
-        self.background_invariants.start_write_convergence(
+        let mut state = self
+            .write_convergence_state
+            .lock()
+            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+        *state = WriteConvergenceState::Starting(WriteConvergenceStartup::spawn(
             self.observer.clone(),
             self.timeouts.poll_interval,
             self.timeouts.write_convergence_deadline,
-        )?;
+        ));
         self.record_startup_phase(
             StartupPhase::InvariantWriteConvergence,
             "started background accepted-write convergence attachment",
         )
-    }
-}
-
-impl BackgroundInvariants {
-    async fn start_primary_count(
-        observer: PgtmObserver,
-        poll_interval: std::time::Duration,
-        health_deadline: std::time::Duration,
-    ) -> Result<Self> {
-        let primary_count =
-            PrimaryCountInvariantRunner::start(observer, poll_interval, health_deadline).await?;
-        Ok(Self {
-            primary_count,
-            write_convergence: Mutex::new(WriteConvergenceState::NotStarted),
-        })
-    }
-
-    fn start_write_convergence(
-        &self,
-        observer: PgtmObserver,
-        poll_interval: std::time::Duration,
-        write_deadline: std::time::Duration,
-    ) -> Result<()> {
-        let mut state = self
-            .write_convergence
-            .lock()
-            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
-        *state = WriteConvergenceState::Starting(WriteConvergenceStartup::spawn(
-            observer,
-            poll_interval,
-            write_deadline,
-        ));
-        Ok(())
-    }
-
-    fn ensure_primary_count_healthy(&self) -> Result<()> {
-        self.primary_count.ensure_healthy()
-    }
-
-    fn ensure_accepted_writes_healthy(&self, harness: &HarnessShared) -> Result<()> {
-        let pending_startup = {
-            let mut state = self
-                .write_convergence
-                .lock()
-                .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
-            match std::mem::replace(&mut *state, WriteConvergenceState::NotStarted) {
-                WriteConvergenceState::Running(runner) => {
-                    *state = WriteConvergenceState::Running(runner);
-                    return match &*state {
-                        WriteConvergenceState::Running(runner) => {
-                            runner.ensure_healthy().map_err(HarnessError::from)
-                        }
-                        _ => unreachable!("write-convergence state must remain running"),
-                    };
-                }
-                WriteConvergenceState::Failed(message) => {
-                    *state = WriteConvergenceState::Failed(message.clone());
-                    return Err(HarnessError::message(message.clone()));
-                }
-                WriteConvergenceState::NotStarted => {
-                    *state = WriteConvergenceState::NotStarted;
-                    return Err(HarnessError::message(
-                        "write-convergence invariant was not started during harness bootstrap",
-                    ));
-                }
-                WriteConvergenceState::Starting(startup) => startup,
-            }
-        };
-
-        let (settled_state, elapsed) = wait_for_write_convergence_attachment(pending_startup);
-
-        let mut state = self
-            .write_convergence
-            .lock()
-            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
-        let startup_detail = match &settled_state {
-            WriteConvergenceState::Running(_) => {
-                format!("accepted-write convergence attached after {:?}", elapsed)
-            }
-            WriteConvergenceState::Failed(message) => format!(
-                "accepted-write convergence attachment failed after {:?}: {message}",
-                elapsed
-            ),
-            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
-                unreachable!("write-convergence attachment must settle into a final state")
-            }
-        };
-        harness.record_startup_phase(StartupPhase::InvariantWriteConvergence, startup_detail)?;
-        *state = settled_state;
-
-        match &*state {
-            WriteConvergenceState::Running(runner) => {
-                runner.ensure_healthy().map_err(HarnessError::from)
-            }
-            WriteConvergenceState::Failed(message) => Err(HarnessError::message(message.clone())),
-            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
-                Err(HarnessError::message(
-                    "write-convergence invariant startup did not settle into a running state",
-                ))
-            }
-        }
     }
 }
 
@@ -1836,10 +1794,8 @@ mod tests {
             service_container_ids: Mutex::new(BTreeMap::new()),
             timeline: Mutex::new(Vec::new()),
             cleaned_up: false,
-            background_invariants: BackgroundInvariants {
-                primary_count: PrimaryCountInvariantRunner::healthy_for_tests(),
-                write_convergence: Mutex::new(write_convergence),
-            },
+            primary_count_invariant: PrimaryCountInvariantRunner::healthy_for_tests(),
+            write_convergence_state: Mutex::new(write_convergence),
         })
     }
 
@@ -1873,8 +1829,7 @@ mod tests {
         };
         assert!(err.to_string().contains("boom"));
         let write_convergence_state = harness
-            .background_invariants
-            .write_convergence
+            .write_convergence_state
             .lock()
             .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
         match &*write_convergence_state {
