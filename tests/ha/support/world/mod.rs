@@ -195,26 +195,16 @@ pub struct HarnessWorkspace {
     pub run_id: String,
     pub feature_name: String,
     pub given: HaGivenDefinition,
-    pub paths: WorkspacePaths,
-}
-
-#[derive(Debug)]
-pub struct WorkspacePaths {
     pub run_dir: PathBuf,
     pub materialized_dir: PathBuf,
     pub artifacts_dir: PathBuf,
-}
-
-#[derive(Debug)]
-pub struct ComposeStack {
-    pub file: PathBuf,
-    pub project: String,
+    pub compose_file: PathBuf,
+    pub compose_project: String,
 }
 
 #[derive(Debug)]
 pub struct HarnessRuntime {
     pub workspace: HarnessWorkspace,
-    pub compose: ComposeStack,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
@@ -286,52 +276,35 @@ impl HarnessShared {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), given)?;
         let run_id = build_run_id(feature.feature_name.as_str(), scenario_name)?;
-        let compose = ComposeStack {
-            file: PathBuf::new(),
-            project: build_compose_project(feature.feature_name.as_str(), run_id.as_str()),
-        };
         let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
-        let paths = WorkspacePaths {
-            run_dir: repo_root
-                .join("tests/ha/runs")
-                .join(feature.feature_name.as_str())
-                .join(run_id.as_str()),
-            materialized_dir: repo_root
-                .join("tests/ha/runs")
-                .join(feature.feature_name.as_str())
-                .join(run_id.as_str())
-                .join("materialized"),
-            artifacts_dir: repo_root
-                .join("tests/ha/runs")
-                .join(feature.feature_name.as_str())
-                .join(run_id.as_str())
-                .join("artifacts"),
-        };
-        create_dir_all(paths.run_dir.as_path())?;
-        create_dir_all(paths.materialized_dir.as_path())?;
-        create_dir_all(paths.artifacts_dir.as_path())?;
-        materialize_given_fixture(&given, paths.materialized_dir.as_path())?;
-        create_fault_directories(paths.materialized_dir.as_path())?;
+        let run_dir = repo_root
+            .join("tests/ha/runs")
+            .join(feature.feature_name.as_str())
+            .join(run_id.as_str());
+        let materialized_dir = run_dir.join("materialized");
+        let artifacts_dir = run_dir.join("artifacts");
+        let compose_project = build_compose_project(feature.feature_name.as_str(), run_id.as_str());
+        let compose_file = materialized_dir.join("compose.yml");
+        create_dir_all(run_dir.as_path())?;
+        create_dir_all(materialized_dir.as_path())?;
+        create_dir_all(artifacts_dir.as_path())?;
+        materialize_given_fixture(&given, materialized_dir.as_path())?;
+        create_fault_directories(materialized_dir.as_path())?;
 
-        let compose = ComposeStack {
-            file: paths.materialized_dir.join("compose.yml"),
-            project: compose.project,
-        };
         let timeouts = TimeoutModel::from_runtime_config(
-            paths
-                .materialized_dir
+            materialized_dir
                 .join(ClusterMember::SEED_PRIMARY.runtime_config_relative_path())
                 .as_path(),
         )?;
-        let ryuk = RyukGuard::start(docker.clone(), compose.project.as_str())?;
+        let ryuk = RyukGuard::start(docker.clone(), compose_project.as_str())?;
         let dcs_service_names = given
             .dcs_services()
             .into_iter()
             .map(|service| service.service_name())
             .collect::<Vec<_>>();
         docker.compose_up_services(
-            compose.file.as_path(),
-            compose.project.as_str(),
+            compose_file.as_path(),
+            compose_project.as_str(),
             dcs_service_names.as_slice(),
         )?;
         let service_container_ids = Mutex::new(BTreeMap::new());
@@ -340,9 +313,12 @@ impl HarnessShared {
                 run_id,
                 feature_name: feature.feature_name.clone(),
                 given,
-                paths,
+                run_dir,
+                materialized_dir,
+                artifacts_dir,
+                compose_file,
+                compose_project,
             },
-            compose,
             cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
@@ -413,30 +389,30 @@ impl HarnessShared {
     }
 
     pub fn compose_file(&self) -> &Path {
-        self.compose.file.as_path()
+        self.workspace.compose_file.as_path()
     }
 
     pub fn compose_project(&self) -> &str {
-        self.compose.project.as_str()
+        self.workspace.compose_project.as_str()
     }
 
     pub fn run_dir(&self) -> &Path {
-        self.workspace.paths.run_dir.as_path()
+        self.workspace.run_dir.as_path()
     }
 
     pub fn materialized_dir(&self) -> &Path {
-        self.workspace.paths.materialized_dir.as_path()
+        self.workspace.materialized_dir.as_path()
     }
 
     pub fn artifacts_dir(&self) -> &Path {
-        self.workspace.paths.artifacts_dir.as_path()
+        self.workspace.artifacts_dir.as_path()
     }
 
     pub fn observer(&self) -> PgtmObserver {
         PgtmObserver::new(
             self.docker.clone(),
-            self.compose.file.clone(),
-            self.compose.project.clone(),
+            self.workspace.compose_file.clone(),
+            self.workspace.compose_project.clone(),
             self.materialized_dir().to_path_buf(),
         )
     }
@@ -1105,9 +1081,9 @@ impl HarnessRuntime {
     fn observer(&self) -> PgtmObserver {
         PgtmObserver::new(
             self.docker.clone(),
-            self.compose.file.clone(),
-            self.compose.project.clone(),
-            self.workspace.paths.materialized_dir.clone(),
+            self.workspace.compose_file.clone(),
+            self.workspace.compose_project.clone(),
+            self.workspace.materialized_dir.clone(),
         )
     }
 }
@@ -1924,17 +1900,15 @@ mod tests {
                         PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
                         HaGivenId::Plain,
                     )?,
-                    paths: WorkspacePaths {
-                        run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
-                        materialized_dir: PathBuf::from(
-                            "tests/ha/runs/test-feature/test-run/materialized",
-                        ),
-                        artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
-                    },
-                },
-                compose: ComposeStack {
-                    file: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized/compose.yml"),
-                    project: "ha-test-run".to_string(),
+                    run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
+                    materialized_dir: PathBuf::from(
+                        "tests/ha/runs/test-feature/test-run/materialized",
+                    ),
+                    artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
+                    compose_file: PathBuf::from(
+                        "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
+                    ),
+                    compose_project: "ha-test-run".to_string(),
                 },
                 cucumber_test_image_run_id: "cucumber-test-run".to_string(),
                 docker: DockerCli::fake_for_tests(),
