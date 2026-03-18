@@ -35,10 +35,11 @@ static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 pub async fn run_feature(
     feature_name: &str,
     feature_path: &str,
+    scenario_name: Option<&str>,
 ) -> std::result::Result<(), String> {
     install_context(feature_name, feature_path).map_err(|err| err.to_string())?;
 
-    let writer = HaWorld::cucumber()
+    let cucumber = HaWorld::cucumber()
         .before(|_, _, scenario, world| {
             async move {
                 world.reset();
@@ -58,11 +59,25 @@ pub async fn run_feature(
         })
         .max_concurrent_scenarios(1)
         .with_writer(writer::Basic::stdout().summarized())
-        .with_default_cli()
-        .run(feature_path)
-        .await;
+        .with_default_cli();
 
-    let stats_error = summarize_result(writer.scenarios_stats(), writer.steps_stats()).err();
+    let writer = match scenario_name.map(str::to_owned) {
+        Some(target_scenario_name) => {
+            cucumber
+                .filter_run(feature_path, move |_, _, scenario| {
+                    scenario.name == target_scenario_name
+                })
+                .await
+        }
+        None => cucumber.run(feature_path).await,
+    };
+
+    let stats_error = summarize_result(
+        writer.scenarios_stats(),
+        writer.steps_stats(),
+        scenario_name,
+    )
+    .err();
     let cleanup_error = cleanup_recorded_errors().err();
 
     match (stats_error, cleanup_error) {
@@ -91,7 +106,14 @@ fn install_context(feature_name: &str, _feature_path: &str) -> Result<()> {
 fn summarize_result(
     scenario_stats: &cucumber::writer::summarize::Stats,
     step_stats: &cucumber::writer::summarize::Stats,
+    scenario_name: Option<&str>,
 ) -> Result<()> {
+    if scenario_name.is_some() && scenario_stats.total() != 1 {
+        return Err(HarnessError::message(format!(
+            "cucumber executed {} scenarios for a single-scenario test",
+            scenario_stats.total()
+        )));
+    }
     if scenario_stats.total() == 0 {
         return Err(HarnessError::message("cucumber executed zero scenarios"));
     }

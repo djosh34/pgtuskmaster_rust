@@ -7,6 +7,7 @@ use std::{
 use pgtuskmaster_rust::{
     api::{AcceptedResponse, NodeState},
     command::{CommandOutputDto, StateCommandOutputDto},
+    pginfo::conninfo::render_conninfo_value,
 };
 
 use crate::support::{
@@ -353,16 +354,19 @@ fn host_postgres_dsn(
     observer_key_path: &Path,
 ) -> String {
     [
-        format!("host={}", member.service_name()),
-        "hostaddr=127.0.0.1".to_string(),
-        format!("port={port}"),
-        "user=postgres".to_string(),
-        "dbname=postgres".to_string(),
-        "sslmode=verify-full".to_string(),
-        format!("sslrootcert={}", ca_cert_path.display()),
-        format!("sslcert={}", observer_cert_path.display()),
-        format!("sslkey={}", observer_key_path.display()),
+        ("host", member.service_name().to_string()),
+        ("hostaddr", "127.0.0.1".to_string()),
+        ("port", port.to_string()),
+        ("user", "postgres".to_string()),
+        ("dbname", "postgres".to_string()),
+        ("sslmode", "verify-full".to_string()),
+        ("sslrootcert", ca_cert_path.display().to_string()),
+        ("sslcert", observer_cert_path.display().to_string()),
+        ("sslkey", observer_key_path.display().to_string()),
     ]
+    .into_iter()
+    .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
+    .collect::<Vec<_>>()
     .join(" ")
 }
 
@@ -398,4 +402,26 @@ identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }
         observer_cert_path.display(),
         observer_key_path.display(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_postgres_dsn;
+    use crate::support::topology::ClusterMember;
+    use std::path::Path;
+
+    #[test]
+    fn host_postgres_dsn_quotes_tls_paths() {
+        let dsn = host_postgres_dsn(
+            ClusterMember::NodeA,
+            5432,
+            Path::new("/tmp/ca bundle.pem"),
+            Path::new("/tmp/observer cert.pem"),
+            Path::new("/tmp/observer key.pem"),
+        );
+
+        assert!(dsn.contains("sslrootcert='/tmp/ca bundle.pem'"));
+        assert!(dsn.contains("sslcert='/tmp/observer cert.pem'"));
+        assert!(dsn.contains("sslkey='/tmp/observer key.pem'"));
+    }
 }

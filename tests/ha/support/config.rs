@@ -54,13 +54,22 @@ fn load_harness_settings() -> Result<HarnessSettings> {
 
 fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
     let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
-    fs::read_dir(target_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.path().join("debug").join(name))
-        .collect()
+    let executable_name = format!("{name}{}", std::env::consts::EXE_SUFFIX);
+    let mut candidates = vec![target_dir.join("debug").join(executable_name.as_str())];
+
+    if let Ok(current_executable) = std::env::current_exe() {
+        if let Some(debug_dir) = current_executable
+            .parent()
+            .and_then(|deps_dir| deps_dir.parent())
+        {
+            let candidate = debug_dir.join(executable_name);
+            if candidate.starts_with(&target_dir) && !candidates.contains(&candidate) {
+                candidates.push(candidate);
+            }
+        }
+    }
+
+    candidates
 }
 
 pub fn configured_executable(
@@ -89,5 +98,13 @@ mod tests {
         let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
         let candidates = workspace_debug_binary_candidates("pgtm");
         assert!(candidates.iter().all(|path| path.starts_with(&target_dir)));
+        assert_eq!(
+            candidates.first(),
+            Some(
+                &target_dir
+                    .join("debug")
+                    .join(format!("pgtm{}", std::env::consts::EXE_SUFFIX))
+            )
+        );
     }
 }

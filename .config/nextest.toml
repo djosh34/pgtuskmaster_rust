@@ -27,7 +27,7 @@ fail-fast = false
 # take longer. Keep routing them by durable binary name rather than exact test lists.
 # These binaries are expected to be parallel-safe. If a scenario only passes in serial,
 # that scenario is buggy and must be fixed instead of protected by serialization.
-# Keep the thread count above the full HA feature count so every scenario can
+# Keep the thread count above the full HA test count so every scenario can
 # fan out at once; the harness is responsible for explicit subnet allocation.
 default-filter = '''
 kind(test) & binary(ha) & test(/^ha_/)

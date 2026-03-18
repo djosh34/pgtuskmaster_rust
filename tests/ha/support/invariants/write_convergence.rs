@@ -22,6 +22,10 @@ use tokio::{
 use tokio_postgres::Client;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
+use pgtuskmaster_rust::pginfo::conninfo::{
+    conninfo_entries, conninfo_value, render_conninfo_value,
+};
+
 use crate::support::{
     observer::pgtm::{PgtmObserver, PostgresRoutingTarget},
     topology::ClusterMember,
@@ -88,7 +92,8 @@ impl WriteConvergenceInvariantRunner {
                 ))
             })?;
 
-        let connected_members = connect_all_members(routing_targets.as_slice()).await?;
+        let connected_members =
+            connect_all_members(routing_targets.as_slice(), poll_interval, write_deadline).await?;
         initialize_fixture(connected_members.as_slice(), poll_interval, write_deadline).await?;
 
         let pause_write = Arc::new(RwLock::new(()));
@@ -299,18 +304,13 @@ struct MonitoredMember {
 
 async fn connect_all_members(
     routing_targets: &[PostgresRoutingTarget],
+    poll_interval: Duration,
+    write_deadline: Duration,
 ) -> Result<Vec<ConnectedMember>, WriteConvergenceInvariantError> {
     let mut connected_members = Vec::with_capacity(routing_targets.len());
     for routing_target in routing_targets {
-        let tls = build_tls_connector(routing_target.dsn.as_str())?;
-        let (client, connection) = tokio_postgres::connect(routing_target.dsn.as_str(), tls)
-            .await
-            .map_err(|err| {
-                WriteConvergenceInvariantError::Failed(format!(
-                    "connect to `{}` failed: {err}",
-                    routing_target.member
-                ))
-            })?;
+        let (client, connection) =
+            connect_member(routing_target, poll_interval, write_deadline).await?;
         let fatal_error = Arc::new(Mutex::new(None));
         let fatal_error_for_task = Arc::clone(&fatal_error);
         let member = routing_target.member;
@@ -329,6 +329,40 @@ async fn connect_all_members(
         });
     }
     Ok(connected_members)
+}
+
+async fn connect_member(
+    routing_target: &PostgresRoutingTarget,
+    poll_interval: Duration,
+    write_deadline: Duration,
+) -> Result<
+    (
+        tokio_postgres::Client,
+        tokio_postgres::Connection<
+            tokio_postgres::Socket,
+            <MakeRustlsConnect as tokio_postgres::tls::MakeTlsConnect<tokio_postgres::Socket>>::Stream,
+        >,
+    ),
+    WriteConvergenceInvariantError,
+>{
+    let connect_dsn = connectable_dsn(routing_target.dsn.as_str())?;
+    let deadline = Instant::now() + write_deadline;
+
+    loop {
+        let tls = build_tls_connector(routing_target.dsn.as_str())?;
+        match tokio_postgres::connect(connect_dsn.as_str(), tls).await {
+            Ok(connection) => return Ok(connection),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(WriteConvergenceInvariantError::Failed(format!(
+                        "connect to `{}` failed before {:?}: {err}",
+                        routing_target.member, write_deadline
+                    )));
+                }
+                tokio::time::sleep(poll_interval).await;
+            }
+        }
+    }
 }
 
 async fn initialize_fixture(
@@ -538,9 +572,9 @@ async fn read_count(client: &Client) -> Result<u64, WriteConvergenceInvariantErr
 }
 
 fn build_tls_connector(dsn: &str) -> Result<MakeRustlsConnect, WriteConvergenceInvariantError> {
-    let root_cert_path = dsn_parameter(dsn, "sslrootcert")?;
-    let client_cert_path = dsn_parameter(dsn, "sslcert")?;
-    let client_key_path = dsn_parameter(dsn, "sslkey")?;
+    let root_cert_path = required_conninfo_value(dsn, "sslrootcert")?;
+    let client_cert_path = required_conninfo_value(dsn, "sslcert")?;
+    let client_key_path = required_conninfo_value(dsn, "sslkey")?;
 
     let mut roots = RootCertStore::empty();
     for cert in load_cert_chain(root_cert_path.as_str())? {
@@ -573,12 +607,30 @@ fn build_tls_connector(dsn: &str) -> Result<MakeRustlsConnect, WriteConvergenceI
     Ok(MakeRustlsConnect::new(client_config))
 }
 
-fn dsn_parameter(dsn: &str, key: &str) -> Result<String, WriteConvergenceInvariantError> {
-    dsn.split(' ')
-        .find_map(|segment| segment.split_once('='))
-        .and_then(|(segment_key, value)| (segment_key == key).then(|| value.to_string()))
+fn required_conninfo_value(dsn: &str, key: &str) -> Result<String, WriteConvergenceInvariantError> {
+    conninfo_value(dsn, key)
+        .map_err(WriteConvergenceInvariantError::Failed)?
         .ok_or_else(|| {
             WriteConvergenceInvariantError::Failed(format!("dsn did not contain `{key}`: {dsn}"))
+        })
+}
+
+fn connectable_dsn(dsn: &str) -> Result<String, WriteConvergenceInvariantError> {
+    conninfo_entries(dsn)
+        .map_err(WriteConvergenceInvariantError::Failed)
+        .map(|entries| {
+            entries
+                .into_iter()
+                .filter_map(|(key, value)| match key.as_str() {
+                    "sslrootcert" | "sslcert" | "sslkey" => None,
+                    "sslmode" if matches!(value.as_str(), "verify-ca" | "verify-full") => {
+                        Some((key, "require".to_string()))
+                    }
+                    _ => Some((key, value)),
+                })
+                .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
+                .collect::<Vec<_>>()
+                .join(" ")
         })
 }
 
@@ -679,9 +731,10 @@ fn store_health_failure(failure: &Mutex<Option<String>>, message: String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        convergence_failure, observations_match_expected, read_count, writer_loop,
-        MemberCountObservation, MemberWriter, WriteConvergenceInvariantError,
-        WriteConvergenceInvariantRunner, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
+        connectable_dsn, convergence_failure, observations_match_expected, read_count,
+        required_conninfo_value, writer_loop, MemberCountObservation, MemberWriter,
+        WriteConvergenceInvariantError, WriteConvergenceInvariantRunner, CREATE_FIXTURE_TABLE_SQL,
+        FIXTURE_ROW_ID,
     };
     use crate::support::topology::ClusterMember;
     use pgtuskmaster_test_support::{
@@ -732,6 +785,65 @@ mod tests {
                 assert!(message.contains("`node-c`=1"));
             }
         }
+    }
+
+    #[test]
+    fn required_conninfo_value_accepts_tls_paths_beyond_first_pair(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let dsn = concat!(
+            "host=node-a ",
+            "hostaddr=127.0.0.1 ",
+            "port=5432 ",
+            "user=postgres ",
+            "dbname=postgres ",
+            "sslmode=verify-full ",
+            "sslrootcert='/tmp/ca bundle.pem' ",
+            "sslcert=/tmp/client.crt ",
+            "sslkey=/tmp/client.key"
+        );
+
+        assert_eq!(
+            required_conninfo_value(dsn, "sslrootcert")?,
+            "/tmp/ca bundle.pem".to_string()
+        );
+        assert_eq!(
+            required_conninfo_value(dsn, "sslcert")?,
+            "/tmp/client.crt".to_string()
+        );
+        assert_eq!(
+            required_conninfo_value(dsn, "sslkey")?,
+            "/tmp/client.key".to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn connectable_dsn_strips_tls_path_fields_but_preserves_general_conninfo(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let dsn = concat!(
+            "host=node-a ",
+            "hostaddr=127.0.0.1 ",
+            "port=5432 ",
+            "user=postgres ",
+            "dbname='postgres db' ",
+            "sslmode=verify-full ",
+            "sslrootcert='/tmp/ca bundle.pem' ",
+            "sslcert=/tmp/client.crt ",
+            "sslkey=/tmp/client.key"
+        );
+
+        let connect_dsn = connectable_dsn(dsn)?;
+
+        assert!(connect_dsn.contains("host=node-a"));
+        assert!(connect_dsn.contains("hostaddr=127.0.0.1"));
+        assert!(connect_dsn.contains("port=5432"));
+        assert!(connect_dsn.contains("user=postgres"));
+        assert!(connect_dsn.contains("dbname='postgres db'"));
+        assert!(connect_dsn.contains("sslmode=require"));
+        assert!(!connect_dsn.contains("sslrootcert"));
+        assert!(!connect_dsn.contains("sslcert"));
+        assert!(!connect_dsn.contains("sslkey"));
+        Ok(())
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

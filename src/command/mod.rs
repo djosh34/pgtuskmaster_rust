@@ -2,6 +2,8 @@ use std::{fmt, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::pginfo::conninfo::render_conninfo_value;
+
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
     dcs::{ClusterMemberView, MemberPostgresView, SwitchoverView},
@@ -175,7 +177,7 @@ pub fn materialize_connection_dsn(
     base_fields
         .into_iter()
         .chain(tls_fields)
-        .map(|(key, value)| format!("{key}={}", escape_libpq_value(value.as_str())))
+        .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -308,22 +310,6 @@ fn render_table_line(values: &[impl AsRef<str>], widths: &[usize]) -> String {
         .map(|(value, width)| format!("{:<width$}", value.as_ref(), width = *width))
         .collect::<Vec<_>>()
         .join("  ")
-}
-
-fn escape_libpq_value(value: &str) -> String {
-    let requires_quotes = value.is_empty()
-        || value
-            .chars()
-            .any(|ch| ch.is_whitespace() || ch == '\'' || ch == '\\');
-    if !requires_quotes {
-        return value.to_string();
-    }
-
-    let escaped = value.chars().fold(String::new(), |acc, ch| match ch {
-        '\'' | '\\' => format!("{acc}\\{ch}"),
-        _ => format!("{acc}{ch}"),
-    });
-    format!("'{escaped}'")
 }
 
 fn health_label(value: StateHealthDto) -> &'static str {

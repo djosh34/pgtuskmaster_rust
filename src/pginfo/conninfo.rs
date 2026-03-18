@@ -148,6 +148,14 @@ pub(crate) fn parse_pg_conninfo(input: &str) -> Result<PgConnInfo, String> {
     input.parse()
 }
 
+pub fn conninfo_entries(input: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    parse_conninfo_entries(input)
+}
+
+pub fn conninfo_value(input: &str, key: &str) -> Result<Option<String>, String> {
+    parse_conninfo_entries(input).map(|entries| entries.get(key).cloned())
+}
+
 pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     let (host, port) = match &info.endpoint {
         PgEndpoint::Tcp { host, port } => (host.clone(), *port),
@@ -176,12 +184,12 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
 
     pairs
         .into_iter()
-        .map(|(key, value)| format!("{key}={}", render_value(&value)))
+        .map(|(key, value)| format!("{key}={}", render_conninfo_value(&value)))
         .collect::<Vec<String>>()
         .join(" ")
 }
 
-fn render_value(value: &str) -> String {
+pub fn render_conninfo_value(value: &str) -> String {
     if value.is_empty()
         || value
             .chars()
@@ -278,7 +286,10 @@ fn parse_conninfo_entries(
 mod tests {
     use std::path::PathBuf;
 
-    use super::{parse_pg_conninfo, render_pg_conninfo, PgClientTls, PgConnInfo, PgSslMode};
+    use super::{
+        conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value,
+        render_pg_conninfo, PgClientTls, PgConnInfo, PgSslMode,
+    };
     use crate::state::PgTcpTarget;
 
     fn sample_conninfo() -> Result<PgConnInfo, String> {
@@ -320,5 +331,49 @@ mod tests {
 
         assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()?));
         Ok(())
+    }
+
+    #[test]
+    fn conninfo_value_reads_quoted_late_field() -> Result<(), String> {
+        let rendered = concat!(
+            "host=127.0.0.1 ",
+            "port=5432 ",
+            "user=postgres ",
+            "dbname=postgres ",
+            "sslmode=verify-full ",
+            "sslrootcert='/etc/pgtm/ca bundle.pem'"
+        );
+
+        assert_eq!(
+            conninfo_value(rendered, "sslrootcert")?,
+            Some("/etc/pgtm/ca bundle.pem".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn conninfo_entries_parse_multiple_quoted_tls_fields() -> Result<(), String> {
+        let entries = conninfo_entries(
+            "host=node-a sslrootcert='/tmp/ca bundle.pem' sslcert='/tmp/client cert.pem'",
+        )?;
+
+        assert_eq!(entries.get("host"), Some(&"node-a".to_string()));
+        assert_eq!(
+            entries.get("sslrootcert"),
+            Some(&"/tmp/ca bundle.pem".to_string())
+        );
+        assert_eq!(
+            entries.get("sslcert"),
+            Some(&"/tmp/client cert.pem".to_string())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn render_conninfo_value_quotes_whitespace_and_backslashes() {
+        assert_eq!(
+            render_conninfo_value("/etc/pgtm/ca bundle\\with'space.pem"),
+            r"'/etc/pgtm/ca bundle\\with\'space.pem'"
+        );
     }
 }
