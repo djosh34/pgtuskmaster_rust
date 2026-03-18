@@ -1,22 +1,23 @@
 use std::{fs, path::PathBuf, sync::OnceLock};
 
-use serde::{
-    de::{Deserializer, Error as _},
-    Deserialize,
-};
+use serde::Deserialize;
 
 use crate::support::error::{HarnessError, Result};
 
 static HARNESS_SETTINGS: OnceLock<HarnessSettings> = OnceLock::new();
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct HarnessSettings {
-    #[serde(deserialize_with = "deserialize_docker_executable")]
     docker: PathBuf,
-    #[serde(deserialize_with = "deserialize_pgtm_executable")]
     pgtm: PathBuf,
-    #[serde(deserialize_with = "deserialize_psql_executable")]
     psql: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct RawHarnessSettings {
+    docker: ExecutableDiscoverySettings,
+    pgtm: ExecutableDiscoverySettings,
+    psql: ExecutableDiscoverySettings,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -58,59 +59,45 @@ fn load_harness_settings() -> Result<HarnessSettings> {
         path: path.clone(),
         source,
     })?;
-    toml::from_str::<HarnessSettings>(raw.as_str()).map_err(|err| {
+    let raw_settings = toml::from_str::<RawHarnessSettings>(raw.as_str()).map_err(|err| {
         HarnessError::message(format!(
             "failed to parse harness config `{}`: {err}",
             path.display()
         ))
-    })
+    })?;
+    raw_settings.into_harness_settings()
 }
 
-fn deserialize_docker_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_configured_executable(deserializer, "docker.executable_candidates", "docker", None)
+impl RawHarnessSettings {
+    fn into_harness_settings(self) -> Result<HarnessSettings> {
+        Ok(HarnessSettings {
+            docker: self
+                .docker
+                .resolve("docker.executable_candidates", "docker", None)?,
+            pgtm: self
+                .pgtm
+                .resolve("pgtm.executable_candidates", "pgtm", Some("pgtm"))?,
+            psql: self
+                .psql
+                .resolve("psql.executable_candidates", "psql", None)?,
+        })
+    }
 }
 
-fn deserialize_pgtm_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_configured_executable(
-        deserializer,
-        "pgtm.executable_candidates",
-        "pgtm",
-        Some("pgtm"),
-    )
-}
-
-fn deserialize_psql_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    deserialize_configured_executable(deserializer, "psql.executable_candidates", "psql", None)
-}
-
-fn deserialize_configured_executable<'de, D>(
-    deserializer: D,
-    config_field: &'static str,
-    label: &'static str,
-    workspace_binary: Option<&str>,
-) -> std::result::Result<PathBuf, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let settings = ExecutableDiscoverySettings::deserialize(deserializer)?;
-    let candidates = match workspace_binary {
-        Some(name) => workspace_debug_binary_candidates(name)
+impl ExecutableDiscoverySettings {
+    fn resolve(
+        self,
+        config_field: &'static str,
+        label: &'static str,
+        workspace_binary: Option<&str>,
+    ) -> Result<PathBuf> {
+        let candidates = workspace_binary
             .into_iter()
-            .chain(settings.executable_candidates)
-            .collect::<Vec<_>>(),
-        None => settings.executable_candidates,
-    };
-    resolve_configured_executable(candidates.as_slice(), config_field, label)
-        .map_err(D::Error::custom)
+            .flat_map(workspace_debug_binary_candidates)
+            .chain(self.executable_candidates)
+            .collect::<Vec<_>>();
+        resolve_configured_executable(candidates.as_slice(), config_field, label)
+    }
 }
 
 fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
@@ -153,8 +140,8 @@ fn resolve_configured_executable(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_configured_executable, workspace_debug_binary_candidates, HarnessError,
-        HarnessSettings, Result,
+        resolve_configured_executable, workspace_debug_binary_candidates,
+        ExecutableDiscoverySettings, HarnessError, RawHarnessSettings, Result,
     };
     use std::path::PathBuf;
 
@@ -215,8 +202,32 @@ mod tests {
         Ok(())
     }
 
+    fn parse_harness_settings(raw: &str) -> Result<super::HarnessSettings> {
+        let settings = toml::from_str::<RawHarnessSettings>(raw).map_err(|err| {
+            HarnessError::message(format!(
+                "expected raw harness settings to parse directly: {err}"
+            ))
+        })?;
+        settings.into_harness_settings()
+    }
+
     #[test]
-    fn harness_settings_deserializes_directly_into_resolved_paths() -> Result<()> {
+    fn executable_discovery_settings_resolve_uses_workspace_binary_fallback() -> Result<()> {
+        let current = current_executable()?;
+        let resolved = ExecutableDiscoverySettings {
+            executable_candidates: vec![current.clone()],
+        }
+        .resolve("pgtm.executable_candidates", "pgtm", Some("pgtm"))?;
+        let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+
+        assert!(resolved.starts_with(target_dir) || resolved == current);
+        assert!(resolved.is_absolute());
+        assert!(resolved.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn harness_settings_parse_into_resolved_paths() -> Result<()> {
         let current = current_executable()?;
         let raw = format!(
             r#"[docker]
@@ -230,11 +241,7 @@ executable_candidates = ["{path}"]
 "#,
             path = current.display(),
         );
-        let settings = toml::from_str::<HarnessSettings>(raw.as_str()).map_err(|err| {
-            HarnessError::message(format!(
-                "expected harness settings to parse directly: {err}"
-            ))
-        })?;
+        let settings = parse_harness_settings(raw.as_str())?;
 
         assert_eq!(settings.docker_executable(), current.as_path());
         assert!(settings.pgtm_executable().is_absolute());
