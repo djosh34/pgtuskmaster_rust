@@ -15,8 +15,15 @@ EOF_APPEND_PROGRESS_LOG
 
 
 
-apply skill improve-code-boundaries on tests/ha/support
+apply skill improve-code-boundaries on one of these:
+
+- src/
+- tests/
 
 when done: 
+- make lint
+- make test
+- make test-long
 - commit
+- push
 - bash .ralph/task_switch.sh

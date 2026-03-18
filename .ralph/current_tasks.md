@@ -1,6 +1,18 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 18 10:27:11 PM CET 2026
+Generated: Wed Mar 18 11:40:17 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
+
+```
+## Bug: API worker reload certificate tests leak resources under nextest <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` currently passes but nextest reports four leaky tests in `pgtuskmaster_rust::api::worker::tests`:
+`reload_certificates_returns_error_when_postmaster_pid_is_stale`,
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-ha-long-runs-leak-docker-networks-and-exhaust-address-pools.md`
 
