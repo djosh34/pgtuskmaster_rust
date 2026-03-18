@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     future::Future,
-    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Mutex,
     thread,
@@ -137,18 +136,6 @@ pub struct HarnessWorkspace {
 }
 
 #[derive(Debug)]
-pub struct HarnessRuntime {
-    pub workspace: HarnessWorkspace,
-    pub cucumber_test_image_run_id: String,
-    pub docker: DockerCli,
-    pub ryuk: Option<RyukGuard>,
-    pub timeouts: TimeoutModel,
-    service_container_ids: Mutex<BTreeMap<String, String>>,
-    timeline: Mutex<Vec<serde_json::Value>>,
-    cleaned_up: bool,
-}
-
-#[derive(Debug)]
 struct BackgroundInvariants {
     primary_count: PrimaryCountInvariantRunner,
     write_convergence: Mutex<WriteConvergenceState>,
@@ -184,22 +171,15 @@ enum StartupPhase {
 
 #[derive(Debug)]
 pub struct HarnessShared {
-    runtime: HarnessRuntime,
+    pub workspace: HarnessWorkspace,
+    pub cucumber_test_image_run_id: String,
+    pub docker: DockerCli,
+    pub ryuk: Option<RyukGuard>,
+    pub timeouts: TimeoutModel,
+    service_container_ids: Mutex<BTreeMap<String, String>>,
+    timeline: Mutex<Vec<serde_json::Value>>,
+    cleaned_up: bool,
     background_invariants: BackgroundInvariants,
-}
-
-impl Deref for HarnessShared {
-    type Target = HarnessRuntime;
-
-    fn deref(&self) -> &Self::Target {
-        &self.runtime
-    }
-}
-
-impl DerefMut for HarnessShared {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.runtime
-    }
 }
 
 impl HarnessShared {
@@ -242,34 +222,36 @@ impl HarnessShared {
             compose_project.as_str(),
             dcs_service_names.as_slice(),
         )?;
-        let service_container_ids = Mutex::new(BTreeMap::new());
-        let runtime = HarnessRuntime {
-            workspace: HarnessWorkspace {
-                run_id,
-                feature_name: feature.feature_name.clone(),
-                given,
-                run_dir,
-                materialized_dir,
-                artifacts_dir,
-                compose_file,
-                compose_project,
-            },
+        let workspace = HarnessWorkspace {
+            run_id,
+            feature_name: feature.feature_name.clone(),
+            given,
+            run_dir,
+            materialized_dir,
+            artifacts_dir,
+            compose_file,
+            compose_project,
+        };
+        let background_invariants = BackgroundInvariants::start_primary_count(
+            PgtmObserver::new(
+                docker.clone(),
+                workspace.compose_file.clone(),
+                workspace.compose_project.clone(),
+                workspace.materialized_dir.clone(),
+            ),
+            timeouts.poll_interval,
+            timeouts.failover_deadline,
+        )
+        .await?;
+        let mut harness = Self {
+            workspace,
             cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
             timeouts,
-            service_container_ids,
+            service_container_ids: Mutex::new(BTreeMap::new()),
             timeline: Mutex::new(Vec::new()),
             cleaned_up: false,
-        };
-        let background_invariants = BackgroundInvariants::start_primary_count(
-            runtime.observer(),
-            runtime.timeouts.poll_interval,
-            runtime.timeouts.failover_deadline,
-        )
-        .await?;
-        let mut harness = Self {
-            runtime,
             background_invariants,
         };
         harness.record_startup_phase(
@@ -1013,17 +995,6 @@ impl HarnessShared {
         self.record_startup_phase(
             StartupPhase::InvariantWriteConvergence,
             "started background accepted-write convergence attachment",
-        )
-    }
-}
-
-impl HarnessRuntime {
-    fn observer(&self) -> PgtmObserver {
-        PgtmObserver::new(
-            self.docker.clone(),
-            self.workspace.compose_file.clone(),
-            self.workspace.compose_project.clone(),
-            self.workspace.materialized_dir.clone(),
         )
     }
 }
@@ -1816,38 +1787,34 @@ mod tests {
         write_convergence: WriteConvergenceState,
     ) -> Result<HarnessShared> {
         Ok(HarnessShared {
-            runtime: HarnessRuntime {
-                workspace: HarnessWorkspace {
-                    run_id: "test-run".to_string(),
-                    feature_name: "test-feature".to_string(),
-                    given: resolve_given(
-                        PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
-                        HaGivenId::Plain,
-                    )?,
-                    run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
-                    materialized_dir: PathBuf::from(
-                        "tests/ha/runs/test-feature/test-run/materialized",
-                    ),
-                    artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
-                    compose_file: PathBuf::from(
-                        "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
-                    ),
-                    compose_project: "ha-test-run".to_string(),
-                },
-                cucumber_test_image_run_id: "cucumber-test-run".to_string(),
-                docker: DockerCli::fake_for_tests(),
-                ryuk: None,
-                timeouts: TimeoutModel {
-                    poll_interval: Duration::from_millis(1),
-                    startup_deadline: Duration::from_millis(10),
-                    failover_deadline: Duration::from_millis(10),
-                    recovery_deadline: Duration::from_millis(10),
-                    write_convergence_deadline: Duration::from_millis(10),
-                },
-                service_container_ids: Mutex::new(BTreeMap::new()),
-                timeline: Mutex::new(Vec::new()),
-                cleaned_up: false,
+            workspace: HarnessWorkspace {
+                run_id: "test-run".to_string(),
+                feature_name: "test-feature".to_string(),
+                given: resolve_given(
+                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
+                    HaGivenId::Plain,
+                )?,
+                run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
+                materialized_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized"),
+                artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
+                compose_file: PathBuf::from(
+                    "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
+                ),
+                compose_project: "ha-test-run".to_string(),
             },
+            cucumber_test_image_run_id: "cucumber-test-run".to_string(),
+            docker: DockerCli::fake_for_tests(),
+            ryuk: None,
+            timeouts: TimeoutModel {
+                poll_interval: Duration::from_millis(1),
+                startup_deadline: Duration::from_millis(10),
+                failover_deadline: Duration::from_millis(10),
+                recovery_deadline: Duration::from_millis(10),
+                write_convergence_deadline: Duration::from_millis(10),
+            },
+            service_container_ids: Mutex::new(BTreeMap::new()),
+            timeline: Mutex::new(Vec::new()),
+            cleaned_up: false,
             background_invariants: BackgroundInvariants {
                 primary_count: PrimaryCountInvariantRunner::healthy_for_tests(),
                 write_convergence: Mutex::new(write_convergence),
