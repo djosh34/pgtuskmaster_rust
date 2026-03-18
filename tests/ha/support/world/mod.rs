@@ -29,7 +29,7 @@ use crate::support::{
     feature_metadata,
     givens::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
-        MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
+        SharedFixtureEntry,
     },
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
@@ -1303,13 +1303,12 @@ fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path
         shared_root,
         compose_variant,
         copies,
-        runtime_configs,
     } = &given.materialization;
     for entry in copies {
         copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
     }
-    for runtime_config in runtime_configs {
-        materialize_runtime_config(materialized_root, runtime_config)?;
+    for member in ClusterMember::ALL {
+        materialize_runtime_config(materialized_root, given, member)?;
     }
     materialize_compose_include_file(materialized_root, *compose_variant)?;
     Ok(())
@@ -1403,13 +1402,14 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
 
 fn materialize_runtime_config(
     materialized_root: &Path,
-    runtime_config: &MemberRuntimeConfigMaterialization,
+    given: &HaGivenDefinition,
+    member: ClusterMember,
 ) -> Result<()> {
-    let target_path = materialized_root.join(runtime_config.member.runtime_config_relative_path());
+    let target_path = materialized_root.join(member.runtime_config_relative_path());
     if let Some(parent) = target_path.parent() {
         create_dir_all(parent)?;
     }
-    let rendered = render_member_runtime_template(&runtime_config.template);
+    let rendered = render_member_runtime_config(given, member);
     write_text_file(target_path.as_path(), rendered.as_str())
 }
 
@@ -1448,16 +1448,16 @@ fn toml_path_string(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-fn render_member_runtime_template(template: &NodeRuntimeTemplate) -> String {
-    let member = template.binding.member.service_name();
-    let dcs_endpoint = template.binding.dcs_service.client_url();
-    let replicator = template.postgres_roles.replicator.as_str();
-    let rewinder = template.postgres_roles.rewinder.as_str();
+fn render_member_runtime_config(given: &HaGivenDefinition, member: ClusterMember) -> String {
+    let member_name = member.service_name();
+    let dcs_endpoint = given.local_dcs_service_for(member).client_url();
+    let replicator = given.topology.postgres_roles.replicator.as_str();
+    let rewinder = given.topology.postgres_roles.rewinder.as_str();
     format!(
         r#"[cluster]
 name = "ha-cucumber-cluster"
 scope = "ha-cucumber-cluster"
-member_id = "{member}"
+member_id = "{member_name}"
 
 [postgres.paths]
 data_dir = "/var/lib/postgresql/data"
@@ -1465,7 +1465,7 @@ socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
 
 [postgres.network]
-listen_host = "{member}"
+listen_host = "{member_name}"
 listen_port = 5432
 
 [postgres.rewind.transport]
@@ -1473,7 +1473,7 @@ ssl_mode = "verify-full"
 ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
 
 [postgres]
-tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }}, client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }} }}
+tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member_name}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member_name}.key" }} }}, client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }} }}
 
 [postgres.access]
 hba = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }}

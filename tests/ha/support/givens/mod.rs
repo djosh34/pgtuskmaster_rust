@@ -60,12 +60,8 @@ impl HaGivenDefinition {
             .collect()
     }
 
-    pub fn member_binding(&self, member: ClusterMember) -> MemberDcsBinding {
-        self.topology.member_binding(member)
-    }
-
     pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
-        self.member_binding(member).dcs_service
+        self.topology.dcs_layout.service_for(member)
     }
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
@@ -77,15 +73,6 @@ impl HaGivenDefinition {
 pub struct ThreeNodeTopologyFixture {
     pub postgres_roles: PostgresRoleMapping,
     pub dcs_layout: ThreeNodeDcsLayout,
-}
-
-impl ThreeNodeTopologyFixture {
-    pub fn member_binding(&self, member: ClusterMember) -> MemberDcsBinding {
-        MemberDcsBinding {
-            member,
-            dcs_service: self.dcs_layout.service_for(member),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -139,18 +126,11 @@ impl ThreeNodeDcsLayout {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MemberDcsBinding {
-    pub member: ClusterMember,
-    pub dcs_service: DcsService,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FixtureMaterialization {
     pub shared_root: PathBuf,
     pub compose_variant: ComposeVariant,
     pub copies: Vec<SharedFixtureEntry>,
-    pub runtime_configs: Vec<MemberRuntimeConfigMaterialization>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,18 +160,6 @@ impl ComposeVariant {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NodeRuntimeTemplate {
-    pub binding: MemberDcsBinding,
-    pub postgres_roles: PostgresRoleMapping,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MemberRuntimeConfigMaterialization {
-    pub member: ClusterMember,
-    pub template: NodeRuntimeTemplate,
-}
-
 pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefinition> {
     let givens_root = repo_root.join("tests/ha/givens");
     let shared_root = givens_root.join("three_node_shared");
@@ -217,7 +185,6 @@ pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefini
                 target_relative_path: PathBuf::from("configs/pg_ident.conf"),
             },
         ],
-        runtime_configs: three_node_runtime_configs(topology.clone()),
     };
     Ok(HaGivenDefinition {
         id: given,
@@ -257,19 +224,4 @@ fn compose_variant(layout: ThreeNodeDcsLayout) -> ComposeVariant {
         ThreeNodeDcsLayout::SharedSingle => ComposeVariant::SharedSingleDcs,
         ThreeNodeDcsLayout::ColocatedThreeMember => ComposeVariant::ColocatedThreeMemberDcs,
     }
-}
-
-fn three_node_runtime_configs(
-    topology: ThreeNodeTopologyFixture,
-) -> Vec<MemberRuntimeConfigMaterialization> {
-    ClusterMember::ALL
-        .into_iter()
-        .map(|member| MemberRuntimeConfigMaterialization {
-            member,
-            template: NodeRuntimeTemplate {
-                binding: topology.member_binding(member),
-                postgres_roles: topology.postgres_roles.clone(),
-            },
-        })
-        .collect()
 }
