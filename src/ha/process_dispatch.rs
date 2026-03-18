@@ -6,7 +6,7 @@ use crate::{
     state::{JobId, MemberId},
 };
 
-use super::state::HaWorkerCtx;
+use super::state::HaRuntimeCtx;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessDispatchOutcome {
@@ -20,7 +20,7 @@ pub(crate) enum ProcessDispatchError {
 }
 
 pub(crate) fn dispatch_process_action(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     action_index: usize,
     action: &ProcessIntent,
@@ -41,7 +41,7 @@ pub(crate) fn dispatch_process_action(
 }
 
 fn send_process_request(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     action: &str,
     request: ProcessIntentRequest,
 ) -> Result<(), ProcessDispatchError> {

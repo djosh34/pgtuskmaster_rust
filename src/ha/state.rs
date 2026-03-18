@@ -55,9 +55,6 @@ pub(crate) struct HaControlPlane {
     pub(crate) dcs_handle: DcsHandle,
 }
 
-pub(crate) type HaWorkerCtx = HaRuntimeCtx;
-pub(crate) type HaWorkerBootstrap = HaRuntimeCtx;
-
 impl HaState {
     pub(crate) fn initial(worker: WorkerStatus) -> Self {
         Self {
@@ -69,25 +66,6 @@ impl HaState {
             world: WorldView::initial(),
             clear_switchover: false,
             planned_actions: PlannedActions::default(),
-        }
-    }
-}
-
-impl HaRuntimeCtx {
-    pub(crate) fn new(bootstrap: HaWorkerBootstrap) -> Self {
-        let HaRuntimeCtx {
-            cadence,
-            state_channel,
-            observed,
-            control,
-            identity,
-        } = bootstrap;
-        Self {
-            cadence,
-            state_channel,
-            observed,
-            control,
-            identity,
         }
     }
 }

@@ -9,8 +9,7 @@ use crate::{
 };
 
 use super::state::{
-    HaControlPlane, HaObservedState, HaState, HaStateChannel, HaWorkerBootstrap, HaWorkerCadence,
-    HaWorkerCtx,
+    HaControlPlane, HaObservedState, HaRuntimeCtx, HaState, HaStateChannel, HaWorkerCadence,
 };
 
 pub(crate) struct HaRuntimeRequest {
@@ -29,7 +28,7 @@ pub(crate) struct HaRuntimeBundle {
     pub(crate) worker: HaWorker,
 }
 
-pub(crate) struct HaWorker(HaWorkerCtx);
+pub(crate) struct HaWorker(HaRuntimeCtx);
 
 impl HaWorker {
     pub(crate) async fn run(self) -> Result<(), WorkerError> {
@@ -40,7 +39,7 @@ impl HaWorker {
 pub(crate) fn bootstrap(request: HaRuntimeRequest) -> HaRuntimeBundle {
     let initial_state = HaState::initial(crate::state::WorkerStatus::Starting);
     let (publisher, state) = new_state_channel(initial_state.clone());
-    let ctx = HaWorkerCtx::new(HaWorkerBootstrap {
+    let ctx = HaRuntimeCtx {
         cadence: HaWorkerCadence {
             poll_interval: request.poll_interval,
             now: Box::new(crate::process::worker::system_now_unix_millis),
@@ -60,7 +59,7 @@ pub(crate) fn bootstrap(request: HaRuntimeRequest) -> HaRuntimeBundle {
             dcs_handle: request.dcs_handle,
         },
         identity: request.identity,
-    });
+    };
 
     HaRuntimeBundle {
         state,

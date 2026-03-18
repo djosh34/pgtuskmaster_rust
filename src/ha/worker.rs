@@ -12,7 +12,7 @@ use super::{
     decide::decide,
     process_dispatch::{dispatch_process_action, ProcessDispatchError},
     reconcile::reconcile,
-    state::{HaState, HaWorkerCtx},
+    state::{HaRuntimeCtx, HaState},
     types::{
         last_start_success_at, last_success_at, wal_position, ApiVisibility, CoordinationAction,
         CoordinationState, DataDirState, DesiredState, DivergenceState, ElectionEligibility,
@@ -24,7 +24,7 @@ use super::{
     },
 };
 
-pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn run(mut ctx: HaRuntimeCtx) -> Result<(), WorkerError> {
     let mut interval = tokio::time::interval(ctx.cadence.poll_interval);
     loop {
         tokio::select! {
@@ -46,7 +46,7 @@ pub(crate) async fn run(mut ctx: HaWorkerCtx) -> Result<(), WorkerError> {
     }
 }
 
-pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError> {
     let now = (ctx.cadence.now)()?;
     let world = observe(ctx, now)?;
     let desired = decide(&world, &ctx.identity.member_id);
@@ -64,7 +64,7 @@ pub(crate) async fn step_once(ctx: &mut HaWorkerCtx) -> Result<(), WorkerError> 
     Ok(())
 }
 
-fn observe(ctx: &HaWorkerCtx, now: crate::state::UnixMillis) -> Result<WorldView, WorkerError> {
+fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldView, WorkerError> {
     let config = ctx.observed.config.latest();
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
@@ -166,7 +166,7 @@ fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) ->
 }
 
 async fn execute_plan(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     plan: &ReconcilePlan,
 ) -> Result<(), WorkerError> {
@@ -183,7 +183,7 @@ async fn execute_plan(
 }
 
 async fn execute_coordination_action(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     action_index: usize,
     action: &CoordinationAction,
@@ -214,7 +214,7 @@ async fn execute_coordination_action(
 }
 
 async fn execute_local_action(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     action_index: usize,
     action: &LocalAction,
@@ -240,7 +240,7 @@ async fn execute_local_action(
 }
 
 async fn execute_process_action(
-    ctx: &mut HaWorkerCtx,
+    ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     action_index: usize,
     action: &ProcessIntent,
