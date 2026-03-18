@@ -75,7 +75,7 @@ pub fn configured_executable(
             HarnessError::message(format!(
                 "{label} binary was not found in tests/ha/harness.toml {config_field}"
             ))
-    })?;
+        })?;
     Ok(candidate.clone())
 }
 

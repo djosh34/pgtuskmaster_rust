@@ -15,7 +15,6 @@ use pgtuskmaster_rust::{
 use crate::support::{
     docker::{cli::DockerCli, ryuk::RyukGuard},
     error::{HarnessError, Result},
-    invariants::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
@@ -25,6 +24,7 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
+    invariants::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -303,7 +303,7 @@ impl HarnessShared {
                 harness.cucumber_test_image_run_id
             ),
         )?;
-        if let Err(err) = harness.start_primary_count_invariant() {
+        if let Err(err) = harness.start_primary_count_invariant().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
                 None => Err(err),
@@ -999,11 +999,15 @@ impl HarnessShared {
             .find(|service| service.service_name() == service_name)
     }
 
-    fn start_primary_count_invariant(&mut self) -> Result<()> {
-        self.primary_count_invariant = Some(PrimaryCountInvariantRunner::start(
-            self.observer(),
-            self.timeouts.poll_interval,
-        )?);
+    async fn start_primary_count_invariant(&mut self) -> Result<()> {
+        self.primary_count_invariant = Some(
+            PrimaryCountInvariantRunner::start(
+                self.observer(),
+                self.timeouts.poll_interval,
+                self.timeouts.failover_deadline,
+            )
+            .await?,
+        );
         self.record_note(
             "invariant.primary_count.start",
             "started perpetual self-reported primary-count runner",
@@ -1011,12 +1015,14 @@ impl HarnessShared {
     }
 
     async fn start_write_convergence_invariant(&mut self) -> Result<()> {
-        self.write_convergence_invariant = Some(WriteConvergenceInvariantRunner::start(
-            self.observer(),
-            self.timeouts.poll_interval,
-            self.timeouts.write_convergence_deadline,
-        )
-        .await?);
+        self.write_convergence_invariant = Some(
+            WriteConvergenceInvariantRunner::start(
+                self.observer(),
+                self.timeouts.poll_interval,
+                self.timeouts.write_convergence_deadline,
+            )
+            .await?,
+        );
         self.record_note(
             "invariant.write_convergence.start",
             "started perpetual accepted-write convergence runner",

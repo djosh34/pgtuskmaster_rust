@@ -4,5 +4,6 @@ sandbox_mode = "workspace-write"
 model_reasoning_summary = "none"
 model_verbosity = "high"
 model_supports_reasoning_summaries = false
-network_access = true
 
+[sandbox_workspace_write]
+network_access = true

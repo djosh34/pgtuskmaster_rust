@@ -1,5 +1,5 @@
-use std::{path::PathBuf, string::FromUtf8Error};
 use crate::support::invariants::WriteConvergenceInvariantError;
+use std::{path::PathBuf, string::FromUtf8Error};
 
 #[derive(Debug, thiserror::Error)]
 pub enum HarnessError {
@@ -37,7 +37,7 @@ pub enum HarnessError {
     },
 
     #[error("{0}")]
-    WriteConvergence(#[from] WriteConvergenceInvariantError)
+    WriteConvergence(#[from] WriteConvergenceInvariantError),
 }
 
 pub type Result<T> = std::result::Result<T, HarnessError>;
