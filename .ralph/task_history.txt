@@ -226,3 +226,5 @@ NONE
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/06-task-add-a-perpetual-accepted-write-convergence-invariant-runner.md
 .ralph/tasks/story-general-architecture-improvement-finding/08-task-split-process-planning-from-managed-postgres-session-materialization-and-external-tool-execution.md
 NONE
+.ralph/tasks/bugs/bug-test-long-takes-far-too-long-with-zero-tests-passing-for-minutes.md
+NONE

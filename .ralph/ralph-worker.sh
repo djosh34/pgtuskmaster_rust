@@ -135,7 +135,9 @@ backoff_reset() {
 # Determine which prompt to use based on current_task.txt existence.
 # Returns the prompt filename via PROMPT_NAME global.
 determine_prompt() {
-  if [[ -f "$SCRIPT_DIR/current_task.txt" ]]; then
+  if [[ -f "$SCRIPT_DIR/alt_prompt.txt" ]]; then
+    PROMPT_NAME="$(head -n 1 "$SCRIPT_DIR/alt_prompt.txt" | tr -d '\r' | xargs)"
+  elif [[ -f "$SCRIPT_DIR/current_task.txt" ]]; then
     PROMPT_NAME="$DO_TASK_PROMPT"
   else
     PROMPT_NAME="$CHOOSE_TASK_PROMPT"

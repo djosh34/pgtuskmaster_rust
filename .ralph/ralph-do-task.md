@@ -22,9 +22,8 @@ EOF_APPEND_PROGRESS_LOG
 - [ ] read the [task name].md file from the path specified
 - [ ] complete the work like this:
     - [ ] If you read nothing/ TO BE VERIFIED, follow these steps:
-        - [ ] Change all types into the Goal CDD/'everything as ADT type' pattern, it is very expected this does not compile
-        - [ ] You must change ALL types first, and break ALL types at once, before fixing any compiler errors
-        - [ ] Iterate on the types, can something be represented better? better enums that make unrepresentable states impossible? Other Structs/Enums in need of big changes to align with new design? change ALL those types first (before fixing compile errors)
+        - [ ] Iterate on the plan, can something be represented better? better enums that make unrepresentable states impossible? Other Structs/Enums in need of big changes to align with new design? change ALL those types first (before fixing compile errors)
+          - [ ] Make use of improve-code-boundaries skill to evaluate your design and to improve the plan and the codebase
         - [ ] Once your happy with type design, replace end of plan with 'NOW EXECUTE'
         - [ ] QUIT IMMEDIATELY!
     - [ ] When you read 'NOW EXECUTE': 
