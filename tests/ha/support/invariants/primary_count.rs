@@ -23,7 +23,7 @@ use crate::support::{
     topology::ClusterMember,
 };
 
-type MemberPrimaryObservation = std::result::Result<(ClusterMember, bool), String>;
+type MemberPrimaryObservation = std::result::Result<bool, String>;
 type ObserveAllMembersFuture = Pin<Box<dyn Future<Output = [MemberPrimaryObservation; 3]> + Send>>;
 type ObserveAllMembers = Arc<dyn Fn() -> ObserveAllMembersFuture + Send + Sync>;
 
@@ -110,11 +110,12 @@ impl PrimaryCountInvariantRunner {
                     return;
                 }
 
-                let primary_members = observations
+                let primary_members = ClusterMember::ALL
                     .into_iter()
-                    .filter_map(|outcome| match outcome {
-                        Ok((member, true)) => Some(member),
-                        Ok((_, false)) => None,
+                    .zip(observations)
+                    .filter_map(|(member, outcome)| match outcome {
+                        Ok(true) => Some(member),
+                        Ok(false) => None,
                         Err(_) => None,
                     })
                     .collect::<Vec<_>>();
@@ -224,17 +225,15 @@ impl PrimaryCountInvariantRunner {
     }
 }
 
-impl PrimaryCountInvariantRunner {}
-
 #[cfg(test)]
 impl PrimaryCountInvariantRunner {
     pub(crate) fn healthy_for_tests() -> Self {
         let observe_all: ObserveAllMembers = Arc::new(|| {
             Box::pin(async {
                 [
-                    Ok((ClusterMember::NodeA, false)),
-                    Ok((ClusterMember::NodeB, true)),
-                    Ok((ClusterMember::NodeC, false)),
+                    Ok(false),
+                    Ok(true),
+                    Ok(false),
                 ]
             })
         });
@@ -270,8 +269,8 @@ async fn observe_member_primary(
     tokio::task::spawn_blocking(move || {
         observer
             .state_via_member(member)
-            .map(|state| (member, matches!(state.pg, PgInfoState::Primary { .. })))
-            .or(Ok((member, false)))
+            .map(|state| matches!(state.pg, PgInfoState::Primary { .. }))
+            .or(Ok(false))
     })
     .await
     .map_err(|err| format!("join self-primary observation for `{member}` failed: {err}"))?
@@ -301,22 +300,13 @@ mod tests {
         validate_primary_count, MemberPrimaryObservation, ObserveAllMembers,
         PrimaryCountInvariantRunner,
     };
-    use crate::support::topology::ClusterMember;
 
     fn observed_poll(states: [bool; 3]) -> [MemberPrimaryObservation; 3] {
-        [
-            Ok((ClusterMember::NodeA, states[0])),
-            Ok((ClusterMember::NodeB, states[1])),
-            Ok((ClusterMember::NodeC, states[2])),
-        ]
+        [Ok(states[0]), Ok(states[1]), Ok(states[2])]
     }
 
     fn unavailable_poll() -> [MemberPrimaryObservation; 3] {
-        [
-            Ok((ClusterMember::NodeA, false)),
-            Ok((ClusterMember::NodeB, false)),
-            Ok((ClusterMember::NodeC, false)),
-        ]
+        [Ok(false), Ok(false), Ok(false)]
     }
 
     fn scripted_observer(polls: Vec<[MemberPrimaryObservation; 3]>) -> ObserveAllMembers {
