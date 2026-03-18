@@ -28,24 +28,6 @@ pub struct ComposePsEntry {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Clone, Debug)]
-struct ContainerInspectDetails {
-    published_ports: BTreeMap<String, PublishedPort>,
-    state_status: Option<String>,
-    health_status: Option<String>,
-    ipv4_address: Option<String>,
-    network_gateway: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PublishedPort {
-    Unpublished,
-    MissingBinding,
-    MissingHostPort,
-    Bound(u16),
-    InvalidHostPort(String),
-}
-
 #[derive(Clone, Debug, Deserialize)]
 struct RawDockerInspectEntry {
     #[serde(rename = "NetworkSettings")]
@@ -88,127 +70,6 @@ struct RawDockerContainerState {
 struct RawDockerHealthState {
     #[serde(rename = "Status")]
     status: Option<String>,
-}
-
-impl ContainerInspectDetails {
-    fn from_raw(raw: RawDockerInspectEntry) -> Self {
-        let published_ports = raw
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.ports.as_ref())
-            .map(|ports| {
-                ports
-                    .iter()
-                    .map(|(container_port, bindings)| {
-                        (
-                            container_port.clone(),
-                            PublishedPort::from_raw_bindings(bindings.as_ref()),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        let state_status = raw.state.as_ref().and_then(|state| state.status.clone());
-        let health_status = raw
-            .state
-            .as_ref()
-            .and_then(|state| state.health.as_ref())
-            .and_then(|health| health.status.clone());
-        let ipv4_address = raw
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| {
-                networks
-                    .values()
-                    .filter_map(|endpoint| endpoint.ip_address.as_deref())
-                    .find(|ip_address| !ip_address.is_empty())
-                    .map(str::to_owned)
-            });
-        let network_gateway = raw
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| {
-                networks
-                    .values()
-                    .filter_map(|endpoint| endpoint.gateway.as_deref())
-                    .find(|gateway| !gateway.is_empty())
-                    .map(str::to_owned)
-            });
-
-        Self {
-            published_ports,
-            state_status,
-            health_status,
-            ipv4_address,
-            network_gateway,
-        }
-    }
-
-    fn published_host_port(&self, container: &str, port: &str) -> Result<u16> {
-        match self.published_ports.get(port) {
-            None | Some(PublishedPort::Unpublished) => Err(HarnessError::message(format!(
-                "container `{container}` does not expose published port `{port}`"
-            ))),
-            Some(PublishedPort::MissingBinding) => Err(HarnessError::message(format!(
-                "container `{container}` has no host binding for `{port}`"
-            ))),
-            Some(PublishedPort::MissingHostPort) => Err(HarnessError::message(format!(
-                "container `{container}` binding for `{port}` is missing HostPort"
-            ))),
-            Some(PublishedPort::Bound(host_port)) => Ok(*host_port),
-            Some(PublishedPort::InvalidHostPort(host_port)) => Err(HarnessError::message(format!(
-                "container `{container}` binding for `{port}` has invalid host port `{host_port}`"
-            ))),
-        }
-    }
-
-    fn state_status(&self, container: &str) -> Result<String> {
-        self.state_status.clone().ok_or_else(|| {
-            HarnessError::message(format!(
-                "container `{container}` inspect payload is missing State.Status"
-            ))
-        })
-    }
-
-    fn health_status(&self) -> Option<String> {
-        self.health_status.clone()
-    }
-
-    fn ipv4_address(&self, container: &str) -> Result<String> {
-        self.ipv4_address.clone().ok_or_else(|| {
-            HarnessError::message(format!(
-                "container `{container}` does not expose a non-empty IPv4 address"
-            ))
-        })
-    }
-
-    fn network_gateway(&self, container: &str) -> Result<String> {
-        self.network_gateway.clone().ok_or_else(|| {
-            HarnessError::message(format!(
-                "container `{container}` does not expose a non-empty network gateway"
-            ))
-        })
-    }
-}
-
-impl PublishedPort {
-    fn from_raw_bindings(bindings: Option<&Vec<RawDockerPortBinding>>) -> Self {
-        let Some(bindings) = bindings else {
-            return Self::Unpublished;
-        };
-        let Some(binding) = bindings.first() else {
-            return Self::MissingBinding;
-        };
-        let Some(host_port) = binding.host_port.as_deref() else {
-            return Self::MissingHostPort;
-        };
-        match host_port.parse::<u16>() {
-            Ok(host_port) => Self::Bound(host_port),
-            Err(_) => Self::InvalidHostPort(host_port.to_string()),
-        }
-    }
 }
 
 impl DockerCli {
@@ -461,27 +322,23 @@ impl DockerCli {
     }
 
     pub fn published_host_port(&self, container: &str, port: &str) -> Result<u16> {
-        self.inspect_container_details(container)?
-            .published_host_port(container, port)
+        published_host_port(&self.inspect_container_entry(container)?, container, port)
     }
 
     pub fn container_health_status(&self, container: &str) -> Result<Option<String>> {
-        Ok(self.inspect_container_details(container)?.health_status())
+        Ok(health_status(&self.inspect_container_entry(container)?))
     }
 
     pub fn container_state_status(&self, container: &str) -> Result<String> {
-        self.inspect_container_details(container)?
-            .state_status(container)
+        state_status(&self.inspect_container_entry(container)?, container)
     }
 
     pub fn container_ipv4_address(&self, container: &str) -> Result<String> {
-        self.inspect_container_details(container)?
-            .ipv4_address(container)
+        ipv4_address(&self.inspect_container_entry(container)?, container)
     }
 
     pub fn container_network_gateway(&self, container: &str) -> Result<String> {
-        self.inspect_container_details(container)?
-            .network_gateway(container)
+        network_gateway(&self.inspect_container_entry(container)?, container)
     }
 
     pub fn exec_as_user(
@@ -539,7 +396,7 @@ impl DockerCli {
         process::run(self.executable.as_path(), cwd, context.into(), args, env)
     }
 
-    fn inspect_container_details(&self, container: &str) -> Result<ContainerInspectDetails> {
+    fn inspect_container_entry(&self, container: &str) -> Result<RawDockerInspectEntry> {
         let output = self.inspect_container(container)?;
         let entries = serde_json::from_str::<Vec<RawDockerInspectEntry>>(output.as_str()).map_err(
             |source| HarnessError::Json {
@@ -552,8 +409,96 @@ impl DockerCli {
                 "docker inspect for `{container}` did not return a container object"
             )));
         };
-        Ok(ContainerInspectDetails::from_raw(entry))
+        Ok(entry)
     }
+}
+
+fn published_host_port(entry: &RawDockerInspectEntry, container: &str, port: &str) -> Result<u16> {
+    let bindings = entry
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.ports.as_ref())
+        .and_then(|ports| ports.get(port));
+    match bindings {
+        None | Some(None) => Err(HarnessError::message(format!(
+            "container `{container}` does not expose published port `{port}`"
+        ))),
+        Some(Some(bindings)) => {
+            let Some(binding) = bindings.first() else {
+                return Err(HarnessError::message(format!(
+                    "container `{container}` has no host binding for `{port}`"
+                )));
+            };
+            let Some(host_port) = binding.host_port.as_deref() else {
+                return Err(HarnessError::message(format!(
+                    "container `{container}` binding for `{port}` is missing HostPort"
+                )));
+            };
+            host_port.parse::<u16>().map_err(|_| {
+                HarnessError::message(format!(
+                    "container `{container}` binding for `{port}` has invalid host port `{host_port}`"
+                ))
+            })
+        }
+    }
+}
+
+fn state_status(entry: &RawDockerInspectEntry, container: &str) -> Result<String> {
+    entry
+        .state
+        .as_ref()
+        .and_then(|state| state.status.clone())
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "container `{container}` inspect payload is missing State.Status"
+            ))
+        })
+}
+
+fn health_status(entry: &RawDockerInspectEntry) -> Option<String> {
+    entry
+        .state
+        .as_ref()
+        .and_then(|state| state.health.as_ref())
+        .and_then(|health| health.status.clone())
+}
+
+fn ipv4_address(entry: &RawDockerInspectEntry, container: &str) -> Result<String> {
+    entry
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.as_ref())
+        .and_then(|networks| {
+            networks
+                .values()
+                .filter_map(|endpoint| endpoint.ip_address.as_deref())
+                .find(|ip_address| !ip_address.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "container `{container}` does not expose a non-empty IPv4 address"
+            ))
+        })
+}
+
+fn network_gateway(entry: &RawDockerInspectEntry, container: &str) -> Result<String> {
+    entry
+        .network_settings
+        .as_ref()
+        .and_then(|settings| settings.networks.as_ref())
+        .and_then(|networks| {
+            networks
+                .values()
+                .filter_map(|endpoint| endpoint.gateway.as_deref())
+                .find(|gateway| !gateway.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "container `{container}` does not expose a non-empty network gateway"
+            ))
+        })
 }
 
 fn forwarded_environment() -> Vec<(String, String)> {
@@ -642,11 +587,11 @@ fn docker_socket_permission_hint(stderr: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_json_sequence, ComposePsEntry, ContainerInspectDetails, HarnessError,
-        RawDockerInspectEntry, Result,
+        health_status, ipv4_address, network_gateway, parse_json_sequence, published_host_port,
+        state_status, ComposePsEntry, HarnessError, RawDockerInspectEntry, Result,
     };
 
-    fn parse_inspect_details(input: &str) -> Result<ContainerInspectDetails> {
+    fn parse_inspect_entry(input: &str) -> Result<RawDockerInspectEntry> {
         let entries =
             serde_json::from_str::<Vec<RawDockerInspectEntry>>(input).map_err(|source| {
                 HarnessError::Json {
@@ -659,7 +604,7 @@ mod tests {
                 "expected test docker inspect json to contain one container object",
             ));
         };
-        Ok(ContainerInspectDetails::from_raw(entry))
+        Ok(entry)
     }
 
     #[test]
@@ -681,7 +626,7 @@ mod tests {
 
     #[test]
     fn inspect_details_normalize_state_network_and_port_access() -> Result<()> {
-        let details = parse_inspect_details(
+        let entry = parse_inspect_entry(
             r#"[{
   "NetworkSettings": {
     "Ports": {
@@ -701,17 +646,17 @@ mod tests {
 }]"#,
         )?;
 
-        assert_eq!(details.published_host_port("node-a", "5432/tcp")?, 15432);
-        assert_eq!(details.state_status("node-a")?, "running");
-        assert_eq!(details.health_status(), Some("healthy".to_string()));
-        assert_eq!(details.ipv4_address("node-a")?, "172.18.0.8");
-        assert_eq!(details.network_gateway("node-a")?, "172.18.0.1");
+        assert_eq!(published_host_port(&entry, "node-a", "5432/tcp")?, 15432);
+        assert_eq!(state_status(&entry, "node-a")?, "running");
+        assert_eq!(health_status(&entry), Some("healthy".to_string()));
+        assert_eq!(ipv4_address(&entry, "node-a")?, "172.18.0.8");
+        assert_eq!(network_gateway(&entry, "node-a")?, "172.18.0.1");
         Ok(())
     }
 
     #[test]
     fn inspect_details_preserve_port_binding_failures_for_requested_port() -> Result<()> {
-        let missing_binding = parse_inspect_details(
+        let missing_binding = parse_inspect_entry(
             r#"[{
   "NetworkSettings": {
     "Ports": {
@@ -720,7 +665,7 @@ mod tests {
   }
 }]"#,
         )?;
-        let missing_host_port = parse_inspect_details(
+        let missing_host_port = parse_inspect_entry(
             r#"[{
   "NetworkSettings": {
     "Ports": {
@@ -729,7 +674,7 @@ mod tests {
   }
 }]"#,
         )?;
-        let invalid_host_port = parse_inspect_details(
+        let invalid_host_port = parse_inspect_entry(
             r#"[{
   "NetworkSettings": {
     "Ports": {
@@ -739,20 +684,20 @@ mod tests {
 }]"#,
         )?;
 
-        let missing_binding_error = match missing_binding.published_host_port("node-a", "5432/tcp")
-        {
-            Ok(host_port) => {
-                return Err(HarnessError::message(format!(
-                    "expected missing binding error, got host port `{host_port}`"
-                )));
-            }
-            Err(error) => error,
-        };
+        let missing_binding_error =
+            match published_host_port(&missing_binding, "node-a", "5432/tcp") {
+                Ok(host_port) => {
+                    return Err(HarnessError::message(format!(
+                        "expected missing binding error, got host port `{host_port}`"
+                    )));
+                }
+                Err(error) => error,
+            };
         assert!(missing_binding_error
             .to_string()
             .contains("has no host binding"));
         let missing_host_port_error =
-            match missing_host_port.published_host_port("node-a", "5432/tcp") {
+            match published_host_port(&missing_host_port, "node-a", "5432/tcp") {
                 Ok(host_port) => {
                     return Err(HarnessError::message(format!(
                         "expected missing HostPort error, got host port `{host_port}`"
@@ -764,7 +709,7 @@ mod tests {
             .to_string()
             .contains("is missing HostPort"));
         let invalid_host_port_error =
-            match invalid_host_port.published_host_port("node-a", "5432/tcp") {
+            match published_host_port(&invalid_host_port, "node-a", "5432/tcp") {
                 Ok(host_port) => {
                     return Err(HarnessError::message(format!(
                         "expected invalid HostPort error, got host port `{host_port}`"
