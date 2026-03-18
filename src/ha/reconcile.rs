@@ -323,6 +323,8 @@ mod tests {
                 last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
+                last_local_timeline: None,
+                last_local_system_identifier: None,
             },
         });
         let desired = DesiredState {
@@ -353,6 +355,8 @@ mod tests {
                     last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
+                    last_local_timeline: None,
+                    last_local_system_identifier: None,
                 },
             },
             global: GlobalKnowledge {
@@ -408,6 +412,8 @@ mod tests {
                 last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
+                last_local_timeline: None,
+                last_local_system_identifier: None,
             },
         });
         let desired = DesiredState {
@@ -439,6 +445,8 @@ mod tests {
                 last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
+                last_local_timeline: None,
+                last_local_system_identifier: None,
             },
         });
         let desired = DesiredState {
@@ -471,6 +479,8 @@ mod tests {
                 last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
+                last_local_timeline: None,
+                last_local_system_identifier: None,
             },
         });
         let desired = DesiredState {
@@ -509,6 +519,8 @@ mod tests {
                 last_basebackup_success_at: None,
                 last_promote_success_at: None,
                 last_demote_success_at: None,
+                last_local_timeline: None,
+                last_local_system_identifier: None,
             },
         });
         let desired = DesiredState {

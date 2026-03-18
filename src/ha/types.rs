@@ -43,6 +43,8 @@ pub struct ObservationState {
     pub last_basebackup_success_at: Option<UnixMillis>,
     pub last_promote_success_at: Option<UnixMillis>,
     pub last_demote_success_at: Option<UnixMillis>,
+    pub last_local_timeline: Option<u64>,
+    pub last_local_system_identifier: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -376,6 +378,8 @@ impl WorldView {
                     last_basebackup_success_at: None,
                     last_promote_success_at: None,
                     last_demote_success_at: None,
+                    last_local_timeline: None,
+                    last_local_system_identifier: None,
                 },
             },
             global: GlobalKnowledge {

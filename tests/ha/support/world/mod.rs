@@ -568,6 +568,16 @@ impl HarnessShared {
         )
     }
 
+    pub fn isolate_member_from_observer_on_postgres(&self, member: ClusterMember) -> Result<()> {
+        let gateway_ip = self.member_network_gateway_ipv4(member)?;
+        self.block_member_path_to_address(
+            member,
+            TrafficPath::Postgres,
+            gateway_ip.as_str(),
+            "host-observer-postgres",
+        )
+    }
+
     pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
         self.block_member_path_to_host(
             member,

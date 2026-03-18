@@ -69,31 +69,45 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
+    let previous_observation = &ctx.state_channel.current.world.local.observation;
     let data_dir_path = config.postgres.paths.data_dir.clone();
     let observed_primary = dcs
         .quorum_state()
         .and_then(|quorum| observed_primary_member(quorum, &ctx.identity.member_id));
+    let current_local_timeline = pg_timeline(&pg);
+    let current_local_system_identifier = pg_system_identifier(&pg);
     let observation = ObservationState {
         pg_observed_at: pg.last_refresh_at().unwrap_or(now),
         last_start_success_at: last_start_success_at(&process),
         last_basebackup_success_at: last_success_at(&process, ActiveJobKind::BaseBackup),
         last_promote_success_at: last_success_at(&process, ActiveJobKind::Promote),
         last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
+        last_local_timeline: current_local_timeline.or(previous_observation.last_local_timeline),
+        last_local_system_identifier: current_local_system_identifier
+            .or(previous_observation.last_local_system_identifier),
     };
-    let (fallback_local_timeline, fallback_local_system_identifier) =
+    let process_assessment = ProcessAssessment::from(&process);
+    let (dcs_local_timeline, dcs_local_system_identifier) =
         local_member_identity_fallback(&dcs, &ctx.identity.member_id, &observation);
-    let local_data_timeline = pg_timeline(&pg).or(fallback_local_timeline);
-    let local_system_identifier = pg_system_identifier(&pg).or(fallback_local_system_identifier);
+    let (retained_local_timeline, retained_local_system_identifier) =
+        retained_local_identity_fallback(&observation);
+    let local_data_timeline = current_local_timeline
+        .or(dcs_local_timeline)
+        .or(retained_local_timeline);
+    let local_system_identifier = current_local_system_identifier
+        .or(dcs_local_system_identifier)
+        .or(retained_local_system_identifier);
 
     let local = LocalKnowledge {
         data_dir: build_data_dir_state(
             data_dir_path.as_path(),
             local_data_timeline,
             local_system_identifier,
+            &process_assessment,
             &observed_primary,
         ),
         postgres: build_local_postgres_state(&pg, &dcs),
-        process: ProcessAssessment::from(&process),
+        process: process_assessment,
         storage: build_storage_state(
             &dcs,
             &pg,
@@ -123,6 +137,17 @@ fn local_member_identity_fallback(
     (
         member.and_then(member_timeline),
         member.and_then(member_system_identifier),
+    )
+}
+
+fn retained_local_identity_fallback(observation: &ObservationState) -> (Option<u64>, Option<u64>) {
+    if observation.basebackup_completed_awaiting_start() {
+        return (None, None);
+    }
+
+    (
+        observation.last_local_timeline,
+        observation.last_local_system_identifier,
     )
 }
 
@@ -265,6 +290,7 @@ fn build_data_dir_state(
     data_dir: &Path,
     local_timeline: Option<u64>,
     local_system_identifier: Option<u64>,
+    process: &ProcessAssessment,
     observed_primary: &Option<ObservedPrimary>,
 ) -> DataDirState {
     let pg_version_path = data_dir.join("PG_VERSION");
@@ -291,6 +317,17 @@ fn build_data_dir_state(
         Some(ObservedPrimary {
             timeline: Some(_), ..
         }) if local_timeline.is_some() => LocalDataState::Diverged(DivergenceState::RewindPossible),
+        Some(ObservedPrimary { .. })
+            if matches!(
+                process,
+                ProcessAssessment::Failed(super::types::JobFailure {
+                    job: ActiveJobKind::PgRewind,
+                    recovery: super::types::FailureRecovery::FallbackToBasebackup,
+                })
+            ) =>
+        {
+            LocalDataState::Diverged(DivergenceState::BasebackupRequired)
+        }
         _ => LocalDataState::ConsistentReplica,
     };
 
@@ -604,6 +641,7 @@ mod tests {
         pginfo::state::PgConnInfo,
     };
     use crate::{
+        ha::types::{FailureRecovery, JobFailure},
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
         state::{
             PgTcpTarget, SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
@@ -752,6 +790,7 @@ mod tests {
             &data_dir,
             Some(7),
             Some(41),
+            &ProcessAssessment::Idle,
             &Some(ObservedPrimary {
                 member: MemberId("node-c".to_string()),
                 timeline: Some(8),
@@ -791,6 +830,8 @@ mod tests {
             last_basebackup_success_at: Some(UnixMillis(20)),
             last_promote_success_at: None,
             last_demote_success_at: None,
+            last_local_timeline: None,
+            last_local_system_identifier: None,
         };
         let (local_timeline, local_system_identifier) = local_member_identity_fallback(
             &dcs_view_for_member("node-b", "node-b", 5432)?,
@@ -801,6 +842,7 @@ mod tests {
             &data_dir,
             local_timeline,
             local_system_identifier,
+            &ProcessAssessment::Idle,
             &Some(ObservedPrimary {
                 member: MemberId("node-a".to_string()),
                 timeline: Some(8),
@@ -814,6 +856,86 @@ mod tests {
         if state != DataDirState::Initialized(LocalDataState::ConsistentReplica) {
             return Err(format!(
                 "expected fresh basebackup to stop stale DCS identity from forcing another basebackup, got {state:?}"
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn retained_local_identity_keeps_last_seen_values_until_basebackup_restart_window() {
+        let observation = ObservationState {
+            pg_observed_at: UnixMillis(100),
+            last_start_success_at: Some(UnixMillis(10)),
+            last_basebackup_success_at: None,
+            last_promote_success_at: None,
+            last_demote_success_at: None,
+            last_local_timeline: Some(1),
+            last_local_system_identifier: Some(41),
+        };
+
+        assert_eq!(
+            retained_local_identity_fallback(&observation),
+            (Some(1), Some(41))
+        );
+    }
+
+    #[test]
+    fn retained_local_identity_ignores_stale_values_after_basebackup_until_pg_refresh() {
+        let observation = ObservationState {
+            pg_observed_at: UnixMillis(100),
+            last_start_success_at: Some(UnixMillis(10)),
+            last_basebackup_success_at: Some(UnixMillis(20)),
+            last_promote_success_at: None,
+            last_demote_success_at: None,
+            last_local_timeline: Some(1),
+            last_local_system_identifier: Some(41),
+        };
+
+        assert_eq!(retained_local_identity_fallback(&observation), (None, None));
+    }
+
+    #[test]
+    fn rewind_failure_without_local_identity_requires_basebackup() -> Result<(), String> {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtm-ha-worker-test-missing-identity-{}",
+            std::process::id()
+        ));
+        let pg_version_path = data_dir.join("PG_VERSION");
+        if data_dir.exists() {
+            std::fs::remove_dir_all(&data_dir)
+                .map_err(|err| format!("failed to clean test data dir: {err}"))?;
+        }
+        std::fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("failed to create test data dir: {err}"))?;
+        std::fs::write(&pg_version_path, "16\n")
+            .map_err(|err| format!("failed to create PG_VERSION: {err}"))?;
+
+        let state = build_data_dir_state(
+            &data_dir,
+            None,
+            None,
+            &ProcessAssessment::Failed(JobFailure {
+                job: ActiveJobKind::PgRewind,
+                recovery: FailureRecovery::FallbackToBasebackup,
+            }),
+            &Some(ObservedPrimary {
+                member: MemberId("node-a".to_string()),
+                timeline: Some(8),
+                system_identifier: Some(99),
+            }),
+        );
+
+        std::fs::remove_dir_all(&data_dir)
+            .map_err(|err| format!("failed to remove test data dir: {err}"))?;
+
+        if state
+            != DataDirState::Initialized(LocalDataState::Diverged(
+                DivergenceState::BasebackupRequired,
+            ))
+        {
+            return Err(format!(
+                "expected missing local identity to require basebackup, observed {state:?}"
             ));
         }
 

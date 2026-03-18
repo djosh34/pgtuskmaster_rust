@@ -36,6 +36,7 @@ async fn i_wait_for_exactly_one_stable_primary_as(
     world: &mut HaWorld,
     alias: String,
 ) -> Result<()> {
+    let expected_replicas = online_expected_count(world).saturating_sub(1);
     let primary = wait_for_authoritative_single_primary(
         world,
         format!("wait.stable_primary.{alias}").as_str(),
@@ -45,6 +46,14 @@ async fn i_wait_for_exactly_one_stable_primary_as(
         None,
     )
     .await?;
+    if expected_replicas > 0 {
+        wait_for_replicas(
+            world,
+            format!("wait.stable_primary_replicas.{alias}").as_str(),
+            expected_replicas,
+        )
+        .await?;
+    }
     world.record_member_alias(alias.as_str(), primary, "wait.stable_primary")?;
     world.record_member_alias("current_primary", primary, "wait.current_primary")?;
     Ok(())
@@ -292,6 +301,7 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
     }
     harness.cut_member_off_from_dcs(member_id)?;
     harness.isolate_member_from_observer_on_api(member_id)?;
+    harness.isolate_member_from_observer_on_postgres(member_id)?;
     world.mark_observer_unreachable(member_id);
     Ok(())
 }
@@ -867,7 +877,11 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .dcs
         .members()
         .filter(|(_member_id, member)| {
-            matches!(member.postgres(), MemberPostgresView::Replica { .. })
+            matches!(
+                member.postgres(),
+                MemberPostgresView::Replica { common, .. }
+                    if common.readiness == Readiness::Ready
+            )
         })
         .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
         .collect::<Vec<_>>()
