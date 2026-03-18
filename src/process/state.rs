@@ -8,6 +8,7 @@ use crate::{
     dcs::DcsView,
     logging::LogSender,
     pginfo::state::PgSslMode,
+    postgres_managed_conf::ManagedRecoverySignal,
     state::{
         JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
     },
@@ -156,6 +157,13 @@ pub(crate) type ProcessNodeIdentity = NodeIdentity;
 pub(crate) struct ProcessObservedState {
     pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs: StateSubscriber<DcsView>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessObservedSnapshot {
+    pub(crate) runtime_config: RuntimeConfig,
+    pub(crate) dcs: DcsView,
+    pub(crate) managed_recovery_state: ManagedRecoverySignal,
 }
 
 pub(crate) struct ProcessStateChannel {

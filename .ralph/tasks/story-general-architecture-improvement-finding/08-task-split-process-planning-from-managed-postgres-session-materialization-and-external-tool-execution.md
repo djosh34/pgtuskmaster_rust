@@ -1,4 +1,4 @@
-## Task: Split Process Planning From Managed Postgres Session Materialization And External Tool Execution <status>not_started</status> <passes>false</passes>
+## Task: Split Process Planning From Managed Postgres Session Materialization And External Tool Execution <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -154,23 +154,23 @@ pub(crate) struct PreparedProcessLaunch {
 </description>
 
 <acceptance_criteria>
-- [ ] Refactor [`src/process/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) so request polling, active-job state, logging, timeout handling, and subprocess handle management remain in the worker, but plan derivation / managed session materialization / tool lowering are no longer intermingled in one worker-owned switch.
-- [ ] Introduce a process-owned planning boundary that consumes `ProcessIntent` plus a typed observed snapshot and owns DCS trust/member lookup, source selection, and start-session derivation.
-- [ ] Introduce a first-class desired managed PostgreSQL session/config ADT, reusing `ManagedPostgresStartIntent` where appropriate instead of duplicating the start vocabulary.
-- [ ] Move authoritative managed PostgreSQL runtime-file work behind a dedicated session/config materialization boundary, reusing and narrowing `src/postgres_managed.rs` and `src/postgres_managed_conf.rs` rather than leaving them as worker-called helpers.
-- [ ] Refactor command construction for `initdb`, `pg_ctl`, `pg_basebackup`, and `pg_rewind` behind a distinct external tool lowering boundary instead of mixing it with planning or managed-session derivation.
-- [ ] Keep the caller-facing process boundary small: runtime/worker callers should use a concrete facade, not a wide public trait graph.
-- [ ] planning start-primary, start-detached-standby, start-replica, basebackup, pg_rewind, promote, and demote requests
-- [ ] primary-start rejection when managed recovery state proves replica-managed state is still present
-- [ ] source-member validation and conninfo/auth derivation for basebackup vs pg_rewind
-- [ ] authoritative managed PostgreSQL session/config materialization independent from subprocess lowering
-- [ ] external tool lowering independent from DCS/planning logic
-- [ ] delete or simplify shallow/internal tests that become redundant once the new deeper boundary tests exist
-- [ ] Preserve or improve logging/observability so failures can still identify whether they happened in planning, session materialization, command lowering, spawn, or runtime process handling.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Refactor [`src/process/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/worker.rs) so request polling, active-job state, logging, timeout handling, and subprocess handle management remain in the worker, but plan derivation / managed session materialization / tool lowering are no longer intermingled in one worker-owned switch.
+- [x] Introduce a process-owned planning boundary that consumes `ProcessIntent` plus a typed observed snapshot and owns DCS trust/member lookup, source selection, and start-session derivation.
+- [x] Introduce a first-class desired managed PostgreSQL session/config ADT, reusing `ManagedPostgresStartIntent` where appropriate instead of duplicating the start vocabulary.
+- [x] Move authoritative managed PostgreSQL runtime-file work behind a dedicated session/config materialization boundary, reusing and narrowing `src/postgres_managed.rs` and `src/postgres_managed_conf.rs` rather than leaving them as worker-called helpers.
+- [x] Refactor command construction for `initdb`, `pg_ctl`, `pg_basebackup`, and `pg_rewind` behind a distinct external tool lowering boundary instead of mixing it with planning or managed-session derivation.
+- [x] Keep the caller-facing process boundary small: runtime/worker callers should use a concrete facade, not a wide public trait graph.
+- [x] planning start-primary, start-detached-standby, start-replica, basebackup, pg_rewind, promote, and demote requests
+- [x] primary-start rejection when managed recovery state proves replica-managed state is still present
+- [x] source-member validation and conninfo/auth derivation for basebackup vs pg_rewind
+- [x] authoritative managed PostgreSQL session/config materialization independent from subprocess lowering
+- [x] external tool lowering independent from DCS/planning logic
+- [x] delete or simplify shallow/internal tests that become redundant once the new deeper boundary tests exist
+- [x] Preserve or improve logging/observability so failures can still identify whether they happened in planning, session materialization, command lowering, spawn, or runtime process handling.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

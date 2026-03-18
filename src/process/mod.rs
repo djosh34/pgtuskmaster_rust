@@ -1,7 +1,11 @@
+pub(crate) mod cluster;
 pub mod jobs;
 pub(crate) mod log_event;
+pub(crate) mod planner;
 pub(crate) mod postmaster;
+pub(crate) mod session;
 pub(crate) mod source;
 pub(crate) mod startup;
 pub mod state;
+pub(crate) mod tools;
 pub(crate) mod worker;

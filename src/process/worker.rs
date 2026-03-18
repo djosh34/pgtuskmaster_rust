@@ -7,37 +7,31 @@ use tokio::{
 };
 
 use crate::{
-    config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
-    dcs::{ClusterMemberView, DcsView},
-    pginfo::state::render_pg_conninfo,
-    postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
-    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
-    process::postmaster::{
-        lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
+    config::ProcessConfig,
+    process::{
+        cluster::{ProcessCluster, ProcessPreparationError},
+        postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
+        tools::{active_kind, active_kind_from_intent, process_job_kind_from_execution},
     },
-    state::{MemberId, UnixMillis, WorkerError, WorkerStatus},
+    state::{UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, DemoteSpec, PostgresStartIntent, PostgresStartMode,
-        ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExit,
+        ActiveJob, PostgresStartIntent, ProcessCommandSpec, ProcessError, ProcessExit,
         ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
-        PromoteSpec, ReplicaProvisionIntent,
+        ReplicaProvisionIntent,
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
-    source::{basebackup_source_from_member, rewind_source_from_member},
     state::{
-        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessExecutionRequest,
-        ProcessIntentRequest, ProcessJobRejection, ProcessState, ProcessWorkerCtx,
+        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessIntentRequest, ProcessJobRejection,
+        ProcessState, ProcessWorkerCtx,
     },
 };
 
 const PROCESS_OUTPUT_READ_CHUNK_BYTES: usize = 8192;
 const PROCESS_OUTPUT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
 const PROCESS_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
-const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
-
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
 
@@ -57,17 +51,6 @@ fn process_job_kind_from_intent(intent: &ProcessIntent) -> ProcessJobKind {
         ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ProcessJobKind::StartReplica,
         ProcessIntent::Promote => ProcessJobKind::Promote,
         ProcessIntent::Demote(_) => ProcessJobKind::Demote,
-    }
-}
-
-fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> ProcessJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ProcessJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ProcessJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ProcessJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ProcessJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ProcessJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(_) => ProcessJobKind::StartPostgres,
     }
 }
 
@@ -573,14 +556,14 @@ pub(crate) async fn start_job(
         }
     }
 
-    let execution_request = match materialize_execution_request(ctx, &request) {
-        Ok(materialized) => materialized,
+    let cluster = match ProcessCluster::production_from_ctx(ctx) {
+        Ok(cluster) => cluster,
         Err(error) => {
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::IntentMaterializationFailed {
                     job_kind: process_job_kind_from_intent(&request.intent),
-                    cause: error.to_string(),
+                    cause: format!("planning snapshot failed: {error}"),
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!(
@@ -600,38 +583,28 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
+    let prepared_launch =
+        match cluster.prepare(&request, &ctx.config, ctx.runtime.capture_subprocess_output) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                log_prepare_failure(ctx, &request, &error)?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Failure {
+                        id: request.id,
+                        job_kind: active_kind_from_intent(&request.intent),
+                        error: error.into_process_error(),
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+        };
+    let execution_request = prepared_launch.request;
     let timeout_ms = timeout_for_kind(&execution_request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
-
-    let command = match build_command(
-        &ctx.config,
-        &execution_request.kind,
-        ctx.runtime.capture_subprocess_output,
-    ) {
-        Ok(command) => command,
-        Err(error) => {
-            ctx.runtime
-                .log
-                .send(ProcessLogEvent::BuildCommandFailed {
-                    job_kind: process_job_kind_from_execution(&execution_request.kind),
-                    cause: error.to_string(),
-                })
-                .map_err(|err| {
-                    WorkerError::Message(format!("process build command log send failed: {err}"))
-                })?;
-            transition_to_idle(
-                ctx,
-                JobOutcome::Failure {
-                    id: request.id,
-                    job_kind: active_kind(&execution_request.kind),
-                    error,
-                    finished_at: now,
-                },
-                now,
-            )?;
-            return Ok(());
-        }
-    };
+    let command = prepared_launch.command;
 
     let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
@@ -1064,541 +1037,36 @@ fn timeout_for_kind(kind: &ProcessExecutionKind, config: &ProcessConfig) -> u64 
     }
 }
 
-fn active_kind(kind: &ProcessExecutionKind) -> ActiveJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ActiveJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ActiveJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ActiveJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(spec) => match spec.mode {
-            PostgresStartMode::Primary => ActiveJobKind::StartPrimary,
-            PostgresStartMode::DetachedStandby => ActiveJobKind::StartDetachedStandby,
-            PostgresStartMode::Replica => ActiveJobKind::StartReplica,
-        },
-    }
-}
-
-fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
-    match intent {
-        ProcessIntent::Bootstrap => ActiveJobKind::Bootstrap,
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
-            ActiveJobKind::BaseBackup
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
-            ActiveJobKind::PgRewind
-        }
-        ProcessIntent::Promote => ActiveJobKind::Promote,
-        ProcessIntent::Demote(_) => ActiveJobKind::Demote,
-        ProcessIntent::Start(PostgresStartIntent::Primary) => ActiveJobKind::StartPrimary,
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-            ActiveJobKind::StartDetachedStandby
-        }
-        ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ActiveJobKind::StartReplica,
-    }
-}
-
-fn build_command(
-    config: &ProcessConfig,
-    kind: &ProcessExecutionKind,
-    capture_output: bool,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    match kind {
-        ProcessExecutionKind::Bootstrap(spec) => {
-            validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
-            if spec.superuser.as_str().trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "bootstrap.superuser must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-A".to_string(),
-                    "trust".to_string(),
-                    "-U".to_string(),
-                    spec.superuser.as_str().to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-        ProcessExecutionKind::BaseBackup(spec) => {
-            validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
-            validate_non_empty_pg_endpoint(
-                "basebackup.source_conninfo.endpoint",
-                &spec.source.conninfo.endpoint,
-            )?;
-            if spec.source.conninfo.user.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "basebackup.source_conninfo.user must not be empty".to_string(),
-                ));
-            }
-            if spec.source.conninfo.dbname.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "basebackup.source_conninfo.dbname must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgBasebackup)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "--dbname".to_string(),
-                    render_pg_conninfo(&spec.source.conninfo),
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-Fp".to_string(),
-                    "-Xs".to_string(),
-                ],
-                env: role_auth_env(&spec.source.auth),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-        ProcessExecutionKind::PgRewind(spec) => {
-            validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
-            validate_non_empty_pg_endpoint(
-                "pg_rewind.source_conninfo.endpoint",
-                &spec.source.conninfo.endpoint,
-            )?;
-            if spec.source.conninfo.user.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo.user must not be empty".to_string(),
-                ));
-            }
-            if spec.source.conninfo.dbname.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgRewind)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "--target-pgdata".to_string(),
-                    spec.target_data_dir.display().to_string(),
-                    "--source-server".to_string(),
-                    render_pg_conninfo(&spec.source.conninfo),
-                ],
-                env: role_auth_env(&spec.source.auth),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-        ProcessExecutionKind::Promote(spec) => {
-            validate_non_empty_path("promote.data_dir", &spec.data_dir)?;
-            let mut args = vec![
-                "-D".to_string(),
-                spec.data_dir.display().to_string(),
-                "promote".to_string(),
-                "-w".to_string(),
-            ];
-            if let Some(wait_seconds) = spec.wait_seconds {
-                args.push("-t".to_string());
-                args.push(wait_seconds.to_string());
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args,
-                env: Vec::new(),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-        ProcessExecutionKind::Demote(spec) => {
-            validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "stop".to_string(),
-                    "-m".to_string(),
-                    spec.mode.as_pg_ctl_arg().to_string(),
-                    "-w".to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-        ProcessExecutionKind::StartPostgres(spec) => {
-            validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
-            validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
-            validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
-            let wait_seconds = spec.wait_seconds.unwrap_or(PG_CTL_DEFAULT_WAIT_SECONDS);
-            let option_tokens = vec![
-                "-c".to_string(),
-                format!("config_file={}", spec.config_file.display()),
-            ];
-            let options = render_pg_ctl_option_string(&option_tokens)?;
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-l".to_string(),
-                    spec.log_file.display().to_string(),
-                    "-o".to_string(),
-                    options,
-                    "start".to_string(),
-                    "-w".to_string(),
-                    "-t".to_string(),
-                    wait_seconds.to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                job_kind: process_job_kind_from_execution(kind),
-            })
-        }
-    }
-}
-
-fn resolve_process_binary(
-    config: &ProcessConfig,
-    binary: PostgresBinaryName,
-) -> Result<std::path::PathBuf, ProcessError> {
-    config
-        .binaries
-        .resolve_binary_path(binary)
-        .map_err(ProcessError::InvalidSpec)
-}
-
-fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
-    match auth {
-        RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
-            key: "PGPASSWORD".to_string(),
-            value: ProcessEnvValue::Secret(password.clone()),
-        }],
-    }
-}
-
-fn materialize_execution_request(
-    ctx: &ProcessWorkerCtx,
+fn log_prepare_failure(
+    ctx: &mut ProcessWorkerCtx,
     request: &ProcessIntentRequest,
-) -> Result<ProcessExecutionRequest, ProcessError> {
-    let runtime_config = ctx.observed.runtime_config.latest();
-    let dcs = ctx.observed.dcs.latest();
-    let kind = match &request.intent {
-        ProcessIntent::Bootstrap => {
-            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
-            ProcessExecutionKind::Bootstrap(super::jobs::BootstrapSpec {
-                data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                superuser: runtime_config
-                    .postgres
-                    .roles
-                    .mandatory
-                    .superuser
-                    .username
-                    .clone(),
-                timeout_ms: None,
+    error: &ProcessPreparationError,
+) -> Result<(), WorkerError> {
+    match error {
+        ProcessPreparationError::Planning(inner)
+        | ProcessPreparationError::SessionMaterialization(inner) => ctx
+            .runtime
+            .log
+            .send(ProcessLogEvent::IntentMaterializationFailed {
+                job_kind: process_job_kind_from_intent(&request.intent),
+                cause: format!("{} failed: {inner}", error.stage_label()),
             })
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
-            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
-            let source = basebackup_source_from_member(
-                &ctx.identity.member_id,
-                &ctx.plan,
-                source_member_id,
-                source_member,
-            )
-            .map_err(source_materialization_error)?;
-            ProcessExecutionKind::BaseBackup(super::jobs::BaseBackupSpec {
-                data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                source,
-                timeout_ms: Some(runtime_config.process.timeouts.bootstrap_ms),
-            })
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
-            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
-            let source = rewind_source_from_member(
-                &ctx.identity.member_id,
-                &ctx.plan,
-                source_member_id,
-                source_member,
-            )
-            .map_err(source_materialization_error)?;
-            ProcessExecutionKind::PgRewind(super::jobs::PgRewindSpec {
-                target_data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                source,
-                timeout_ms: None,
-            })
-        }
-        ProcessIntent::Start(PostgresStartIntent::Primary) => {
-            let start_intent = primary_start_intent(&runtime_config)?;
-            materialize_start_postgres(
-                &runtime_config,
-                &ctx.plan,
-                PostgresStartMode::Primary,
-                &start_intent,
-            )?
-        }
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => materialize_start_postgres(
-            &runtime_config,
-            &ctx.plan,
-            PostgresStartMode::DetachedStandby,
-            &ManagedPostgresStartIntent::detached_standby(),
-        )?,
-        ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
-            let start_intent = replica_start_intent(ctx, &runtime_config, &dcs, leader)?;
-            materialize_start_postgres(
-                &runtime_config,
-                &ctx.plan,
-                PostgresStartMode::Replica,
-                &start_intent,
-            )?
-        }
-        ProcessIntent::Promote => ProcessExecutionKind::Promote(PromoteSpec {
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            wait_seconds: None,
-            timeout_ms: None,
-        }),
-        ProcessIntent::Demote(mode) => ProcessExecutionKind::Demote(DemoteSpec {
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            mode: mode.clone(),
-            timeout_ms: None,
-        }),
-    };
-
-    Ok(ProcessExecutionRequest {
-        id: request.id.clone(),
-        kind,
-    })
-}
-
-fn primary_start_intent(
-    runtime_config: &RuntimeConfig,
-) -> Result<ManagedPostgresStartIntent, ProcessError> {
-    let managed_recovery_state = inspect_managed_recovery_state(
-        runtime_config.postgres.paths.data_dir.as_path(),
-    )
-    .map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "inspect managed recovery state for primary start failed: {err}"
-        ))
-    })?;
-    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
-        return Err(ProcessError::InvalidSpec(
-            "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
-        ));
-    }
-    Ok(ManagedPostgresStartIntent::primary())
-}
-
-fn replica_start_intent(
-    ctx: &ProcessWorkerCtx,
-    runtime_config: &RuntimeConfig,
-    dcs: &DcsView,
-    leader: &crate::state::MemberId,
-) -> Result<ManagedPostgresStartIntent, ProcessError> {
-    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    let source = basebackup_source_from_member(
-        &ctx.identity.member_id,
-        &ctx.plan,
-        source_member_id,
-        source_member,
-    )
-    .map_err(source_materialization_error)?;
-    Ok(ManagedPostgresStartIntent::replica(
-        source.conninfo,
-        managed_standby_auth_from_role_auth(
-            &source.auth,
-            runtime_config.postgres.paths.data_dir.as_path(),
-        ),
-        None,
-    ))
-}
-
-fn materialize_start_postgres(
-    runtime_config: &RuntimeConfig,
-    intent_runtime: &super::state::ProcessRuntimePlan,
-    mode: PostgresStartMode,
-    start_intent: &ManagedPostgresStartIntent,
-) -> Result<ProcessExecutionKind, ProcessError> {
-    let managed =
-        materialize_managed_postgres_config(runtime_config, start_intent).map_err(|err| {
-            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
-        })?;
-    Ok(ProcessExecutionKind::StartPostgres(
-        super::jobs::StartPostgresSpec {
-            mode,
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            socket_dir: intent_runtime.postgres.paths.socket_dir.clone(),
-            port: intent_runtime.postgres.port,
-            config_file: managed.postgresql_conf_path,
-            log_file: intent_runtime.postgres.paths.log_file.clone(),
-            wait_seconds: None,
-            timeout_ms: None,
-        },
-    ))
-}
-
-fn resolve_source_member<'a>(
-    dcs: &'a DcsView,
-    leader: &'a MemberId,
-) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
-    let cluster = dcs.quorum_state().ok_or_else(|| {
-        ProcessError::InvalidSpec(
-            "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
-                .to_string(),
-        )
-    })?;
-    cluster
-        .member(leader)
-        .map(|member| (leader, member))
-        .ok_or_else(|| {
-            ProcessError::InvalidSpec(format!(
-                "target member `{}` not present in DCS view",
-                leader.0
-            ))
-        })
-}
-
-fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {
-    ProcessError::InvalidSpec(error.to_string())
-}
-
-fn wipe_data_dir(data_dir: &Path) -> Result<(), ProcessError> {
-    if data_dir.as_os_str().is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "wipe_data_dir data_dir must not be empty".to_string(),
-        ));
-    }
-    if data_dir.exists() {
-        wipe_data_dir_contents(data_dir)?;
-    } else {
-        fs::create_dir_all(data_dir).map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir create_dir_all failed: {err}"))
-        })?;
-    }
-    set_postgres_data_dir_permissions(data_dir)?;
-    Ok(())
-}
-
-fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
-    let entries = fs::read_dir(data_dir).map_err(|err| {
-        ProcessError::InvalidSpec(format!("wipe_data_dir read_dir failed: {err}"))
-    })?;
-    for entry_result in entries {
-        let entry = entry_result.map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir read_dir entry failed: {err}"))
-        })?;
-        let file_type = entry.file_type().map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir file_type failed: {err}"))
-        })?;
-        let entry_path = entry.path();
-        if file_type.is_dir() {
-            fs::remove_dir_all(entry_path.as_path()).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "wipe_data_dir remove_dir_all failed for {}: {err}",
-                    entry_path.display()
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "process intent materialization log send failed: {err}"
                 ))
-            })?;
-        } else {
-            fs::remove_file(entry_path.as_path()).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "wipe_data_dir remove_file failed for {}: {err}",
-                    entry_path.display()
-                ))
-            })?;
-        }
+            }),
+        ProcessPreparationError::ToolLowering(inner) => ctx
+            .runtime
+            .log
+            .send(ProcessLogEvent::BuildCommandFailed {
+                job_kind: process_job_kind_from_intent(&request.intent),
+                cause: format!("{} failed: {inner}", error.stage_label()),
+            })
+            .map_err(|err| {
+                WorkerError::Message(format!("process build command log send failed: {err}"))
+            }),
     }
-    Ok(())
-}
-
-fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), ProcessError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir set_permissions failed: {err}"))
-        })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _path = data_dir;
-    }
-
-    Ok(())
-}
-
-fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), ProcessError> {
-    if value.as_os_str().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_non_empty_pg_endpoint(
-    field: &str,
-    value: &crate::state::PgEndpoint,
-) -> Result<(), ProcessError> {
-    let is_empty = match value {
-        crate::state::PgEndpoint::Tcp { host, .. } => host.trim().is_empty(),
-        crate::state::PgEndpoint::UnixSocket { socket_dir, .. } => {
-            socket_dir.as_os_str().is_empty()
-        }
-    };
-    if is_empty {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
-    let mut out = String::new();
-    for (index, raw) in tokens.iter().enumerate() {
-        let escaped = escape_pg_ctl_option_token(raw.as_str())?;
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(escaped.as_str());
-    }
-    Ok(out)
-}
-
-fn escape_pg_ctl_option_token(token: &str) -> Result<String, ProcessError> {
-    if token.is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "pg_ctl option token must not be empty".to_string(),
-        ));
-    }
-    if token.contains('\0') || token.contains('\n') || token.contains('\r') {
-        return Err(ProcessError::InvalidSpec(
-            "pg_ctl option token contains invalid characters".to_string(),
-        ));
-    }
-
-    let needs_quotes = token.chars().any(|ch| ch.is_ascii_whitespace());
-    if !needs_quotes {
-        return Ok(token.to_string());
-    }
-
-    let mut out = String::with_capacity(token.len().saturating_add(2));
-    out.push('"');
-    for ch in token.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    Ok(out)
 }
 
 #[cfg(test)]

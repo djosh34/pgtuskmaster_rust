@@ -4,9 +4,7 @@ The process management layer is the execution boundary between the HA reconciler
 
 ## Why This Boundary Exists
 
-The process management boundary solves a tension between high-level orchestration and low-level execution. HA logic must remain pure, reasoning only about quorum, fencing, and switchover coordination. It should not contain code that spawns `postgres`, `pg_rewind`, or `pg_basebackup`. Conversely, the process layer should not need to understand HA concepts like DCS trust or member health. The boundary between them is a narrow channel of typed intents, ensuring that process execution concerns never infiltrate higher-level decision-making.
-
-// todo: this sentence is too strong. the new process planner explicitly owns DCS-backed source resolution and validation inside the process domain. the intended boundary is that HA no longer owns those details, not that the process domain is ignorant of DCS/member-health facts.
+The process management boundary solves a tension between high-level orchestration and low-level execution. HA logic must remain pure, reasoning only about quorum, fencing, and switchover coordination. It should not contain code that spawns `postgres`, `pg_rewind`, or `pg_basebackup`. The process layer owns DCS-backed source resolution and validation internally; the intended boundary is that HA no longer owns those details, not that the process domain is ignorant of DCS/member-health facts.
 
 ```mermaid
 flowchart LR
@@ -40,9 +38,7 @@ The planner produces a first-class plan ADT that carries explicit replication so
 
 ### Stage Two: Session Materialization
 
-The `ManagedPostgresSessionMaterializer` in `src/process/session.rs` handles authoritative managed PostgreSQL runtime-file creation for start flows. Given a `ClusterProcessPlan` and the desired session shape from the planner, the materializer writes `postgresql.conf`, `pg_hba.conf`, `pg_ident.conf`, and standby passfiles into the data directory.
-
-// todo: the materializer does not overwrite the stock filenames directly. it writes the managed files like `pgtm.postgresql.conf`, `pgtm.pg_hba.conf`, and `pgtm.pg_ident.conf`, plus managed signal/passfile artifacts.
+The `ManagedPostgresSessionMaterializer` in `src/process/session.rs` handles authoritative managed PostgreSQL runtime-file creation for start flows. Given a `ClusterProcessPlan` and the desired session shape from the planner, the materializer writes managed files like `pgtm.postgresql.conf`, `pgtm.pg_hba.conf`, and `pgtm.pg_ident.conf`, plus managed signal/passfile artifacts into the data directory.
 
 This stage calls `ProcessRuntimePlan::ensure_start_paths()` before writing files, guaranteeing that the data directory, socket directory, and log parent exist with correct permissions. For non-start plans, the materializer returns `None` and does no work.
 

@@ -36,6 +36,7 @@ docs/src/explanation/overview.md
 docs/src/explanation/process-management.md
 docs/src/explanation/trust-model.md
 docs/src/how-to/add-cluster-node.md
+docs/src/how-to/backup-and-restore.md
 docs/src/how-to/bootstrap-cluster.md
 docs/src/how-to/check-cluster-health.md
 docs/src/how-to/configure-tls-security.md
@@ -50,6 +51,7 @@ docs/src/how-to/perform-switchover.md
 docs/src/how-to/remove-cluster-node.md
 docs/src/how-to/run-tests.md
 docs/src/overview.md
+docs/src/reference/code-organization.md
 docs/src/reference/dcs-state-model.md
 docs/src/reference/ha-decisions.md
 docs/src/reference/http-api.md
@@ -57,6 +59,7 @@ docs/src/reference/overview.md
 docs/src/reference/pgtm-cli.md
 docs/src/reference/pgtuskmaster-cli.md
 docs/src/reference/runtime-configuration.md
+docs/src/reference/tls-configuration.md
 docs/src/tutorial/first-ha-cluster.md
 docs/src/tutorial/observing-failover.md
 docs/src/tutorial/overview.md
@@ -84,6 +87,7 @@ docs/src/tutorial/validating-cluster-behavior.md
     - [Bootstrap a New Cluster from Zero State](how-to/bootstrap-cluster.md)
     - [Check Cluster Health](how-to/check-cluster-health.md)
     - [Add a Cluster Node](how-to/add-cluster-node.md)
+    - [Perform Backup and Restore Operations](how-to/backup-and-restore.md)
     - [Configure TLS](how-to/configure-tls.md)
     - [Configure TLS Security](how-to/configure-tls-security.md)
     - [Debug Cluster Issues](how-to/debug-cluster-issues.md)
@@ -108,12 +112,14 @@ docs/src/tutorial/validating-cluster-behavior.md
 # Reference
 
 - [Reference](reference/overview.md)
+    - [Code Organization Reference](reference/code-organization.md)
     - [HTTP API](reference/http-api.md)
     - [HA Decisions](reference/ha-decisions.md)
     - [DCS State Model](reference/dcs-state-model.md)
     - [pgtm CLI](reference/pgtm-cli.md)
     - [pgtuskmaster CLI](reference/pgtuskmaster-cli.md)
     - [Runtime Configuration](reference/runtime-configuration.md)
+    - [TLS Configuration Reference](reference/tls-configuration.md)
 
 
 
@@ -587,13 +593,14 @@ version = "0.1.0"
 edition = "2021"
 
 [workspace]
-members = ["crates/pgtuskmaster_test_support"]
+members = ["crates/pgtm_log_derive", "crates/pgtuskmaster_test_support"]
 
 [features]
 default = []
 internal-test-support = []
 
 [dependencies]
+pgtm_log_derive = { path = "crates/pgtm_log_derive" }
 clap = { version = "4.5.47", features = ["derive", "env"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.140"
@@ -662,6 +669,7 @@ src/cli/mod.rs
 src/cli/output.rs
 src/cli/status.rs
 src/cli/switchover.rs
+src/command/mod.rs
 src/config/defaults.rs
 src/config/endpoint.rs
 src/config/materialize.rs
@@ -695,10 +703,12 @@ src/ha/state.rs
 src/ha/types.rs
 src/ha/worker.rs
 src/lib.rs
+src/logging/core/mod.rs
+src/logging/core/queued_record.rs
+src/logging/core/runtime.rs
 src/logging/event.rs
 src/logging/mod.rs
 src/logging/postgres_ingest.rs
-src/logging/raw_record.rs
 src/logging/tailer.rs
 src/pginfo/conninfo.rs
 src/pginfo/log_event.rs
@@ -710,13 +720,17 @@ src/pginfo/worker.rs
 src/postgres_managed.rs
 src/postgres_managed_conf.rs
 src/postgres_roles.rs
+src/process/cluster.rs
 src/process/jobs.rs
 src/process/log_event.rs
 src/process/mod.rs
+src/process/planner.rs
 src/process/postmaster.rs
+src/process/session.rs
 src/process/source.rs
 src/process/startup.rs
 src/process/state.rs
+src/process/tools.rs
 src/process/worker.rs
 src/runtime/log_event.rs
 src/runtime/mod.rs
@@ -738,38 +752,13 @@ tests/docker/wrappers/pg_basebackup
 tests/docker/wrappers/pg_rewind
 tests/docker/wrappers/postgres
 tests/ha.rs
-tests/ha/features/ha_all_dcs_services_stopped_on_three_etcd_enters_safe_degraded_mode_and_fences_post_cutoff_writes/ha_all_dcs_services_stopped_on_three_etcd_enters_safe_degraded_mode_and_fences_post_cutoff_writes.feature
-tests/ha/features/ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins/ha_all_nodes_stopped_then_two_nodes_restarted_then_final_node_rejoins.feature
-tests/ha/features/ha_basebackup_clone_blocked_then_unblocked_replica_recovers/ha_basebackup_clone_blocked_then_unblocked_replica_recovers.feature
-tests/ha/features/ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum/ha_broken_replica_rejoin_attempt_does_not_destabilize_quorum.feature
-tests/ha/features/ha_dcs_and_api_faults_then_healed_cluster_converges/ha_dcs_and_api_faults_then_healed_cluster_converges.feature
-tests/ha/features/ha_dcs_quorum_lost_enters_failsafe/ha_dcs_quorum_lost_enters_failsafe.feature
-tests/ha/features/ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes/ha_dcs_quorum_lost_fencing_blocks_post_cutoff_writes.feature
-tests/ha/features/ha_lagging_replica_is_not_promoted_during_failover/ha_lagging_replica_is_not_promoted_during_failover.feature
-tests/ha/features/ha_non_primary_api_isolated_primary_stays_primary/ha_non_primary_api_isolated_primary_stays_primary.feature
-tests/ha/features/ha_old_primary_partitioned_from_majority_majority_elects_new_primary/ha_old_primary_partitioned_from_majority_majority_elects_new_primary.feature
-tests/ha/features/ha_old_primary_partitioned_from_majority_on_three_etcd_majority_elects_new_primary/ha_old_primary_partitioned_from_majority_on_three_etcd_majority_elects_new_primary.feature
-tests/ha/features/ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover/ha_old_primary_partitioned_then_healed_rejoins_as_replica_after_majority_failover.feature
-tests/ha/features/ha_planned_switchover_changes_primary_cleanly/ha_planned_switchover_changes_primary_cleanly.feature
-tests/ha/features/ha_planned_switchover_with_concurrent_writes/ha_planned_switchover_with_concurrent_writes.feature
-tests/ha/features/ha_primary_killed_custom_roles_survive_rejoin/ha_primary_killed_custom_roles_survive_rejoin.feature
-tests/ha/features/ha_primary_killed_then_rejoins_as_replica/ha_primary_killed_then_rejoins_as_replica.feature
-tests/ha/features/ha_primary_killed_with_concurrent_writes/ha_primary_killed_with_concurrent_writes.feature
-tests/ha/features/ha_primary_loses_local_etcd_on_three_etcd_loses_authority_until_local_dcs_recovers/ha_primary_loses_local_etcd_on_three_etcd_loses_authority_until_local_dcs_recovers.feature
-tests/ha/features/ha_primary_storage_stalled_then_new_primary_takes_over/ha_primary_storage_stalled_then_new_primary_takes_over.feature
-tests/ha/features/ha_repeated_failovers_preserve_single_primary/ha_repeated_failovers_preserve_single_primary.feature
-tests/ha/features/ha_replica_flapped_primary_stays_primary/ha_replica_flapped_primary_stays_primary.feature
-tests/ha/features/ha_replica_loses_local_etcd_on_three_etcd_does_not_become_primary_and_primary_stays_primary/ha_replica_loses_local_etcd_on_three_etcd_does_not_become_primary_and_primary_stays_primary.feature
-tests/ha/features/ha_replica_partitioned_from_majority_on_three_etcd_primary_stays_primary/ha_replica_partitioned_from_majority_on_three_etcd_primary_stays_primary.feature
-tests/ha/features/ha_replica_partitioned_from_majority_primary_stays_primary/ha_replica_partitioned_from_majority_primary_stays_primary.feature
-tests/ha/features/ha_replica_stopped_primary_stays_primary/ha_replica_stopped_primary_stays_primary.feature
-tests/ha/features/ha_replication_path_isolated_then_healed_replicas_catch_up/ha_replication_path_isolated_then_healed_replicas_catch_up.feature
-tests/ha/features/ha_rewind_fails_then_basebackup_rejoins_old_primary/ha_rewind_fails_then_basebackup_rejoins_old_primary.feature
-tests/ha/features/ha_targeted_switchover_promotes_requested_replica/ha_targeted_switchover_promotes_requested_replica.feature
-tests/ha/features/ha_targeted_switchover_to_degraded_replica_is_rejected/ha_targeted_switchover_to_degraded_replica_is_rejected.feature
-tests/ha/features/ha_two_nodes_stopped_on_three_etcd_lone_survivor_never_keeps_primary/ha_two_nodes_stopped_on_three_etcd_lone_survivor_never_keeps_primary.feature
-tests/ha/features/ha_two_nodes_stopped_then_one_healthy_node_restarted_restores_service_while_other_stays_broken/ha_two_nodes_stopped_then_one_healthy_node_restarted_restores_service_while_other_stays_broken.feature
-tests/ha/features/ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum/ha_two_replicas_stopped_then_one_replica_restarted_restores_quorum.feature
+tests/ha/features/ha_operator_switchovers/ha_operator_switchovers.feature
+tests/ha/features/ha_primary_faults_fail_over_then_recover/ha_primary_faults_fail_over_then_recover.feature
+tests/ha/features/ha_quorum_loss_and_dcs_loss/ha_quorum_loss_and_dcs_loss.feature
+tests/ha/features/ha_rejoin_and_restart_recovery/ha_rejoin_and_restart_recovery.feature
+tests/ha/features/ha_replica_faults_keep_cluster_healthy/ha_replica_faults_keep_cluster_healthy.feature
+tests/ha/givens/compose/three_node_shared_single.yml
+tests/ha/givens/compose/three_node_three_etcd.yml
 tests/ha/givens/three_node_shared/configs/pg_hba.conf
 tests/ha/givens/three_node_shared/configs/pg_ident.conf
 tests/ha/givens/three_node_shared/configs/tls/ca.crt
@@ -795,6 +784,7 @@ tests/ha/support/docker/ryuk.rs
 tests/ha/support/error.rs
 tests/ha/support/faults/mod.rs
 tests/ha/support/givens/mod.rs
+tests/ha/support/invariant.rs
 tests/ha/support/mod.rs
 tests/ha/support/observer/mod.rs
 tests/ha/support/observer/pgtm.rs
@@ -804,7 +794,6 @@ tests/ha/support/runner/mod.rs
 tests/ha/support/steps/mod.rs
 tests/ha/support/timeouts/mod.rs
 tests/ha/support/topology.rs
-tests/ha/support/workload/mod.rs
 tests/ha/support/world/mod.rs
 tests/nextest_config_contract.rs
 
@@ -833,6 +822,9 @@ docker/pg/pg_hba.conf
 docker/pg/pg_ident.conf
 docker/pgtm.toml
 docs/book.toml
+docs/draft/docs/src/explanation/failure-modes.md
+docs/draft/docs/src/explanation/failure-modes.revised.md
+docs/draft/docs/src/explanation/failure-modes.surgical.md
 docs/draft/docs/src/explanation/process-management.md
 docs/draft/docs/src/explanation/trust-model.md
 docs/examples/docker-cluster-node-a.toml
@@ -849,6 +841,7 @@ docs/src/explanation/overview.md
 docs/src/explanation/process-management.md
 docs/src/explanation/trust-model.md
 docs/src/how-to/add-cluster-node.md
+docs/src/how-to/backup-and-restore.md
 docs/src/how-to/bootstrap-cluster.md
 docs/src/how-to/check-cluster-health.md
 docs/src/how-to/configure-tls-security.md
@@ -863,6 +856,7 @@ docs/src/how-to/perform-switchover.md
 docs/src/how-to/remove-cluster-node.md
 docs/src/how-to/run-tests.md
 docs/src/overview.md
+docs/src/reference/code-organization.md
 docs/src/reference/dcs-state-model.md
 docs/src/reference/ha-decisions.md
 docs/src/reference/http-api.md
@@ -870,40 +864,65 @@ docs/src/reference/overview.md
 docs/src/reference/pgtm-cli.md
 docs/src/reference/pgtuskmaster-cli.md
 docs/src/reference/runtime-configuration.md
+docs/src/reference/tls-configuration.md
 docs/src/tutorial/first-ha-cluster.md
 docs/src/tutorial/observing-failover.md
 docs/src/tutorial/overview.md
 docs/src/tutorial/performing-switchover.md
 docs/src/tutorial/validating-cluster-behavior.md
+docs/tmp/docs/src/explanation/failure-modes.prompt.md
 docs/tmp/docs/src/explanation/process-management.prompt.md
 docs/tmp/docs/src/explanation/trust-model.prompt.md
+docs/tmp/verbose_extra_context/ha-invariant-runners.md
+docs/tmp/verbose_extra_context/ha-primary-count-invariant-runner.md
 docs/tmp/verbose_extra_context/managed-postgres-roles.md
 docs/tmp/verbose_extra_context/process-logging-boundary.md
+docs/tmp/verbose_extra_context/process-management-refactor.md
 docs/tmp/verbose_extra_context/trust-model.md
 
 
 ===== docs/src/explanation/process-management.md =====
 # Process Management and Execution Domain
 
-Process management is the execution boundary between the HA reconciler and the operating system. The HA side decides what should happen next. The process domain turns that decision into concrete PostgreSQL subprocess work, records the outcome, and publishes state for the rest of the node.
+Process management is the execution boundary between the HA reconciler and the operating system. The HA side decides what should happen next based on cluster state and policy. The process domain turns that decision into concrete PostgreSQL subprocess work, records the outcome, and publishes state for the rest of the node. This separation keeps HA logic pure and ensures process execution concerns do not leak into higher-level decision-making.
 
-## Startup Boundary
+## Why This Boundary Exists
 
-The narrowed startup rewrite moved process-specific startup policy behind `ProcessRuntimePlan` and `process::startup::bootstrap(...)`.
+The HA decision engine must remain focused on cluster state and safety invariants. It should not contain code that knows how to spawn `postgres`, `pg_rewind`, or `pg_basebackup`. Conversely, the process layer should not need to understand HA concepts like quorum, fencing, or switchover coordination. The boundary between them is a narrow channel of typed intents.
 
-`ProcessRuntimePlan::from_config(...)` projects the parts of `RuntimeConfig` that the process and pginfo domains need repeatedly:
+```mermaid
+flowchart LR
+    A[HA reconciler] --> B[ProcessIntent]
+    B --> C[process_dispatch]
+    C --> D[ProcessIntentRequest]
+    D --> E[Process worker]
+    E --> F[Subprocess execution]
+    F --> G[JobOutcome and ProcessState]
+```
 
-- managed PostgreSQL paths and listen port
-- replication-source defaults for replicator and rewinder jobs
-- connection defaults such as dbname, SSL mode, CA path, and connect timeout
+## Startup Composition
 
-`ProcessRuntimePlan::ensure_start_paths()` also moved out of `runtime/node.rs`. It creates the data-dir parent, data dir, socket dir, and log parent before workers start. On Unix it additionally sets `0o700` permissions on the data directory.
+Runtime startup moved process-specific policy into `ProcessRuntimePlan` and `process::startup::bootstrap`. The plan is a typed projection of runtime config that the process and pginfo domains need repeatedly:
 
-At runtime composition level, `src/runtime/node.rs` now creates the plan once, prepares the paths once, and passes the typed plan into the owning startup modules instead of rebuilding loose strings and paths across domains.
+- Managed PostgreSQL paths and listen port
+- Replication-source defaults for replicator and rewinder jobs
+- Connection defaults such as database name, SSL mode, CA path, and connect timeout
+
+`ProcessRuntimePlan::ensure_start_paths()` creates the data directory parent, data directory, socket directory, and log parent before workers start. On Unix systems it additionally sets `0o700` permissions on the data directory to match PostgreSQL expectations.
+
+At the composition root, `src/runtime/node.rs` creates the plan once, prepares paths once, and passes the typed plan into owning startup modules instead of rebuilding loose strings across domains.
+
+```mermaid
+flowchart LR
+    A[runtime::run_node_from_config] --> B[ProcessRuntimePlan::from_config]
+    B --> C[ensure_start_paths]
+    C --> D[process::startup::bootstrap]
+    B --> E[pginfo::startup::bootstrap]
+```
 
 ## Worker Context Shape
 
-`ProcessWorkerCtx` is no longer a flat startup bag. It groups concerns into narrower ADTs:
+`ProcessWorkerCtx` groups concerns into narrower abstract data types:
 
 - `cadence`: worker poll interval and time source
 - `config`: process-level timeout and binary configuration
@@ -911,12 +930,12 @@ At runtime composition level, `src/runtime/node.rs` now creates the plan once, p
 - `observed`: live `RuntimeConfig` and `DcsView` subscribers
 - `plan`: the stable `ProcessRuntimePlan`
 - `state_channel`: current `ProcessState`, publisher, and last rejection
-- `control`: the inbox plus the optional active runtime
+- `control`: the inbox plus optional active runtime
 - `runtime`: logging, subprocess-output capture flag, and command runner
 
 That split keeps the startup boundary smaller and makes cross-domain dependencies more explicit. The worker reads local identity and long-lived runtime defaults from typed bundles instead of from many unrelated top-level fields.
 
-## Intent Flow
+## Intent Flow from HA to Process
 
 The HA reconciler never spawns a subprocess directly. It emits `ProcessIntent` values such as:
 
@@ -926,36 +945,32 @@ The HA reconciler never spawns a subprocess directly. It emits `ProcessIntent` v
 - `Promote`
 - `Demote(Fast | Immediate)`
 
-`src/ha/process_dispatch.rs` converts each intent into a `ProcessIntentRequest` with a deterministic `JobId` built from scope, member id, HA tick, action index, and intent label. That request is sent through the process worker inbox.
+`src/ha/process_dispatch.rs` converts each intent into a `ProcessIntentRequest` with a deterministic `JobId` built from scope, member id, HA tick, action index, and intent label. That request is sent through the process worker inbox. If the worker is already busy, the new request is rejected without starting a second job. That rejection is recorded in `state_channel.last_rejection` and logged as a worker event.
 
 ```mermaid
 flowchart LR
     A[HA reconcile] --> B[ProcessIntent]
     B --> C[process_dispatch]
-    C --> D[ProcessIntentRequest<br/>deterministic JobId]
-    D --> E[Process worker inbox]
-    E --> F[Materialize execution request]
-    F --> G[Build command spec]
-    G --> H[Spawn PostgreSQL tool process]
-    H --> I[Drain output and poll exit]
-    I --> J[Publish ProcessState and JobOutcome]
+    C --> D[ProcessIntentRequest plus JobId]
+    D --> E[process worker inbox]
+    E --> F{worker idle}
+    F -- no --> G[record rejection]
+    F -- yes --> H[materialize execution request]
+    H --> I[build command spec]
+    I --> J[spawn subprocess]
 ```
-
-If the worker is already busy, the new request is rejected without starting a second job. That rejection is recorded in `state_channel.last_rejection` and logged as a worker event.
 
 ## Materialization and Validation
 
-The process worker turns `ProcessIntentRequest` into a concrete `ProcessExecutionRequest` inside `materialize_execution_request(...)`.
+The process worker turns `ProcessIntentRequest` into a concrete `ProcessExecutionRequest` inside `materialize_execution_request(...)`. For replica-provisioning paths, materialization reads the latest DCS view and validates the chosen leader before building connection info:
 
-For replica-provisioning paths, materialization reads the latest DCS view and validates the chosen leader before building conninfo:
-
-- the source member must not be `self`
-- the advertised PostgreSQL host must be non-empty
-- the source member must currently present as a primary in DCS
+- The source member must not be `self`
+- The advertised PostgreSQL host must be non-empty
+- The source member must currently present as a primary in DCS
 
 Those checks live in `src/process/source.rs` and use the typed replication-source defaults stored in `ProcessRuntimePlan`. That keeps replication-source policy in the process domain instead of leaving it spread across HA and runtime startup code.
 
-The same materialization step also converts start intents into concrete PostgreSQL start specs, including detached-standby and replica-start managed configuration.
+The same materialization step also converts start intents into concrete PostgreSQL start specifications, including detached-standby and replica-start managed configuration.
 
 ## Job Lifecycle and Timeouts
 
@@ -978,21 +993,54 @@ Subprocess output is drained during execution and again during shutdown paths. W
 
 ## PostgreSQL Preflight Safety
 
-The start-postgres path does extra preflight work before spawning `pg_ctl start`.
+The start-postgres path does extra preflight work before spawning `pg_ctl start`:
 
-- It checks `postmaster.pid` in the configured data directory.
-- It verifies whether that PID still exists and, on Unix, whether `/proc/<pid>/cmdline` looks like a PostgreSQL postmaster for the same data directory.
-- It checks the PostgreSQL socket lock file for the configured port.
-- If the PID or socket-lock evidence is stale, it removes the stale files before continuing.
-- If PostgreSQL already appears to be running for that data directory or port, the start job becomes a no-op success instead of spawning another process.
+- It checks `postmaster.pid` in the configured data directory
+- It verifies whether that PID still exists and, on Unix, whether `/proc/<pid>/cmdline` looks like a PostgreSQL postmaster for the same data directory
+- It checks the PostgreSQL socket lock file for the configured port
+- If the PID or socket-lock evidence is stale, it removes the stale files before continuing
+- If PostgreSQL already appears to be running for that data directory or port, the start job becomes a no-op success instead of spawning another process
 
 This keeps the start path crash-tolerant and reduces false-positive "already running" failures after unclean shutdowns.
 
+```mermaid
+flowchart TD
+    A[start postgres request] --> B[check postmaster.pid]
+    B --> C[check socket lock]
+    C --> D{live postgres evidence}
+    D -- yes --> E[no-op success]
+    D -- no --> F[remove stale files]
+    F --> G[spawn pg_ctl start]
+```
+
 ## Integration with PgInfo and API
 
-The pginfo domain now shares the same `ProcessRuntimePlan` at startup rather than rebuilding its local socket target in `runtime/node.rs`. `PgProbeTarget::local_from_config(...)` derives the local probe conninfo from the runtime config plus the process plan, so the process and pginfo domains agree on the managed socket directory and port.
+The pginfo domain now shares the same `ProcessRuntimePlan` at startup rather than rebuilding its local socket target in `runtime/node.rs`. `PgProbeTarget::local_from_config(...)` derives the local probe connection info from the runtime config plus the process plan, so the process and pginfo domains agree on the managed socket directory and port.
 
 The API domain no longer reaches into process startup details either. It consumes published process state through its live observed-state bundle. During startup, the API can stay in `ApiObservedState::Unavailable` until the full live subscriber set is ready, which avoids pretending that partially wired state is already live.
+
+## Logging Boundary
+
+The logging subsystem centers on an opaque `LogSender` handle. Process code does not create JSON records or interact with tracing APIs. Instead, each domain owns typed log ADTs that implement a sealed logging contract.
+
+The process domain defines:
+
+- `ProcessLogEvent` for worker lifecycle and job control events
+- `SubprocessLogEvent` for stdout/stderr lines from child processes
+
+Process worker code constructs these typed events and calls `ctx.runtime.log.send(...)` directly. The `LogSender` filters by minimum severity, materializes events into a private queue shape, and forwards them to the background worker. Backend sink failures after enqueue remain internal to logging and do not affect process execution.
+
+This boundary ensures process execution code remains focused on process supervision while still producing rich, structured logs for observability.
+
+```mermaid
+flowchart LR
+    A[process worker] --> B[ProcessLogEvent or SubprocessLogEvent]
+    B --> C[LogSender.send]
+    C --> D[private queued record]
+    D --> E[LogWorker]
+    E --> F[final LogRecord]
+    F --> G[sinks]
+```
 
 ## Why This Boundary Is Better
 
@@ -1007,6 +1055,1806 @@ The rewrite makes `src/runtime/node.rs` a smaller composition root:
 That boundary reduces startup duplication, shrinks the number of raw fields runtime must know about, and keeps process execution policy close to the code that actually launches and supervises PostgreSQL subprocesses.
 
 
+===== docs/tmp/verbose_extra_context/process-management-refactor.md =====
+# Verbose Extra Context: Process Management Refactor
+
+This context file exists to update `docs/src/explanation/process-management.md` after the process-domain refactor completed in March 2026.
+
+The existing explanation page is stale in one important way:
+
+- It still says the worker turns `ProcessIntentRequest` into `ProcessExecutionRequest` inside `materialize_execution_request(...)`.
+- It still says the worker then lowers commands in `build_command(...)`.
+- Those statements are no longer true.
+
+The current architecture after the refactor is:
+
+1. HA still emits the same small `ProcessIntent` surface.
+2. `process_dispatch` still turns that into `ProcessIntentRequest`.
+3. `src/process/worker.rs` remains responsible for:
+   - inbox polling
+   - busy rejection
+   - start-postgres noop preflight
+   - active-job state transitions
+   - timeout handling
+   - subprocess output draining
+   - subprocess spawn lifecycle
+   - logging and state publication
+4. The worker no longer owns the internal switch that mixes planning, managed PostgreSQL config/session materialization, and external command lowering.
+5. The worker now constructs a `ProcessCluster` facade and calls `ProcessCluster::prepare(...)`.
+
+The new private process-domain modules are:
+
+- `src/process/cluster.rs`
+- `src/process/planner.rs`
+- `src/process/session.rs`
+- `src/process/tools.rs`
+
+The intended explanation should describe those modules and their responsibilities accurately.
+
+## Exact role of each new module
+
+### `src/process/cluster.rs`
+
+`ProcessCluster` is the concrete internal facade used by the worker.
+
+It owns:
+
+- the local process identity
+- the stable `ProcessRuntimePlan`
+- a typed `ProcessObservedSnapshot`
+- a `ProcessIntentPlanner`
+- a `ManagedPostgresSessionMaterializer`
+- an `ExternalToolLowerer`
+
+`ProcessCluster::production_from_ctx(...)` reads observed state once from the worker context and creates a typed snapshot that includes:
+
+- latest `RuntimeConfig`
+- latest `DcsView`
+- inspected `ManagedRecoverySignal`
+
+That snapshot is represented by `ProcessObservedSnapshot` in `src/process/state.rs`.
+
+`ProcessCluster::prepare(...)` runs the internal process-domain pipeline:
+
+1. planner: turn `ProcessIntent` into a first-class `ClusterProcessPlan`
+2. session materializer: materialize authoritative managed PostgreSQL artifacts for start flows
+3. tool lowerer: turn the plan plus prepared session into a `ProcessExecutionRequest` and `ProcessCommandSpec`
+
+`PreparedProcessLaunch` now carries:
+
+- `request: ProcessExecutionRequest`
+- `command: ProcessCommandSpec`
+
+`ProcessPreparationError` keeps stage-specific attribution:
+
+- `Planning`
+- `SessionMaterialization`
+- `ToolLowering`
+
+The worker logs those stage failures with stage-specific cause text, so observability still distinguishes planning/session/tool-lowering failures from spawn/runtime failures.
+
+### `src/process/planner.rs`
+
+This module owns intent planning.
+
+Important ADTs introduced here:
+
+- `ClusterProcessPlan`
+- `ManagedStartPlan`
+- `DesiredManagedPostgresSession`
+- `ReplicaFollowPlan`
+
+`DesiredManagedPostgresSession` is the new first-class desired managed PostgreSQL session/config ADT.
+
+Current variants:
+
+- `Primary`
+- `DetachedStandby`
+- `Follow(Box<ReplicaFollowPlan>)`
+
+The `Follow` variant is boxed because clippy rejected the large enum variant shape otherwise.
+
+The planner is now where the process domain owns:
+
+- DCS trust/member lookup
+- source-member validation
+- basebackup source selection
+- pg_rewind source selection
+- primary-start rejection when managed recovery state is still present
+- derivation of the desired managed PostgreSQL session for replica starts
+
+The planner does not write files and does not spawn commands.
+
+For replica-following starts, the planner reuses the existing source ADT:
+
+- `MandatoryRoleSourceConn`
+
+That means the plan explicitly carries:
+
+- conninfo
+- auth
+- source role
+
+instead of hiding those details in worker-local helper functions.
+
+### `src/process/session.rs`
+
+This module owns authoritative managed PostgreSQL runtime-file materialization for start flows.
+
+It reuses:
+
+- `ManagedPostgresStartIntent`
+- `materialize_managed_postgres_config(...)`
+- `managed_standby_auth_from_role_auth(...)`
+
+The new boundary is:
+
+- planner decides the desired session shape with `DesiredManagedPostgresSession`
+- session materializer converts that shape into canonical `ManagedPostgresStartIntent`
+- session materializer writes authoritative runtime artifacts and returns `PreparedManagedPostgresSession`
+
+`PreparedManagedPostgresSession` currently wraps the produced `ManagedPostgresConfig`.
+
+Important behavioral detail:
+
+- `ProcessRuntimePlan::ensure_start_paths()` is now called from the session materializer for start flows before managed files are written.
+
+Non-start plans return `None` from the session materializer.
+
+### `src/process/tools.rs`
+
+This module owns external tool lowering.
+
+It now contains:
+
+- lowering from `ClusterProcessPlan` plus optional prepared session into `ProcessExecutionRequest`
+- command construction from `ProcessExecutionKind` into `ProcessCommandSpec`
+- destructive data-dir wiping for bootstrap/basebackup preparation
+- helper mappings for active job kind and execution job kind
+
+This means `worker.rs` no longer contains the large `build_command(...)` match.
+
+The external tool lowerer is also where bootstrap/basebackup destructive preparation now happens. That keeps planning pure and moves the destructive preparation closer to external tool execution.
+
+### `src/process/state.rs`
+
+This module gained `ProcessObservedSnapshot`:
+
+- `runtime_config: RuntimeConfig`
+- `dcs: DcsView`
+- `managed_recovery_state: ManagedRecoverySignal`
+
+The explanation page should say clearly that the worker hands a typed observed snapshot to the deeper process boundary instead of letting the worker-owned switch read runtime config, DCS, and managed recovery state ad hoc during execution-request construction.
+
+## What remains unchanged externally
+
+These facts should remain in the doc:
+
+- HA still emits `ProcessIntent`
+- the caller-facing process boundary remains small
+- the worker still handles admission, preflight, lifecycle, timeout, output drain, spawn, and publication
+- start-postgres preflight/noop behavior still exists in the worker
+- subprocess logging still flows through `ProcessLogEvent` / `SubprocessLogEvent`
+
+## What should be removed or rewritten from the existing explanation
+
+Please remove or rewrite any statements that claim:
+
+- `materialize_execution_request(...)` is the current mixed worker-owned boundary
+- `build_command(...)` is still inside `src/process/worker.rs`
+- the worker itself directly performs source resolution, primary/replica start-intent derivation, managed config materialization, and command lowering in one switch
+
+Those descriptions are now obsolete.
+
+## New tests added by the refactor
+
+The refactor added deeper boundary tests:
+
+- `process::planner::tests::planner_maps_process_intents_to_expected_plan_variants`
+- `process::planner::tests::planner_rejects_primary_start_with_existing_managed_replica_state`
+- `process::planner::tests::planner_uses_distinct_source_roles_for_basebackup_and_rewind`
+- `process::session::tests::materialize_follow_session_writes_managed_files_without_tool_lowering`
+- `process::session::tests::materialize_skips_non_start_plans`
+- `process::tools::tests::lower_execution_request_for_basebackup_wipes_existing_data_dir_contents`
+- `process::tools::tests::build_command_for_start_postgres_uses_prepared_session_paths`
+- `process::cluster::tests::prepare_replica_start_runs_through_planner_session_and_tool_layers`
+
+Those tests are relevant evidence that the new boundary is planner/session/tool/facade oriented rather than only worker-helper oriented.
+
+## Validation results from this task
+
+All required task gates passed after this refactor:
+
+- `make check`
+- `make test`
+- `make lint`
+- `make test-long`
+
+If the doc mentions validation evidence, keep it factual and concise.
+
+
+===== src/process/cluster.rs =====
+use thiserror::Error;
+
+use crate::{
+    postgres_managed::inspect_managed_recovery_state,
+    process::{
+        planner::ProcessIntentPlanner,
+        session::ManagedPostgresSessionMaterializer,
+        state::{
+            ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot,
+            ProcessRuntimePlan, ProcessWorkerCtx,
+        },
+        tools::ExternalToolLowerer,
+    },
+};
+
+use super::jobs::{ProcessCommandSpec, ProcessError};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedProcessLaunch {
+    pub(crate) request: ProcessExecutionRequest,
+    pub(crate) command: ProcessCommandSpec,
+}
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(crate) enum ProcessPreparationError {
+    #[error("process planning failed: {0}")]
+    Planning(ProcessError),
+    #[error("managed session materialization failed: {0}")]
+    SessionMaterialization(ProcessError),
+    #[error("external tool lowering failed: {0}")]
+    ToolLowering(ProcessError),
+}
+
+impl ProcessPreparationError {
+    pub(crate) fn into_process_error(self) -> ProcessError {
+        match self {
+            Self::Planning(error)
+            | Self::SessionMaterialization(error)
+            | Self::ToolLowering(error) => error,
+        }
+    }
+
+    pub(crate) fn stage_label(&self) -> &'static str {
+        match self {
+            Self::Planning(_) => "planning",
+            Self::SessionMaterialization(_) => "managed session materialization",
+            Self::ToolLowering(_) => "external tool lowering",
+        }
+    }
+}
+
+pub(crate) struct ProcessCluster {
+    identity: crate::process::state::ProcessNodeIdentity,
+    runtime: ProcessRuntimePlan,
+    observed: ProcessObservedSnapshot,
+    planner: ProcessIntentPlanner,
+    sessions: ManagedPostgresSessionMaterializer,
+    tools: ExternalToolLowerer,
+}
+
+impl ProcessCluster {
+    pub(crate) fn production_from_ctx(ctx: &ProcessWorkerCtx) -> Result<Self, ProcessError> {
+        let runtime_config = ctx.observed.runtime_config.latest();
+        let managed_recovery_state =
+            inspect_managed_recovery_state(runtime_config.postgres.paths.data_dir.as_path())
+                .map_err(|err| {
+                    ProcessError::InvalidSpec(format!(
+                        "inspect managed recovery state failed: {err}"
+                    ))
+                })?;
+        Ok(Self::from_snapshot(
+            ctx.identity.clone(),
+            ctx.plan.clone(),
+            ProcessObservedSnapshot {
+                dcs: ctx.observed.dcs.latest(),
+                runtime_config,
+                managed_recovery_state,
+            },
+        ))
+    }
+
+    pub(crate) fn from_snapshot(
+        identity: crate::process::state::ProcessNodeIdentity,
+        runtime: ProcessRuntimePlan,
+        observed: ProcessObservedSnapshot,
+    ) -> Self {
+        Self {
+            identity,
+            runtime,
+            observed,
+            planner: ProcessIntentPlanner,
+            sessions: ManagedPostgresSessionMaterializer,
+            tools: ExternalToolLowerer,
+        }
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        request: &ProcessIntentRequest,
+        config: &crate::config::ProcessConfig,
+        capture_output: bool,
+    ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
+        let plan = self
+            .planner
+            .plan(
+                &self.identity,
+                &self.runtime,
+                &self.observed,
+                &request.intent,
+            )
+            .map_err(ProcessPreparationError::Planning)?;
+        let prepared_session = self
+            .sessions
+            .materialize(&self.observed.runtime_config, &self.runtime, &plan)
+            .map_err(ProcessPreparationError::SessionMaterialization)?;
+        let execution_request = self
+            .tools
+            .lower_execution_request(
+                request.id.clone(),
+                &plan,
+                &self.runtime,
+                &self.observed,
+                prepared_session.as_ref(),
+            )
+            .map_err(ProcessPreparationError::ToolLowering)?;
+        let command = self
+            .tools
+            .build_command(config, &execution_request.kind, capture_output)
+            .map_err(ProcessPreparationError::ToolLowering)?;
+        Ok(PreparedProcessLaunch {
+            request: execution_request,
+            command,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::{
+        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        postgres_managed_conf::ManagedRecoverySignal,
+        process::{
+            jobs::{PostgresStartIntent, ProcessIntent},
+            state::{ProcessIntentRequest, ProcessObservedSnapshot, ProcessRuntimePlan},
+        },
+        state::{
+            ClusterName, JobId, MemberId, NodeIdentity, PgTcpTarget, ScopeName, SwitchoverState,
+            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+        },
+    };
+
+    use super::ProcessCluster;
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-process-cluster-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn sample_identity() -> NodeIdentity {
+        NodeIdentity {
+            cluster_name: ClusterName("cluster-a".to_string()),
+            scope: ScopeName("scope-a".to_string()),
+            member_id: MemberId("node-a".to_string()),
+        }
+    }
+
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .build()
+    }
+
+    fn primary_member(host: &str, port: u16) -> Result<ClusterMemberView, String> {
+        Ok(ClusterMemberView {
+            postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+            postgres: MemberPostgresView::Primary {
+                common: PgInfoCommon {
+                    worker: WorkerStatus::Running,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: Some(TimelineId(7)),
+                    system_identifier: Some(SystemIdentifier(41)),
+                    pg_config: PgConfig {
+                        port: Some(port),
+                        hot_standby: Some(false),
+                        primary_conninfo: None,
+                        primary_slot_name: None,
+                        extra: BTreeMap::new(),
+                    },
+                    last_refresh_at: Some(UnixMillis(123)),
+                },
+                wal_lsn: WalLsn(91),
+                slots: Vec::new(),
+            },
+        })
+    }
+
+    #[test]
+    fn prepare_replica_start_runs_through_planner_session_and_tool_layers() -> Result<(), String> {
+        let root = unique_test_dir("replica-start")?;
+        let data_dir = root.join("data");
+        let runtime_config = sample_runtime_config(data_dir.clone());
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let leader = MemberId("node-b".to_string());
+        let snapshot = ProcessObservedSnapshot {
+            runtime_config: runtime_config.clone(),
+            dcs: DcsView::quorum(
+                None,
+                SwitchoverState::None,
+                BTreeMap::from([(leader.clone(), primary_member("10.0.0.13", 5432)?)]),
+            ),
+            managed_recovery_state: ManagedRecoverySignal::None,
+        };
+        let cluster = ProcessCluster::from_snapshot(sample_identity(), runtime, snapshot);
+        let request = ProcessIntentRequest {
+            id: JobId("job-start-replica".to_string()),
+            intent: ProcessIntent::Start(PostgresStartIntent::Replica { leader }),
+        };
+
+        let prepared = cluster
+            .prepare(
+                &request,
+                &crate::config::ProcessConfig {
+                    binaries: sample_binary_paths(),
+                    ..runtime_config.process.clone()
+                },
+                true,
+            )
+            .map_err(|err| format!("prepare replica start failed: {err}"))?;
+
+        if prepared.command.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {
+            return Err(format!(
+                "unexpected prepared command job kind: {:?}",
+                prepared.command.job_kind
+            ));
+        }
+        match prepared.request.kind {
+            crate::process::state::ProcessExecutionKind::StartPostgres(spec) => {
+                if spec.mode != crate::process::jobs::PostgresStartMode::Replica {
+                    return Err(format!("unexpected start mode: {:?}", spec.mode));
+                }
+                if !spec.config_file.exists() {
+                    return Err(format!(
+                        "expected prepared managed config file to exist at {}",
+                        spec.config_file.display()
+                    ));
+                }
+            }
+            other => return Err(format!("unexpected execution request kind: {other:?}")),
+        }
+
+        Ok(())
+    }
+}
+
+
+===== src/process/planner.rs =====
+use crate::{
+    dcs::{ClusterMemberView, DcsView},
+    postgres_managed_conf::ManagedRecoverySignal,
+    process::{
+        jobs::{
+            BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn, PgRewindSpec,
+            PostgresStartIntent, PostgresStartMode, ProcessError, ProcessIntent, PromoteSpec,
+            ReplicaProvisionIntent,
+        },
+        source::{basebackup_source_from_member, rewind_source_from_member},
+        state::{ProcessNodeIdentity, ProcessObservedSnapshot, ProcessRuntimePlan},
+    },
+    state::MemberId,
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ClusterProcessPlan {
+    Bootstrap(BootstrapSpec),
+    BaseBackup(BaseBackupSpec),
+    PgRewind(PgRewindSpec),
+    StartManagedPostgres(ManagedStartPlan),
+    Promote(PromoteSpec),
+    Demote(DemoteSpec),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ManagedStartPlan {
+    pub(crate) mode: PostgresStartMode,
+    pub(crate) desired_session: DesiredManagedPostgresSession,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum DesiredManagedPostgresSession {
+    Primary,
+    DetachedStandby,
+    Follow(Box<ReplicaFollowPlan>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplicaFollowPlan {
+    pub(crate) source: MandatoryRoleSourceConn,
+    pub(crate) primary_slot_name: Option<String>,
+}
+
+#[derive(Default)]
+pub(crate) struct ProcessIntentPlanner;
+
+impl ProcessIntentPlanner {
+    pub(crate) fn plan(
+        &self,
+        identity: &ProcessNodeIdentity,
+        runtime: &ProcessRuntimePlan,
+        observed: &ProcessObservedSnapshot,
+        intent: &ProcessIntent,
+    ) -> Result<ClusterProcessPlan, ProcessError> {
+        match intent {
+            ProcessIntent::Bootstrap => Ok(ClusterProcessPlan::Bootstrap(BootstrapSpec {
+                data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                superuser: observed
+                    .runtime_config
+                    .postgres
+                    .roles
+                    .mandatory
+                    .superuser
+                    .username
+                    .clone(),
+                timeout_ms: None,
+            })),
+            ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
+                let source = basebackup_source_from_leader(
+                    &identity.member_id,
+                    runtime,
+                    &observed.dcs,
+                    leader,
+                )?;
+                Ok(ClusterProcessPlan::BaseBackup(BaseBackupSpec {
+                    data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                    source,
+                    timeout_ms: Some(observed.runtime_config.process.timeouts.bootstrap_ms),
+                }))
+            }
+            ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
+                let source =
+                    rewind_source_from_leader(&identity.member_id, runtime, &observed.dcs, leader)?;
+                Ok(ClusterProcessPlan::PgRewind(PgRewindSpec {
+                    target_data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                    source,
+                    timeout_ms: None,
+                }))
+            }
+            ProcessIntent::Start(PostgresStartIntent::Primary) => {
+                if observed.managed_recovery_state != ManagedRecoverySignal::None {
+                    return Err(ProcessError::InvalidSpec(
+                        "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
+                    ));
+                }
+                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
+                    mode: PostgresStartMode::Primary,
+                    desired_session: DesiredManagedPostgresSession::Primary,
+                }))
+            }
+            ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
+                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
+                    mode: PostgresStartMode::DetachedStandby,
+                    desired_session: DesiredManagedPostgresSession::DetachedStandby,
+                }))
+            }
+            ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
+                let source = basebackup_source_from_leader(
+                    &identity.member_id,
+                    runtime,
+                    &observed.dcs,
+                    leader,
+                )?;
+                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
+                    mode: PostgresStartMode::Replica,
+                    desired_session: DesiredManagedPostgresSession::Follow(Box::new(
+                        ReplicaFollowPlan {
+                            source,
+                            primary_slot_name: None,
+                        },
+                    )),
+                }))
+            }
+            ProcessIntent::Promote => Ok(ClusterProcessPlan::Promote(PromoteSpec {
+                data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                wait_seconds: None,
+                timeout_ms: None,
+            })),
+            ProcessIntent::Demote(mode) => Ok(ClusterProcessPlan::Demote(DemoteSpec {
+                data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                mode: mode.clone(),
+                timeout_ms: None,
+            })),
+        }
+    }
+}
+
+fn basebackup_source_from_leader(
+    self_id: &MemberId,
+    runtime: &ProcessRuntimePlan,
+    dcs: &DcsView,
+    leader: &MemberId,
+) -> Result<MandatoryRoleSourceConn, ProcessError> {
+    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
+    basebackup_source_from_member(self_id, runtime, source_member_id, source_member)
+        .map_err(source_materialization_error)
+}
+
+fn rewind_source_from_leader(
+    self_id: &MemberId,
+    runtime: &ProcessRuntimePlan,
+    dcs: &DcsView,
+    leader: &MemberId,
+) -> Result<MandatoryRoleSourceConn, ProcessError> {
+    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
+    rewind_source_from_member(self_id, runtime, source_member_id, source_member)
+        .map_err(source_materialization_error)
+}
+
+fn resolve_source_member<'a>(
+    dcs: &'a DcsView,
+    leader: &'a MemberId,
+) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
+    let cluster = dcs.quorum_state().ok_or_else(|| {
+        ProcessError::InvalidSpec(
+            "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
+                .to_string(),
+        )
+    })?;
+    cluster
+        .member(leader)
+        .map(|member| (leader, member))
+        .ok_or_else(|| {
+            ProcessError::InvalidSpec(format!(
+                "target member `{}` not present in DCS view",
+                leader.0
+            ))
+        })
+}
+
+fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {
+    ProcessError::InvalidSpec(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::BTreeMap,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::{
+        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        dev_support::runtime_config::RuntimeConfigBuilder,
+        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        postgres_managed_conf::ManagedRecoverySignal,
+        process::{
+            jobs::{
+                MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
+                ShutdownMode,
+            },
+            state::{ProcessNodeIdentity, ProcessObservedSnapshot, ProcessRuntimePlan},
+        },
+        state::{
+            ClusterName, MemberId, NodeIdentity, PgTcpTarget, ScopeName, SwitchoverState,
+            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+        },
+    };
+
+    use super::{ClusterProcessPlan, DesiredManagedPostgresSession, ProcessIntentPlanner};
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-process-planner-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn sample_identity() -> ProcessNodeIdentity {
+        NodeIdentity {
+            cluster_name: ClusterName("cluster-a".to_string()),
+            scope: ScopeName("scope-a".to_string()),
+            member_id: MemberId("node-a".to_string()),
+        }
+    }
+
+    fn sample_runtime(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .build()
+    }
+
+    fn primary_member(host: &str, port: u16) -> Result<ClusterMemberView, String> {
+        Ok(ClusterMemberView {
+            postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+            postgres: MemberPostgresView::Primary {
+                common: PgInfoCommon {
+                    worker: WorkerStatus::Running,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: Some(TimelineId(7)),
+                    system_identifier: Some(SystemIdentifier(41)),
+                    pg_config: PgConfig {
+                        port: Some(port),
+                        hot_standby: Some(false),
+                        primary_conninfo: None,
+                        primary_slot_name: None,
+                        extra: BTreeMap::new(),
+                    },
+                    last_refresh_at: Some(UnixMillis(123)),
+                },
+                wal_lsn: WalLsn(99),
+                slots: Vec::new(),
+            },
+        })
+    }
+
+    fn observed_snapshot(
+        runtime_config: crate::config::RuntimeConfig,
+        dcs: DcsView,
+        managed_recovery_state: ManagedRecoverySignal,
+    ) -> ProcessObservedSnapshot {
+        ProcessObservedSnapshot {
+            runtime_config,
+            dcs,
+            managed_recovery_state,
+        }
+    }
+
+    #[test]
+    fn planner_maps_process_intents_to_expected_plan_variants() -> Result<(), String> {
+        let root = unique_test_dir("intent-variants")?;
+        let runtime_config = sample_runtime(root.join("data"));
+        let leader = MemberId("node-b".to_string());
+        let dcs = DcsView::quorum(
+            None,
+            SwitchoverState::None,
+            BTreeMap::from([(leader.clone(), primary_member("10.0.0.8", 5432)?)]),
+        );
+        let snapshot = observed_snapshot(runtime_config.clone(), dcs, ManagedRecoverySignal::None);
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let planner = ProcessIntentPlanner;
+        let identity = sample_identity();
+
+        let cases = [
+            (ProcessIntent::Bootstrap, "bootstrap"),
+            (
+                ProcessIntent::Start(PostgresStartIntent::Primary),
+                "start-primary",
+            ),
+            (
+                ProcessIntent::Start(PostgresStartIntent::DetachedStandby),
+                "start-detached-standby",
+            ),
+            (
+                ProcessIntent::Start(PostgresStartIntent::Replica {
+                    leader: leader.clone(),
+                }),
+                "start-replica",
+            ),
+            (
+                ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
+                    leader: leader.clone(),
+                }),
+                "basebackup",
+            ),
+            (
+                ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind {
+                    leader: leader.clone(),
+                }),
+                "pg-rewind",
+            ),
+            (ProcessIntent::Promote, "promote"),
+            (ProcessIntent::Demote(ShutdownMode::Fast), "demote"),
+        ];
+
+        for (intent, label) in cases {
+            let plan = planner
+                .plan(&identity, &runtime, &snapshot, &intent)
+                .map_err(|err| format!("planning {label} failed: {err}"))?;
+            let matches_expected = matches!(
+                (&plan, label),
+                (ClusterProcessPlan::Bootstrap(_), "bootstrap")
+                    | (ClusterProcessPlan::StartManagedPostgres(_), "start-primary")
+                    | (
+                        ClusterProcessPlan::StartManagedPostgres(_),
+                        "start-detached-standby"
+                    )
+                    | (ClusterProcessPlan::StartManagedPostgres(_), "start-replica")
+                    | (ClusterProcessPlan::BaseBackup(_), "basebackup")
+                    | (ClusterProcessPlan::PgRewind(_), "pg-rewind")
+                    | (ClusterProcessPlan::Promote(_), "promote")
+                    | (ClusterProcessPlan::Demote(_), "demote")
+            );
+            if !matches_expected {
+                return Err(format!("unexpected plan for {label}: {plan:?}"));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn planner_rejects_primary_start_with_existing_managed_replica_state() -> Result<(), String> {
+        let root = unique_test_dir("primary-reject")?;
+        let runtime_config = sample_runtime(root.join("data"));
+        let snapshot = observed_snapshot(
+            runtime_config.clone(),
+            DcsView::starting(),
+            ManagedRecoverySignal::Standby,
+        );
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let planner = ProcessIntentPlanner;
+        let error = planner
+            .plan(
+                &sample_identity(),
+                &runtime,
+                &snapshot,
+                &ProcessIntent::Start(PostgresStartIntent::Primary),
+            )
+            .err()
+            .ok_or_else(|| "expected primary start to be rejected".to_string())?;
+
+        if !error.to_string().contains("managed replica recovery state") {
+            return Err(format!("unexpected primary-start rejection: {error}"));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn planner_uses_distinct_source_roles_for_basebackup_and_rewind() -> Result<(), String> {
+        let root = unique_test_dir("source-roles")?;
+        let runtime_config = sample_runtime(root.join("data"));
+        let leader = MemberId("node-b".to_string());
+        let dcs = DcsView::quorum(
+            None,
+            SwitchoverState::None,
+            BTreeMap::from([(leader.clone(), primary_member("10.0.0.9", 5432)?)]),
+        );
+        let snapshot = observed_snapshot(runtime_config.clone(), dcs, ManagedRecoverySignal::None);
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let planner = ProcessIntentPlanner;
+        let identity = sample_identity();
+
+        let basebackup_plan = planner
+            .plan(
+                &identity,
+                &runtime,
+                &snapshot,
+                &ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
+                    leader: leader.clone(),
+                }),
+            )
+            .map_err(|err| format!("plan basebackup failed: {err}"))?;
+        let rewind_plan = planner
+            .plan(
+                &identity,
+                &runtime,
+                &snapshot,
+                &ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }),
+            )
+            .map_err(|err| format!("plan rewind failed: {err}"))?;
+
+        let basebackup_role = match basebackup_plan {
+            ClusterProcessPlan::BaseBackup(spec) => spec.source.role,
+            other => return Err(format!("unexpected basebackup plan: {other:?}")),
+        };
+        let rewind_role = match rewind_plan {
+            ClusterProcessPlan::PgRewind(spec) => spec.source.role,
+            other => return Err(format!("unexpected rewind plan: {other:?}")),
+        };
+
+        if basebackup_role != MandatorySourceRole::Replicator {
+            return Err(format!(
+                "basebackup should use replicator role, observed {basebackup_role:?}"
+            ));
+        }
+        if rewind_role != MandatorySourceRole::Rewinder {
+            return Err(format!(
+                "rewind should use rewinder role, observed {rewind_role:?}"
+            ));
+        }
+
+        let replica_plan = planner
+            .plan(
+                &identity,
+                &runtime,
+                &snapshot,
+                &ProcessIntent::Start(PostgresStartIntent::Replica {
+                    leader: MemberId("node-b".to_string()),
+                }),
+            )
+            .map_err(|err| format!("plan replica start failed: {err}"))?;
+        match replica_plan {
+            ClusterProcessPlan::StartManagedPostgres(start) => match start.desired_session {
+                DesiredManagedPostgresSession::Follow(follow) => {
+                    if follow.source.role != MandatorySourceRole::Replicator {
+                        return Err(format!(
+                            "replica start should use replicator role, observed {:?}",
+                            follow.source.role
+                        ));
+                    }
+                }
+                other => return Err(format!("unexpected replica desired session: {other:?}")),
+            },
+            other => return Err(format!("unexpected replica start plan: {other:?}")),
+        }
+
+        Ok(())
+    }
+}
+
+
+===== src/process/session.rs =====
+use std::path::Path;
+
+use crate::{
+    config::RuntimeConfig,
+    postgres_managed::{materialize_managed_postgres_config, ManagedPostgresConfig},
+    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
+    process::{
+        planner::{ClusterProcessPlan, DesiredManagedPostgresSession},
+        state::ProcessRuntimePlan,
+    },
+};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PreparedManagedPostgresSession {
+    pub(crate) config: ManagedPostgresConfig,
+}
+
+#[derive(Default)]
+pub(crate) struct ManagedPostgresSessionMaterializer;
+
+impl ManagedPostgresSessionMaterializer {
+    pub(crate) fn materialize(
+        &self,
+        runtime_config: &RuntimeConfig,
+        runtime: &ProcessRuntimePlan,
+        plan: &ClusterProcessPlan,
+    ) -> Result<Option<PreparedManagedPostgresSession>, crate::process::jobs::ProcessError> {
+        match plan {
+            ClusterProcessPlan::StartManagedPostgres(start) => {
+                runtime.ensure_start_paths()?;
+                let start_intent = start
+                    .desired_session
+                    .clone()
+                    .into_start_intent(runtime_config.postgres.paths.data_dir.as_path());
+                let config = materialize_managed_postgres_config(runtime_config, &start_intent)
+                    .map_err(|err| {
+                        crate::process::jobs::ProcessError::InvalidSpec(format!(
+                            "materialize managed postgres config failed: {err}"
+                        ))
+                    })?;
+                Ok(Some(PreparedManagedPostgresSession { config }))
+            }
+            ClusterProcessPlan::Bootstrap(_)
+            | ClusterProcessPlan::BaseBackup(_)
+            | ClusterProcessPlan::PgRewind(_)
+            | ClusterProcessPlan::Promote(_)
+            | ClusterProcessPlan::Demote(_) => Ok(None),
+        }
+    }
+}
+
+impl DesiredManagedPostgresSession {
+    fn into_start_intent(self, data_dir: &Path) -> ManagedPostgresStartIntent {
+        match self {
+            Self::Primary => ManagedPostgresStartIntent::primary(),
+            Self::DetachedStandby => ManagedPostgresStartIntent::detached_standby(),
+            Self::Follow(plan) => ManagedPostgresStartIntent::replica(
+                plan.source.conninfo,
+                managed_standby_auth_from_role_auth(&plan.source.auth, data_dir),
+                plan.primary_slot_name,
+            ),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::{
+        dev_support::runtime_config::RuntimeConfigBuilder,
+        postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
+        process::{
+            jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
+            planner::{
+                ClusterProcessPlan, DesiredManagedPostgresSession, ManagedStartPlan,
+                ReplicaFollowPlan,
+            },
+            state::ProcessRuntimePlan,
+        },
+        state::PgTcpTarget,
+    };
+
+    use super::ManagedPostgresSessionMaterializer;
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-process-session-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .build()
+    }
+
+    #[test]
+    fn materialize_follow_session_writes_managed_files_without_tool_lowering() -> Result<(), String>
+    {
+        let root = unique_test_dir("follow")?;
+        let data_dir = root.join("data");
+        let runtime_config = sample_runtime_config(data_dir.clone());
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let source = MandatoryRoleSourceConn {
+            role: MandatorySourceRole::Replicator,
+            conninfo: crate::pginfo::state::PgConnInfo {
+                endpoint: PgTcpTarget::new("10.0.0.10".to_string(), 5432)?,
+                user: "replicator".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: Some(5),
+                ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+                ssl_root_cert: None,
+                options: None,
+                tls: crate::pginfo::conninfo::PgClientTls {
+                    mode: crate::pginfo::state::PgSslMode::Prefer,
+                    root_cert: None,
+                    client_cert: None,
+                    client_key: None,
+                },
+            },
+            auth: runtime.replica_access.roles.replicator.auth.clone(),
+        };
+        let plan = ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
+            mode: crate::process::jobs::PostgresStartMode::Replica,
+            desired_session: DesiredManagedPostgresSession::Follow(Box::new(ReplicaFollowPlan {
+                source,
+                primary_slot_name: None,
+            })),
+        });
+
+        let prepared = ManagedPostgresSessionMaterializer
+            .materialize(&runtime_config, &runtime, &plan)
+            .map_err(|err| format!("materialize follow session failed: {err}"))?
+            .ok_or_else(|| "expected prepared managed session".to_string())?;
+
+        if !prepared.config.postgresql_conf_path.exists() {
+            return Err(format!(
+                "managed postgres config file was not written at {}",
+                prepared.config.postgresql_conf_path.display()
+            ));
+        }
+        let managed_conf_name = prepared
+            .config
+            .postgresql_conf_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "managed postgres conf path is not valid UTF-8".to_string())?;
+        if managed_conf_name != MANAGED_POSTGRESQL_CONF_NAME {
+            return Err(format!(
+                "unexpected managed conf file name: {managed_conf_name}"
+            ));
+        }
+        let passfile_path = managed_standby_passfile_path(&data_dir);
+        if !passfile_path.exists() {
+            return Err(format!(
+                "expected standby passfile to exist at {}",
+                passfile_path.display()
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn materialize_skips_non_start_plans() -> Result<(), String> {
+        let root = unique_test_dir("skip-non-start")?;
+        let runtime_config = sample_runtime_config(root.join("data"));
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let plan = ClusterProcessPlan::Promote(crate::process::jobs::PromoteSpec {
+            data_dir: runtime_config.postgres.paths.data_dir.clone(),
+            wait_seconds: None,
+            timeout_ms: None,
+        });
+
+        let prepared = ManagedPostgresSessionMaterializer
+            .materialize(&runtime_config, &runtime, &plan)
+            .map_err(|err| format!("materialize non-start plan failed: {err}"))?;
+        if prepared.is_some() {
+            return Err("non-start plan should not materialize managed session".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+
+===== src/process/tools.rs =====
+use std::{fs, path::Path};
+
+use crate::{
+    config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig},
+    pginfo::state::render_pg_conninfo,
+    process::{
+        jobs::{
+            ActiveJobKind, PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
+            ProcessError, ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, StartPostgresSpec,
+        },
+        planner::ClusterProcessPlan,
+        session::PreparedManagedPostgresSession,
+        state::{
+            ProcessExecutionKind, ProcessExecutionRequest, ProcessObservedSnapshot,
+            ProcessRuntimePlan,
+        },
+    },
+};
+
+const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
+
+#[derive(Default)]
+pub(crate) struct ExternalToolLowerer;
+
+impl ExternalToolLowerer {
+    pub(crate) fn lower_execution_request(
+        &self,
+        request_id: crate::state::JobId,
+        plan: &ClusterProcessPlan,
+        runtime: &ProcessRuntimePlan,
+        observed: &ProcessObservedSnapshot,
+        prepared_session: Option<&PreparedManagedPostgresSession>,
+    ) -> Result<ProcessExecutionRequest, ProcessError> {
+        let kind = match plan {
+            ClusterProcessPlan::Bootstrap(spec) => {
+                wipe_data_dir(spec.data_dir.as_path())?;
+                ProcessExecutionKind::Bootstrap(spec.clone())
+            }
+            ClusterProcessPlan::BaseBackup(spec) => {
+                wipe_data_dir(spec.data_dir.as_path())?;
+                ProcessExecutionKind::BaseBackup(spec.clone())
+            }
+            ClusterProcessPlan::PgRewind(spec) => ProcessExecutionKind::PgRewind(spec.clone()),
+            ClusterProcessPlan::StartManagedPostgres(start) => {
+                let prepared_session = prepared_session.ok_or_else(|| {
+                    ProcessError::InvalidSpec(
+                        "managed postgres start requires prepared session artifacts".to_string(),
+                    )
+                })?;
+                ProcessExecutionKind::StartPostgres(StartPostgresSpec {
+                    mode: start.mode,
+                    data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
+                    socket_dir: runtime.postgres.paths.socket_dir.clone(),
+                    port: runtime.postgres.port,
+                    config_file: prepared_session.config.postgresql_conf_path.clone(),
+                    log_file: runtime.postgres.paths.log_file.clone(),
+                    wait_seconds: None,
+                    timeout_ms: None,
+                })
+            }
+            ClusterProcessPlan::Promote(spec) => ProcessExecutionKind::Promote(spec.clone()),
+            ClusterProcessPlan::Demote(spec) => ProcessExecutionKind::Demote(spec.clone()),
+        };
+
+        Ok(ProcessExecutionRequest {
+            id: request_id,
+            kind,
+        })
+    }
+
+    pub(crate) fn build_command(
+        &self,
+        config: &ProcessConfig,
+        kind: &ProcessExecutionKind,
+        capture_output: bool,
+    ) -> Result<ProcessCommandSpec, ProcessError> {
+        match kind {
+            ProcessExecutionKind::Bootstrap(spec) => {
+                validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
+                if spec.superuser.as_str().trim().is_empty() {
+                    return Err(ProcessError::InvalidSpec(
+                        "bootstrap.superuser must not be empty".to_string(),
+                    ));
+                }
+                let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args: vec![
+                        "-D".to_string(),
+                        spec.data_dir.display().to_string(),
+                        "-A".to_string(),
+                        "trust".to_string(),
+                        "-U".to_string(),
+                        spec.superuser.as_str().to_string(),
+                    ],
+                    env: Vec::new(),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+            ProcessExecutionKind::BaseBackup(spec) => {
+                validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
+                validate_non_empty_pg_endpoint(
+                    "basebackup.source_conninfo.endpoint",
+                    &spec.source.conninfo.endpoint,
+                )?;
+                if spec.source.conninfo.user.trim().is_empty() {
+                    return Err(ProcessError::InvalidSpec(
+                        "basebackup.source_conninfo.user must not be empty".to_string(),
+                    ));
+                }
+                if spec.source.conninfo.dbname.trim().is_empty() {
+                    return Err(ProcessError::InvalidSpec(
+                        "basebackup.source_conninfo.dbname must not be empty".to_string(),
+                    ));
+                }
+                let program = resolve_process_binary(config, PostgresBinaryName::PgBasebackup)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args: vec![
+                        "--dbname".to_string(),
+                        render_pg_conninfo(&spec.source.conninfo),
+                        "-D".to_string(),
+                        spec.data_dir.display().to_string(),
+                        "-Fp".to_string(),
+                        "-Xs".to_string(),
+                    ],
+                    env: role_auth_env(&spec.source.auth),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+            ProcessExecutionKind::PgRewind(spec) => {
+                validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
+                validate_non_empty_pg_endpoint(
+                    "pg_rewind.source_conninfo.endpoint",
+                    &spec.source.conninfo.endpoint,
+                )?;
+                if spec.source.conninfo.user.trim().is_empty() {
+                    return Err(ProcessError::InvalidSpec(
+                        "pg_rewind.source_conninfo.user must not be empty".to_string(),
+                    ));
+                }
+                if spec.source.conninfo.dbname.trim().is_empty() {
+                    return Err(ProcessError::InvalidSpec(
+                        "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
+                    ));
+                }
+                let program = resolve_process_binary(config, PostgresBinaryName::PgRewind)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args: vec![
+                        "--target-pgdata".to_string(),
+                        spec.target_data_dir.display().to_string(),
+                        "--source-server".to_string(),
+                        render_pg_conninfo(&spec.source.conninfo),
+                    ],
+                    env: role_auth_env(&spec.source.auth),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+            ProcessExecutionKind::Promote(spec) => {
+                validate_non_empty_path("promote.data_dir", &spec.data_dir)?;
+                let mut args = vec![
+                    "-D".to_string(),
+                    spec.data_dir.display().to_string(),
+                    "promote".to_string(),
+                    "-w".to_string(),
+                ];
+                if let Some(wait_seconds) = spec.wait_seconds {
+                    args.push("-t".to_string());
+                    args.push(wait_seconds.to_string());
+                }
+                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args,
+                    env: Vec::new(),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+            ProcessExecutionKind::Demote(spec) => {
+                validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
+                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args: vec![
+                        "-D".to_string(),
+                        spec.data_dir.display().to_string(),
+                        "stop".to_string(),
+                        "-m".to_string(),
+                        spec.mode.as_pg_ctl_arg().to_string(),
+                        "-w".to_string(),
+                    ],
+                    env: Vec::new(),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+            ProcessExecutionKind::StartPostgres(spec) => {
+                validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
+                validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
+                validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
+                let wait_seconds = spec.wait_seconds.unwrap_or(PG_CTL_DEFAULT_WAIT_SECONDS);
+                let option_tokens = vec![
+                    "-c".to_string(),
+                    format!("config_file={}", spec.config_file.display()),
+                ];
+                let options = render_pg_ctl_option_string(&option_tokens)?;
+                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                Ok(ProcessCommandSpec {
+                    program: program.clone(),
+                    args: vec![
+                        "-D".to_string(),
+                        spec.data_dir.display().to_string(),
+                        "-l".to_string(),
+                        spec.log_file.display().to_string(),
+                        "-o".to_string(),
+                        options,
+                        "start".to_string(),
+                        "-w".to_string(),
+                        "-t".to_string(),
+                        wait_seconds.to_string(),
+                    ],
+                    env: Vec::new(),
+                    capture_output,
+                    job_kind: process_job_kind_from_execution(kind),
+                })
+            }
+        }
+    }
+}
+
+pub(crate) fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
+    match intent {
+        ProcessIntent::Bootstrap => ActiveJobKind::Bootstrap,
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
+            ActiveJobKind::BaseBackup
+        }
+        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
+            ActiveJobKind::PgRewind
+        }
+        ProcessIntent::Promote => ActiveJobKind::Promote,
+        ProcessIntent::Demote(_) => ActiveJobKind::Demote,
+        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::Primary) => {
+            ActiveJobKind::StartPrimary
+        }
+        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::DetachedStandby) => {
+            ActiveJobKind::StartDetachedStandby
+        }
+        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::Replica { .. }) => {
+            ActiveJobKind::StartReplica
+        }
+    }
+}
+
+pub(crate) fn active_kind(kind: &ProcessExecutionKind) -> ActiveJobKind {
+    match kind {
+        ProcessExecutionKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
+        ProcessExecutionKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
+        ProcessExecutionKind::PgRewind(_) => ActiveJobKind::PgRewind,
+        ProcessExecutionKind::Promote(_) => ActiveJobKind::Promote,
+        ProcessExecutionKind::Demote(_) => ActiveJobKind::Demote,
+        ProcessExecutionKind::StartPostgres(spec) => match spec.mode {
+            PostgresStartMode::Primary => ActiveJobKind::StartPrimary,
+            PostgresStartMode::DetachedStandby => ActiveJobKind::StartDetachedStandby,
+            PostgresStartMode::Replica => ActiveJobKind::StartReplica,
+        },
+    }
+}
+
+pub(crate) fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> ProcessJobKind {
+    match kind {
+        ProcessExecutionKind::Bootstrap(_) => ProcessJobKind::Bootstrap,
+        ProcessExecutionKind::BaseBackup(_) => ProcessJobKind::BaseBackup,
+        ProcessExecutionKind::PgRewind(_) => ProcessJobKind::PgRewind,
+        ProcessExecutionKind::Promote(_) => ProcessJobKind::Promote,
+        ProcessExecutionKind::Demote(_) => ProcessJobKind::Demote,
+        ProcessExecutionKind::StartPostgres(_) => ProcessJobKind::StartPostgres,
+    }
+}
+
+fn resolve_process_binary(
+    config: &ProcessConfig,
+    binary: PostgresBinaryName,
+) -> Result<std::path::PathBuf, ProcessError> {
+    config
+        .binaries
+        .resolve_binary_path(binary)
+        .map_err(ProcessError::InvalidSpec)
+}
+
+fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
+    match auth {
+        RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
+            key: "PGPASSWORD".to_string(),
+            value: ProcessEnvValue::Secret(password.clone()),
+        }],
+    }
+}
+
+fn wipe_data_dir(data_dir: &Path) -> Result<(), ProcessError> {
+    if data_dir.as_os_str().is_empty() {
+        return Err(ProcessError::InvalidSpec(
+            "wipe_data_dir data_dir must not be empty".to_string(),
+        ));
+    }
+    if data_dir.exists() {
+        wipe_data_dir_contents(data_dir)?;
+    } else {
+        fs::create_dir_all(data_dir).map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir create_dir_all failed: {err}"))
+        })?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir set_permissions failed: {err}"))
+        })?;
+    }
+
+    Ok(())
+}
+
+fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
+    let entries = fs::read_dir(data_dir).map_err(|err| {
+        ProcessError::InvalidSpec(format!("wipe_data_dir read_dir failed: {err}"))
+    })?;
+    for entry_result in entries {
+        let entry = entry_result.map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir read_dir entry failed: {err}"))
+        })?;
+        let file_type = entry.file_type().map_err(|err| {
+            ProcessError::InvalidSpec(format!("wipe_data_dir file_type failed: {err}"))
+        })?;
+        let path = entry.path();
+        if file_type.is_dir() {
+            fs::remove_dir_all(&path).map_err(|err| {
+                ProcessError::InvalidSpec(format!(
+                    "wipe_data_dir remove_dir_all failed for {}: {err}",
+                    path.display()
+                ))
+            })?;
+        } else {
+            fs::remove_file(&path).map_err(|err| {
+                ProcessError::InvalidSpec(format!(
+                    "wipe_data_dir remove_file failed for {}: {err}",
+                    path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_non_empty_path(field: &str, value: &Path) -> Result<(), ProcessError> {
+    if value.as_os_str().is_empty() {
+        return Err(ProcessError::InvalidSpec(format!(
+            "{field} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_non_empty_pg_endpoint(
+    field: &str,
+    value: &crate::state::PgEndpoint,
+) -> Result<(), ProcessError> {
+    if value.host().trim().is_empty() {
+        return Err(ProcessError::InvalidSpec(format!(
+            "{field}.host must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
+    if tokens.is_empty() {
+        return Err(ProcessError::InvalidSpec(
+            "pg_ctl options must not be empty".to_string(),
+        ));
+    }
+
+    let rendered = tokens
+        .iter()
+        .map(|token| {
+            if token.is_empty() {
+                return Err(ProcessError::InvalidSpec(
+                    "pg_ctl option token must not be empty".to_string(),
+                ));
+            }
+
+            if token
+                .chars()
+                .any(|ch| ch == '\0' || ch == '\n' || ch == '\r')
+            {
+                return Err(ProcessError::InvalidSpec(format!(
+                    "pg_ctl option token contains control characters: `{token}`"
+                )));
+            }
+
+            if token
+                .chars()
+                .all(|ch| !ch.is_whitespace() && ch != '\'' && ch != '"' && ch != '\\')
+            {
+                Ok(token.clone())
+            } else {
+                let escaped = token
+                    .chars()
+                    .map(|ch| match ch {
+                        '\\' => "\\\\".to_string(),
+                        '"' => "\\\"".to_string(),
+                        other => other.to_string(),
+                    })
+                    .collect::<String>();
+                Ok(format!("\"{escaped}\""))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(rendered.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use crate::{
+        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        pginfo::{conninfo::PgClientTls, state::PgConnInfo},
+        postgres_managed::ManagedPostgresConfig,
+        postgres_managed_conf::ManagedRecoverySignal,
+        process::{
+            jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
+            planner::{
+                ClusterProcessPlan, DesiredManagedPostgresSession, ManagedStartPlan,
+                ReplicaFollowPlan,
+            },
+            session::PreparedManagedPostgresSession,
+            state::{ProcessObservedSnapshot, ProcessRuntimePlan},
+        },
+        state::PgTcpTarget,
+    };
+
+    use super::ExternalToolLowerer;
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-process-tools-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+        RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .build()
+    }
+
+    #[test]
+    fn lower_execution_request_for_basebackup_wipes_existing_data_dir_contents(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("wipe-basebackup")?;
+        let data_dir = root.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let stale = data_dir.join("stale.txt");
+        fs::write(&stale, "stale")
+            .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
+
+        let runtime_config = sample_runtime_config(data_dir.clone());
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let observed = ProcessObservedSnapshot {
+            runtime_config: runtime_config.clone(),
+            dcs: crate::dcs::DcsView::starting(),
+            managed_recovery_state: ManagedRecoverySignal::None,
+        };
+        let plan = ClusterProcessPlan::BaseBackup(crate::process::jobs::BaseBackupSpec {
+            data_dir: data_dir.clone(),
+            source: MandatoryRoleSourceConn {
+                role: MandatorySourceRole::Replicator,
+                conninfo: PgConnInfo {
+                    endpoint: PgTcpTarget::new("10.0.0.11".to_string(), 5432)?,
+                    user: "replicator".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: Some(5),
+                    ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+                    ssl_root_cert: None,
+                    options: None,
+                    tls: PgClientTls {
+                        mode: crate::pginfo::state::PgSslMode::Prefer,
+                        root_cert: None,
+                        client_cert: None,
+                        client_key: None,
+                    },
+                },
+                auth: runtime.replica_access.roles.replicator.auth.clone(),
+            },
+            timeout_ms: None,
+        });
+
+        let request = ExternalToolLowerer
+            .lower_execution_request(
+                crate::state::JobId("job-basebackup".to_string()),
+                &plan,
+                &runtime,
+                &observed,
+                None,
+            )
+            .map_err(|err| format!("lower execution request failed: {err}"))?;
+
+        if !matches!(
+            request.kind,
+            crate::process::state::ProcessExecutionKind::BaseBackup(_)
+        ) {
+            return Err(format!(
+                "unexpected execution request kind: {:?}",
+                request.kind
+            ));
+        }
+        if stale.exists() {
+            return Err(format!(
+                "basebackup lowering should wipe stale data dir contents at {}",
+                stale.display()
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn build_command_for_start_postgres_uses_prepared_session_paths() -> Result<(), String> {
+        let root = unique_test_dir("start-command")?;
+        let data_dir = root.join("data");
+        let runtime_config = sample_runtime_config(data_dir.clone());
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let observed = ProcessObservedSnapshot {
+            runtime_config: runtime_config.clone(),
+            dcs: crate::dcs::DcsView::starting(),
+            managed_recovery_state: ManagedRecoverySignal::None,
+        };
+        let config_file = data_dir.join("pgtm.postgresql.conf");
+        let prepared_session = PreparedManagedPostgresSession {
+            config: ManagedPostgresConfig {
+                postgresql_conf_path: config_file.clone(),
+                hba_path: data_dir.join("pgtm.pg_hba.conf"),
+                ident_path: data_dir.join("pgtm.pg_ident.conf"),
+                standby_passfile_path: None,
+                tls_cert_path: None,
+                tls_key_path: None,
+                tls_client_ca_path: None,
+                standby_signal_path: data_dir.join("standby.signal"),
+                recovery_signal_path: data_dir.join("recovery.signal"),
+                postgresql_auto_conf_path: data_dir.join("postgresql.auto.conf"),
+                quarantined_postgresql_auto_conf_path: data_dir
+                    .join("pgtm.unmanaged.postgresql.auto.conf"),
+            },
+        };
+        let plan = ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
+            mode: crate::process::jobs::PostgresStartMode::Replica,
+            desired_session: DesiredManagedPostgresSession::Follow(Box::new(ReplicaFollowPlan {
+                source: MandatoryRoleSourceConn {
+                    role: MandatorySourceRole::Replicator,
+                    conninfo: PgConnInfo {
+                        endpoint: PgTcpTarget::new("10.0.0.12".to_string(), 5432)?,
+                        user: "replicator".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: Some(5),
+                        ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
+                        ssl_root_cert: None,
+                        options: None,
+                        tls: PgClientTls {
+                            mode: crate::pginfo::state::PgSslMode::Prefer,
+                            root_cert: None,
+                            client_cert: None,
+                            client_key: None,
+                        },
+                    },
+                    auth: runtime.replica_access.roles.replicator.auth.clone(),
+                },
+                primary_slot_name: None,
+            })),
+        });
+
+        let execution_request = ExternalToolLowerer
+            .lower_execution_request(
+                crate::state::JobId("job-start".to_string()),
+                &plan,
+                &runtime,
+                &observed,
+                Some(&prepared_session),
+            )
+            .map_err(|err| format!("lower start execution request failed: {err}"))?;
+        let command = ExternalToolLowerer
+            .build_command(
+                &crate::config::ProcessConfig {
+                    binaries: sample_binary_paths(),
+                    ..runtime_config.process.clone()
+                },
+                &execution_request.kind,
+                true,
+            )
+            .map_err(|err| format!("build start command failed: {err}"))?;
+
+        if command.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {
+            return Err(format!("unexpected start job kind: {:?}", command.job_kind));
+        }
+        let has_config_file = command
+            .args
+            .iter()
+            .any(|arg| arg.contains(config_file.display().to_string().as_str()));
+        if !has_config_file {
+            return Err(format!(
+                "start command did not include prepared config path {}",
+                config_file.display()
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+
 ===== src/process/worker.rs =====
 use std::{fs, path::Path, process::Stdio};
 
@@ -1017,49 +2865,33 @@ use tokio::{
 };
 
 use crate::{
-    config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
-    dcs::{ClusterMemberView, DcsView},
-    pginfo::state::render_pg_conninfo,
-    postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
-    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
-    process::postmaster::{
-        lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget,
+    config::ProcessConfig,
+    process::{
+        cluster::{ProcessCluster, ProcessPreparationError},
+        postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
+        tools::{active_kind, active_kind_from_intent, process_job_kind_from_execution},
     },
-    state::{JobId, MemberId, UnixMillis, WorkerError, WorkerStatus},
+    state::{UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
-        ActiveJob, ActiveJobKind, DemoteSpec, PostgresStartIntent, PostgresStartMode,
-        ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExit,
-        ProcessHandle, ProcessIntent, ProcessLogIdentity, ProcessOutputLine, ProcessOutputStream,
-        PromoteSpec, ProcessJobKind, ReplicaProvisionIntent,
+        ActiveJob, PostgresStartIntent, ProcessCommandSpec, ProcessError, ProcessExit,
+        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
+        ReplicaProvisionIntent,
     },
-    log_event::{
-        CapturedStream, ProcessExecutionIdentity, ProcessJobIdentity, ProcessLogEvent,
-        ProcessLogOrigin, SubprocessLogEvent,
-    },
-    source::{basebackup_source_from_member, rewind_source_from_member},
+    log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     state::{
-        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessExecutionRequest,
-        ProcessIntentRequest, ProcessJobRejection, ProcessState, ProcessWorkerCtx,
+        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessIntentRequest, ProcessJobRejection,
+        ProcessState, ProcessWorkerCtx,
     },
 };
 
 const PROCESS_OUTPUT_READ_CHUNK_BYTES: usize = 8192;
 const PROCESS_OUTPUT_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1);
 const PROCESS_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
-const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
-
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
-
-fn process_job_identity(job_id: &JobId, job_kind: ProcessJobKind) -> ProcessJobIdentity {
-    ProcessJobIdentity {
-        job_id: job_id.0.clone(),
-        kind: job_kind,
-    }
-}
 
 fn process_job_kind_from_intent(intent: &ProcessIntent) -> ProcessJobKind {
     match intent {
@@ -1077,24 +2909,6 @@ fn process_job_kind_from_intent(intent: &ProcessIntent) -> ProcessJobKind {
         ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ProcessJobKind::StartReplica,
         ProcessIntent::Promote => ProcessJobKind::Promote,
         ProcessIntent::Demote(_) => ProcessJobKind::Demote,
-    }
-}
-
-fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> ProcessJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ProcessJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ProcessJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ProcessJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ProcessJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ProcessJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(_) => ProcessJobKind::StartPostgres,
-    }
-}
-
-fn process_execution_identity(identity: &ProcessLogIdentity) -> ProcessExecutionIdentity {
-    ProcessExecutionIdentity {
-        job: process_job_identity(&identity.job_id, identity.job_kind),
-        binary: identity.binary.clone(),
     }
 }
 
@@ -1200,7 +3014,7 @@ impl super::jobs::ProcessCommandRunner for TokioCommandRunner {
             args,
             env,
             capture_output,
-            log_identity: _,
+            job_kind: _,
         } = spec;
         let binary = program.display().to_string();
         if !program.is_absolute() {
@@ -1334,7 +3148,6 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
     ctx.runtime
         .log
         .send(ProcessLogEvent::WorkerRunStarted {
-            origin: ProcessLogOrigin::Run,
             capture_subprocess_output: ctx.runtime.capture_subprocess_output,
         })
         .map_err(|err| {
@@ -1352,11 +3165,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::RequestReceived {
-                    origin: ProcessLogOrigin::StepOnce,
-                    job: process_job_identity(
-                        &request.id,
-                        process_job_kind_from_intent(&request.intent),
-                    ),
+                    job_kind: process_job_kind_from_intent(&request.intent),
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!("process request log send failed: {err}"))
@@ -1369,9 +3178,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerEr
                 ctx.control.inbox_disconnected_logged = true;
                 ctx.runtime
                     .log
-                    .send(ProcessLogEvent::InboxDisconnected {
-                        origin: ProcessLogOrigin::StepOnce,
-                    })
+                    .send(ProcessLogEvent::InboxDisconnected)
                     .map_err(|err| {
                         WorkerError::Message(format!(
                             "process inbox disconnected log send failed: {err}"
@@ -1541,11 +3348,7 @@ pub(crate) async fn start_job(
         ctx.runtime
             .log
             .send(ProcessLogEvent::BusyRejected {
-                origin: ProcessLogOrigin::StartJob,
-                job: process_job_identity(
-                    &rejected_job_id,
-                    process_job_kind_from_intent(&request.intent),
-                ),
+                job_kind: process_job_kind_from_intent(&request.intent),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process busy reject log send failed: {err}"))
@@ -1566,8 +3369,6 @@ pub(crate) async fn start_job(
                 ctx.runtime
                     .log
                     .send(ProcessLogEvent::StartPostgresAlreadyRunning {
-                        origin: ProcessLogOrigin::StartJob,
-                        job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
                         data_dir: data_dir.display().to_string(),
                     })
                     .map_err(|err| {
@@ -1591,9 +3392,7 @@ pub(crate) async fn start_job(
                 ctx.runtime
                     .log
                     .send(ProcessLogEvent::StartPostgresPreflightFailed {
-                        origin: ProcessLogOrigin::StartJob,
-                        job: process_job_identity(&request.id, ProcessJobKind::StartPostgres),
-                        error: error.to_string(),
+                        cause: error.to_string(),
                     })
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -1615,18 +3414,14 @@ pub(crate) async fn start_job(
         }
     }
 
-    let execution_request = match materialize_execution_request(ctx, &request) {
-        Ok(materialized) => materialized,
+    let cluster = match ProcessCluster::production_from_ctx(ctx) {
+        Ok(cluster) => cluster,
         Err(error) => {
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::IntentMaterializationFailed {
-                    origin: ProcessLogOrigin::StartJob,
-                    job: process_job_identity(
-                        &request.id,
-                        process_job_kind_from_intent(&request.intent),
-                    ),
-                    error: error.to_string(),
+                    job_kind: process_job_kind_from_intent(&request.intent),
+                    cause: format!("planning snapshot failed: {error}"),
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!(
@@ -1646,59 +3441,38 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
+    let prepared_launch =
+        match cluster.prepare(&request, &ctx.config, ctx.runtime.capture_subprocess_output) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                log_prepare_failure(ctx, &request, &error)?;
+                transition_to_idle(
+                    ctx,
+                    JobOutcome::Failure {
+                        id: request.id,
+                        job_kind: active_kind_from_intent(&request.intent),
+                        error: error.into_process_error(),
+                        finished_at: now,
+                    },
+                    now,
+                )?;
+                return Ok(());
+            }
+        };
+    let execution_request = prepared_launch.request;
     let timeout_ms = timeout_for_kind(&execution_request.kind, &ctx.config);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
+    let command = prepared_launch.command;
 
-    let command = match build_command(
-        &ctx.config,
-        &request.id,
-        &execution_request.kind,
-        ctx.runtime.capture_subprocess_output,
-    ) {
-        Ok(command) => command,
-        Err(error) => {
-            ctx.runtime
-                .log
-                .send(ProcessLogEvent::BuildCommandFailed {
-                    origin: ProcessLogOrigin::StartJob,
-                    job: process_job_identity(
-                        &request.id,
-                        process_job_kind_from_execution(&execution_request.kind),
-                    ),
-                    error: error.to_string(),
-                })
-                .map_err(|err| {
-                    WorkerError::Message(format!(
-                        "process build command log send failed: {err}"
-                    ))
-                })?;
-            transition_to_idle(
-                ctx,
-                JobOutcome::Failure {
-                    id: request.id,
-                    job_kind: active_kind(&execution_request.kind),
-                    error,
-                    finished_at: now,
-                },
-                now,
-            )?;
-            return Ok(());
-        }
-    };
-
-    let log_identity = command.log_identity.clone();
+    let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::SpawnFailed {
-                    origin: ProcessLogOrigin::StartJob,
-                    job: process_job_identity(
-                        &request.id,
-                        process_job_kind_from_execution(&execution_request.kind),
-                    ),
-                    error: error.to_string(),
+                    job_kind: process_job_kind_from_execution(&execution_request.kind),
+                    cause: error.to_string(),
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!("process spawn log send failed: {err}"))
@@ -1723,13 +3497,11 @@ pub(crate) async fn start_job(
         started_at: now,
         deadline_at,
     };
-    let started_execution = process_execution_identity(&log_identity);
-
     ctx.control.active_runtime = Some(ActiveRuntime {
         request: execution_request,
         deadline_at,
         handle,
-        log_identity,
+        job_kind,
     });
     ctx.state_channel.current = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -1737,11 +3509,10 @@ pub(crate) async fn start_job(
     };
     ctx.runtime
         .log
-        .send(ProcessLogEvent::Started {
-            origin: ProcessLogOrigin::StartJob,
-            execution: started_execution,
-        })
-        .map_err(|err| WorkerError::Message(format!("process job started log send failed: {err}")))?;
+        .send(ProcessLogEvent::Started { job_kind })
+        .map_err(|err| {
+            WorkerError::Message(format!("process job started log send failed: {err}"))
+        })?;
     publish_state(ctx)
 }
 
@@ -1759,18 +3530,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
     {
         Ok(lines) => {
             for line in lines {
-                if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
-                    &runtime.log_identity,
-                    line.clone(),
-                )) {
+                if let Err(err) = ctx
+                    .runtime
+                    .log
+                    .send(subprocess_log_event(runtime.job_kind, line.clone()))
+                {
                     ctx.runtime
                         .log
                         .send(ProcessLogEvent::OutputEmitFailed {
-                            origin: ProcessLogOrigin::EmitSubprocessLine,
-                            execution: process_execution_identity(&runtime.log_identity),
+                            job_kind: runtime.job_kind,
                             stream: captured_stream(line.stream),
-                            bytes_len: line.bytes.len(),
-                            error: err.to_string(),
+                            cause: err.to_string(),
                         })
                         .map_err(|send_err| {
                             WorkerError::Message(format!(
@@ -1780,27 +3550,26 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                 }
             }
         }
-        Err(err) => ctx.runtime
+        Err(err) => ctx
+            .runtime
             .log
             .send(ProcessLogEvent::OutputDrainFailed {
-                origin: ProcessLogOrigin::TickActiveJob,
-                execution: process_execution_identity(&runtime.log_identity),
-                error: err.to_string(),
+                job_kind: runtime.job_kind,
+                cause: err.to_string(),
             })
             .map_err(|send_err| {
-                WorkerError::Message(format!(
-                    "process output drain log send failed: {send_err}"
-                ))
+                WorkerError::Message(format!("process output drain log send failed: {send_err}"))
             })?,
     }
     if now.0 >= runtime.deadline_at.0 {
         ctx.runtime
             .log
             .send(ProcessLogEvent::Timeout {
-                origin: ProcessLogOrigin::TickActiveJob,
-                execution: process_execution_identity(&runtime.log_identity),
+                job_kind: runtime.job_kind,
             })
-            .map_err(|err| WorkerError::Message(format!("process timeout log send failed: {err}")))?;
+            .map_err(|err| {
+                WorkerError::Message(format!("process timeout log send failed: {err}"))
+            })?;
         let cancel_result = runtime.handle.cancel().await;
         match runtime
             .handle
@@ -1809,18 +3578,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
         {
             Ok(lines) => {
                 for line in lines {
-                    if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
-                        &runtime.log_identity,
-                        line.clone(),
-                    )) {
+                    if let Err(err) = ctx
+                        .runtime
+                        .log
+                        .send(subprocess_log_event(runtime.job_kind, line.clone()))
+                    {
                         ctx.runtime
                             .log
                             .send(ProcessLogEvent::OutputEmitFailed {
-                                origin: ProcessLogOrigin::EmitSubprocessLine,
-                                execution: process_execution_identity(&runtime.log_identity),
+                                job_kind: runtime.job_kind,
                                 stream: captured_stream(line.stream),
-                                bytes_len: line.bytes.len(),
-                                error: err.to_string(),
+                                cause: err.to_string(),
                             })
                             .map_err(|send_err| {
                                 WorkerError::Message(format!(
@@ -1830,12 +3598,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                     }
                 }
             }
-            Err(err) => ctx.runtime
+            Err(err) => ctx
+                .runtime
                 .log
                 .send(ProcessLogEvent::OutputDrainFailed {
-                    origin: ProcessLogOrigin::TickActiveJob,
-                    execution: process_execution_identity(&runtime.log_identity),
-                    error: err.to_string(),
+                    job_kind: runtime.job_kind,
+                    cause: err.to_string(),
                 })
                 .map_err(|send_err| {
                     WorkerError::Message(format!(
@@ -1874,18 +3642,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
-                            &runtime.log_identity,
-                            line.clone(),
-                        )) {
+                        if let Err(err) = ctx
+                            .runtime
+                            .log
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
+                        {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    origin: ProcessLogOrigin::EmitSubprocessLine,
-                                    execution: process_execution_identity(&runtime.log_identity),
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
-                                    bytes_len: line.bytes.len(),
-                                    error: err.to_string(),
+                                    cause: err.to_string(),
                                 })
                                 .map_err(|send_err| {
                                     WorkerError::Message(format!(
@@ -1895,12 +3662,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => ctx.runtime
+                Err(err) => ctx
+                    .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        origin: ProcessLogOrigin::TickActiveJob,
-                        execution: process_execution_identity(&runtime.log_identity),
-                        error: err.to_string(),
+                        job_kind: runtime.job_kind,
+                        cause: err.to_string(),
                     })
                     .map_err(|send_err| {
                         WorkerError::Message(format!(
@@ -1917,10 +3684,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedSuccessfully {
-                    origin: ProcessLogOrigin::TickActiveJob,
-                    execution: process_execution_identity(&runtime.log_identity),
+                    job_kind: runtime.job_kind,
                 })
-                .map_err(|err| WorkerError::Message(format!("process exit log send failed: {err}")))?;
+                .map_err(|err| {
+                    WorkerError::Message(format!("process exit log send failed: {err}"))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
@@ -1931,18 +3699,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
-                            &runtime.log_identity,
-                            line.clone(),
-                        )) {
+                        if let Err(err) = ctx
+                            .runtime
+                            .log
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
+                        {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    origin: ProcessLogOrigin::EmitSubprocessLine,
-                                    execution: process_execution_identity(&runtime.log_identity),
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
-                                    bytes_len: line.bytes.len(),
-                                    error: err.to_string(),
+                                    cause: err.to_string(),
                                 })
                                 .map_err(|send_err| {
                                     WorkerError::Message(format!(
@@ -1952,12 +3719,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => ctx.runtime
+                Err(err) => ctx
+                    .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        origin: ProcessLogOrigin::TickActiveJob,
-                        execution: process_execution_identity(&runtime.log_identity),
-                        error: err.to_string(),
+                        job_kind: runtime.job_kind,
+                        cause: err.to_string(),
                     })
                     .map_err(|send_err| {
                         WorkerError::Message(format!(
@@ -1975,11 +3742,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedUnsuccessfully {
-                    origin: ProcessLogOrigin::TickActiveJob,
-                    execution: process_execution_identity(&runtime.log_identity),
-                    error: exit_error.to_string(),
+                    job_kind: runtime.job_kind,
+                    cause: exit_error.to_string(),
                 })
-                .map_err(|err| WorkerError::Message(format!("process exit log send failed: {err}")))?;
+                .map_err(|err| {
+                    WorkerError::Message(format!("process exit log send failed: {err}"))
+                })?;
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
@@ -1990,18 +3758,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             {
                 Ok(lines) => {
                     for line in lines {
-                        if let Err(err) = ctx.runtime.log.send(subprocess_log_event(
-                            &runtime.log_identity,
-                            line.clone(),
-                        )) {
+                        if let Err(err) = ctx
+                            .runtime
+                            .log
+                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
+                        {
                             ctx.runtime
                                 .log
                                 .send(ProcessLogEvent::OutputEmitFailed {
-                                    origin: ProcessLogOrigin::EmitSubprocessLine,
-                                    execution: process_execution_identity(&runtime.log_identity),
+                                    job_kind: runtime.job_kind,
                                     stream: captured_stream(line.stream),
-                                    bytes_len: line.bytes.len(),
-                                    error: err.to_string(),
+                                    cause: err.to_string(),
                                 })
                                 .map_err(|send_err| {
                                     WorkerError::Message(format!(
@@ -2011,12 +3778,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
                         }
                     }
                 }
-                Err(err) => ctx.runtime
+                Err(err) => ctx
+                    .runtime
                     .log
                     .send(ProcessLogEvent::OutputDrainFailed {
-                        origin: ProcessLogOrigin::TickActiveJob,
-                        execution: process_execution_identity(&runtime.log_identity),
-                        error: err.to_string(),
+                        job_kind: runtime.job_kind,
+                        cause: err.to_string(),
                     })
                     .map_err(|send_err| {
                         WorkerError::Message(format!(
@@ -2033,14 +3800,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), Wo
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::PollFailed {
-                    origin: ProcessLogOrigin::TickActiveJob,
-                    execution: process_execution_identity(&runtime.log_identity),
-                    error: outcome_error_string(&outcome),
+                    job_kind: runtime.job_kind,
+                    cause: outcome_error_string(&outcome),
                 })
                 .map_err(|err| {
-                    WorkerError::Message(format!(
-                        "process poll failure log send failed: {err}"
-                    ))
+                    WorkerError::Message(format!("process poll failure log send failed: {err}"))
                 })?;
             transition_to_idle(ctx, outcome, now)
         }
@@ -2062,16 +3826,18 @@ fn captured_stream(stream: ProcessOutputStream) -> CapturedStream {
     }
 }
 
-fn subprocess_log_event(
-    identity: &ProcessLogIdentity,
-    line: ProcessOutputLine,
-) -> SubprocessLogEvent {
-    SubprocessLogEvent {
-        producer: crate::logging::LogProducer::PgTool,
+fn subprocess_log_event(job_kind: ProcessJobKind, line: ProcessOutputLine) -> SubprocessLogEvent {
+    SubprocessLogEvent::Line {
+        job_kind,
         stream: captured_stream(line.stream),
-        execution: process_execution_identity(identity),
-        origin: ProcessLogOrigin::EmitSubprocessLine,
-        bytes: line.bytes,
+        line: decode_process_output_line(line.bytes),
+    }
+}
+
+fn decode_process_output_line(bytes: Vec<u8>) -> String {
+    match String::from_utf8(bytes) {
+        Ok(line) => line,
+        Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
     }
 }
 
@@ -2129,568 +3895,36 @@ fn timeout_for_kind(kind: &ProcessExecutionKind, config: &ProcessConfig) -> u64 
     }
 }
 
-fn active_kind(kind: &ProcessExecutionKind) -> ActiveJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ActiveJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ActiveJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ActiveJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(spec) => match spec.mode {
-            PostgresStartMode::Primary => ActiveJobKind::StartPrimary,
-            PostgresStartMode::DetachedStandby => ActiveJobKind::StartDetachedStandby,
-            PostgresStartMode::Replica => ActiveJobKind::StartReplica,
-        },
-    }
-}
-
-fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
-    match intent {
-        ProcessIntent::Bootstrap => ActiveJobKind::Bootstrap,
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
-            ActiveJobKind::BaseBackup
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
-            ActiveJobKind::PgRewind
-        }
-        ProcessIntent::Promote => ActiveJobKind::Promote,
-        ProcessIntent::Demote(_) => ActiveJobKind::Demote,
-        ProcessIntent::Start(PostgresStartIntent::Primary) => ActiveJobKind::StartPrimary,
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-            ActiveJobKind::StartDetachedStandby
-        }
-        ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ActiveJobKind::StartReplica,
-    }
-}
-
-fn build_command(
-    config: &ProcessConfig,
-    job_id: &JobId,
-    kind: &ProcessExecutionKind,
-    capture_output: bool,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    match kind {
-        ProcessExecutionKind::Bootstrap(spec) => {
-            validate_non_empty_path("bootstrap.data_dir", &spec.data_dir)?;
-            if spec.superuser.as_str().trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "bootstrap.superuser must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-A".to_string(),
-                    "trust".to_string(),
-                    "-U".to_string(),
-                    spec.superuser.as_str().to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessExecutionKind::BaseBackup(spec) => {
-            validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
-            validate_non_empty_pg_connect_target(
-                "basebackup.source_conninfo.target",
-                &spec.source.conninfo.target,
-            )?;
-            if spec.source.conninfo.user.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "basebackup.source_conninfo.user must not be empty".to_string(),
-                ));
-            }
-            if spec.source.conninfo.dbname.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "basebackup.source_conninfo.dbname must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgBasebackup)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "--dbname".to_string(),
-                    render_pg_conninfo(&spec.source.conninfo),
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-Fp".to_string(),
-                    "-Xs".to_string(),
-                ],
-                env: role_auth_env(&spec.source.auth),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessExecutionKind::PgRewind(spec) => {
-            validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
-            validate_non_empty_pg_connect_target(
-                "pg_rewind.source_conninfo.target",
-                &spec.source.conninfo.target,
-            )?;
-            if spec.source.conninfo.user.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo.user must not be empty".to_string(),
-                ));
-            }
-            if spec.source.conninfo.dbname.trim().is_empty() {
-                return Err(ProcessError::InvalidSpec(
-                    "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
-                ));
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgRewind)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "--target-pgdata".to_string(),
-                    spec.target_data_dir.display().to_string(),
-                    "--source-server".to_string(),
-                    render_pg_conninfo(&spec.source.conninfo),
-                ],
-                env: role_auth_env(&spec.source.auth),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessExecutionKind::Promote(spec) => {
-            validate_non_empty_path("promote.data_dir", &spec.data_dir)?;
-            let mut args = vec![
-                "-D".to_string(),
-                spec.data_dir.display().to_string(),
-                "promote".to_string(),
-                "-w".to_string(),
-            ];
-            if let Some(wait_seconds) = spec.wait_seconds {
-                args.push("-t".to_string());
-                args.push(wait_seconds.to_string());
-            }
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args,
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessExecutionKind::Demote(spec) => {
-            validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "stop".to_string(),
-                    "-m".to_string(),
-                    spec.mode.as_pg_ctl_arg().to_string(),
-                    "-w".to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-        ProcessExecutionKind::StartPostgres(spec) => {
-            validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
-            validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
-            validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
-            let wait_seconds = spec.wait_seconds.unwrap_or(PG_CTL_DEFAULT_WAIT_SECONDS);
-            let option_tokens = vec![
-                "-c".to_string(),
-                format!("config_file={}", spec.config_file.display()),
-            ];
-            let options = render_pg_ctl_option_string(&option_tokens)?;
-            let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
-            Ok(ProcessCommandSpec {
-                program: program.clone(),
-                args: vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "-l".to_string(),
-                    spec.log_file.display().to_string(),
-                    "-o".to_string(),
-                    options,
-                    "start".to_string(),
-                    "-w".to_string(),
-                    "-t".to_string(),
-                    wait_seconds.to_string(),
-                ],
-                env: Vec::new(),
-                capture_output,
-                log_identity: ProcessLogIdentity {
-                    job_id: job_id.clone(),
-                    job_kind: process_job_kind_from_execution(kind),
-                    binary: binary_label(program.as_path()),
-                },
-            })
-        }
-    }
-}
-
-fn resolve_process_binary(
-    config: &ProcessConfig,
-    binary: PostgresBinaryName,
-) -> Result<std::path::PathBuf, ProcessError> {
-    config
-        .binaries
-        .resolve_binary_path(binary)
-        .map_err(ProcessError::InvalidSpec)
-}
-
-fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
-    match auth {
-        RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
-            key: "PGPASSWORD".to_string(),
-            value: ProcessEnvValue::Secret(password.clone()),
-        }],
-    }
-}
-
-fn materialize_execution_request(
-    ctx: &ProcessWorkerCtx,
+fn log_prepare_failure(
+    ctx: &mut ProcessWorkerCtx,
     request: &ProcessIntentRequest,
-) -> Result<ProcessExecutionRequest, ProcessError> {
-    let runtime_config = ctx.observed.runtime_config.latest();
-    let dcs = ctx.observed.dcs.latest();
-    let kind = match &request.intent {
-        ProcessIntent::Bootstrap => {
-            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
-            ProcessExecutionKind::Bootstrap(super::jobs::BootstrapSpec {
-                data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                superuser: runtime_config
-                    .postgres
-                    .roles
-                    .mandatory
-                    .superuser
-                    .username
-                    .clone(),
-                timeout_ms: None,
+    error: &ProcessPreparationError,
+) -> Result<(), WorkerError> {
+    match error {
+        ProcessPreparationError::Planning(inner)
+        | ProcessPreparationError::SessionMaterialization(inner) => ctx
+            .runtime
+            .log
+            .send(ProcessLogEvent::IntentMaterializationFailed {
+                job_kind: process_job_kind_from_intent(&request.intent),
+                cause: format!("{} failed: {inner}", error.stage_label()),
             })
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-            wipe_data_dir(runtime_config.postgres.paths.data_dir.as_path())?;
-            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
-            let source = basebackup_source_from_member(
-                &ctx.identity.self_id,
-                &ctx.plan,
-                source_member_id,
-                source_member,
-            )
-            .map_err(source_materialization_error)?;
-            ProcessExecutionKind::BaseBackup(super::jobs::BaseBackupSpec {
-                data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                source,
-                timeout_ms: Some(runtime_config.process.timeouts.bootstrap_ms),
-            })
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
-            let (source_member_id, source_member) = resolve_source_member(&dcs, leader)?;
-            let source = rewind_source_from_member(
-                &ctx.identity.self_id,
-                &ctx.plan,
-                source_member_id,
-                source_member,
-            )
-            .map_err(source_materialization_error)?;
-            ProcessExecutionKind::PgRewind(super::jobs::PgRewindSpec {
-                target_data_dir: runtime_config.postgres.paths.data_dir.clone(),
-                source,
-                timeout_ms: None,
-            })
-        }
-        ProcessIntent::Start(PostgresStartIntent::Primary) => {
-            let start_intent = primary_start_intent(&runtime_config)?;
-            materialize_start_postgres(
-                &runtime_config,
-                &ctx.plan,
-                PostgresStartMode::Primary,
-                &start_intent,
-            )?
-        }
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => materialize_start_postgres(
-            &runtime_config,
-            &ctx.plan,
-            PostgresStartMode::DetachedStandby,
-            &ManagedPostgresStartIntent::detached_standby(),
-        )?,
-        ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
-            let start_intent = replica_start_intent(ctx, &runtime_config, &dcs, leader)?;
-            materialize_start_postgres(
-                &runtime_config,
-                &ctx.plan,
-                PostgresStartMode::Replica,
-                &start_intent,
-            )?
-        }
-        ProcessIntent::Promote => ProcessExecutionKind::Promote(PromoteSpec {
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            wait_seconds: None,
-            timeout_ms: None,
-        }),
-        ProcessIntent::Demote(mode) => ProcessExecutionKind::Demote(DemoteSpec {
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            mode: mode.clone(),
-            timeout_ms: None,
-        }),
-    };
-
-    Ok(ProcessExecutionRequest {
-        id: request.id.clone(),
-        kind,
-    })
-}
-
-fn primary_start_intent(
-    runtime_config: &RuntimeConfig,
-) -> Result<ManagedPostgresStartIntent, ProcessError> {
-    let managed_recovery_state = inspect_managed_recovery_state(
-        runtime_config.postgres.paths.data_dir.as_path(),
-    )
-    .map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "inspect managed recovery state for primary start failed: {err}"
-        ))
-    })?;
-    if managed_recovery_state != crate::postgres_managed_conf::ManagedRecoverySignal::None {
-        return Err(ProcessError::InvalidSpec(
-            "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
-        ));
-    }
-    Ok(ManagedPostgresStartIntent::primary())
-}
-
-fn replica_start_intent(
-    ctx: &ProcessWorkerCtx,
-    runtime_config: &RuntimeConfig,
-    dcs: &DcsView,
-    leader: &crate::state::MemberId,
-) -> Result<ManagedPostgresStartIntent, ProcessError> {
-    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    let source = basebackup_source_from_member(
-        &ctx.identity.self_id,
-        &ctx.plan,
-        source_member_id,
-        source_member,
-    )
-    .map_err(source_materialization_error)?;
-    Ok(ManagedPostgresStartIntent::replica(
-        source.conninfo,
-        managed_standby_auth_from_role_auth(
-            &source.auth,
-            runtime_config.postgres.paths.data_dir.as_path(),
-        ),
-        None,
-    ))
-}
-
-fn materialize_start_postgres(
-    runtime_config: &RuntimeConfig,
-    intent_runtime: &super::state::ProcessRuntimePlan,
-    mode: PostgresStartMode,
-    start_intent: &ManagedPostgresStartIntent,
-) -> Result<ProcessExecutionKind, ProcessError> {
-    let managed =
-        materialize_managed_postgres_config(runtime_config, start_intent).map_err(|err| {
-            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
-        })?;
-    Ok(ProcessExecutionKind::StartPostgres(
-        super::jobs::StartPostgresSpec {
-            mode,
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
-            socket_dir: intent_runtime.postgres.paths.socket_dir.clone(),
-            port: intent_runtime.postgres.port,
-            config_file: managed.postgresql_conf_path,
-            log_file: intent_runtime.postgres.paths.log_file.clone(),
-            wait_seconds: None,
-            timeout_ms: None,
-        },
-    ))
-}
-
-fn resolve_source_member<'a>(
-    dcs: &'a DcsView,
-    leader: &'a MemberId,
-) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
-    let cluster = dcs.cluster().ok_or_else(|| {
-        ProcessError::InvalidSpec(
-            "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
-                .to_string(),
-        )
-    })?;
-    cluster.member(leader).map(|member| (leader, member)).ok_or_else(|| {
-        ProcessError::InvalidSpec(format!(
-            "target member `{}` not present in DCS view",
-            leader.0
-        ))
-    })
-}
-
-fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {
-    ProcessError::InvalidSpec(error.to_string())
-}
-
-fn wipe_data_dir(data_dir: &Path) -> Result<(), ProcessError> {
-    if data_dir.as_os_str().is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "wipe_data_dir data_dir must not be empty".to_string(),
-        ));
-    }
-    if data_dir.exists() {
-        wipe_data_dir_contents(data_dir)?;
-    } else {
-        fs::create_dir_all(data_dir).map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir create_dir_all failed: {err}"))
-        })?;
-    }
-    set_postgres_data_dir_permissions(data_dir)?;
-    Ok(())
-}
-
-fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
-    let entries = fs::read_dir(data_dir).map_err(|err| {
-        ProcessError::InvalidSpec(format!("wipe_data_dir read_dir failed: {err}"))
-    })?;
-    for entry_result in entries {
-        let entry = entry_result.map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir read_dir entry failed: {err}"))
-        })?;
-        let file_type = entry.file_type().map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir file_type failed: {err}"))
-        })?;
-        let entry_path = entry.path();
-        if file_type.is_dir() {
-            fs::remove_dir_all(entry_path.as_path()).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "wipe_data_dir remove_dir_all failed for {}: {err}",
-                    entry_path.display()
+            .map_err(|err| {
+                WorkerError::Message(format!(
+                    "process intent materialization log send failed: {err}"
                 ))
-            })?;
-        } else {
-            fs::remove_file(entry_path.as_path()).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "wipe_data_dir remove_file failed for {}: {err}",
-                    entry_path.display()
-                ))
-            })?;
-        }
+            }),
+        ProcessPreparationError::ToolLowering(inner) => ctx
+            .runtime
+            .log
+            .send(ProcessLogEvent::BuildCommandFailed {
+                job_kind: process_job_kind_from_intent(&request.intent),
+                cause: format!("{} failed: {inner}", error.stage_label()),
+            })
+            .map_err(|err| {
+                WorkerError::Message(format!("process build command log send failed: {err}"))
+            }),
     }
-    Ok(())
-}
-
-fn set_postgres_data_dir_permissions(data_dir: &Path) -> Result<(), ProcessError> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
-            ProcessError::InvalidSpec(format!("wipe_data_dir set_permissions failed: {err}"))
-        })?;
-    }
-
-    #[cfg(not(unix))]
-    {
-        let _path = data_dir;
-    }
-
-    Ok(())
-}
-
-fn binary_label(path: &std::path::Path) -> String {
-    match path.file_name().and_then(|s| s.to_str()) {
-        Some(name) if !name.trim().is_empty() => name.to_string(),
-        _ => path.display().to_string(),
-    }
-}
-
-fn validate_non_empty_path(field: &str, value: &std::path::Path) -> Result<(), ProcessError> {
-    if value.as_os_str().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_non_empty_pg_connect_target(
-    field: &str,
-    value: &crate::state::PgConnectTarget,
-) -> Result<(), ProcessError> {
-    let is_empty = match value {
-        crate::state::PgConnectTarget::Tcp(target) => target.host().trim().is_empty(),
-        crate::state::PgConnectTarget::Unix(target) => target.socket_dir.as_os_str().is_empty(),
-    };
-    if is_empty {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
-    let mut out = String::new();
-    for (index, raw) in tokens.iter().enumerate() {
-        let escaped = escape_pg_ctl_option_token(raw.as_str())?;
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(escaped.as_str());
-    }
-    Ok(out)
-}
-
-fn escape_pg_ctl_option_token(token: &str) -> Result<String, ProcessError> {
-    if token.is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "pg_ctl option token must not be empty".to_string(),
-        ));
-    }
-    if token.contains('\0') || token.contains('\n') || token.contains('\r') {
-        return Err(ProcessError::InvalidSpec(
-            "pg_ctl option token contains invalid characters".to_string(),
-        ));
-    }
-
-    let needs_quotes = token.chars().any(|ch| ch.is_ascii_whitespace());
-    if !needs_quotes {
-        return Ok(token.to_string());
-    }
-
-    let mut out = String::with_capacity(token.len().saturating_add(2));
-    out.push('"');
-    for ch in token.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            other => out.push(other),
-        }
-    }
-    out.push('"');
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -2884,7 +4118,9 @@ mod tests {
                 },
                 config: cfg.process.clone(),
                 identity: ProcessNodeIdentity {
-                    self_id: MemberId(cfg.cluster.member_id.clone()),
+                    cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
+                    scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
+                    member_id: MemberId(cfg.cluster.member_id.clone()),
                 },
                 observed: ProcessObservedState {
                     runtime_config,
@@ -3004,3902 +4240,6 @@ mod tests {
 }
 
 
-===== src/process/log_event.rs =====
-use std::borrow::Cow;
-
-use crate::logging::{
-    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
-    LogParser, LogProducer, LogTransport, SealedLogEvent, SeverityText,
-};
-
-use super::jobs::ProcessJobKind;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessLogOrigin {
-    Run,
-    StepOnce,
-    StartJob,
-    TickActiveJob,
-    EmitSubprocessLine,
-}
-
-impl ProcessLogOrigin {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Run => "process_worker::run",
-            Self::StepOnce => "process_worker::step_once",
-            Self::StartJob => "process_worker::start_job",
-            Self::TickActiveJob => "process_worker::tick_active_job",
-            Self::EmitSubprocessLine => "process_worker::emit_subprocess_line",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessJobIdentity {
-    pub(crate) job_id: String,
-    pub(crate) kind: ProcessJobKind,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessExecutionIdentity {
-    pub(crate) job: ProcessJobIdentity,
-    pub(crate) binary: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CapturedStream {
-    Stdout,
-    Stderr,
-}
-
-impl CapturedStream {
-    fn severity(self) -> SeverityText {
-        match self {
-            Self::Stdout => SeverityText::Info,
-            Self::Stderr => SeverityText::Warn,
-        }
-    }
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Stdout => "stdout",
-            Self::Stderr => "stderr",
-        }
-    }
-
-    fn transport(self) -> LogTransport {
-        match self {
-            Self::Stdout => LogTransport::ChildStdout,
-            Self::Stderr => LogTransport::ChildStderr,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessLogEvent {
-    WorkerRunStarted {
-        origin: ProcessLogOrigin,
-        capture_subprocess_output: bool,
-    },
-    RequestReceived {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-    },
-    InboxDisconnected {
-        origin: ProcessLogOrigin,
-    },
-    BusyRejected {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-    },
-    StartPostgresAlreadyRunning {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-        data_dir: String,
-    },
-    StartPostgresPreflightFailed {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-        error: String,
-    },
-    IntentMaterializationFailed {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-        error: String,
-    },
-    BuildCommandFailed {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-        error: String,
-    },
-    SpawnFailed {
-        origin: ProcessLogOrigin,
-        job: ProcessJobIdentity,
-        error: String,
-    },
-    Started {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-    },
-    OutputDrainFailed {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-        error: String,
-    },
-    Timeout {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-    },
-    ExitedSuccessfully {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-    },
-    ExitedUnsuccessfully {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-        error: String,
-    },
-    PollFailed {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-        error: String,
-    },
-    OutputEmitFailed {
-        origin: ProcessLogOrigin,
-        execution: ProcessExecutionIdentity,
-        stream: CapturedStream,
-        bytes_len: usize,
-        error: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SubprocessLogEvent {
-    pub(crate) producer: LogProducer,
-    pub(crate) origin: ProcessLogOrigin,
-    pub(crate) execution: ProcessExecutionIdentity,
-    pub(crate) stream: CapturedStream,
-    pub(crate) bytes: Vec<u8>,
-}
-
-impl SealedLogEvent for ProcessLogEvent {}
-
-impl DomainLogEvent for ProcessLogEvent {
-    fn metadata(&self) -> LogEventMetadata {
-        match self {
-            Self::WorkerRunStarted { origin, .. } => event_metadata(
-                SeverityText::Debug,
-                "process worker run started",
-                "process.worker.run_started",
-                LogEventResult::Ok,
-                *origin,
-            ),
-            Self::RequestReceived { origin, .. } => event_metadata(
-                SeverityText::Debug,
-                "process job request received",
-                "process.worker.request_received",
-                LogEventResult::Ok,
-                *origin,
-            ),
-            Self::InboxDisconnected { origin } => event_metadata(
-                SeverityText::Warn,
-                "process worker inbox disconnected",
-                "process.worker.inbox_disconnected",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::BusyRejected { origin, .. } => event_metadata(
-                SeverityText::Warn,
-                "process worker busy; rejecting job",
-                "process.worker.busy_reject",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::StartPostgresAlreadyRunning { origin, .. } => event_metadata(
-                SeverityText::Info,
-                "start postgres preflight: postgres already running",
-                "process.job.start_postgres_noop",
-                LogEventResult::Ok,
-                *origin,
-            ),
-            Self::StartPostgresPreflightFailed { origin, .. } => event_metadata(
-                SeverityText::Error,
-                "start postgres preflight failed",
-                "process.job.start_postgres_preflight_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::IntentMaterializationFailed { origin, .. } => event_metadata(
-                SeverityText::Error,
-                "process intent materialization failed",
-                "process.worker.intent_materialization_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::BuildCommandFailed { origin, .. } => event_metadata(
-                SeverityText::Error,
-                "process build command failed",
-                "process.job.build_command_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::SpawnFailed { origin, .. } => event_metadata(
-                SeverityText::Error,
-                "process spawn failed",
-                "process.job.spawn_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::Started { origin, .. } => event_metadata(
-                SeverityText::Info,
-                "process job started",
-                "process.job.started",
-                LogEventResult::Ok,
-                *origin,
-            ),
-            Self::OutputDrainFailed { origin, .. } => event_metadata(
-                SeverityText::Warn,
-                "process output drain failed",
-                "process.worker.output_drain_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::Timeout { origin, .. } => event_metadata(
-                SeverityText::Warn,
-                "process job timed out; cancelling",
-                "process.job.timeout",
-                LogEventResult::Timeout,
-                *origin,
-            ),
-            Self::ExitedSuccessfully { origin, .. } => event_metadata(
-                SeverityText::Info,
-                "process job exited successfully",
-                "process.job.exited",
-                LogEventResult::Ok,
-                *origin,
-            ),
-            Self::ExitedUnsuccessfully { origin, .. } => event_metadata(
-                SeverityText::Warn,
-                "process job exited unsuccessfully",
-                "process.job.exited",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::PollFailed { origin, .. } => event_metadata(
-                SeverityText::Error,
-                "process job poll failed",
-                "process.job.poll_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-            Self::OutputEmitFailed { origin, .. } => event_metadata(
-                SeverityText::Warn,
-                "process subprocess output emit failed",
-                "process.worker.output_emit_failed",
-                LogEventResult::Failed,
-                *origin,
-            ),
-        }
-    }
-
-    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
-        match self {
-            Self::WorkerRunStarted {
-                capture_subprocess_output,
-                ..
-            } => visitor.bool("capture_subprocess_output", *capture_subprocess_output),
-            Self::RequestReceived { job, .. } | Self::BusyRejected { job, .. } => {
-                write_job(visitor, job);
-            }
-            Self::InboxDisconnected { .. } => {}
-            Self::StartPostgresAlreadyRunning { job, data_dir, .. } => {
-                write_job(visitor, job);
-                visitor.string("data_dir", data_dir.clone());
-            }
-            Self::StartPostgresPreflightFailed { job, error, .. }
-            | Self::IntentMaterializationFailed { job, error, .. }
-            | Self::BuildCommandFailed { job, error, .. }
-            | Self::SpawnFailed { job, error, .. } => {
-                write_job(visitor, job);
-                visitor.string("error", error.clone());
-            }
-            Self::Started { execution, .. }
-            | Self::Timeout { execution, .. }
-            | Self::ExitedSuccessfully { execution, .. } => {
-                write_execution(visitor, execution);
-            }
-            Self::OutputDrainFailed {
-                execution,
-                error,
-                ..
-            }
-            | Self::ExitedUnsuccessfully {
-                execution,
-                error,
-                ..
-            }
-            | Self::PollFailed {
-                execution,
-                error,
-                ..
-            } => {
-                write_execution(visitor, execution);
-                visitor.string("error", error.clone());
-            }
-            Self::OutputEmitFailed {
-                execution,
-                stream,
-                bytes_len,
-                error,
-                ..
-            } => {
-                write_execution(visitor, execution);
-                visitor.str("stream", stream.label());
-                visitor.usize("bytes_len", *bytes_len);
-                visitor.string("error", error.clone());
-            }
-        }
-    }
-}
-
-impl SealedLogEvent for SubprocessLogEvent {}
-
-impl DomainLogEvent for SubprocessLogEvent {
-    fn metadata(&self) -> LogEventMetadata {
-        LogEventMetadata {
-            severity: self.stream.severity(),
-            message: Cow::Owned(String::from_utf8_lossy(self.bytes.as_slice()).into_owned()),
-            event_name: "process.subprocess.line",
-            event_domain: "process",
-            event_result: LogEventResult::Ok,
-            source: LogEventSource::new(
-                self.producer,
-                self.stream.transport(),
-                LogParser::Raw,
-                self.origin.label(),
-            ),
-        }
-    }
-
-    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
-        write_execution(visitor, &self.execution);
-        visitor.str("stream", self.stream.label());
-    }
-}
-
-fn event_metadata(
-    severity: SeverityText,
-    message: &'static str,
-    event_name: &'static str,
-    event_result: LogEventResult,
-    origin: ProcessLogOrigin,
-) -> LogEventMetadata {
-    LogEventMetadata {
-        severity,
-        message: Cow::Borrowed(message),
-        event_name,
-        event_domain: "process",
-        event_result,
-        source: LogEventSource::app(origin.label()),
-    }
-}
-
-fn write_job(visitor: &mut dyn LogFieldVisitor, identity: &ProcessJobIdentity) {
-    visitor.string("job.id", identity.job_id.clone());
-    visitor.str("job.kind", process_job_kind_label(identity.kind));
-}
-
-fn write_execution(visitor: &mut dyn LogFieldVisitor, execution: &ProcessExecutionIdentity) {
-    write_job(visitor, &execution.job);
-    visitor.string("binary", execution.binary.clone());
-}
-
-fn process_job_kind_label(kind: ProcessJobKind) -> &'static str {
-    match kind {
-        ProcessJobKind::Bootstrap => "bootstrap",
-        ProcessJobKind::BaseBackup => "basebackup",
-        ProcessJobKind::PgRewind => "pg_rewind",
-        ProcessJobKind::Promote => "promote",
-        ProcessJobKind::Demote => "demote",
-        ProcessJobKind::StartPostgres => "start_postgres",
-        ProcessJobKind::StartPrimary => "start_primary",
-        ProcessJobKind::StartDetachedStandby => "start_detached_standby",
-        ProcessJobKind::StartReplica => "start_replica",
-    }
-}
-
-
-===== src/logging/mod.rs =====
-use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::LineWriter;
-use std::io::Write;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use serde::Serialize;
-use serde_json::Value;
-use thiserror::Error;
-use tokio::sync::mpsc;
-use tracing::{dispatcher, Dispatch};
-use tracing_subscriber::layer::{Context, Layer};
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::Registry;
-
-mod event;
-mod raw_record;
-
-pub(crate) mod postgres_ingest;
-pub(crate) mod tailer;
-
-pub(crate) use event::{
-    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
-    SealedLogEvent,
-};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum SeverityText {
-    Trace,
-    Debug,
-    Info,
-    Warn,
-    Error,
-    Fatal,
-}
-
-impl SeverityText {
-    pub(crate) fn number(self) -> u8 {
-        // OpenTelemetry severity_number mapping.
-        match self {
-            Self::Trace => 1,
-            Self::Debug => 5,
-            Self::Info => 9,
-            Self::Warn => 13,
-            Self::Error => 17,
-            Self::Fatal => 21,
-        }
-    }
-}
-
-impl From<crate::config::LogLevel> for SeverityText {
-    fn from(value: crate::config::LogLevel) -> Self {
-        match value {
-            crate::config::LogLevel::Trace => Self::Trace,
-            crate::config::LogLevel::Debug => Self::Debug,
-            crate::config::LogLevel::Info => Self::Info,
-            crate::config::LogLevel::Warn => Self::Warn,
-            crate::config::LogLevel::Error => Self::Error,
-            crate::config::LogLevel::Fatal => Self::Fatal,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum LogProducer {
-    App,
-    Postgres,
-    PgTool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum LogTransport {
-    Internal,
-    FileTail,
-    ChildStdout,
-    ChildStderr,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum LogParser {
-    App,
-    PostgresJson,
-    PostgresPlain,
-    Raw,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub(crate) struct LogSource {
-    pub(crate) producer: LogProducer,
-    pub(crate) transport: LogTransport,
-    pub(crate) parser: LogParser,
-    pub(crate) origin: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize)]
-pub(crate) struct LogRecord {
-    pub(crate) timestamp_ms: u64,
-    pub(crate) hostname: String,
-    pub(crate) severity_text: SeverityText,
-    pub(crate) severity_number: u8,
-    pub(crate) message: String,
-    pub(crate) source: LogSource,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub(crate) attributes: BTreeMap<String, Value>,
-}
-
-impl LogRecord {
-    #[cfg(test)]
-    pub(crate) fn new(
-        timestamp_ms: u64,
-        hostname: String,
-        severity_text: SeverityText,
-        message: String,
-        source: LogSource,
-    ) -> Self {
-        Self {
-            timestamp_ms,
-            hostname,
-            severity_text,
-            severity_number: severity_text.number(),
-            message,
-            source,
-            attributes: BTreeMap::new(),
-        }
-    }
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum LogError {
-    #[error("json serialize failed: {0}")]
-    Json(String),
-    #[error("sink write failed: {0}")]
-    SinkIo(String),
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum LogBootstrapError {
-    #[error("logging misconfigured: {0}")]
-    Misconfigured(String),
-    #[error("sink init failed: {0}")]
-    SinkInit(String),
-}
-
-pub(crate) trait LogSink: Send + Sync {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError>;
-}
-
-pub(crate) struct JsonlStderrSink {
-    stderr: Mutex<std::io::Stderr>,
-}
-
-impl JsonlStderrSink {
-    pub(crate) fn new() -> Self {
-        Self {
-            stderr: Mutex::new(std::io::stderr()),
-        }
-    }
-}
-
-impl LogSink for JsonlStderrSink {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let line = serde_json::to_string(record).map_err(|err| LogError::Json(err.to_string()))?;
-        let mut stderr = self
-            .stderr
-            .lock()
-            .map_err(|_| LogError::SinkIo("stderr lock poisoned".to_string()))?;
-        stderr
-            .write_all(line.as_bytes())
-            .and_then(|()| stderr.write_all(b"\n"))
-            .map_err(|err| LogError::SinkIo(err.to_string()))?;
-        Ok(())
-    }
-}
-
-struct NullSink;
-
-impl LogSink for NullSink {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let _ = record;
-        Ok(())
-    }
-}
-
-pub(crate) struct JsonlFileSink {
-    path: PathBuf,
-    writer: Mutex<LineWriter<File>>,
-}
-
-impl JsonlFileSink {
-    pub(crate) fn new(path: PathBuf, mode: crate::config::FileSinkMode) -> Result<Self, LogError> {
-        if path.as_os_str().is_empty() {
-            return Err(LogError::SinkIo("file sink path is empty".to_string()));
-        }
-
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                std::fs::create_dir_all(parent).map_err(|err| {
-                    LogError::SinkIo(format!(
-                        "create log directory {} for {} failed: {err}",
-                        parent.display(),
-                        path.display()
-                    ))
-                })?;
-            }
-        }
-
-        let mut options = OpenOptions::new();
-        options.create(true).write(true);
-        match mode {
-            crate::config::FileSinkMode::Append => {
-                options.append(true);
-            }
-            crate::config::FileSinkMode::Truncate => {
-                options.truncate(true);
-            }
-        }
-
-        let file = options.open(&path).map_err(|err| {
-            LogError::SinkIo(format!("open log file {} failed: {err}", path.display()))
-        })?;
-
-        Ok(Self {
-            path,
-            writer: Mutex::new(LineWriter::new(file)),
-        })
-    }
-}
-
-impl LogSink for JsonlFileSink {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let line = serde_json::to_string(record).map_err(|err| LogError::Json(err.to_string()))?;
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| LogError::SinkIo("file sink lock poisoned".to_string()))?;
-        writer
-            .write_all(line.as_bytes())
-            .and_then(|()| writer.write_all(b"\n"))
-            .map_err(|err| {
-                LogError::SinkIo(format!(
-                    "write to log file {} failed: {err}",
-                    self.path.display()
-                ))
-            })?;
-        Ok(())
-    }
-}
-
-struct FanoutSink {
-    sinks: Vec<(String, Arc<dyn LogSink>)>,
-}
-
-static FANOUT_DIAGNOSTIC_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-#[cfg(test)]
-static FANOUT_DIAGNOSTIC_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-struct AtomicResetGuard<'a> {
-    value: &'a AtomicBool,
-}
-
-impl Drop for AtomicResetGuard<'_> {
-    fn drop(&mut self) {
-        self.value.store(false, Ordering::SeqCst);
-    }
-}
-
-impl FanoutSink {
-    fn new(sinks: Vec<(String, Arc<dyn LogSink>)>) -> Self {
-        Self { sinks }
-    }
-
-    fn write_diagnostic(label: &str, err: &LogError) {
-        let acquired = FANOUT_DIAGNOSTIC_ACTIVE
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok();
-        if !acquired {
-            return;
-        }
-
-        let _guard = AtomicResetGuard {
-            value: &FANOUT_DIAGNOSTIC_ACTIVE,
-        };
-
-        #[cfg(test)]
-        {
-            FANOUT_DIAGNOSTIC_COUNT.fetch_add(1, Ordering::SeqCst);
-        }
-
-        let mut stderr = std::io::stderr();
-        let _ = stderr.write_all(b"fanout sink failure: ");
-        let _ = stderr.write_all(label.as_bytes());
-        let _ = stderr.write_all(b": ");
-        let _ = stderr.write_all(err.to_string().as_bytes());
-        let _ = stderr.write_all(b"\n");
-    }
-}
-
-impl LogSink for FanoutSink {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let mut ok_count: u64 = 0;
-        let mut failures: Vec<(String, String)> = Vec::new();
-
-        for (label, sink) in &self.sinks {
-            match sink.emit(record) {
-                Ok(()) => {
-                    ok_count += 1;
-                }
-                Err(err) => {
-                    Self::write_diagnostic(label.as_str(), &err);
-                    failures.push((label.clone(), err.to_string()));
-                }
-            }
-        }
-
-        if ok_count > 0 {
-            return Ok(());
-        }
-
-        let mut message = "all sinks failed".to_string();
-        if !failures.is_empty() {
-            message.push_str(": ");
-            for (idx, (label, err)) in failures.iter().enumerate() {
-                if idx > 0 {
-                    message.push_str("; ");
-                }
-                message.push_str(label.as_str());
-                message.push_str(" => ");
-                message.push_str(err.as_str());
-            }
-        }
-        Err(LogError::SinkIo(message))
-    }
-}
-
-const TRACING_LOG_TARGET: &str = "pgtuskmaster::logging::record";
-
-thread_local! {
-    static CURRENT_TRACING_RECORD: RefCell<Option<LogRecord>> = const { RefCell::new(None) };
-    static CURRENT_TRACING_RESULT: RefCell<Option<Result<(), LogError>>> = const { RefCell::new(None) };
-}
-
-struct ActiveTracingRecordGuard;
-
-impl ActiveTracingRecordGuard {
-    fn new(record: &LogRecord) -> Result<Self, LogError> {
-        CURRENT_TRACING_RECORD.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            if slot.is_some() {
-                return Err(LogError::SinkIo(
-                    "nested tracing-backed log emission is not supported".to_string(),
-                ));
-            }
-            *slot = Some(record.clone());
-            Ok(())
-        })?;
-        CURRENT_TRACING_RESULT.with(|slot| {
-            *slot.borrow_mut() = None;
-        });
-        Ok(Self)
-    }
-}
-
-impl Drop for ActiveTracingRecordGuard {
-    fn drop(&mut self) {
-        CURRENT_TRACING_RECORD.with(|slot| {
-            let _ = slot.borrow_mut().take();
-        });
-        CURRENT_TRACING_RESULT.with(|slot| {
-            let _ = slot.borrow_mut().take();
-        });
-    }
-}
-
-struct TracingRecordLayer {
-    sink: Arc<dyn LogSink>,
-}
-
-impl<S> Layer<S> for TracingRecordLayer
-where
-    S: tracing::Subscriber,
-{
-    fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
-        if event.metadata().target() != TRACING_LOG_TARGET {
-            return;
-        }
-
-        let result = CURRENT_TRACING_RECORD.with(|slot| {
-            let slot = slot.borrow();
-            match slot.as_ref() {
-                Some(record) => self.sink.emit(record),
-                None => Err(LogError::SinkIo(
-                    "tracing backend event emitted without an active record".to_string(),
-                )),
-            }
-        });
-
-        CURRENT_TRACING_RESULT.with(|slot| {
-            *slot.borrow_mut() = Some(result);
-        });
-    }
-}
-
-#[derive(Clone)]
-struct TracingBackend {
-    dispatch: Dispatch,
-}
-
-impl TracingBackend {
-    fn new(sink: Arc<dyn LogSink>) -> Self {
-        let subscriber = Registry::default().with(TracingRecordLayer { sink });
-        Self {
-            dispatch: Dispatch::new(subscriber),
-        }
-    }
-
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let _guard = ActiveTracingRecordGuard::new(record)?;
-        dispatcher::with_default(&self.dispatch, || dispatch_tracing_record_event(record));
-        CURRENT_TRACING_RESULT.with(|slot| {
-            slot.borrow_mut().take().unwrap_or_else(|| {
-                Err(LogError::SinkIo(
-                    "tracing backend did not produce an emission result".to_string(),
-                ))
-            })
-        })
-    }
-}
-
-fn dispatch_tracing_record_event(record: &LogRecord) {
-    match record.severity_text {
-        SeverityText::Trace => tracing::event!(
-            target: TRACING_LOG_TARGET,
-            tracing::Level::TRACE,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
-            severity_number = record.severity_number,
-            message = record.message.as_str()
-        ),
-        SeverityText::Debug => tracing::event!(
-            target: TRACING_LOG_TARGET,
-            tracing::Level::DEBUG,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
-            severity_number = record.severity_number,
-            message = record.message.as_str()
-        ),
-        SeverityText::Info => tracing::event!(
-            target: TRACING_LOG_TARGET,
-            tracing::Level::INFO,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
-            severity_number = record.severity_number,
-            message = record.message.as_str()
-        ),
-        SeverityText::Warn => tracing::event!(
-            target: TRACING_LOG_TARGET,
-            tracing::Level::WARN,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
-            severity_number = record.severity_number,
-            message = record.message.as_str()
-        ),
-        SeverityText::Error | SeverityText::Fatal => tracing::event!(
-            target: TRACING_LOG_TARGET,
-            tracing::Level::ERROR,
-            origin = record.source.origin.as_str(),
-            producer = ?record.source.producer,
-            transport = ?record.source.transport,
-            parser = ?record.source.parser,
-            severity_number = record.severity_number,
-            message = record.message.as_str()
-        ),
-    }
-}
-
-#[derive(Clone)]
-enum LogSenderMode {
-    Disabled,
-    Queue(mpsc::UnboundedSender<raw_record::QueuedRecord>),
-}
-
-#[derive(Clone)]
-pub(crate) struct LogSender {
-    hostname: String,
-    mode: LogSenderMode,
-    min_app_severity_number: u8,
-}
-
-impl std::fmt::Debug for LogSender {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LogSender")
-            .field("hostname", &self.hostname)
-            .field("min_app_severity_number", &self.min_app_severity_number)
-            .finish()
-    }
-}
-
-#[derive(Debug, Error)]
-pub(crate) enum LogSendError {
-    #[error("log queue is closed")]
-    QueueClosed,
-}
-
-pub(crate) struct LogWorker {
-    receiver: mpsc::UnboundedReceiver<raw_record::QueuedRecord>,
-    backend: Arc<TracingBackend>,
-}
-
-impl LogWorker {
-    pub(crate) async fn run(mut self) {
-        while let Some(record) = self.receiver.recv().await {
-            let materialized = record.into_record();
-            let _ = self.backend.emit(&materialized);
-        }
-    }
-}
-
-impl LogSender {
-    pub(crate) fn new(
-        hostname: String,
-        sender: mpsc::UnboundedSender<raw_record::QueuedRecord>,
-        min_app_severity: SeverityText,
-    ) -> Self {
-        Self {
-            hostname,
-            mode: LogSenderMode::Queue(sender),
-            min_app_severity_number: min_app_severity.number(),
-        }
-    }
-
-    pub(crate) fn disabled() -> Self {
-        Self {
-            hostname: "unknown".to_string(),
-            mode: LogSenderMode::Disabled,
-            min_app_severity_number: SeverityText::Trace.number(),
-        }
-    }
-
-    pub(crate) fn send<E>(&self, event: E) -> Result<(), LogSendError>
-    where
-        E: DomainLogEvent,
-    {
-        if event.metadata().severity.number() < self.min_app_severity_number {
-            return Ok(());
-        }
-        let record = raw_record::QueuedRecord::from_event(
-            system_now_unix_millis(),
-            self.hostname.clone(),
-            event,
-        );
-        match &self.mode {
-            LogSenderMode::Disabled => Ok(()),
-            LogSenderMode::Queue(sender) => sender.send(record).map_err(|_| LogSendError::QueueClosed),
-        }
-    }
-}
-
-pub(crate) fn system_now_unix_millis() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(_) => 0,
-    }
-}
-
-fn detect_hostname() -> String {
-    match std::env::var("HOSTNAME") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => "unknown".to_string(),
-    }
-}
-
-pub(crate) struct LoggingSystem {
-    pub(crate) sender: LogSender,
-    pub(crate) worker: LogWorker,
-}
-
-pub(crate) fn bootstrap(
-    cfg: &crate::config::RuntimeConfig,
-) -> Result<LoggingSystem, LogBootstrapError> {
-    let hostname = detect_hostname();
-    let mut sinks: Vec<(String, Arc<dyn LogSink>)> = Vec::new();
-
-    if cfg.logging.sinks.stderr.enabled {
-        sinks.push((
-            "stderr".to_string(),
-            Arc::new(JsonlStderrSink::new()) as Arc<dyn LogSink>,
-        ));
-    }
-
-    if cfg.logging.sinks.file.enabled {
-        let path = cfg.logging.sinks.file.path.clone().ok_or_else(|| {
-            LogBootstrapError::Misconfigured(
-                "logging.sinks.file.enabled=true but logging.sinks.file.path is not set"
-                    .to_string(),
-            )
-        })?;
-
-        let label = format!("file:{}", path.display());
-        let sink = JsonlFileSink::new(path, cfg.logging.sinks.file.mode)
-            .map_err(|err| LogBootstrapError::SinkInit(err.to_string()))?;
-        sinks.push((label, Arc::new(sink) as Arc<dyn LogSink>));
-    }
-
-    let sink: Arc<dyn LogSink> = match sinks.len() {
-        0 => Arc::new(NullSink),
-        1 => sinks
-            .pop()
-            .map(|(_label, sink)| sink)
-            .ok_or_else(|| LogBootstrapError::SinkInit("unexpected empty sink list".to_string()))?,
-        _ => Arc::new(FanoutSink::new(sinks)),
-    };
-
-    let backend = Arc::new(TracingBackend::new(sink));
-    let (sender, receiver) = mpsc::unbounded_channel();
-
-    Ok(LoggingSystem {
-        sender: LogSender::new(hostname, sender, SeverityText::from(cfg.logging.level)),
-        worker: LogWorker { receiver, backend },
-    })
-}
-
-#[cfg(test)]
-#[derive(Clone, Default)]
-pub(crate) struct TestSink {
-    records: Arc<Mutex<Vec<LogRecord>>>,
-}
-
-#[cfg(test)]
-impl TestSink {
-    pub(crate) fn take(&self) -> Vec<LogRecord> {
-        let mut locked = match self.records.lock() {
-            Ok(locked) => locked,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        std::mem::take(&mut *locked)
-    }
-}
-
-#[cfg(test)]
-impl LogSink for TestSink {
-    fn emit(&self, record: &LogRecord) -> Result<(), LogError> {
-        let mut locked = self
-            .records
-            .lock()
-            .map_err(|_| LogError::SinkIo("test sink lock poisoned".to_string()))?;
-        locked.push(record.clone());
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::config::{
-        DebugConfig, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
-        RuntimeConfig,
-    };
-    use crate::process::jobs::ProcessJobKind;
-    use crate::process::log_event::{
-        CapturedStream, ProcessExecutionIdentity, ProcessJobIdentity, ProcessLogOrigin,
-        SubprocessLogEvent,
-    };
-    use crate::runtime::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
-
-    fn unique_temp_root(label: &str) -> PathBuf {
-        let pid = std::process::id();
-        static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let unique = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!("pgtuskmaster-{label}-{pid}-{unique}"))
-    }
-
-    fn remove_dir_all_if_exists(path: &std::path::Path) -> Result<(), std::io::Error> {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn remove_file_if_exists(path: &std::path::Path) -> Result<(), std::io::Error> {
-        match std::fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn sample_record(message: &str) -> LogRecord {
-        LogRecord::new(
-            1,
-            "host-a".to_string(),
-            SeverityText::Info,
-            message.to_string(),
-            LogSource {
-                producer: LogProducer::App,
-                transport: LogTransport::Internal,
-                parser: LogParser::App,
-                origin: "test".to_string(),
-            },
-        )
-    }
-
-    fn read_lines(path: &std::path::Path) -> Result<Vec<String>, std::io::Error> {
-        let bytes = std::fs::read(path)?;
-        let text = String::from_utf8_lossy(&bytes);
-        Ok(text
-            .lines()
-            .map(|line| line.to_string())
-            .filter(|line| !line.trim().is_empty())
-            .collect())
-    }
-
-    fn sample_runtime_config() -> RuntimeConfig {
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_logging(LoggingConfig {
-                level: LogLevel::Trace,
-                postgres: PostgresLoggingConfig {
-                    poll_interval_ms: 50,
-                    cleanup: LogCleanupConfig {
-                        enabled: false,
-                        ..crate::dev_support::runtime_config::sample_postgres_logging_config()
-                            .cleanup
-                    },
-                    ..crate::dev_support::runtime_config::sample_postgres_logging_config()
-                },
-                ..crate::dev_support::runtime_config::sample_logging_config()
-            })
-            .with_debug(DebugConfig { enabled: false })
-            .build()
-    }
-
-    fn sample_runtime_event() -> RuntimeLogEvent {
-        RuntimeLogEvent::StartupEntered {
-            origin: RuntimeLogOrigin::RunNodeFromConfig,
-            identity: RuntimeNodeIdentity {
-                scope: "scope-a".to_string(),
-                member_id: "member-a".to_string(),
-            },
-            startup_run_id: "run-1".to_string(),
-            logging_level: crate::config::LogLevel::Info,
-        }
-    }
-
-    fn test_log_system(min_app_severity: SeverityText) -> (LogSender, LogWorker, TestSink) {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let sink = TestSink::default();
-        let sink_dyn: Arc<dyn LogSink> = Arc::new(sink.clone());
-        (
-            LogSender::new("host-a".to_string(), sender, min_app_severity),
-            LogWorker {
-                receiver,
-                backend: Arc::new(TracingBackend::new(sink_dyn)),
-            },
-            sink,
-        )
-    }
-
-    fn run_worker(worker: LogWorker) -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        runtime.block_on(worker.run());
-        Ok(())
-    }
-
-    fn collect_records<E>(
-        min_app_severity: SeverityText,
-        event: E,
-    ) -> Result<Vec<LogRecord>, Box<dyn std::error::Error>>
-    where
-        E: DomainLogEvent,
-    {
-        let (log, worker, sink) = test_log_system(min_app_severity);
-        log.send(event)?;
-        drop(log);
-        run_worker(worker)?;
-        Ok(sink.take())
-    }
-
-    #[test]
-    fn emit_typed_runtime_event_encodes_headers_and_fields(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let records = collect_records(SeverityText::Trace, sample_runtime_event())?;
-        assert_eq!(records.len(), 1);
-        assert_eq!(
-            records[0].attributes.get("event.name"),
-            Some(&Value::String("runtime.startup.entered".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("event.domain"),
-            Some(&Value::String("runtime".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("event.result"),
-            Some(&Value::String("ok".to_string()))
-        );
-        assert_eq!(records[0].source.origin, "runtime::run_node_from_config");
-        assert_eq!(records[0].message, "runtime starting");
-        assert_eq!(
-            records[0].attributes.get("scope"),
-            Some(&Value::String("scope-a".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("member_id"),
-            Some(&Value::String("member-a".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("startup_run_id"),
-            Some(&Value::String("run-1".to_string()))
-        );
-        assert_eq!(
-            records[0].attributes.get("logging.level"),
-            Some(&Value::String("info".to_string()))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn emit_typed_event_respects_min_severity() -> Result<(), Box<dyn std::error::Error>> {
-        let records = collect_records(SeverityText::Warn, sample_runtime_event())?;
-        assert!(records.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn subprocess_line_event_encodes_stream_metadata(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let records = collect_records(
-            SeverityText::Trace,
-            SubprocessLogEvent {
-            producer: LogProducer::PgTool,
-            origin: ProcessLogOrigin::EmitSubprocessLine,
-            execution: ProcessExecutionIdentity {
-                job: ProcessJobIdentity {
-                    job_id: "job-1".to_string(),
-                    kind: ProcessJobKind::StartPostgres,
-                },
-                binary: "postgres".to_string(),
-            },
-            stream: CapturedStream::Stderr,
-            bytes: vec![0xff_u8, 0x00, b'a', 0x80],
-        },
-        )?;
-
-        assert_eq!(records.len(), 1);
-        let record = &records[0];
-        assert_eq!(record.source.producer, LogProducer::PgTool);
-        assert_eq!(record.source.transport, LogTransport::ChildStderr);
-        assert_eq!(record.source.parser, LogParser::Raw);
-        assert_eq!(record.source.origin, "process_worker::emit_subprocess_line");
-        assert_eq!(record.severity_text, SeverityText::Warn);
-        assert!(record.message.contains('a'));
-        assert_eq!(
-            record.attributes.get("job.id"),
-            Some(&Value::String("job-1".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("job.kind"),
-            Some(&Value::String("start_postgres".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("stream"),
-            Some(&Value::String("stderr".to_string()))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn jsonl_file_sink_creates_parent_dirs_and_writes_jsonl_line(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let root = unique_temp_root("file-sink-create");
-        remove_dir_all_if_exists(&root)?;
-
-        let path = root.join("a").join("b").join("log.jsonl");
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append)?;
-        sink.emit(&sample_record("hello"))?;
-        drop(sink);
-
-        let lines = read_lines(&path)?;
-        assert_eq!(lines.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "hello");
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn jsonl_file_sink_append_mode_preserves_existing_content(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let root = unique_temp_root("file-sink-append");
-        remove_dir_all_if_exists(&root)?;
-        std::fs::create_dir_all(&root)?;
-
-        let path = root.join("log.jsonl");
-        std::fs::write(&path, b"{\"pre\":1}\n")?;
-
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append)?;
-        sink.emit(&sample_record("post"))?;
-        drop(sink);
-
-        let lines = read_lines(&path)?;
-        assert_eq!(lines.len(), 2);
-        let pre: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(pre["pre"], 1);
-        let post: serde_json::Value = serde_json::from_str(lines[1].as_str())?;
-        assert_eq!(post["message"], "post");
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn jsonl_file_sink_truncate_mode_replaces_existing_content(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let root = unique_temp_root("file-sink-truncate");
-        remove_dir_all_if_exists(&root)?;
-        std::fs::create_dir_all(&root)?;
-
-        let path = root.join("log.jsonl");
-        std::fs::write(&path, b"{\"stale\":true}\n{\"stale\":true}\n")?;
-
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Truncate)?;
-        sink.emit(&sample_record("fresh"))?;
-        drop(sink);
-
-        let lines = read_lines(&path)?;
-        assert_eq!(lines.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "fresh");
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn jsonl_file_sink_errors_when_parent_is_file() -> Result<(), Box<dyn std::error::Error>> {
-        let root = unique_temp_root("file-sink-parent-file");
-        remove_dir_all_if_exists(&root)?;
-        std::fs::create_dir_all(&root)?;
-
-        let not_a_dir = root.join("not_a_dir");
-        remove_file_if_exists(&not_a_dir)?;
-        let write_res = std::fs::write(&not_a_dir, b"im a file");
-        assert!(write_res.is_ok());
-
-        let path = not_a_dir.join("app.jsonl");
-        let err = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append);
-        assert!(matches!(err, Err(LogError::SinkIo(_))));
-
-        if let Err(LogError::SinkIo(msg)) = err {
-            assert!(msg.contains(path.display().to_string().as_str()));
-        }
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[derive(Clone)]
-    struct FailSink;
-
-    impl LogSink for FailSink {
-        fn emit(&self, _record: &LogRecord) -> Result<(), LogError> {
-            Err(LogError::SinkIo("fail sink".to_string()))
-        }
-    }
-
-    #[test]
-    fn fanout_sink_ok_when_any_sink_succeeds_and_emits_diagnostic() {
-        FANOUT_DIAGNOSTIC_COUNT.store(0, Ordering::SeqCst);
-
-        let ok = Arc::new(TestSink::default());
-        let ok_dyn: Arc<dyn LogSink> = ok;
-        let fail_dyn: Arc<dyn LogSink> = Arc::new(FailSink);
-
-        let sink = FanoutSink::new(vec![
-            ("ok".to_string(), ok_dyn),
-            ("fail".to_string(), fail_dyn),
-        ]);
-
-        assert!(sink.emit(&sample_record("x")).is_ok());
-        assert!(FANOUT_DIAGNOSTIC_COUNT.load(Ordering::SeqCst) >= 1);
-    }
-
-    #[test]
-    fn fanout_sink_err_when_all_sinks_fail() {
-        let fail_a: Arc<dyn LogSink> = Arc::new(FailSink);
-        let fail_b: Arc<dyn LogSink> = Arc::new(FailSink);
-
-        let sink = FanoutSink::new(vec![("a".to_string(), fail_a), ("b".to_string(), fail_b)]);
-
-        let err = sink.emit(&sample_record("x"));
-        assert!(matches!(err, Err(LogError::SinkIo(_))));
-    }
-
-    #[test]
-    fn sender_reports_only_queue_closed_to_callers() {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        drop(receiver);
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
-
-        let err = log.send(sample_runtime_event());
-        assert!(matches!(err, Err(LogSendError::QueueClosed)));
-    }
-
-    #[test]
-    fn worker_keeps_sink_failures_internal_after_enqueue(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let sink: Arc<dyn LogSink> = Arc::new(FailSink);
-        let worker = LogWorker {
-            receiver,
-            backend: Arc::new(TracingBackend::new(sink)),
-        };
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
-
-        assert!(log.send(sample_runtime_event()).is_ok());
-        drop(log);
-        run_worker(worker)?;
-        Ok(())
-    }
-
-    #[test]
-    fn worker_preserves_partial_fanout_success() -> Result<(), Box<dyn std::error::Error>> {
-        FANOUT_DIAGNOSTIC_COUNT.store(0, Ordering::SeqCst);
-
-        let ok = TestSink::default();
-        let ok_records = ok.clone();
-        let sink: Arc<dyn LogSink> = Arc::new(FanoutSink::new(vec![
-            ("ok".to_string(), Arc::new(ok) as Arc<dyn LogSink>),
-            ("fail".to_string(), Arc::new(FailSink) as Arc<dyn LogSink>),
-        ]));
-        let (sender, receiver) = mpsc::unbounded_channel();
-        let worker = LogWorker {
-            receiver,
-            backend: Arc::new(TracingBackend::new(sink)),
-        };
-        let log = LogSender::new("host-a".to_string(), sender, SeverityText::Trace);
-
-        log.send(sample_runtime_event())?;
-        drop(log);
-        run_worker(worker)?;
-
-        let records = ok_records.take();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].message, "runtime starting");
-        assert!(FANOUT_DIAGNOSTIC_COUNT.load(Ordering::SeqCst) >= 1);
-        Ok(())
-    }
-
-    #[test]
-    fn bootstrap_file_enabled_without_path_returns_misconfigured() {
-        let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = None;
-
-        let res = bootstrap(&cfg);
-        assert!(matches!(res, Err(LogBootstrapError::Misconfigured(_))));
-    }
-
-    #[test]
-    fn bootstrap_file_enabled_with_path_writes_jsonl() -> Result<(), Box<dyn std::error::Error>> {
-        let root = unique_temp_root("bootstrap-file-enabled");
-        remove_dir_all_if_exists(&root)?;
-        std::fs::create_dir_all(&root)?;
-
-        let path = root.join("app.jsonl");
-
-        let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = Some(path.clone());
-
-        let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
-        sender.send(sample_runtime_event())?;
-        drop(sender);
-        run_worker(worker)?;
-
-        let lines = read_lines(&path)?;
-        assert_eq!(lines.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "runtime starting");
-        assert_eq!(v["severity_text"], "info");
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn bootstrap_with_stderr_and_file_still_writes_file() -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = unique_temp_root("bootstrap-stderr-and-file");
-        remove_dir_all_if_exists(&root)?;
-        std::fs::create_dir_all(&root)?;
-
-        let path = root.join("app.jsonl");
-
-        let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = true;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = Some(path.clone());
-
-        let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
-        sender.send(sample_runtime_event())?;
-        drop(sender);
-        run_worker(worker)?;
-
-        let lines = read_lines(&path)?;
-        assert_eq!(lines.len(), 1);
-        let v: serde_json::Value = serde_json::from_str(lines[0].as_str())?;
-        assert_eq!(v["message"], "runtime starting");
-
-        remove_dir_all_if_exists(&root)?;
-        Ok(())
-    }
-
-    #[test]
-    fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), LogBootstrapError> {
-        let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = false;
-
-        let system = bootstrap(&cfg)?;
-        let res = system.sender.send(sample_runtime_event());
-        assert!(res.is_ok(), "expected null sink to accept record: {res:?}");
-        Ok(())
-    }
-}
-
-
-===== src/logging/postgres_ingest.rs =====
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::{Duration, SystemTime};
-
-use std::borrow::Cow;
-
-use serde_json::Value;
-
-use crate::config::{LogCleanupConfig, RuntimeConfig};
-use crate::logging::{
-    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
-    LogProducer, LogSender, LogTransport, SealedLogEvent, SeverityText,
-};
-use crate::state::WorkerError;
-
-use super::tailer::{DirTailers, FileTailer, StartPosition};
-
-pub(crate) struct PostgresIngestWorkerCtx {
-    pub(crate) cfg: RuntimeConfig,
-    pub(crate) log: LogSender,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PostgresIngestOrigin {
-    Run,
-}
-
-impl PostgresIngestOrigin {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Run => "postgres_ingest::run",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PostgresIngestLogEvent {
-    StepOnceFailed {
-        origin: PostgresIngestOrigin,
-        attempts: u32,
-        suppressed: u64,
-        error: String,
-    },
-    Recovered {
-        origin: PostgresIngestOrigin,
-        attempts: u32,
-    },
-    IterationSummary {
-        origin: PostgresIngestOrigin,
-        pg_ctl_lines_emitted: u64,
-        log_dir_files_tailed: u64,
-        log_dir_lines_emitted: u64,
-        dir_tailers: usize,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PostgresLineSource {
-    producer: LogProducer,
-    transport: LogTransport,
-    origin: String,
-    path: std::path::PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum PostgresLineLogEvent {
-    Json {
-        source: PostgresLineSource,
-        severity: SeverityText,
-        message: String,
-        payload: Value,
-    },
-    Plain {
-        source: PostgresLineSource,
-        severity: SeverityText,
-        message: String,
-        level_raw: String,
-    },
-    Unparsed {
-        source: PostgresLineSource,
-        decoded_line: String,
-    },
-}
-
-impl SealedLogEvent for PostgresIngestLogEvent {}
-
-impl DomainLogEvent for PostgresIngestLogEvent {
-    fn metadata(&self) -> LogEventMetadata {
-        match self {
-            Self::StepOnceFailed { origin, .. } => LogEventMetadata {
-                severity: SeverityText::Error,
-                message: Cow::Borrowed("postgres ingest step once failed"),
-                event_name: "postgres_ingest.step_once_failed",
-                event_domain: "postgres_ingest",
-                event_result: LogEventResult::Failed,
-                source: LogEventSource::app(origin.label()),
-            },
-            Self::Recovered { origin, .. } => LogEventMetadata {
-                severity: SeverityText::Info,
-                message: Cow::Borrowed("postgres ingest recovered"),
-                event_name: "postgres_ingest.recovered",
-                event_domain: "postgres_ingest",
-                event_result: LogEventResult::Recovered,
-                source: LogEventSource::app(origin.label()),
-            },
-            Self::IterationSummary { origin, .. } => LogEventMetadata {
-                severity: SeverityText::Debug,
-                message: Cow::Borrowed("postgres ingest iteration summary"),
-                event_name: "postgres_ingest.iteration_summary",
-                event_domain: "postgres_ingest",
-                event_result: LogEventResult::Ok,
-                source: LogEventSource::app(origin.label()),
-            },
-        }
-    }
-
-    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
-        match self {
-            Self::StepOnceFailed {
-                attempts,
-                suppressed,
-                error,
-                ..
-            } => {
-                visitor.u64("attempts", u64::from(*attempts));
-                visitor.u64("suppressed", *suppressed);
-                visitor.string("error", error.clone());
-            }
-            Self::Recovered { attempts, .. } => {
-                visitor.u64("attempts", u64::from(*attempts));
-            }
-            Self::IterationSummary {
-                pg_ctl_lines_emitted,
-                log_dir_files_tailed,
-                log_dir_lines_emitted,
-                dir_tailers,
-                ..
-            } => {
-                visitor.u64("pg_ctl_lines_emitted", *pg_ctl_lines_emitted);
-                visitor.u64("log_dir_files_tailed", *log_dir_files_tailed);
-                visitor.u64("log_dir_lines_emitted", *log_dir_lines_emitted);
-                visitor.usize("dir_tailers", *dir_tailers);
-            }
-        }
-    }
-}
-
-impl SealedLogEvent for PostgresLineLogEvent {}
-
-impl DomainLogEvent for PostgresLineLogEvent {
-    fn metadata(&self) -> LogEventMetadata {
-        match self {
-            Self::Json {
-                source,
-                severity,
-                message,
-                ..
-            } => line_metadata(source, *severity, Cow::Owned(message.clone()), crate::logging::LogParser::PostgresJson),
-            Self::Plain {
-                source,
-                severity,
-                message,
-                ..
-            } => line_metadata(source, *severity, Cow::Owned(message.clone()), crate::logging::LogParser::PostgresPlain),
-            Self::Unparsed {
-                source,
-                decoded_line,
-            } => line_metadata(source, SeverityText::Info, Cow::Owned(decoded_line.clone()), crate::logging::LogParser::Raw),
-        }
-    }
-
-    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
-        match self {
-            Self::Json { source, payload, .. } => {
-                visitor.string("path", source.path.display().to_string());
-                visitor.json("payload", payload.clone());
-            }
-            Self::Plain {
-                source,
-                level_raw,
-                ..
-            } => {
-                visitor.string("path", source.path.display().to_string());
-                visitor.string("level_raw", level_raw.clone());
-            }
-            Self::Unparsed {
-                source,
-                decoded_line,
-            } => {
-                visitor.string("path", source.path.display().to_string());
-                visitor.bool("parse_failed", true);
-                visitor.string("raw_line", decoded_line.clone());
-            }
-        }
-    }
-}
-
-fn line_metadata(
-    source: &PostgresLineSource,
-    severity: SeverityText,
-    message: Cow<'static, str>,
-    parser: crate::logging::LogParser,
-) -> LogEventMetadata {
-    LogEventMetadata {
-        severity,
-        message,
-        event_name: "postgres.line",
-        event_domain: "postgres",
-        event_result: LogEventResult::Ok,
-        source: LogEventSource::new(
-            source.producer,
-            source.transport,
-            parser,
-            source.origin.clone(),
-        ),
-    }
-}
-
-const POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS: u64 = 30_000;
-const POSTGRES_INGEST_MAX_BYTES_PER_FILE: usize = 256 * 1024;
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct IngestErrorKey {
-    stage: String,
-    kind: String,
-    path: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct RateLimitDecision {
-    emit: bool,
-    suppressed: u64,
-}
-
-#[derive(Clone, Debug)]
-struct RateLimitState {
-    last_emit_ms: u64,
-    suppressed: u64,
-}
-
-#[derive(Clone, Debug)]
-struct IngestErrorRateLimiter {
-    window_ms: u64,
-    by_key: BTreeMap<IngestErrorKey, RateLimitState>,
-}
-
-impl IngestErrorRateLimiter {
-    fn new(window_ms: u64) -> Self {
-        Self {
-            window_ms,
-            by_key: BTreeMap::new(),
-        }
-    }
-
-    fn record(&mut self, key: IngestErrorKey, now_ms: u64) -> RateLimitDecision {
-        match self.by_key.get_mut(&key) {
-            None => {
-                self.by_key.insert(
-                    key,
-                    RateLimitState {
-                        last_emit_ms: now_ms,
-                        suppressed: 0,
-                    },
-                );
-                RateLimitDecision {
-                    emit: true,
-                    suppressed: 0,
-                }
-            }
-            Some(entry) => {
-                let elapsed_ms = now_ms.saturating_sub(entry.last_emit_ms);
-                if elapsed_ms >= self.window_ms {
-                    let suppressed = entry.suppressed;
-                    entry.last_emit_ms = now_ms;
-                    entry.suppressed = 0;
-                    RateLimitDecision {
-                        emit: true,
-                        suppressed,
-                    }
-                } else {
-                    entry.suppressed = entry.suppressed.saturating_add(1);
-                    RateLimitDecision {
-                        emit: false,
-                        suppressed: 0,
-                    }
-                }
-            }
-        }
-    }
-}
-
-pub(crate) async fn run(ctx: PostgresIngestWorkerCtx) -> Result<(), WorkerError> {
-    let mut state = PostgresIngestWorkerState::new(&ctx.cfg);
-    let mut limiter = IngestErrorRateLimiter::new(POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS);
-    let mut consecutive_failures = 0u32;
-    loop {
-        if ctx.cfg.logging.postgres.enabled {
-            match step_once(&ctx, &mut state).await {
-                Ok(()) => {
-                    if consecutive_failures > 0 {
-                        ctx.log
-                            .send(PostgresIngestLogEvent::Recovered {
-                                origin: PostgresIngestOrigin::Run,
-                                attempts: consecutive_failures,
-                            })
-                            .map_err(|err| {
-                                WorkerError::Message(format!(
-                                    "postgres ingest recovered log send failed: {err}"
-                                ))
-                            })?;
-                        consecutive_failures = 0;
-                    }
-                }
-                Err(error) => {
-                    consecutive_failures = consecutive_failures.saturating_add(1);
-                    let now_ms = crate::logging::system_now_unix_millis();
-                    let key = ingest_error_key_best_effort(&error);
-                    let decision = limiter.record(key, now_ms);
-                    if decision.emit {
-                        ctx.log
-                            .send(PostgresIngestLogEvent::StepOnceFailed {
-                                origin: PostgresIngestOrigin::Run,
-                                attempts: consecutive_failures,
-                                suppressed: decision.suppressed,
-                                error: error.to_string(),
-                            })
-                            .map_err(|err| {
-                                WorkerError::Message(format!(
-                                    "postgres ingest error log send failed: {err}"
-                                ))
-                            })?;
-                    }
-                }
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(
-            ctx.cfg.logging.postgres.poll_interval_ms,
-        ))
-        .await;
-    }
-}
-
-fn ingest_error_key_best_effort(error: &WorkerError) -> IngestErrorKey {
-    let msg = error.to_string();
-
-    let mut stage = "unknown".to_string();
-    let mut kind = "unknown".to_string();
-    let mut path = "unknown".to_string();
-
-    for token in msg.split_whitespace() {
-        if stage == "unknown" {
-            if let Some(value) = token.strip_prefix("stage=") {
-                stage = value.to_string();
-                continue;
-            }
-        }
-        if kind == "unknown" {
-            if let Some(value) = token.strip_prefix("kind=") {
-                kind = value.to_string();
-                continue;
-            }
-        }
-        if path == "unknown" {
-            if let Some(value) = token.strip_prefix("path=") {
-                path = value.to_string();
-                continue;
-            }
-        }
-        if stage != "unknown" && kind != "unknown" && path != "unknown" {
-            break;
-        }
-    }
-
-    IngestErrorKey { stage, kind, path }
-}
-
-struct PostgresIngestWorkerState {
-    pg_ctl_log: FileTailer,
-    dir_tailers: DirTailers,
-}
-
-impl PostgresIngestWorkerState {
-    fn new(cfg: &RuntimeConfig) -> Self {
-        let pg_ctl_log_file = match cfg.logging.postgres.pg_ctl_log_file.clone() {
-            Some(path) => path,
-            None => cfg.postgres_log_file(),
-        };
-
-        Self {
-            pg_ctl_log: FileTailer::new(pg_ctl_log_file, StartPosition::Beginning),
-            dir_tailers: DirTailers::default(),
-        }
-    }
-}
-
-async fn step_once(
-    ctx: &PostgresIngestWorkerCtx,
-    state: &mut PostgresIngestWorkerState,
-) -> Result<(), WorkerError> {
-    let max_bytes_per_file = POSTGRES_INGEST_MAX_BYTES_PER_FILE;
-    let mut pg_ctl_lines_emitted: u64 = 0;
-    let mut log_dir_lines_emitted: u64 = 0;
-    let mut log_dir_files_tailed: u64 = 0;
-
-    #[derive(Clone, Debug)]
-    struct IterationIssue {
-        stage: &'static str,
-        kind: &'static str,
-        path: String,
-        error: String,
-    }
-
-    fn encode_path_token(path: &Path) -> String {
-        path.display().to_string().replace(' ', "%20")
-    }
-
-    fn file_name_best_effort(path: &Path) -> String {
-        match path.file_name() {
-            Some(name) => name.to_string_lossy().to_string(),
-            None => "log".to_string(),
-        }
-    }
-
-    fn push_issue(
-        issues: &mut Vec<IterationIssue>,
-        stage: &'static str,
-        kind: &'static str,
-        path: &Path,
-        error: WorkerError,
-    ) {
-        issues.push(IterationIssue {
-            stage,
-            kind,
-            path: encode_path_token(path),
-            error: error.to_string(),
-        });
-    }
-
-    let mut issues: Vec<IterationIssue> = Vec::new();
-
-    match state.pg_ctl_log.read_new_lines(max_bytes_per_file).await {
-        Ok(pg_lines) => {
-            for line in pg_lines {
-                if let Err(err) = ctx.log.send(postgres_line_event(
-                    LogProducer::Postgres,
-                    LogTransport::FileTail,
-                    "pg_ctl_log_file",
-                    state.pg_ctl_log.path(),
-                    line,
-                )) {
-                    push_issue(
-                        &mut issues,
-                        "pg_ctl_log_file.emit",
-                        "log.emit_record",
-                        state.pg_ctl_log.path(),
-                        WorkerError::Message(err.to_string()),
-                    );
-                } else {
-                    pg_ctl_lines_emitted = pg_ctl_lines_emitted.saturating_add(1);
-                }
-            }
-        }
-        Err(err) => {
-            push_issue(
-                &mut issues,
-                "pg_ctl_log_file.read",
-                "tailer.read_new_lines",
-                state.pg_ctl_log.path(),
-                err,
-            );
-        }
-    }
-
-    if let Some(dir) = ctx.cfg.logging.postgres.log_dir.as_ref() {
-        if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
-            push_issue(&mut issues, "log_dir.discover", "read_dir", dir, err);
-        }
-
-        for (path, tailer) in state.dir_tailers.iter_mut() {
-            log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
-            let origin = format!("postgres_log_dir:{}", file_name_best_effort(path));
-            match tailer.read_new_lines(max_bytes_per_file).await {
-                Ok(lines) => {
-                    for line in lines {
-                        if let Err(err) = ctx.log.send(postgres_line_event(
-                            LogProducer::Postgres,
-                            LogTransport::FileTail,
-                            origin.as_str(),
-                            tailer.path(),
-                            line,
-                        )) {
-                            push_issue(
-                                &mut issues,
-                                "log_dir.emit",
-                                "log.emit_record",
-                                tailer.path(),
-                                WorkerError::Message(err.to_string()),
-                            );
-                        } else {
-                            log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(1);
-                        }
-                    }
-                }
-                Err(err) => {
-                    push_issue(
-                        &mut issues,
-                        "log_dir.read",
-                        "tailer.read_new_lines",
-                        tailer.path(),
-                        err,
-                    );
-                }
-            }
-        }
-
-        if ctx.cfg.logging.postgres.cleanup.enabled {
-            let protected: Vec<&Path> = vec![state.pg_ctl_log.path()];
-
-            match cleanup_log_dir(
-                dir,
-                &ctx.cfg.logging.postgres.cleanup,
-                protected.as_slice(),
-                SystemTime::now(),
-            )
-            .await
-            {
-                Ok(report) => {
-                    if report.issue_count > 0 {
-                        let stage = "log_dir.cleanup";
-                        let kind = "cleanup.issues";
-                        let error = WorkerError::Message(format!(
-                            "cleanup had issues: issue_count={} first={}",
-                            report.issue_count, report.first_issue
-                        ));
-                        push_issue(&mut issues, stage, kind, dir, error);
-                    }
-                }
-                Err(err) => {
-                    push_issue(&mut issues, "log_dir.cleanup", "cleanup.fatal", dir, err);
-                }
-            }
-        }
-    }
-
-    if issues.is_empty() {
-        ctx.log
-            .send(PostgresIngestLogEvent::IterationSummary {
-                origin: PostgresIngestOrigin::Run,
-                pg_ctl_lines_emitted,
-                log_dir_files_tailed,
-                log_dir_lines_emitted,
-                dir_tailers: state.dir_tailers.len(),
-            })
-            .map_err(|err| {
-                WorkerError::Message(format!("postgres ingest debug log send failed: {err}"))
-            })?;
-        return Ok(());
-    }
-
-    let first = match issues.first() {
-        Some(first) => format!(
-            "stage={} kind={} path={} error={}",
-            first.stage, first.kind, first.path, first.error
-        ),
-        None => "stage=unknown kind=unknown path=unknown error=unknown".to_string(),
-    };
-
-    let mut extra = Vec::new();
-    for issue in issues.iter().skip(1).take(2) {
-        extra.push(format!(
-            "stage={} kind={} path={} error={}",
-            issue.stage, issue.kind, issue.path, issue.error
-        ));
-    }
-    let extra_suffix = if extra.is_empty() {
-        String::new()
-    } else {
-        format!(" extra=[{}]", extra.join(" | "))
-    };
-
-    Err(WorkerError::Message(format!(
-        "postgres_ingest iteration_errors count={} {}{}",
-        issues.len(),
-        first,
-        extra_suffix
-    )))
-}
-
-async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), WorkerError> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "read_dir failed for {}: {err}",
-                dir.display()
-            )));
-        }
-    };
-
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|err| WorkerError::Message(format!("read_dir entry failed: {err}")))?
-    {
-        let path = entry.path();
-        let is_file = match entry.file_type().await {
-            Ok(ft) => ft.is_file(),
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "stage=log_dir.discover kind=file_type path={} error={err}",
-                    path.display()
-                )));
-            }
-        };
-        if !is_file {
-            continue;
-        }
-
-        let matches = matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("log") | Some("json")
-        );
-        if !matches {
-            continue;
-        }
-
-        let start = match path.file_name().and_then(|s| s.to_str()) {
-            Some("postgres.stderr.log") | Some("postgres.stdout.log") => StartPosition::Beginning,
-            _ => StartPosition::End,
-        };
-        tailers.ensure_file(path, start);
-    }
-    Ok(())
-}
-
-async fn cleanup_log_dir(
-    dir: &Path,
-    cleanup: &LogCleanupConfig,
-    protected_paths: &[&Path],
-    now: SystemTime,
-) -> Result<CleanupReport, WorkerError> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(CleanupReport::empty()),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "cleanup read_dir failed for {}: {err}",
-                dir.display()
-            )));
-        }
-    };
-
-    let protected_basenames: [&str; 3] = [
-        "postgres.json",
-        "postgres.stderr.log",
-        "postgres.stdout.log",
-    ];
-
-    let mut issues: Vec<String> = Vec::new();
-    let mut candidates = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|err| WorkerError::Message(format!("cleanup readdir entry failed: {err}")))?
-    {
-        let path = entry.path();
-        let is_file = match entry.file_type().await {
-            Ok(ft) => ft.is_file(),
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "stage=cleanup.file_type kind=file_type path={} error={err}",
-                    path.display()
-                )));
-            }
-        };
-        if !is_file {
-            continue;
-        }
-
-        let matches = matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("log") | Some("json")
-        );
-        if !matches {
-            continue;
-        }
-
-        let mut protected = false;
-        for p in protected_paths {
-            if path.as_path() == *p {
-                protected = true;
-                break;
-            }
-        }
-
-        let file_name = match path.file_name() {
-            Some(name) => name.to_string_lossy().to_string(),
-            None => String::new(),
-        };
-        if protected_basenames.contains(&file_name.as_str()) {
-            protected = true;
-        }
-
-        let meta = match entry.metadata().await {
-            Ok(meta) => meta,
-            Err(err) => {
-                protected = true;
-                issues.push(format!(
-                    "stage=cleanup.metadata kind=metadata path={} error={err}",
-                    path.display()
-                ));
-                candidates.push((path, None, protected));
-                continue;
-            }
-        };
-        let modified = match meta.modified() {
-            Ok(modified) => Some(modified),
-            Err(err) => {
-                protected = true;
-                issues.push(format!(
-                    "stage=cleanup.modified kind=modified path={} error={err}",
-                    path.display()
-                ));
-                candidates.push((path, None, protected));
-                continue;
-            }
-        };
-
-        if !protected {
-            let is_recent = match modified {
-                Some(modified) => match now.duration_since(modified) {
-                    Ok(age) => age.as_secs() <= cleanup.protect_recent_seconds,
-                    Err(err) => {
-                        issues.push(format!(
-                            "stage=cleanup.age kind=duration_since path={} error={err}",
-                            path.display()
-                        ));
-                        true
-                    }
-                },
-                None => true,
-            };
-            if is_recent {
-                protected = true;
-            }
-        }
-
-        candidates.push((path, modified, protected));
-    }
-
-    let mut eligible = candidates
-        .iter()
-        .filter_map(|(path, modified, protected)| {
-            if *protected {
-                return None;
-            }
-            modified.map(|modified| (path.clone(), modified))
-        })
-        .collect::<Vec<_>>();
-
-    eligible.sort_by(|a, b| {
-        let by_time = a.1.cmp(&b.1);
-        if by_time != std::cmp::Ordering::Equal {
-            return by_time;
-        }
-        a.0.cmp(&b.0)
-    });
-
-    let mut to_remove: Vec<std::path::PathBuf> = Vec::new();
-
-    if cleanup.max_files > 0 && (eligible.len() as u64) > cleanup.max_files {
-        let remove_count = eligible.len().saturating_sub(cleanup.max_files as usize);
-        for (path, _) in eligible.iter().take(remove_count) {
-            to_remove.push(path.clone());
-        }
-    }
-
-    if cleanup.max_age_seconds > 0 {
-        for (path, modified) in eligible {
-            match now.duration_since(modified) {
-                Ok(age) => {
-                    if age.as_secs() > cleanup.max_age_seconds {
-                        to_remove.push(path);
-                    }
-                }
-                Err(err) => {
-                    issues.push(format!(
-                        "stage=cleanup.age kind=duration_since path={} error={err}",
-                        path.display()
-                    ));
-                }
-            }
-        }
-    }
-
-    for path in to_remove {
-        match tokio::fs::remove_file(&path).await {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(err) => {
-                issues.push(format!(
-                    "stage=cleanup.remove_file kind=remove_file path={} error={err}",
-                    path.display()
-                ));
-            }
-        }
-    }
-
-    Ok(CleanupReport::from_issues(issues))
-}
-
-#[derive(Clone, Debug)]
-struct CleanupReport {
-    issue_count: usize,
-    first_issue: String,
-}
-
-impl CleanupReport {
-    fn empty() -> Self {
-        Self {
-            issue_count: 0,
-            first_issue: "<none>".to_string(),
-        }
-    }
-
-    fn from_issues(issues: Vec<String>) -> Self {
-        let issue_count = issues.len();
-        let first_issue = match issues.first() {
-            Some(first) => first.to_string(),
-            None => "<none>".to_string(),
-        };
-        Self {
-            issue_count,
-            first_issue,
-        }
-    }
-}
-
-fn postgres_line_event(
-    producer: LogProducer,
-    transport: LogTransport,
-    origin: &str,
-    path: &Path,
-    line: Vec<u8>,
-) -> PostgresLineLogEvent {
-    let decoded = decode_line(&line);
-    normalize_postgres_line(
-        decoded.as_str(),
-        PostgresLineSource {
-            producer,
-            transport,
-            origin: format!("{origin}:{}", path.display()),
-            path: path.to_path_buf(),
-        },
-    )
-}
-
-fn decode_line(line: &[u8]) -> String {
-    match String::from_utf8(line.to_vec()) {
-        Ok(s) => s,
-        Err(err) => {
-            let bytes = err.into_bytes();
-            format!("non_utf8_bytes_hex={}", hex_encode(bytes.as_slice()))
-        }
-    }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    const TABLE: &[u8; 16] = b"0123456789abcdef";
-    let mut out = String::with_capacity(bytes.len().saturating_mul(2));
-    for b in bytes {
-        out.push(TABLE[(b >> 4) as usize] as char);
-        out.push(TABLE[(b & 0x0f) as usize] as char);
-    }
-    out
-}
-
-fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLineLogEvent {
-    if let Ok(value) = serde_json::from_str::<Value>(line) {
-        if let Some(parsed) = normalize_postgres_json(value) {
-            return PostgresLineLogEvent::Json {
-                source,
-                severity: parsed.severity,
-                message: parsed.message,
-                payload: parsed.payload,
-            };
-        }
-    }
-
-    if let Some(parsed) = normalize_postgres_plain(line) {
-        return PostgresLineLogEvent::Plain {
-            source,
-            severity: parsed.severity,
-            message: parsed.message,
-            level_raw: parsed.level_raw,
-        };
-    }
-
-    PostgresLineLogEvent::Unparsed {
-        source,
-        decoded_line: line.to_string(),
-    }
-}
-
-struct ParsedLine {
-    severity: SeverityText,
-    message: String,
-    payload: Value,
-    level_raw: String,
-}
-
-fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
-    let obj = value.as_object()?;
-    let message = match obj.get("message").and_then(|v| v.as_str()) {
-        Some(message) => message.to_string(),
-        None => String::new(),
-    };
-    if message.trim().is_empty() {
-        return None;
-    }
-
-    let severity_raw = obj
-        .get("error_severity")
-        .and_then(|v| v.as_str())
-        .or_else(|| obj.get("severity").and_then(|v| v.as_str()));
-    let severity_raw = severity_raw.map_or("INFO", |severity| severity);
-    let severity = map_pg_severity(severity_raw);
-
-    Some(ParsedLine {
-        severity,
-        message,
-        payload: value,
-        level_raw: String::new(),
-    })
-}
-
-fn normalize_postgres_plain(line: &str) -> Option<ParsedLine> {
-    // Example:
-    // 2026-01-01 12:34:56.789 UTC [123] LOG:  message
-    let bracket = line.find('[')?;
-    let after_bracket = line[bracket..].find(']')?;
-    let rest = line[bracket + after_bracket + 1..].trim_start();
-
-    let (level, message) = rest.split_once(':')?;
-    let level = level.trim();
-    let message = message.trim_start().to_string();
-    if level.is_empty() || message.is_empty() {
-        return None;
-    }
-    let severity = map_pg_severity(level);
-
-    Some(ParsedLine {
-        severity,
-        message,
-        payload: Value::Null,
-        level_raw: level.to_string(),
-    })
-}
-
-fn map_pg_severity(raw: &str) -> SeverityText {
-    match raw.trim().to_ascii_uppercase().as_str() {
-        "DEBUG" | "DEBUG1" | "DEBUG2" | "DEBUG3" | "DEBUG4" | "DEBUG5" => SeverityText::Debug,
-        "INFO" | "NOTICE" | "LOG" => SeverityText::Info,
-        "WARNING" => SeverityText::Warn,
-        "ERROR" => SeverityText::Error,
-        "FATAL" | "PANIC" => SeverityText::Fatal,
-        _ => SeverityText::Info,
-    }
-}
-
-pub(crate) fn build_ctx(cfg: RuntimeConfig, log: LogSender) -> PostgresIngestWorkerCtx {
-    PostgresIngestWorkerCtx { cfg, log }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, SystemTime};
-
-    use serde_json::Value;
-    use tokio::task::JoinHandle;
-
-    use crate::config::{
-        DebugConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-        PostgresLoggingConfig, RuntimeConfig,
-    };
-    use crate::logging::{LogParser, LogProducer, LogSender, LogTransport, SeverityText, TestSink};
-
-    use crate::state::WorkerError;
-
-    use super::{
-        cleanup_log_dir, decode_line, ingest_error_key_best_effort, map_pg_severity,
-        normalize_postgres_line, IngestErrorKey, IngestErrorRateLimiter, PostgresIngestLogEvent,
-        PostgresIngestOrigin,
-    };
-
-    const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
-    const REAL_PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
-    const REAL_PSQL_RETRY_SLEEP: Duration = Duration::from_millis(50);
-
-    fn remove_dir_all_if_exists(path: &std::path::Path) -> Result<(), WorkerError> {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(WorkerError::Message(err.to_string())),
-        }
-    }
-
-    fn sample_runtime_config() -> RuntimeConfig {
-        let baseline_logging = crate::dev_support::runtime_config::sample_postgres_logging_config();
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_pg_hba(InlineOrPath::Inline {
-                content: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",)
-                    .to_string(),
-            })
-            .with_logging(LoggingConfig {
-                level: LogLevel::Trace,
-                postgres: PostgresLoggingConfig {
-                    poll_interval_ms: 50,
-                    cleanup: LogCleanupConfig {
-                        enabled: false,
-                        ..baseline_logging.cleanup
-                    },
-                    ..baseline_logging
-                },
-                ..crate::dev_support::runtime_config::sample_logging_config()
-            })
-            .with_debug(DebugConfig { enabled: false })
-            .build()
-    }
-
-    struct RunningTestLog {
-        sender: LogSender,
-        sink: Arc<TestSink>,
-        worker_task: JoinHandle<()>,
-    }
-
-    impl RunningTestLog {
-        fn start() -> Self {
-            let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-            let sink = Arc::new(TestSink::default());
-            let sink_dyn: Arc<dyn super::super::LogSink> = sink.clone();
-            let worker = super::super::LogWorker {
-                receiver,
-                backend: Arc::new(super::super::TracingBackend::new(sink_dyn)),
-            };
-            Self {
-                sender: LogSender::new("host-a".to_string(), sender, SeverityText::Trace),
-                sink,
-                worker_task: tokio::spawn(worker.run()),
-            }
-        }
-
-        fn sender(&self) -> LogSender {
-            self.sender.clone()
-        }
-
-        async fn take(&self) -> Vec<crate::logging::LogRecord> {
-            tokio::task::yield_now().await;
-            self.sink.take()
-        }
-    }
-
-    impl Drop for RunningTestLog {
-        fn drop(&mut self) {
-            self.worker_task.abort();
-        }
-    }
-
-    fn materialize_record<E>(event: E) -> crate::logging::LogRecord
-    where
-        E: crate::logging::DomainLogEvent,
-    {
-        super::super::raw_record::QueuedRecord::from_event(1, "host-a".to_string(), event)
-            .into_record()
-    }
-
-    fn sample_postgres_line_source() -> super::PostgresLineSource {
-        super::PostgresLineSource {
-            producer: LogProducer::Postgres,
-            transport: LogTransport::FileTail,
-            origin: "test".to_string(),
-            path: PathBuf::from("/tmp/postgres.log"),
-        }
-    }
-
-    fn normalized_postgres_record(raw: &str) -> crate::logging::LogRecord {
-        materialize_record(normalize_postgres_line(raw, sample_postgres_line_source()))
-    }
-
-    fn start_test_log() -> RunningTestLog {
-        RunningTestLog::start()
-    }
-
-    fn sample_postgres_ingest_failure_event(error: &WorkerError) -> PostgresIngestLogEvent {
-        PostgresIngestLogEvent::StepOnceFailed {
-            origin: PostgresIngestOrigin::Run,
-            attempts: 2,
-            suppressed: 7,
-            error: error.to_string(),
-        }
-    }
-
-    fn sample_non_utf8_postgres_line_event(path: &std::path::Path) -> super::PostgresLineLogEvent {
-        super::postgres_line_event(
-            LogProducer::Postgres,
-            LogTransport::FileTail,
-            "pg_ctl_log_file",
-            path,
-            vec![0xff_u8, 0x00, b'a', 0x80],
-        )
-    }
-
-    #[test]
-    fn ingest_error_rate_limiter_suppresses_and_reemits_with_count() {
-        let mut limiter = IngestErrorRateLimiter::new(30_000);
-        let key = IngestErrorKey {
-            stage: "a".to_string(),
-            kind: "b".to_string(),
-            path: "c".to_string(),
-        };
-
-        let first = limiter.record(key.clone(), 1_000);
-        assert_eq!(
-            first,
-            super::RateLimitDecision {
-                emit: true,
-                suppressed: 0
-            }
-        );
-
-        let suppressed = limiter.record(key.clone(), 2_000);
-        assert_eq!(
-            suppressed,
-            super::RateLimitDecision {
-                emit: false,
-                suppressed: 0
-            }
-        );
-
-        let reemit = limiter.record(key, 31_000);
-        assert_eq!(
-            reemit,
-            super::RateLimitDecision {
-                emit: true,
-                suppressed: 1
-            }
-        );
-    }
-
-    #[test]
-    fn ingest_error_key_parsing_uses_first_stage_kind_path_tokens() {
-        let err = WorkerError::Message(
-            "postgres_ingest iteration_errors count=2 stage=first kind=k1 path=/a error=x extra=[stage=second kind=k2 path=/b error=y]"
-                .to_string(),
-        );
-        let key = ingest_error_key_best_effort(&err);
-        assert_eq!(key.stage, "first");
-        assert_eq!(key.kind, "k1");
-        assert_eq!(key.path, "/a");
-    }
-
-    #[test]
-    fn step_failure_event_encodes_internal_error_record() {
-        let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
-        let record = materialize_record(sample_postgres_ingest_failure_event(&err));
-
-        assert_eq!(record.severity_text, SeverityText::Error);
-        assert_eq!(record.source.origin, "postgres_ingest::run");
-        assert_eq!(
-            record.attributes.get("event.name"),
-            Some(&Value::String("postgres_ingest.step_once_failed".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("event.domain"),
-            Some(&Value::String("postgres_ingest".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("event.result"),
-            Some(&Value::String("failed".to_string()))
-        );
-        assert_eq!(
-            record.attributes.get("attempts"),
-            Some(&Value::Number(serde_json::Number::from(2_u64)))
-        );
-        assert_eq!(
-            record.attributes.get("suppressed"),
-            Some(&Value::Number(serde_json::Number::from(7_u64)))
-        );
-    }
-
-    #[test]
-    fn map_pg_severity_maps_known_levels() {
-        assert_eq!(map_pg_severity("ERROR"), SeverityText::Error);
-        assert_eq!(map_pg_severity("warning"), SeverityText::Warn);
-        assert_eq!(map_pg_severity("log"), SeverityText::Info);
-    }
-
-    #[test]
-    fn normalize_postgres_line_parses_jsonlog() {
-        let raw = r#"{"error_severity":"LOG","message":"hello from json"}"#;
-        let record = normalized_postgres_record(raw);
-        assert_eq!(record.source.parser, LogParser::PostgresJson);
-        assert_eq!(record.message, "hello from json");
-        assert_eq!(record.severity_text, SeverityText::Info);
-        assert_eq!(record.severity_number, SeverityText::Info.number());
-        assert_eq!(record.hostname, "host-a");
-    }
-
-    #[test]
-    fn normalize_postgres_line_parses_plain() {
-        let raw = "2026-03-04 01:02:03 UTC [123] ERROR:  something bad";
-        let record = normalized_postgres_record(raw);
-        assert_eq!(record.source.parser, LogParser::PostgresPlain);
-        assert_eq!(record.severity_text, SeverityText::Error);
-        assert_eq!(record.message, "something bad");
-    }
-
-    #[test]
-    fn normalize_postgres_line_preserves_raw_on_failure() {
-        let raw = "not a postgres log line";
-        let record = normalized_postgres_record(raw);
-        assert_eq!(record.source.parser, LogParser::Raw);
-        assert_eq!(record.message, raw);
-        assert_eq!(
-            record.attributes.get("parse_failed"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        assert_eq!(
-            record.attributes.get("raw_line"),
-            Some(&serde_json::Value::String(raw.to_string()))
-        );
-    }
-
-    #[test]
-    fn decode_line_encodes_non_utf8_bytes_as_hex() {
-        let bytes = [0xff_u8, 0x00, b'a', 0x80];
-        assert_eq!(decode_line(bytes.as_slice()), "non_utf8_bytes_hex=ff006180");
-    }
-
-    #[test]
-    fn normalize_postgres_line_preserves_raw_on_non_utf8_failure() {
-        let bytes = [0xff_u8, 0x00, b'a', 0x80];
-        let raw = decode_line(bytes.as_slice());
-        let record = normalized_postgres_record(raw.as_str());
-        assert_eq!(record.source.parser, LogParser::Raw);
-        assert_eq!(record.message, raw);
-        assert_eq!(
-            record.attributes.get("parse_failed"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            record.attributes.get("raw_line"),
-            Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
-        );
-    }
-
-    #[test]
-    fn postgres_line_event_preserves_parse_failure_for_non_utf8() {
-        let path = PathBuf::from("/tmp/pg.log");
-        let record = materialize_record(sample_non_utf8_postgres_line_event(path.as_path()));
-        assert_eq!(
-            record.attributes.get("parse_failed"),
-            Some(&Value::Bool(true))
-        );
-        assert_eq!(
-            record.attributes.get("raw_line"),
-            Some(&Value::String("non_utf8_bytes_hex=ff006180".to_string()))
-        );
-    }
-
-    fn temp_dir(label: &str) -> PathBuf {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-        let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "pgtuskmaster-logging-cleanup-{label}-{}-{unique}",
-            std::process::id()
-        ))
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_enforces_max_files_and_protects_active_file() -> Result<(), WorkerError>
-    {
-        let dir = temp_dir("max-files");
-        remove_dir_all_if_exists(&dir)?;
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        let protected = dir.join("active.log");
-        std::fs::write(&protected, b"active\n")
-            .map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        for i in 0..5 {
-            let path = dir.join(format!("rotated-{i}.log"));
-            std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-        }
-
-        let report = cleanup_log_dir(
-            dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 2,
-                max_age_seconds: 365 * 24 * 60 * 60,
-                protect_recent_seconds: 1,
-            },
-            &[protected.as_path()],
-            SystemTime::now() + Duration::from_secs(3600),
-        )
-        .await?;
-        assert_eq!(report.issue_count, 0);
-
-        assert!(protected.exists());
-        let mut remaining = 0usize;
-        for entry in std::fs::read_dir(&dir).map_err(|err| WorkerError::Message(err.to_string()))? {
-            let entry = entry.map_err(|err| WorkerError::Message(err.to_string()))?;
-            if entry.path().extension().and_then(|s| s.to_str()) == Some("log") {
-                remaining = remaining.saturating_add(1);
-            }
-        }
-        // protected + max_files
-        assert!(remaining <= 3);
-
-        remove_dir_all_if_exists(&dir)?;
-        Ok(())
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_never_deletes_known_active_signals() -> Result<(), WorkerError> {
-        let dir = temp_dir("protected-basenames");
-        remove_dir_all_if_exists(&dir)?;
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        let json = dir.join("postgres.json");
-        let stderr = dir.join("postgres.stderr.log");
-        let stdout = dir.join("postgres.stdout.log");
-        std::fs::write(&json, b"{}\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-        std::fs::write(&stderr, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-        std::fs::write(&stdout, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        for i in 0..10 {
-            let path = dir.join(format!("rotated-{i}.log"));
-            std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-        }
-
-        let report = cleanup_log_dir(
-            dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 1,
-                max_age_seconds: 365 * 24 * 60 * 60,
-                protect_recent_seconds: 1,
-            },
-            &[],
-            SystemTime::now() + Duration::from_secs(3600),
-        )
-        .await?;
-        assert_eq!(report.issue_count, 0);
-
-        assert!(json.exists());
-        assert!(stderr.exists());
-        assert!(stdout.exists());
-
-        remove_dir_all_if_exists(&dir)?;
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test(flavor = "current_thread")]
-    async fn cleanup_log_dir_surfaces_remove_failures() -> Result<(), WorkerError> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = temp_dir("remove-failure");
-        remove_dir_all_if_exists(&dir)?;
-        std::fs::create_dir_all(&dir).map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        let old = dir.join("old.log");
-        std::fs::write(&old, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        let mut perms = std::fs::metadata(&dir)
-            .map_err(|err| WorkerError::Message(err.to_string()))?
-            .permissions();
-        perms.set_mode(0o555);
-        std::fs::set_permissions(&dir, perms)
-            .map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        let report = cleanup_log_dir(
-            dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 1,
-                max_age_seconds: 1,
-                protect_recent_seconds: 1,
-            },
-            &[],
-            SystemTime::now() + Duration::from_secs(3600),
-        )
-        .await?;
-        assert!(report.issue_count > 0);
-        assert!(old.exists());
-
-        let mut perms = std::fs::metadata(&dir)
-            .map_err(|err| WorkerError::Message(err.to_string()))?
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&dir, perms)
-            .map_err(|err| WorkerError::Message(err.to_string()))?;
-
-        remove_dir_all_if_exists(&dir)?;
-        Ok(())
-    }
-
-    mod real_binary {
-        use std::path::PathBuf;
-        use std::time::Duration;
-
-        use tokio::process::Command;
-        use tokio::sync::mpsc;
-        use tokio::time::Instant;
-
-        use crate::dcs::{
-            ClusterMemberView, ClusterView, DcsView, LeadershipObservation, MemberPostgresView,
-            SwitchoverView,
-        };
-        use crate::dev_support::binaries::{
-            require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
-        };
-        use crate::dev_support::namespace::NamespaceGuard;
-        use crate::dev_support::pg16::{
-            prepare_pgdata_dir, spawn_pg16_for_vanilla_postgres, PgInstanceSpec,
-        };
-        use crate::dev_support::ports::allocate_ports;
-        use crate::logging::LogRecord;
-        use crate::process::jobs::{
-            PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
-        };
-        use crate::process::state::{
-            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
-            ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-            ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
-        };
-        use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
-        use crate::state::{
-            new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError,
-        };
-
-        use super::super::{
-            step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
-        };
-        use super::{
-            sample_runtime_config, start_test_log, REAL_INGEST_RETRY_SLEEP,
-            REAL_PROCESS_WORKER_POLL_INTERVAL, REAL_PSQL_RETRY_SLEEP,
-        };
-
-        async fn wait_for_process_idle_success(
-            ctx: &mut ProcessWorkerCtx,
-            job_id: &JobId,
-            timeout: Duration,
-        ) -> Result<(), WorkerError> {
-            wait_for_process_idle_success_with_debug(ctx, job_id, timeout, None).await
-        }
-
-        async fn wait_for_process_idle_success_with_debug(
-            ctx: &mut ProcessWorkerCtx,
-            job_id: &JobId,
-            timeout: Duration,
-            debug_log_path: Option<&PathBuf>,
-        ) -> Result<(), WorkerError> {
-            let started = Instant::now();
-            while started.elapsed() < timeout {
-                process_step_once(ctx).await?;
-                if let ProcessState::Idle {
-                    last_outcome: Some(outcome),
-                    ..
-                } = &ctx.state_channel.current
-                {
-                    match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. } if *id == *job_id => {
-                            return Ok(());
-                        }
-                        crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if *id == *job_id =>
-                        {
-                            let debug_tail = match debug_log_path {
-                                Some(path) => tail_file_best_effort(path, 60),
-                                None => String::new(),
-                            };
-                            return Err(WorkerError::Message(format!(
-                                "process job {} failed unexpectedly: {error}{}",
-                                job_id.0,
-                                if debug_tail.is_empty() {
-                                    "".to_string()
-                                } else {
-                                    format!(
-                                        "\n--- debug tail {} ---\n{debug_tail}",
-                                        path_display(debug_log_path)
-                                    )
-                                }
-                            )));
-                        }
-                        _ => {}
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            Err(WorkerError::Message(format!(
-                "timed out waiting for job {} success",
-                job_id.0
-            )))
-        }
-
-        fn path_display(path: Option<&PathBuf>) -> String {
-            match path {
-                Some(path) => path.display().to_string(),
-                None => "<none>".to_string(),
-            }
-        }
-
-        fn tail_file_best_effort(path: &PathBuf, max_lines: usize) -> String {
-            let contents = match std::fs::read_to_string(path) {
-                Ok(contents) => contents,
-                Err(err) => return format!("(failed to read {}: {err})", path.display()),
-            };
-            let mut lines = contents.lines().collect::<Vec<_>>();
-            if lines.len() > max_lines {
-                let start = lines.len().saturating_sub(max_lines);
-                lines.drain(0..start);
-            }
-            lines.join("\n")
-        }
-
-        fn build_process_worker_ctx(
-            cfg: &crate::config::RuntimeConfig,
-            log: crate::logging::LogSender,
-            dcs: DcsView,
-            inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
-        ) -> (
-            ProcessWorkerCtx,
-            crate::state::StateSubscriber<ProcessState>,
-        ) {
-            let initial = ProcessState::starting();
-            let (publisher, subscriber) = new_state_channel(initial.clone());
-            let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-            let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
-            (
-                ProcessWorkerCtx::new(ProcessWorkerBootstrap {
-                    cadence: ProcessCadence {
-                        poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
-                        now: Box::new(crate::process::worker::system_now_unix_millis),
-                    },
-                    config: cfg.process.clone(),
-                    identity: ProcessNodeIdentity {
-                        self_id: MemberId(cfg.cluster.member_id.clone()),
-                    },
-                    observed: ProcessObservedState {
-                        runtime_config,
-                        dcs: dcs_subscriber,
-                    },
-                    plan: ProcessRuntimePlan::from_config(cfg),
-                    state_channel: ProcessStateChannel {
-                        current: initial,
-                        publisher,
-                        last_rejection: None,
-                    },
-                    control: ProcessControlPlane {
-                        inbox,
-                        inbox_disconnected_logged: false,
-                        active_runtime: None,
-                    },
-                    runtime: ProcessRuntime {
-                        log,
-                        capture_subprocess_output: true,
-                        command_runner: Box::new(TokioCommandRunner),
-                    },
-                }),
-                subscriber,
-            )
-        }
-
-        fn is_transient_psql_failure(stderr: &str) -> bool {
-            let normalized = stderr.to_ascii_lowercase();
-            normalized.contains("the database system is starting up")
-                || normalized.contains("the database system is shutting down")
-                || normalized.contains("not yet accepting connections")
-                || normalized.contains("could not connect to server")
-                || normalized.contains("connection refused")
-        }
-
-        async fn run_psql_query_with_retry(
-            psql_bin: &PathBuf,
-            port: u16,
-            query: &str,
-            timeout: Duration,
-        ) -> Result<(), WorkerError> {
-            let deadline = Instant::now() + timeout;
-            let mut last_stderr = String::new();
-            let mut last_stdout = String::new();
-
-            while Instant::now() < deadline {
-                let mut cmd = Command::new(psql_bin);
-                cmd.arg("-h")
-                    .arg("127.0.0.1")
-                    .arg("-p")
-                    .arg(port.to_string())
-                    .arg("-U")
-                    .arg("postgres")
-                    .arg("-d")
-                    .arg("postgres")
-                    .arg("-c")
-                    .arg(query);
-
-                let output = cmd
-                    .output()
-                    .await
-                    .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
-
-                if output.status.success() {
-                    return Ok(());
-                }
-
-                last_stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-                last_stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-
-                if !is_transient_psql_failure(&last_stderr) {
-                    return Err(WorkerError::Message(format!(
-                        "psql exited unsuccessfully: {} (non-transient)\n--- stdout ---\n{}\n--- stderr ---\n{}",
-                        output.status,
-                        last_stdout,
-                        last_stderr
-                    )));
-                }
-
-                tokio::time::sleep(REAL_PSQL_RETRY_SLEEP).await;
-            }
-
-            Err(WorkerError::Message(format!(
-                "timed out waiting for psql readiness after {:?}\n--- last stdout ---\n{}\n--- last stderr ---\n{}",
-                timeout, last_stdout, last_stderr
-            )))
-        }
-
-        #[tokio::test(flavor = "current_thread")]
-        async fn ingests_jsonlog_and_stderr_files_from_real_postgres() -> Result<(), WorkerError> {
-            let postgres_bin = require_pg16_bin_for_real_tests("postgres")?;
-            let initdb_bin = require_pg16_bin_for_real_tests("initdb")?;
-            let psql_bin = require_pg16_bin_for_real_tests("psql")?;
-
-            let guard = NamespaceGuard::new("log-jsonlog-stderr")?;
-            let ns = guard.namespace()?;
-
-            let data_dir = prepare_pgdata_dir(ns, "node-a")?;
-            let mut reservation = allocate_ports(1)?;
-            let port = reservation.as_slice()[0];
-            let socket_dir = ns.child_dir("pg16/node-a/socket");
-            let log_dir = ns.child_dir("logs/pg16-node-a");
-
-            let jsonlog_path = log_dir.join("postgres.json");
-            std::fs::create_dir_all(&log_dir).map_err(|err| {
-                WorkerError::Message(format!(
-                    "create postgres ingest log dir {} failed: {err}",
-                    log_dir.display()
-                ))
-            })?;
-            std::fs::write(&jsonlog_path, b"").map_err(|err| {
-                WorkerError::Message(format!(
-                    "seed postgres ingest jsonlog file {} failed: {err}",
-                    jsonlog_path.display()
-                ))
-            })?;
-
-            let conf_lines = vec![
-                "logging_collector = on".to_string(),
-                "log_destination = 'jsonlog,stderr'".to_string(),
-                format!("log_directory = '{}'", log_dir.display()),
-                "log_filename = 'postgres.json'".to_string(),
-                "log_statement = 'all'".to_string(),
-            ];
-
-            let spec = PgInstanceSpec {
-                postgres_bin,
-                initdb_bin,
-                data_dir,
-                socket_dir,
-                log_dir: log_dir.clone(),
-                port,
-                startup_timeout: Duration::from_secs(10),
-            };
-            reservation.release_port(port).map_err(|err| {
-                WorkerError::Message(format!("release reserved port failed: {err}"))
-            })?;
-            // This test validates raw PostgreSQL log emission and ingest parsing, not
-            // pgtuskmaster-managed startup ownership, so it uses the explicit
-            // vanilla-Postgres config exception path.
-            let mut pg = spawn_pg16_for_vanilla_postgres(spec, &conf_lines).await?;
-
-            let mut cfg = sample_runtime_config();
-            cfg.logging.postgres.log_dir = Some(log_dir);
-            cfg.logging.postgres.cleanup.enabled = false;
-            cfg.postgres.paths.log_file = Some(ns.child_dir("runtime/pg_ctl.log"));
-
-            let test_log = start_test_log();
-            let ctx = PostgresIngestWorkerCtx {
-                cfg,
-                log: test_log.sender(),
-            };
-            let mut state = PostgresIngestWorkerState::new(&ctx.cfg);
-
-            // Prime ingestion offsets and then generate logs.
-            ingest_step_once(&ctx, &mut state).await?;
-
-            run_psql_query_with_retry(&psql_bin, port, "SELECT 1;", Duration::from_secs(10))
-                .await?;
-
-            let deadline = Instant::now() + Duration::from_secs(3);
-            let mut collected = Vec::new();
-            while Instant::now() < deadline {
-                ingest_step_once(&ctx, &mut state).await?;
-                collected.extend(test_log.take().await);
-                let saw_json = collected
-                    .iter()
-                    .any(|r| r.source.parser == crate::logging::LogParser::PostgresJson);
-                let saw_stderr = collected
-                    .iter()
-                    .any(|r| r.source.origin.contains("postgres.stderr.log"));
-                if saw_json && saw_stderr {
-                    pg.shutdown().await?;
-                    return Ok(());
-                }
-                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
-            }
-
-            pg.shutdown().await?;
-            drop(reservation);
-            Err(WorkerError::Message(
-                "timed out waiting for jsonlog+stderr ingestion".to_string(),
-            ))
-        }
-
-        #[tokio::test(flavor = "current_thread")]
-        async fn ingests_pg_ctl_log_file_and_captures_pg_tool_output() -> Result<(), WorkerError> {
-            let binaries = require_pg16_process_binaries_for_real_tests()?;
-
-            let guard = NamespaceGuard::new("log-pgctl")?;
-            let ns = guard.namespace()?;
-
-            let mut reservation = allocate_ports(1)?;
-            let port = reservation.as_slice()[0];
-
-            let data_dir = prepare_pgdata_dir(ns, "node-a")?;
-            let socket_dir = ns.child_dir("sock");
-            let log_file = ns.child_dir("runtime/pg_ctl.log");
-            let log_dir = ns.child_dir("logs/pg16-node-a");
-            std::fs::create_dir_all(&socket_dir)
-                .map_err(|err| WorkerError::Message(format!("create socket_dir failed: {err}")))?;
-            if let Some(parent) = log_file.parent() {
-                std::fs::create_dir_all(parent).map_err(|err| {
-                    WorkerError::Message(format!("create log file parent failed: {err}"))
-                })?;
-            }
-            std::fs::create_dir_all(&log_dir)
-                .map_err(|err| WorkerError::Message(format!("create log_dir failed: {err}")))?;
-            let jsonlog_path = log_dir.join("postgres.json");
-            std::fs::write(&jsonlog_path, b"")
-                .map_err(|err| WorkerError::Message(format!("seed jsonlog failed: {err}")))?;
-
-            let mut cfg = sample_runtime_config();
-            cfg.process.binaries = binaries.clone();
-            cfg.postgres.paths.data_dir = data_dir.clone();
-            cfg.postgres.paths.socket_dir = Some(socket_dir.clone());
-            cfg.postgres.network.listen_port = port;
-            cfg.postgres.paths.log_file = Some(log_file.clone());
-            cfg.postgres
-                .extra_gucs
-                .insert("log_filename".to_string(), "postgres.json".to_string());
-            cfg.postgres
-                .extra_gucs
-                .insert("log_directory".to_string(), log_dir.display().to_string());
-            cfg.postgres
-                .extra_gucs
-                .insert("log_statement".to_string(), "all".to_string());
-            cfg.logging.postgres.log_dir = Some(log_dir.clone());
-            cfg.logging.postgres.cleanup.enabled = false;
-
-            let test_log = start_test_log();
-
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
-                &cfg,
-                test_log.sender(),
-                DcsView::starting(),
-                rx,
-            );
-
-            let ingest_ctx = PostgresIngestWorkerCtx {
-                cfg,
-                log: test_log.sender(),
-            };
-            let mut ingest_state = PostgresIngestWorkerState::new(&ingest_ctx.cfg);
-
-            let bootstrap_id = JobId("bootstrap".to_string());
-            tx.send(ProcessIntentRequest {
-                id: bootstrap_id.clone(),
-                intent: ProcessIntent::Bootstrap,
-            })
-            .map_err(|_| WorkerError::Message("send bootstrap job failed".to_string()))?;
-
-            wait_for_process_idle_success(&mut process_ctx, &bootstrap_id, Duration::from_secs(30))
-                .await?;
-
-            reservation.release_port(port).map_err(|err| {
-                WorkerError::Message(format!("release reserved port failed: {err}"))
-            })?;
-            let start_id = JobId("start".to_string());
-            tx.send(ProcessIntentRequest {
-                id: start_id.clone(),
-                intent: ProcessIntent::Start(PostgresStartIntent::Primary),
-            })
-            .map_err(|_| WorkerError::Message("send start job failed".to_string()))?;
-
-            let started = Instant::now();
-            let mut collected_for_debug: Vec<LogRecord> = Vec::new();
-            while started.elapsed() < Duration::from_secs(60) {
-                process_step_once(&mut process_ctx).await?;
-                collected_for_debug.extend(test_log.take().await);
-
-                if let ProcessState::Idle {
-                    last_outcome: Some(outcome),
-                    ..
-                } = &process_ctx.state_channel.current
-                {
-                    match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. }
-                            if *id == start_id =>
-                        {
-                            break;
-                        }
-                        crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if *id == start_id =>
-                        {
-                            let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
-                            let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
-                            let postmaster_pid =
-                                tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
-
-                            let mut pg_tool_lines = Vec::new();
-                            for record in &collected_for_debug {
-                                if record.source.producer != crate::logging::LogProducer::PgTool {
-                                    continue;
-                                }
-                                let job_kind = record
-                                    .attributes
-                                    .get("job.kind")
-                                    .and_then(|v| v.as_str())
-                                    .map_or("<none>", |value| value);
-                                let job_id_attr = record
-                                    .attributes
-                                    .get("job.id")
-                                    .and_then(|v| v.as_str())
-                                    .map_or("<none>", |value| value);
-                                if job_kind != "start_postgres"
-                                    && job_id_attr != start_id.0.as_str()
-                                {
-                                    continue;
-                                }
-                                pg_tool_lines.push(format!(
-                                    "{:?} {}: {}",
-                                    record.source.transport, record.source.origin, record.message
-                                ));
-                            }
-                            if pg_tool_lines.len() > 60 {
-                                let start = pg_tool_lines.len().saturating_sub(60);
-                                pg_tool_lines.drain(0..start);
-                            }
-                            let pg_tool_debug = if pg_tool_lines.is_empty() {
-                                "(no captured pg_tool stdout/stderr lines for start_postgres)"
-                                    .to_string()
-                            } else {
-                                pg_tool_lines.join("\n")
-                            };
-
-                            return Err(WorkerError::Message(format!(
-                                "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
-                                start_id.0,
-                                log_file.display(),
-                                pg_ctl_tail,
-                                jsonlog_path.display(),
-                                postgres_json_tail,
-                                data_dir.join("postmaster.pid").display(),
-                                postmaster_pid,
-                                pg_tool_debug
-                            )));
-                        }
-                        _ => {}
-                    }
-                }
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            if started.elapsed() >= Duration::from_secs(60) {
-                return Err(WorkerError::Message(
-                    "timed out waiting for start_postgres job success".to_string(),
-                ));
-            }
-
-            // Pump ingestion a bit to collect pg_ctl log lines.
-            let psql_bin = binaries.overrides.psql.clone().ok_or_else(|| {
-                WorkerError::Message("test process binaries missing psql override".to_string())
-            })?;
-            let mut cmd = Command::new(psql_bin);
-            cmd.arg("-h")
-                .arg("127.0.0.1")
-                .arg("-p")
-                .arg(port.to_string())
-                .arg("-U")
-                .arg("postgres")
-                .arg("-d")
-                .arg("postgres")
-                .arg("-c")
-                .arg("SELECT 1;");
-            let status = cmd
-                .status()
-                .await
-                .map_err(|err| WorkerError::Message(format!("psql spawn failed: {err}")))?;
-            if !status.success() {
-                return Err(WorkerError::Message(format!(
-                    "psql pg_switch_wal exited unsuccessfully: {status}"
-                )));
-            }
-
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut collected = Vec::new();
-            while Instant::now() < deadline {
-                ingest_step_once(&ingest_ctx, &mut ingest_state).await?;
-                process_step_once(&mut process_ctx).await?;
-                collected.extend(test_log.take().await);
-                let saw_pg_ctl_log = collected.iter().any(|r| {
-                    r.source.producer == crate::logging::LogProducer::Postgres
-                        && r.source.origin.contains("pg_ctl_log_file")
-                });
-                let saw_pg_tool = collected.iter().any(|r| {
-                    r.source.producer == crate::logging::LogProducer::PgTool
-                        && (r.source.transport == crate::logging::LogTransport::ChildStdout
-                            || r.source.transport == crate::logging::LogTransport::ChildStderr)
-                });
-                let saw_jsonlog = collected.iter().any(|r| {
-                    r.source.producer == crate::logging::LogProducer::Postgres
-                        && r.source.parser == crate::logging::LogParser::PostgresJson
-                });
-                if saw_pg_ctl_log && saw_pg_tool && saw_jsonlog {
-                    break;
-                }
-                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
-            }
-
-            let stop_id = JobId("stop".to_string());
-            tx.send(ProcessIntentRequest {
-                id: stop_id.clone(),
-                intent: ProcessIntent::Demote(ShutdownMode::Fast),
-            })
-            .map_err(|_| WorkerError::Message("send stop job failed".to_string()))?;
-            wait_for_process_idle_success(&mut process_ctx, &stop_id, Duration::from_secs(30))
-                .await?;
-
-            // One more ingestion pass after shutdown to catch any final flushes.
-            ingest_step_once(&ingest_ctx, &mut ingest_state).await?;
-
-            let mut all_records = collected;
-            all_records.extend(test_log.take().await);
-
-            let saw_pg_ctl_log = all_records.iter().any(|r| {
-                r.source.producer == crate::logging::LogProducer::Postgres
-                    && r.source.origin.contains("pg_ctl_log_file")
-            });
-            let saw_pg_tool = all_records.iter().any(|r| {
-                r.source.producer == crate::logging::LogProducer::PgTool
-                    && r.attributes
-                        .get("job.kind")
-                        .and_then(|v| v.as_str())
-                        .is_some()
-            });
-            let saw_jsonlog = all_records.iter().any(|r| {
-                r.source.producer == crate::logging::LogProducer::Postgres
-                    && r.source.parser == crate::logging::LogParser::PostgresJson
-            });
-            if !saw_pg_ctl_log {
-                return Err(WorkerError::Message(
-                    "missing ingested pg_ctl log file records".to_string(),
-                ));
-            }
-            if !saw_pg_tool {
-                return Err(WorkerError::Message(
-                    "missing captured pg tool stdout/stderr records".to_string(),
-                ));
-            }
-            if !saw_jsonlog {
-                return Err(WorkerError::Message(
-                    "missing ingested postgres jsonlog records".to_string(),
-                ));
-            }
-
-            drop(reservation);
-            Ok(())
-        }
-
-        #[tokio::test(flavor = "current_thread")]
-        async fn captures_helper_binary_stdout_stderr_on_failure() -> Result<(), WorkerError> {
-            let binaries = require_pg16_process_binaries_for_real_tests()?;
-
-            let guard = NamespaceGuard::new("log-pgtool")?;
-            let ns = guard.namespace()?;
-
-            let data_dir = ns.child_dir("pg_basebackup/out");
-            std::fs::create_dir_all(&data_dir)
-                .map_err(|err| WorkerError::Message(format!("create data_dir failed: {err}")))?;
-
-            let mut cfg = sample_runtime_config();
-            cfg.process.binaries = binaries;
-
-            let test_log = start_test_log();
-
-            let (tx, rx) = mpsc::unbounded_channel();
-            let dcs = DcsView::Coordinated(ClusterView::new(
-                std::collections::BTreeMap::from([(
-                    MemberId("node-b".to_string()),
-                    ClusterMemberView::new(
-                        MemberPostgresView::Primary {
-                            readiness: crate::pginfo::state::Readiness::Ready,
-                            system_identifier: None,
-                            committed_wal: crate::state::ObservedWalPosition {
-                                timeline: Some(TimelineId(1)),
-                                lsn: WalLsn(0),
-                            },
-                        },
-                        crate::state::PgTcpTarget::new("127.0.0.1".to_string(), 9)
-                            .map_err(|err| WorkerError::Message(format!("test dcs target failed: {err}")))?,
-                    ),
-                )]),
-                LeadershipObservation::Open,
-                SwitchoverView::None,
-            ));
-            let (mut ctx, _process_state_subscriber) =
-                build_process_worker_ctx(&cfg, test_log.sender(), dcs, rx);
-
-            let job_id = JobId("basebackup-fail".to_string());
-            tx.send(ProcessIntentRequest {
-                id: job_id.clone(),
-                intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
-                    leader: MemberId("node-b".to_string()),
-                }),
-            })
-            .map_err(|_| WorkerError::Message("send basebackup job failed".to_string()))?;
-
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut collected = Vec::new();
-            while Instant::now() < deadline {
-                process_step_once(&mut ctx).await?;
-                collected.extend(test_log.take().await);
-                let saw_stderr = collected.iter().any(|r| {
-                    r.source.producer == crate::logging::LogProducer::PgTool
-                        && r.source.transport == crate::logging::LogTransport::ChildStderr
-                        && r.attributes.get("job.kind").and_then(|v| v.as_str())
-                            == Some("basebackup")
-                });
-                if saw_stderr {
-                    return Ok(());
-                }
-                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
-            }
-
-            Err(WorkerError::Message(
-                "timed out waiting for captured pg_basebackup stderr".to_string(),
-            ))
-        }
-    }
-}
-
-
-===== src/runtime/node.rs =====
-use std::{path::Path, time::Duration};
-
-use thiserror::Error;
-
-use crate::{
-    config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
-    process::state::ProcessRuntimePlan,
-    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
-};
-
-use super::log_event::{RuntimeLogEvent, RuntimeLogOrigin, RuntimeNodeIdentity};
-
-#[derive(Debug, Error)]
-pub enum RuntimeError {
-    #[error("config error: {0}")]
-    Config(#[from] ConfigError),
-    #[error("startup planning failed: {0}")]
-    StartupPlanning(String),
-    #[error("startup execution failed: {0}")]
-    StartupExecution(String),
-    #[error("api bind failed at `{listen_addr}`: {message}")]
-    ApiBind {
-        listen_addr: std::net::SocketAddr,
-        message: String,
-    },
-    #[error("worker failed: {0}")]
-    Worker(String),
-    #[error("time error: {0}")]
-    Time(String),
-}
-
-fn runtime_startup_event(cfg: &RuntimeConfig, startup_run_id: &str) -> RuntimeLogEvent {
-    RuntimeLogEvent::StartupEntered {
-        origin: RuntimeLogOrigin::RunNodeFromConfig,
-        identity: RuntimeNodeIdentity {
-            scope: cfg.cluster.scope.clone(),
-            member_id: cfg.cluster.member_id.clone(),
-        },
-        startup_run_id: startup_run_id.to_string(),
-        logging_level: cfg.logging.level,
-    }
-}
-
-pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> {
-    let cfg = load_runtime_config(path)?;
-    run_node_from_config(cfg).await
-}
-
-pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
-    validate_runtime_config(&cfg)?;
-
-    let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
-        RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
-    })?;
-    let log = logging.sender.clone();
-    let worker = logging.worker;
-    let startup_run_id = format!(
-        "{}-{}",
-        cfg.cluster.member_id,
-        crate::logging::system_now_unix_millis()
-    );
-    log.send(runtime_startup_event(&cfg, startup_run_id.as_str()))
-        .map_err(|err| {
-            RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
-        })?;
-
-    let process_plan = ProcessRuntimePlan::from_config(&cfg);
-    process_plan.ensure_start_paths().map_err(|err| {
-        RuntimeError::StartupExecution(format!("process start path preparation failed: {err}"))
-    })?;
-
-    run_workers(cfg, process_plan, log, worker).await
-}
-
-async fn run_workers(
-    cfg: RuntimeConfig,
-    process_plan: ProcessRuntimePlan,
-    log: crate::logging::LogSender,
-    log_worker: crate::logging::LogWorker,
-) -> Result<(), RuntimeError> {
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
-    let identity = NodeIdentity {
-        cluster_name: ClusterName(cfg.cluster.name.clone()),
-        scope: ScopeName(cfg.cluster.scope.clone()),
-        member_id: MemberId(cfg.cluster.member_id.clone()),
-    };
-    let worker_poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
-
-    let pginfo = crate::pginfo::startup::bootstrap(crate::pginfo::startup::PgInfoRuntimeRequest {
-        self_id: identity.member_id.clone(),
-        probe: crate::pginfo::state::PgProbeTarget::local_from_config(&cfg, &process_plan),
-        poll_interval: worker_poll_interval,
-        log: log.clone(),
-    });
-
-    let dcs = crate::dcs::startup::bootstrap(crate::dcs::startup::DcsRuntimeRequest {
-        identity: identity.clone(),
-        endpoints: cfg.dcs.endpoints.clone(),
-        client: cfg.dcs.client.clone(),
-        poll_interval: worker_poll_interval,
-        member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised: crate::dcs::startup::DcsAdvertisedEndpoints::from_config(&cfg)
-            .map_err(|err| RuntimeError::Worker(format!("dcs advertisement build failed: {err}")))?,
-        pg_subscriber: pginfo.state.clone(),
-        log: log.clone(),
-    })
-    .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
-
-    let process =
-        crate::process::startup::bootstrap(crate::process::startup::ProcessRuntimeRequest {
-            identity: identity.clone(),
-            runtime_config: cfg_subscriber.clone(),
-            dcs_subscriber: dcs.state.clone(),
-            plan: process_plan,
-            config: cfg.process.clone(),
-            capture_subprocess_output: cfg.logging.capture_subprocess_output,
-            log: log.clone(),
-        });
-
-    let ha = crate::ha::startup::bootstrap(crate::ha::startup::HaRuntimeRequest {
-        identity: identity.clone(),
-        poll_interval: worker_poll_interval,
-        config_subscriber: cfg_subscriber.clone(),
-        pg_subscriber: pginfo.state.clone(),
-        dcs_subscriber: dcs.state.clone(),
-        process_subscriber: process.state.clone(),
-        process_control: process.control.clone(),
-        dcs_handle: dcs.handle.clone(),
-    });
-
-    let api = crate::api::startup::bootstrap(crate::api::startup::ApiRuntimeRequest {
-        identity,
-        runtime_config: cfg_subscriber,
-        dcs_handle: dcs.handle.clone(),
-        observed_state: crate::api::worker::ApiObservedState::Live {
-            pg: pginfo.state.clone(),
-            process: process.state.clone(),
-            dcs: dcs.state.clone(),
-            ha: ha.state.clone(),
-        },
-        log: log.clone(),
-    })
-    .map_err(|err| RuntimeError::Worker(err.to_string()))?;
-
-    let (
-        (),
-        pginfo_result,
-        dcs_result,
-        process_result,
-        ingest_result,
-        ha_result,
-        api_result,
-    ) = tokio::join!(
-        log_worker.run(),
-        pginfo.worker.run(),
-        dcs.worker.run(),
-        process.worker.run(),
-        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
-            cfg.clone(),
-            log.clone(),
-        )),
-        ha.worker.run(),
-        api.worker.run(),
-    );
-
-    pginfo_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-    dcs_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-    process_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-    ingest_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-    ha_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-    api_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
-
-    Ok(())
-}
-
-
-===== src/runtime/log_event.rs =====
-use std::borrow::Cow;
-
-use crate::config::LogLevel;
-use crate::logging::{
-    DomainLogEvent, LogEventMetadata, LogEventResult, LogEventSource, LogFieldVisitor,
-    SealedLogEvent, SeverityText,
-};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RuntimeLogOrigin {
-    RunNodeFromConfig,
-}
-
-impl RuntimeLogOrigin {
-    fn label(self) -> &'static str {
-        match self {
-            Self::RunNodeFromConfig => "runtime::run_node_from_config",
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct RuntimeNodeIdentity {
-    pub(crate) scope: String,
-    pub(crate) member_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum RuntimeLogEvent {
-    StartupEntered {
-        origin: RuntimeLogOrigin,
-        identity: RuntimeNodeIdentity,
-        startup_run_id: String,
-        logging_level: LogLevel,
-    },
-}
-
-impl SealedLogEvent for RuntimeLogEvent {}
-
-impl DomainLogEvent for RuntimeLogEvent {
-    fn metadata(&self) -> LogEventMetadata {
-        match self {
-            Self::StartupEntered { origin, .. } => LogEventMetadata {
-                severity: SeverityText::Info,
-                message: Cow::Borrowed("runtime starting"),
-                event_name: "runtime.startup.entered",
-                event_domain: "runtime",
-                event_result: LogEventResult::Ok,
-                source: LogEventSource::app(origin.label()),
-            },
-        }
-    }
-
-    fn write_fields(&self, visitor: &mut dyn LogFieldVisitor) {
-        match self {
-            Self::StartupEntered {
-                identity,
-                startup_run_id,
-                logging_level,
-                ..
-            } => {
-                visitor.string("scope", identity.scope.clone());
-                visitor.string("member_id", identity.member_id.clone());
-                visitor.string("startup_run_id", startup_run_id.clone());
-                visitor.str("logging.level", log_level_label(*logging_level));
-            }
-        }
-    }
-}
-
-fn log_level_label(level: LogLevel) -> &'static str {
-    match level {
-        LogLevel::Trace => "trace",
-        LogLevel::Debug => "debug",
-        LogLevel::Info => "info",
-        LogLevel::Warn => "warn",
-        LogLevel::Error => "error",
-        LogLevel::Fatal => "fatal",
-    }
-}
-
-
 ===== src/process/state.rs =====
 use std::{fs, path::PathBuf, time::Duration};
 
@@ -6907,19 +4247,20 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    config::{PostgresRoleName, ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    config::{PostgresRoleName, PostgresRoleSlots, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::DcsView,
     logging::LogSender,
     pginfo::state::PgSslMode,
+    postgres_managed_conf::ManagedRecoverySignal,
     state::{
-        JobId, MemberId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
+        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
     },
 };
 
 use super::jobs::{
     ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessLogIdentity,
-    PromoteSpec, StartPostgresSpec,
+    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec,
+    StartPostgresSpec,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -6987,7 +4328,7 @@ pub(crate) struct ActiveRuntime {
     pub(crate) request: ProcessExecutionRequest,
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
-    pub(crate) log_identity: ProcessLogIdentity,
+    pub(crate) job_kind: ProcessJobKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -7009,12 +4350,7 @@ pub(crate) struct MandatoryPostgresRoleCredential {
     pub(crate) auth: RoleAuthConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MandatoryPostgresRuntimeRoles {
-    pub(crate) superuser: MandatoryPostgresRoleCredential,
-    pub(crate) replicator: MandatoryPostgresRoleCredential,
-    pub(crate) rewinder: MandatoryPostgresRoleCredential,
-}
+pub(crate) type MandatoryPostgresRuntimeRoles = PostgresRoleSlots<MandatoryPostgresRoleCredential>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ReplicaAccessRuntime {
@@ -7058,15 +4394,19 @@ pub(crate) struct ProcessCadence {
     pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessNodeIdentity {
-    pub(crate) self_id: MemberId,
-}
+pub(crate) type ProcessNodeIdentity = NodeIdentity;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedState {
     pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs: StateSubscriber<DcsView>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessObservedSnapshot {
+    pub(crate) runtime_config: RuntimeConfig,
+    pub(crate) dcs: DcsView,
+    pub(crate) managed_recovery_state: ManagedRecoverySignal,
 }
 
 pub(crate) struct ProcessStateChannel {
@@ -7155,7 +4495,6 @@ impl ProcessRuntimePlan {
             },
         }
     }
-
 }
 
 impl ProcessRuntimePlan {
@@ -7219,91 +4558,200 @@ impl ProcessState {
 }
 
 
-===== docs/tmp/verbose_extra_context/process-logging-boundary.md =====
-# Verbose Context: Process Logging Boundary
+===== src/process/startup.rs =====
+use std::time::Duration;
 
-This file is raw factual context for documentation drafting.
+use tokio::sync::mpsc;
 
-The logging subsystem is now centered on an opaque `LogSender` in `src/logging/mod.rs`.
+use crate::{
+    config::{ProcessConfig, RuntimeConfig},
+    dcs::DcsView,
+    logging::LogSender,
+    state::{new_state_channel, NodeIdentity, StateSubscriber, WorkerError},
+};
 
-Facts from the current code:
+use super::{
+    state::{
+        ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
+        ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
+        ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+    },
+    worker::{system_now_unix_millis, TokioCommandRunner},
+};
 
-- `LogSender` is the only outward-facing application logging handle used by non-logging code.
-- `LogSender` exposes `send(event)` where `event` implements the sealed `DomainLogEvent` trait.
-- `LogSender::send(...)` only returns `LogSendError::QueueClosed`.
-- `LogSender::send(...)` does not expose field bags, records, severities, tracing APIs, or queue internals.
-- `LogSender` filters by minimum app severity before queueing, using event metadata severity.
-- `LogSender` eagerly materializes the typed event into the private `raw_record::QueuedRecord` shape before queueing.
-- The queue payload type is private to `src/logging`.
-- `LogWorker` receives queued records, converts them into final `LogRecord` values, and forwards them to the backend.
-- `LogWorker` discards backend sink failures internally after dequeue. The worker currently does `let _ = self.backend.emit(&materialized);`.
-- This means logging is best effort after enqueue.
+const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-Facts about the logging trait and domain ownership:
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessRuntimeRequest {
+    pub(crate) identity: NodeIdentity,
+    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
+    pub(crate) dcs_subscriber: StateSubscriber<DcsView>,
+    pub(crate) plan: ProcessRuntimePlan,
+    pub(crate) config: ProcessConfig,
+    pub(crate) capture_subprocess_output: bool,
+    pub(crate) log: LogSender,
+}
 
-- `src/logging/event.rs` defines the sealed logging contract with `DomainLogEvent`, `SealedLogEvent`, `LogEventMetadata`, `LogEventSource`, `LogEventResult`, and `LogFieldVisitor`.
-- Each domain owns its own typed log ADTs instead of routing application meaning through one central logging-owned sum enum.
-- Runtime-owned events live in `src/runtime/log_event.rs`.
-- DCS-owned events live in `src/dcs/log_event.rs`.
-- PgInfo-owned events live in `src/pginfo/log_event.rs`.
-- Process-owned events live in `src/process/log_event.rs`.
-- Logging-internal postgres ingest events live in `src/logging/postgres_ingest.rs` as private typed enums.
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessControlHandle {
+    pub(crate) intents: tokio::sync::mpsc::UnboundedSender<ProcessIntentRequest>,
+}
 
-Facts about process-domain logging after the refactor:
+pub(crate) struct ProcessRuntimeBundle {
+    pub(crate) state: crate::state::StateSubscriber<ProcessState>,
+    pub(crate) control: ProcessControlHandle,
+    pub(crate) worker: ProcessWorker,
+}
 
-- `src/process/worker.rs` no longer has `emit_process_event(...)` wrappers.
-- `src/process/worker.rs` now constructs `ProcessLogEvent` or `SubprocessLogEvent` values directly and calls `ctx.runtime.log.send(...)` directly.
-- `src/process/log_event.rs` owns the process event taxonomy.
-- `ProcessLogEvent` covers worker startup, request receipt, inbox disconnect, busy rejection, preflight failures, command-build failures, spawn failures, job started, timeout, exit success, exit failure, poll failure, output drain failure, and output emit failure.
-- `SubprocessLogEvent` represents stdout/stderr lines from child processes as a separate typed event.
-- `SubprocessLogEvent` carries producer, origin, execution identity, stream, and bytes.
-- Process execution identity is modeled with `ProcessExecutionIdentity`, which embeds `ProcessJobIdentity`.
-- Process job kind is recorded through `ProcessJobKind`.
-- Process stdout lines map to info severity and child-stdout transport.
-- Process stderr lines map to warn severity and child-stderr transport.
-- Process log fields include `job.id`, `job.kind`, `binary`, `stream`, `bytes_len`, and `error` where appropriate.
+pub(crate) struct ProcessWorker(ProcessWorkerCtx);
 
-Facts about process worker behavior and control flow after the refactor:
+impl ProcessWorker {
+    pub(crate) async fn run(self) -> Result<(), WorkerError> {
+        super::worker::run(self.0).await
+    }
+}
 
-- Process worker log sends still map queue-closed errors into `WorkerError::Message(...)` at the point of send.
-- Backend sink failures no longer affect the process worker after the event has been accepted by the queue.
-- Output-drain and output-emit logging still publish typed process events, but only queue failure is visible to the caller.
-- The process worker still transitions jobs back to idle and publishes outcomes after successful sends.
-- Subprocess output capture is still controlled by `logging.capture_subprocess_output` in runtime configuration.
-- `ProcessRuntime` stores `log: LogSender`, `capture_subprocess_output`, and the process command runner.
+pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle {
+    let initial_state = ProcessState::starting();
+    let (publisher, state) = new_state_channel(initial_state.clone());
+    let (intents, inbox) = mpsc::unbounded_channel();
 
-Facts about runtime startup and the log worker:
+    ProcessRuntimeBundle {
+        state,
+        control: ProcessControlHandle { intents },
+        worker: ProcessWorker(ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+            cadence: ProcessCadence {
+                poll_interval: PROCESS_WORKER_POLL_INTERVAL,
+                now: Box::new(system_now_unix_millis),
+            },
+            config: request.config,
+            identity: ProcessNodeIdentity {
+                cluster_name: request.identity.cluster_name,
+                scope: request.identity.scope,
+                member_id: request.identity.member_id,
+            },
+            observed: ProcessObservedState {
+                runtime_config: request.runtime_config,
+                dcs: request.dcs_subscriber,
+            },
+            plan: request.plan,
+            state_channel: ProcessStateChannel {
+                current: initial_state,
+                publisher,
+                last_rejection: None,
+            },
+            control: ProcessControlPlane {
+                inbox,
+                inbox_disconnected_logged: false,
+                active_runtime: None,
+            },
+            runtime: ProcessRuntime {
+                log: request.log,
+                capture_subprocess_output: request.capture_subprocess_output,
+                command_runner: Box::new(TokioCommandRunner),
+            },
+        })),
+    }
+}
 
-- `src/runtime/node.rs` bootstraps logging first.
-- `bootstrap(...)` returns `LoggingSystem { sender, worker }`.
-- Runtime sends the startup event through `log.send(runtime_startup_event(...))`.
-- Worker orchestration now joins the non-fallible log worker separately from fallible workers using `tokio::join!`.
-- Runtime, pginfo, dcs, process, HA, API, and postgres ingest all share cloned `LogSender` values.
 
-Facts about postgres ingest in the new architecture:
+===== src/process/source.rs =====
+use thiserror::Error;
 
-- `src/logging/postgres_ingest.rs` no longer uses `emit_ingest_event(...)`, `emit_ingest_step_failure(...)`, `emit_ingest_retry_recovered(...)`, or `emit_postgres_line(...)`.
-- Postgres ingest now constructs `PostgresIngestLogEvent` or `PostgresLineLogEvent` values directly and sends them through `LogSender`.
-- `PostgresIngestLogEvent` covers step failure, recovery, and iteration summary.
-- `PostgresLineLogEvent` covers JSON, plain, and unparsed postgres lines.
-- The helper `postgres_line_event(...)` is a pure builder that returns a typed event. The caller performs the send.
-- Postgres ingest queue-send failures are still surfaced as worker errors because they mean the logging queue is broken.
-- Sink and backend failures after enqueue remain internal to logging.
+use crate::{
+    dcs::{ClusterMemberView, MemberPostgresView},
+    pginfo::conninfo::PgClientTls,
+    pginfo::state::PgConnInfo,
+    process::{
+        jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
+        state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
+    },
+    state::MemberId,
+};
 
-Facts about tracing visibility:
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(crate) enum SourceMaterializationError {
+    #[error("remote source member `{member_id}` is self")]
+    SelfTarget { member_id: String },
+    #[error("remote source member `{member_id}` is not a healthy primary")]
+    NotHealthyPrimary { member_id: String },
+    #[error("remote source member `{member_id}` has an empty postgres host")]
+    EmptyHost { member_id: String },
+}
 
-- `tracing` usage remains inside `src/logging/mod.rs`.
-- Non-logging modules do not use `tracing`.
-- The private backend bridge currently uses `TracingBackend` and a private `dispatch_tracing_record_event(...)` helper.
+pub(crate) fn basebackup_source_from_member(
+    self_id: &MemberId,
+    runtime: &ProcessRuntimePlan,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
+) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
+    validate_remote_primary_source(self_id, member_id, member)?;
+    Ok(MandatoryRoleSourceConn {
+        role: MandatorySourceRole::Replicator,
+        conninfo: remote_conninfo(member, &runtime.replica_access.roles.replicator, runtime),
+        auth: runtime.replica_access.roles.replicator.auth.clone(),
+    })
+}
 
-Facts about DCS logging after the refactor:
+pub(crate) fn rewind_source_from_member(
+    self_id: &MemberId,
+    runtime: &ProcessRuntimePlan,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
+) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
+    validate_remote_primary_source(self_id, member_id, member)?;
+    Ok(MandatoryRoleSourceConn {
+        role: MandatorySourceRole::Rewinder,
+        conninfo: remote_conninfo(member, &runtime.replica_access.roles.rewinder, runtime),
+        auth: runtime.replica_access.roles.rewinder.auth.clone(),
+    })
+}
 
-- DCS owns its own typed events in `src/dcs/log_event.rs`.
-- The refactor also corrected a misleading event mapping by using generic failure events `ConnectedStepFailed` and `InitialConnectFailed`.
-- Those names now match the real failure boundary instead of implying that every connected failure was specifically a watch-refresh failure or that every initial connect failure was specifically a snapshot-read failure.
+fn validate_remote_primary_source(
+    self_id: &MemberId,
+    member_id: &MemberId,
+    member: &ClusterMemberView,
+) -> Result<(), SourceMaterializationError> {
+    if member_id == self_id {
+        return Err(SourceMaterializationError::SelfTarget {
+            member_id: member_id.0.clone(),
+        });
+    }
 
-Facts about documentation impact:
+    if member.postgres_target().host().trim().is_empty() {
+        return Err(SourceMaterializationError::EmptyHost {
+            member_id: member_id.0.clone(),
+        });
+    }
 
-- The existing `docs/src/explanation/process-management.md` page already discusses subprocess output capture and typed subprocess events.
-- The new code makes the logging boundary more explicit: process code only holds an opaque `LogSender`, owns typed process log ADTs locally, and does not know about record rendering or backend sinks.
-- A documentation update should stay within process-management scope and explain how process execution and logging interact today.
+    if !matches!(member.postgres(), MemberPostgresView::Primary { .. }) {
+        return Err(SourceMaterializationError::NotHealthyPrimary {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+fn remote_conninfo(
+    member: &ClusterMemberView,
+    role: &MandatoryPostgresRoleCredential,
+    runtime: &ProcessRuntimePlan,
+) -> PgConnInfo {
+    PgConnInfo {
+        endpoint: member.postgres_target().clone(),
+        user: role.username.as_str().to_owned(),
+        dbname: runtime.replica_access.dbname.clone(),
+        application_name: None,
+        connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
+        ssl_mode: runtime.replica_access.ssl_mode,
+        ssl_root_cert: runtime.replica_access.ssl_root_cert.clone(),
+        options: None,
+        tls: PgClientTls {
+            mode: runtime.replica_access.ssl_mode,
+            root_cert: runtime.replica_access.ssl_root_cert.clone(),
+            client_cert: None,
+            client_key: None,
+        },
+    }
+}

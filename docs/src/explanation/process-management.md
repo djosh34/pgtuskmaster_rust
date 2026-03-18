@@ -1,10 +1,10 @@
 # Process Management and Execution Domain
 
-Process management is the execution boundary between the HA reconciler and the operating system. The HA side decides what should happen next based on cluster state and policy. The process domain turns that decision into concrete PostgreSQL subprocess work, records the outcome, and publishes state for the rest of the node. This separation keeps HA logic pure and ensures process execution concerns do not leak into higher-level decision-making.
+The process management layer is the execution boundary between the HA reconciler and the operating system. This boundary exists to preserve architectural purity: the HA decision engine focuses exclusively on cluster state and safety invariants, while the process layer translates those decisions into concrete PostgreSQL subprocess work. Neither domain leaks concerns into the other.
 
 ## Why This Boundary Exists
 
-The HA decision engine must remain focused on cluster state and safety invariants. It should not contain code that knows how to spawn `postgres`, `pg_rewind`, or `pg_basebackup`. Conversely, the process layer should not need to understand HA concepts like quorum, fencing, or switchover coordination. The boundary between them is a narrow channel of typed intents.
+The process management boundary solves a tension between high-level orchestration and low-level execution. HA logic must remain pure, reasoning only about quorum, fencing, and switchover coordination. It should not contain code that spawns `postgres`, `pg_rewind`, or `pg_basebackup`. The process layer owns DCS-backed source resolution and validation internally; the intended boundary is that HA no longer owns those details, not that the process domain is ignorant of DCS/member-health facts.
 
 ```mermaid
 flowchart LR
@@ -16,137 +16,59 @@ flowchart LR
     F --> G[JobOutcome and ProcessState]
 ```
 
-## Startup Composition
+## The Three-Stage Preparation Pipeline
 
-Runtime startup moved process-specific policy into `ProcessRuntimePlan` and `process::startup::bootstrap`. The plan is a typed projection of runtime config that the process and pginfo domains need repeatedly:
-
-- Managed PostgreSQL paths and listen port
-- Replication-source defaults for replicator and rewinder jobs
-- Connection defaults such as database name, SSL mode, CA path, and connect timeout
-
-`ProcessRuntimePlan::ensure_start_paths()` creates the data directory parent, data directory, socket directory, and log parent before workers start. On Unix systems it additionally sets `0o700` permissions on the data directory to match PostgreSQL expectations.
-
-At the composition root, `src/runtime/node.rs` creates the plan once, prepares paths once, and passes the typed plan into owning startup modules instead of rebuilding loose strings across domains.
+A March 2026 refactor replaced the monolithic worker-owned preparation logic with a three-stage pipeline. The HA reconciler emits a `ProcessIntent`. The worker passes this intent to a `ProcessCluster` facade, which orchestrates preparation through three distinct modules. Each stage has a single responsibility and produces an intermediate artifact that the next stage consumes.
 
 ```mermaid
 flowchart LR
-    A[runtime::run_node_from_config] --> B[ProcessRuntimePlan::from_config]
-    B --> C[ensure_start_paths]
-    C --> D[process::startup::bootstrap]
-    B --> E[pginfo::startup::bootstrap]
+    A[ProcessIntent] --> B[Planner]
+    B --> C[ClusterProcessPlan]
+    C --> D[Session Materializer]
+    D --> E[Optional PreparedManagedPostgresSession]
+    E --> F[Tool Lowerer]
+    F --> G[ProcessExecutionRequest + ProcessCommandSpec]
 ```
 
-## Worker Context Shape
+### Stage One: Intent Planning
 
-`ProcessWorkerCtx` groups concerns into narrower abstract data types:
+The `ProcessIntentPlanner` in `src/process/planner.rs` converts a `ProcessIntent` into a `ClusterProcessPlan`. This stage owns DCS trust validation, source member resolution, and replica-source selection. For replica-provisioning paths, the planner reads the latest DCS view and validates that the chosen leader is a healthy primary and not the local member. For managed PostgreSQL starts, the planner derives the desired session shape—primary, detached standby, or replica-follow—based on the intent and observed state.
 
-- `cadence`: worker poll interval and time source
-- `config`: process-level timeout and binary configuration
-- `identity`: the local `MemberId`
-- `observed`: live `RuntimeConfig` and `DcsView` subscribers
-- `plan`: the stable `ProcessRuntimePlan`
-- `state_channel`: current `ProcessState`, publisher, and last rejection
-- `control`: the inbox plus optional active runtime
-- `runtime`: logging, subprocess-output capture flag, and command runner
+The planner produces a first-class plan ADT that carries explicit replication source information. For replica starts, the plan includes a `ReplicaFollowPlan` containing a `MandatoryRoleSourceConn` with conninfo, auth, and role. This keeps replication policy inside the process domain instead of scattering it across HA and runtime startup code.
 
-That split keeps the startup boundary smaller and makes cross-domain dependencies more explicit. The worker reads local identity and long-lived runtime defaults from typed bundles instead of from many unrelated top-level fields.
+### Stage Two: Session Materialization
 
-## Intent Flow from HA to Process
+The `ManagedPostgresSessionMaterializer` in `src/process/session.rs` handles authoritative managed PostgreSQL runtime-file creation for start flows. Given a `ClusterProcessPlan` and the desired session shape from the planner, the materializer writes managed files like `pgtm.postgresql.conf`, `pgtm.pg_hba.conf`, and `pgtm.pg_ident.conf`, plus managed signal/passfile artifacts into the data directory.
 
-The HA reconciler never spawns a subprocess directly. It emits `ProcessIntent` values such as:
+This stage calls `ProcessRuntimePlan::ensure_start_paths()` before writing files, guaranteeing that the data directory, socket directory, and log parent exist with correct permissions. For non-start plans, the materializer returns `None` and does no work.
 
-- `Bootstrap`
-- `ProvisionReplica(BaseBackup | PgRewind)`
-- `Start(Primary | DetachedStandby | Replica)`
-- `Promote`
-- `Demote(Fast | Immediate)`
+### Stage Three: Tool Lowering
 
-`src/ha/process_dispatch.rs` converts each intent into a `ProcessIntentRequest` with a deterministic `JobId` built from scope, member id, HA tick, action index, and intent label. That request is sent through the process worker inbox. If the worker is already busy, the new request is rejected without starting a second job. That rejection is recorded in `state_channel.last_rejection` and logged as a worker event.
+The `ExternalToolLowerer` in `src/process/tools.rs` converts the plan and optional prepared session into a concrete execution request and command specification. This stage also performs destructive preparation: for bootstrap and basebackup operations, it wipes the data directory contents before constructing the external command. For start-postgres, it uses the prepared session's config file path to build the `pg_ctl` invocation.
 
-```mermaid
-flowchart LR
-    A[HA reconcile] --> B[ProcessIntent]
-    B --> C[process_dispatch]
-    C --> D[ProcessIntentRequest plus JobId]
-    D --> E[process worker inbox]
-    E --> F{worker idle}
-    F -- no --> G[record rejection]
-    F -- yes --> H[materialize execution request]
-    H --> I[build command spec]
-    I --> J[spawn subprocess]
-```
+The lowerer validates all input paths and endpoint values, ensuring that missing or malformed configuration fails fast with clear attribution. It constructs the final `ProcessExecutionRequest` and `ProcessCommandSpec`, which the worker passes to the command runner.
 
-## Materialization and Validation
+## Worker Context and Job Lifecycle
 
-The process worker turns `ProcessIntentRequest` into a concrete `ProcessExecutionRequest` inside `materialize_execution_request(...)`. For replica-provisioning paths, materialization reads the latest DCS view and validates the chosen leader before building connection info:
+The worker in `src/process/worker.rs` remains responsible for admission control, preflight checks, job lifecycle management, timeout enforcement, and state publication. When a `ProcessIntentRequest` arrives, the worker first checks if it is idle. If busy, it records a rejection and logs a worker event. If idle, it checks for a start-postgres noop condition: when PostgreSQL is already running for the configured data directory and port, the worker transitions directly to idle with a success outcome and does not spawn a subprocess.
 
-- The source member must not be `self`
-- The advertised PostgreSQL host must be non-empty
-- The source member must currently present as a primary in DCS
+For actual work, the worker calls `ProcessCluster::production_from_ctx()` to create a typed `ProcessObservedSnapshot` that bundles the latest `RuntimeConfig`, `DcsView`, and `ManagedRecoverySignal`. It then calls `cluster.prepare()`, which runs the three-stage pipeline. Any stage failure becomes a `ProcessPreparationError` with a stage label—"planning", "managed session materialization", or "external tool lowering"—and the worker logs the specific stage that failed.
 
-Those checks live in `src/process/source.rs` and use the typed replication-source defaults stored in `ProcessRuntimePlan`. That keeps replication-source policy in the process domain instead of leaving it spread across HA and runtime startup code.
+## Error Attribution and Observability
 
-The same materialization step also converts start intents into concrete PostgreSQL start specifications, including detached-standby and replica-start managed configuration.
+The staged preparation pipeline improves observability by attributing failures to the exact phase where they occur. The `ProcessPreparationError` enum in `src/process/cluster.rs` distinguishes three failure modes:
 
-## Job Lifecycle and Timeouts
+- `Planning(ProcessError)`
+- `SessionMaterialization(ProcessError)`
+- `ToolLowering(ProcessError)`
 
-`ProcessState` exposes two high-level states:
+Each variant carries a `stage_label()` method that returns a static string for logging. When a replica start fails due to a missing leader in DCS, the log shows "planning failed" and the cause. When a managed config write fails, the log shows "managed session materialization failed". When a binary path is malformed, the log shows "external tool lowering failed". This precision helps operators diagnose whether the problem lies in DCS state, file system permissions, or configuration values.
 
-- `Idle { worker, last_outcome }`
-- `Running { worker, active }`
+## Logging Boundaries
 
-Internally, `ActiveRuntime` holds the execution request, deadline, process handle, and structured log identity for the running job.
+Process execution code never creates JSON records or interacts with tracing APIs. Instead, it constructs typed log events and sends them through an opaque `LogSender` handle. The process domain defines `ProcessLogEvent` for worker lifecycle and job control events, and `SubprocessLogEvent` for stdout/stderr lines from child processes.
 
-Timeouts are enforced by deadline checks inside `tick_active_job(...)`. Different execution kinds resolve to different timeout defaults from `ProcessConfig`:
-
-- bootstrap, basebackup, promote, and start-postgres use the bootstrap timeout unless the spec overrides it
-- pg_rewind uses the pg_rewind timeout unless overridden
-- demote uses the fencing timeout unless overridden
-
-When the deadline is exceeded, the worker logs a timeout event, calls the process handle cancellation path, drains any remaining output, and transitions back to idle. In the current implementation that cancellation path is kill-based: `TokioProcessHandle::cancel()` uses `start_kill()` followed by `wait()`. A successful cancellation produces `JobOutcome::Timeout`; a cancellation failure becomes `JobOutcome::Failure`.
-
-Subprocess output is drained during execution and again during shutdown paths. When `logging.capture_subprocess_output` is enabled, the process startup bundle projects that setting into `ProcessRuntime.capture_subprocess_output`, and stdout/stderr lines cross into the logging subsystem as typed subprocess events. The logging package then serializes those events into final log records tagged with the job identity.
-
-## PostgreSQL Preflight Safety
-
-The start-postgres path does extra preflight work before spawning `pg_ctl start`:
-
-- It checks `postmaster.pid` in the configured data directory
-- It verifies whether that PID still exists and, on Unix, whether `/proc/<pid>/cmdline` looks like a PostgreSQL postmaster for the same data directory
-- It checks the PostgreSQL socket lock file for the configured port
-- If the PID or socket-lock evidence is stale, it removes the stale files before continuing
-- If PostgreSQL already appears to be running for that data directory or port, the start job becomes a no-op success instead of spawning another process
-
-This keeps the start path crash-tolerant and reduces false-positive "already running" failures after unclean shutdowns.
-
-```mermaid
-flowchart TD
-    A[start postgres request] --> B[check postmaster.pid]
-    B --> C[check socket lock]
-    C --> D{live postgres evidence}
-    D -- yes --> E[no-op success]
-    D -- no --> F[remove stale files]
-    F --> G[spawn pg_ctl start]
-```
-
-## Integration with PgInfo and API
-
-The pginfo domain now shares the same `ProcessRuntimePlan` at startup rather than rebuilding its local socket target in `runtime/node.rs`. `PgProbeTarget::local_from_config(...)` derives the local probe connection info from the runtime config plus the process plan, so the process and pginfo domains agree on the managed socket directory and port.
-
-The API domain no longer reaches into process startup details either. It consumes published process state through its live observed-state bundle. During startup, the API can stay in `ApiObservedState::Unavailable` until the full live subscriber set is ready, which avoids pretending that partially wired state is already live.
-
-## Logging Boundary
-
-The logging subsystem centers on an opaque `LogSender` handle. Process code does not create JSON records or interact with tracing APIs. Instead, each domain owns typed log ADTs that implement a sealed logging contract.
-
-The process domain defines:
-
-- `ProcessLogEvent` for worker lifecycle and job control events
-- `SubprocessLogEvent` for stdout/stderr lines from child processes
-
-Process worker code constructs these typed events and calls `ctx.runtime.log.send(...)` directly. The `LogSender` filters by minimum severity, materializes events into a private queue shape, and forwards them to the background worker. Backend sink failures after enqueue remain internal to logging and do not affect process execution.
-
-This boundary ensures process execution code remains focused on process supervision while still producing rich, structured logs for observability.
+Worker code calls `ctx.runtime.log.send(...)` with these typed events. The `LogSender` filters by minimum severity, materializes events into a private queue, and forwards them to a background worker. Backend sink failures after enqueue remain internal to logging and do not affect process execution. This boundary ensures that process supervision logic stays focused on its domain while still producing structured logs for observability.
 
 ```mermaid
 flowchart LR
@@ -158,14 +80,19 @@ flowchart LR
     F --> G[sinks]
 ```
 
-## Why This Boundary Is Better
+## Integration with PgInfo and API
 
-The rewrite makes `src/runtime/node.rs` a smaller composition root:
+The process management refactor improved integration with the pginfo and API domains. Both pginfo and process now share the same `ProcessRuntimePlan` at startup, created once in `src/runtime/node.rs` and passed to owning startup modules. This eliminates duplicate path construction and prevents subtle mismatches between probe targets and managed PostgreSQL configuration.
 
-- runtime validates top-level config and boots global services
-- process startup owns process-specific path preparation and runtime projection
-- pginfo startup owns its local probe target
-- HA sends typed intents instead of process commands
-- API consumes published state instead of process internals
+The API domain consumes published process state through its live observed-state bundle. During startup, the API can remain in `ApiObservedState::Unavailable` until the full subscriber set is ready, avoiding the risk of serving partially wired state.
 
-That boundary reduces startup duplication, shrinks the number of raw fields runtime must know about, and keeps process execution policy close to the code that actually launches and supervises PostgreSQL subprocesses.
+## Benefits of the Three-Stage Design
+
+The refactor accomplishes several architectural goals:
+
+1. **Smaller composition root**: `src/runtime/node.rs` validates top-level config and boots global services, but process-specific policy lives in the process domain.
+2. **Clearer domain boundaries**: Planning, session materialization, and tool lowering have explicit contracts and cannot accidentally intermix concerns.
+3. **Improved testability**: Each stage is independently unit-testable. The test suite includes focused tests for planner decisions, session file writes, and command construction without requiring full worker integration.
+4. **Better error messages**: Stage-specific errors with stage labels help operators understand where and why preparation failed.
+
+The boundary remains narrow: HA emits `ProcessIntent`, the worker calls `ProcessCluster::prepare()`, and the result is a concrete execution request. Internal complexity is hidden behind a facade, but the pipeline's three stages make that complexity manageable and observable.

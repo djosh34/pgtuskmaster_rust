@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Wed Mar 18 01:09:37 AM CET 2026
+Generated: Wed Mar 18 01:48:32 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
 
@@ -276,6 +276,18 @@ The intended product invariant is stricter than the behavior that was reintroduc
 
 <priority>high</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-dcs-simplification/02-task-fully-rewrite-etcd-into-a-much-simpler-model-with-derive-support.md`</blocked_by>
+```
+
+==============
+
+# Task `.ralph/tasks/story-general-architecture-improvement-finding/08-task-split-process-planning-from-managed-postgres-session-materialization-and-external-tool-execution.md`
+
+```
+## Task: Split Process Planning From Managed Postgres Session Materialization And External Tool Execution <status>completed</status> <passes>true</passes>
+
+<priority>high</priority>
+
+<description>
 ```
 
 ==============
