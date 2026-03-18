@@ -116,7 +116,12 @@ impl WriteConvergenceInvariantRunner {
         let write_deadline = self.write_deadline;
         let poll_interval = self.poll_interval;
         let written_count = Arc::clone(&self.written_count);
-        let members = member_observation_targets(self.members.as_slice(), self.observer.clone());
+        let members = self
+            .members
+            .iter()
+            .map(|member| member.routing_target.clone())
+            .collect::<Vec<_>>();
+        let observer = self.observer.clone();
         let future = async move {
             let expected_count = written_count.load(Ordering::SeqCst);
             if expected_count == 0 {
@@ -124,6 +129,7 @@ impl WriteConvergenceInvariantRunner {
             }
             wait_for_convergence(
                 members.as_slice(),
+                observer.as_ref(),
                 expected_count,
                 poll_interval,
                 write_deadline,
@@ -198,11 +204,6 @@ impl WriteConvergenceInvariantRunner {
             members,
         }
     }
-}
-
-struct MemberObservationTarget {
-    observer: Option<PgtmObserver>,
-    routing_target: PostgresRoutingTarget,
 }
 
 async fn connect_member(
@@ -334,6 +335,9 @@ async fn run_member_worker(
                 .await;
             }
             Err(err) => {
+                // THIS IS ONE OF THE ONLY VALID EXCEPTION TO THE "don't drop err via let _ = err rule"
+                // That is because we explicitly we want that a failed connection just get retried when scenarios progress
+                // DO NOT REMOVE THIS COMMENT DURING REFACTORS!
                 let _ = err;
                 tokio::time::sleep(poll_interval).await;
             }
@@ -395,48 +399,38 @@ async fn maintain_connected_member(
     }
 }
 
-fn member_observation_targets(
-    members: &[MemberWorker],
-    observer: Option<PgtmObserver>,
-) -> Vec<MemberObservationTarget> {
-    members
-        .iter()
-        .map(|member| MemberObservationTarget {
-            observer: observer.clone(),
-            routing_target: member.routing_target.clone(),
-        })
-        .collect()
-}
-
 async fn read_monitored_member_counts(
-    members: &[MemberObservationTarget],
+    members: &[PostgresRoutingTarget],
+    observer: Option<&PgtmObserver>,
     query_timeout: Duration,
 ) -> Vec<MemberCountObservation> {
     futures::future::join_all(
         members
             .iter()
-            .map(|member| read_member_count(member, query_timeout)),
+            .map(|member| read_member_count(member, observer, query_timeout)),
     )
     .await
 }
 
 async fn read_member_count(
-    member: &MemberObservationTarget,
+    member: &PostgresRoutingTarget,
+    observer: Option<&PgtmObserver>,
     query_timeout: Duration,
 ) -> MemberCountObservation {
-    read_member_count_via_fresh_connection(member, query_timeout, None).await
+    read_member_count_via_fresh_connection(member, observer, query_timeout, None).await
 }
 
 async fn read_member_count_via_fresh_connection(
-    member: &MemberObservationTarget,
+    member: &PostgresRoutingTarget,
+    observer: Option<&PgtmObserver>,
     connect_timeout: Duration,
     previous_error: Option<String>,
 ) -> MemberCountObservation {
-    let routing_target = match resolve_observation_routing_target(member) {
+    let routing_target = match resolve_observation_routing_target(member, observer) {
         Ok(routing_target) => routing_target,
         Err(err) => {
             return MemberCountObservation::Failed {
-                member: member.routing_target.member,
+                member: member.member,
                 message: previous_error.map_or(err.clone(), |previous| {
                     format!(
                         "existing observation failed: {previous}; refresh routing failed: {err}"
@@ -451,11 +445,11 @@ async fn read_member_count_via_fresh_connection(
             connection_task.abort();
             match count_result {
                 Ok(count) => MemberCountObservation::Observed {
-                    member: member.routing_target.member,
+                    member: member.member,
                     count,
                 },
                 Err(err) => MemberCountObservation::Failed {
-                    member: member.routing_target.member,
+                    member: member.member,
                     message: previous_error.map_or_else(
                         || err.to_string(),
                         |previous| format!(
@@ -466,7 +460,7 @@ async fn read_member_count_via_fresh_connection(
             }
         }
         Err(err) => MemberCountObservation::Failed {
-            member: member.routing_target.member,
+            member: member.member,
             message: previous_error.map_or_else(
                 || err.clone(),
                 |previous| {
@@ -480,27 +474,29 @@ async fn read_member_count_via_fresh_connection(
 }
 
 fn resolve_observation_routing_target(
-    member: &MemberObservationTarget,
+    member: &PostgresRoutingTarget,
+    observer: Option<&PgtmObserver>,
 ) -> Result<PostgresRoutingTarget, String> {
-    member.observer.as_ref().map_or_else(
-        || Ok(member.routing_target.clone()),
+    observer.map_or_else(
+        || Ok(member.clone()),
         |observer| {
             observer
-                .postgres_routing_target(member.routing_target.member)
+                .postgres_routing_target(member.member)
                 .map_err(|err| err.to_string())
         },
     )
 }
 
 async fn wait_for_convergence(
-    members: &[MemberObservationTarget],
+    members: &[PostgresRoutingTarget],
+    observer: Option<&PgtmObserver>,
     expected_count: u64,
     poll_interval: Duration,
     write_deadline: Duration,
 ) -> Result<(), WriteConvergenceInvariantError> {
     let deadline = Instant::now() + write_deadline;
     loop {
-        let observations = read_monitored_member_counts(members, poll_interval).await;
+        let observations = read_monitored_member_counts(members, observer, poll_interval).await;
         if observations_match_expected(observations.as_slice(), expected_count) {
             return Ok(());
         }
