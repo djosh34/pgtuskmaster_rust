@@ -169,6 +169,7 @@ impl PgtmObserver {
         let context = format!("{context_label} via `{member}`");
         let output = process::run(
             executable.as_path(),
+            None,
             context.clone(),
             args.as_slice(),
             [("PATH", "")],

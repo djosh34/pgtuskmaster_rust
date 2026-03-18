@@ -220,9 +220,10 @@ impl DockerCli {
 
     pub fn verify_daemon(&self) -> Result<()> {
         let _ = self
-            .run(["info"], "checking docker daemon availability")
+            .run(None, ["info"], "checking docker daemon availability")
             .map_err(annotate_docker_daemon_error)?;
         let _ = self.run(
+            None,
             ["compose", "version"],
             "checking docker compose plugin availability",
         )?;
@@ -258,7 +259,7 @@ impl DockerCli {
         };
         let mut attempts = 0_u8;
         loop {
-            match self.run_in_dir(compose_dir, args.clone(), context.clone()) {
+            match self.run(Some(compose_dir), args.clone(), context.clone()) {
                 Ok(_) => return Ok(()),
                 Err(HarnessError::CommandFailed { stderr, .. })
                     if attempts < 2 && is_retryable_compose_network_race(stderr.as_str()) =>
@@ -272,13 +273,13 @@ impl DockerCli {
     }
 
     pub fn compose_down(&self, compose_file: &Path, project: &str) -> Result<()> {
-        let _ = self.run_in_dir(
-            compose_file.parent().ok_or_else(|| {
+        let _ = self.run(
+            Some(compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
                     "compose file `{}` has no parent directory",
                     compose_file.display()
                 ))
-            })?,
+            })?),
             [
                 "compose".to_string(),
                 "--project-name".to_string(),
@@ -314,13 +315,13 @@ impl DockerCli {
         compose_file: &Path,
         project: &str,
     ) -> Result<Vec<ComposePsEntry>> {
-        let output = self.run_in_dir(
-            compose_file.parent().ok_or_else(|| {
+        let output = self.run(
+            Some(compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
                     "compose file `{}` has no parent directory",
                     compose_file.display()
                 ))
-            })?,
+            })?),
             [
                 "compose".to_string(),
                 "--project-name".to_string(),
@@ -348,13 +349,13 @@ impl DockerCli {
     }
 
     pub fn compose_logs(&self, compose_file: &Path, project: &str) -> Result<String> {
-        self.run_in_dir(
-            compose_file.parent().ok_or_else(|| {
+        self.run(
+            Some(compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
                     "compose file `{}` has no parent directory",
                     compose_file.display()
                 ))
-            })?,
+            })?),
             [
                 "compose".to_string(),
                 "--project-name".to_string(),
@@ -398,6 +399,7 @@ impl DockerCli {
 
     pub fn inspect_container(&self, container: &str) -> Result<String> {
         self.run(
+            None,
             ["inspect".to_string(), container.to_string()],
             format!("inspecting docker container `{container}`"),
         )
@@ -405,6 +407,7 @@ impl DockerCli {
 
     pub fn kill_container(&self, container: &str) -> Result<()> {
         let _ = self.run(
+            None,
             ["kill".to_string(), container.to_string()],
             format!("killing container `{container}`"),
         )?;
@@ -413,6 +416,7 @@ impl DockerCli {
 
     pub fn start_container(&self, container: &str) -> Result<()> {
         let _ = self.run(
+            None,
             ["start".to_string(), container.to_string()],
             format!("starting container `{container}`"),
         )?;
@@ -421,6 +425,7 @@ impl DockerCli {
 
     pub fn remove_container_force(&self, container: &str) -> Result<()> {
         let _ = self.run(
+            None,
             [
                 "rm".to_string(),
                 "--force".to_string(),
@@ -433,6 +438,7 @@ impl DockerCli {
 
     fn network_exists(&self, network: &str) -> Result<bool> {
         match self.run(
+            None,
             [
                 "network".to_string(),
                 "inspect".to_string(),
@@ -508,20 +514,21 @@ impl DockerCli {
         command.extend([container.to_string(), binary.display().to_string()]);
         command.extend(args.iter().map(|value| value.to_string()));
         self.run(
+            None,
             command,
             format!("executing `{}` in `{container}`", binary.display()),
         )
     }
 
     pub fn run_detached(&self, args: Vec<String>, context: impl Into<String>) -> Result<String> {
-        self.run(args, context)
+        self.run(None, args, context)
     }
 
     pub fn sleep_for_resource_cleanup(&self) {
         std::thread::sleep(Duration::from_secs(2));
     }
 
-    fn run<I, S>(&self, args: I, context: impl Into<String>) -> Result<String>
+    fn run<I, S>(&self, cwd: Option<&Path>, args: I, context: impl Into<String>) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -529,18 +536,7 @@ impl DockerCli {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
         let mut env = forwarded_environment();
         env.push(("PATH".to_string(), String::new()));
-        process::run(self.executable.as_path(), context.into(), args, env)
-    }
-
-    fn run_in_dir<I, S>(&self, cwd: &Path, args: I, context: impl Into<String>) -> Result<String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let mut env = forwarded_environment();
-        env.push(("PATH".to_string(), String::new()));
-        process::run_in_dir(self.executable.as_path(), cwd, context.into(), args, env)
+        process::run(self.executable.as_path(), cwd, context.into(), args, env)
     }
 
     fn inspect_container_details(&self, container: &str) -> Result<ContainerInspectDetails> {

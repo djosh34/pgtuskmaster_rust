@@ -17,6 +17,7 @@ pub fn execute(materialized_dir: &Path, dsn: &str, sql: &str, timeout: Duration)
     ];
     process::run(
         harness_settings()?.psql_executable(),
+        None,
         format!("executing psql from {}", materialized_dir.display()),
         [
             "--no-psqlrc",

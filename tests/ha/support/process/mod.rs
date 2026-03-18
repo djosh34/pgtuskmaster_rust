@@ -31,41 +31,8 @@ pub fn ensure_absolute_executable(path: &Path) -> Result<()> {
 
 pub fn run<I, S, E, K, V>(
     executable: &Path,
-    context: impl Into<String>,
-    args: I,
-    env: E,
-) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-    E: IntoIterator<Item = (K, V)>,
-    K: AsRef<OsStr>,
-    V: AsRef<OsStr>,
-{
-    run_with_options(executable, None, context.into(), args, env)
-}
-
-pub fn run_in_dir<I, S, E, K, V>(
-    executable: &Path,
-    cwd: &Path,
-    context: impl Into<String>,
-    args: I,
-    env: E,
-) -> Result<String>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-    E: IntoIterator<Item = (K, V)>,
-    K: AsRef<OsStr>,
-    V: AsRef<OsStr>,
-{
-    run_with_options(executable, Some(cwd), context.into(), args, env)
-}
-
-fn run_with_options<I, S, E, K, V>(
-    executable: &Path,
     cwd: Option<&Path>,
-    context: String,
+    context: impl Into<String>,
     args: I,
     env: E,
 ) -> Result<String>
@@ -86,6 +53,7 @@ where
     command.env_clear();
     command.envs(env);
 
+    let context = context.into();
     let output = command.output().map_err(|source| HarnessError::Io {
         path: executable.to_path_buf(),
         source,
