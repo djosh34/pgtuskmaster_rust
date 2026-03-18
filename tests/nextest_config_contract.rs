@@ -8,6 +8,8 @@ const GREENFIELD_HA_BINARY_RULE: &str = "binary(ha)";
 const GREENFIELD_HA_TEST_RULE: &str = "test(/^ha_/)";
 const SETUP_SCRIPTS_EXPERIMENT: &str = "setup-scripts";
 const HA_CUCUMBER_SETUP_SCRIPT: &str = "ha-cucumber-image";
+const TEST_OUTPUT_MODE: &str = "immediate-final";
+const NO_CAPTURE_ARG: &str = "--nocapture";
 
 #[test]
 fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
@@ -33,6 +35,9 @@ fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
     let ultra_long_filter = profile_filter(&parsed, "ultra-long");
     let ultra_long_threads = profile_test_threads(&parsed, "ultra-long");
     let ultra_long_setup_scripts = profile_setup_scripts(&parsed, "ultra-long");
+    let ultra_long_run_extra_args = profile_run_extra_args(&parsed, "ultra-long");
+    let default_success_output = profile_string(&parsed, "default", "success-output");
+    let ultra_long_success_output = profile_string(&parsed, "ultra-long", "success-output");
     let experimental_features = experimental_features(&parsed);
     let ha_feature_count = count_ha_feature_files();
 
@@ -88,6 +93,23 @@ fn nextest_profiles_route_greenfield_ha_binaries_without_serial_cap() {
         "ultra-long profile must register the shared HA cucumber setup script {}",
         HA_CUCUMBER_SETUP_SCRIPT
     );
+    assert!(
+        default_success_output.as_deref() == Some(TEST_OUTPUT_MODE),
+        "default profile must stream passing test output with {}",
+        TEST_OUTPUT_MODE
+    );
+    assert!(
+        ultra_long_success_output.as_deref() == Some(TEST_OUTPUT_MODE),
+        "ultra-long profile must stream passing test output with {}",
+        TEST_OUTPUT_MODE
+    );
+    assert!(
+        ultra_long_run_extra_args
+            .iter()
+            .any(|arg| arg == NO_CAPTURE_ARG),
+        "ultra-long profile must disable libtest capture with {}",
+        NO_CAPTURE_ARG
+    );
 }
 
 #[test]
@@ -141,6 +163,31 @@ fn profile_test_threads(config: &toml::Value, profile_name: &str) -> Option<i64>
         .and_then(|profiles| profiles.get(profile_name))
         .and_then(|profile| profile.get("test-threads"))
         .and_then(toml::Value::as_integer)
+}
+
+fn profile_run_extra_args(config: &toml::Value, profile_name: &str) -> Vec<String> {
+    config
+        .get("profile")
+        .and_then(|profiles| profiles.get(profile_name))
+        .and_then(|profile| profile.get("run-extra-args"))
+        .and_then(toml::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(toml::Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn profile_string(config: &toml::Value, profile_name: &str, key: &str) -> Option<String> {
+    config
+        .get("profile")
+        .and_then(|profiles| profiles.get(profile_name))
+        .and_then(|profile| profile.get(key))
+        .and_then(toml::Value::as_str)
+        .map(str::to_owned)
 }
 
 fn count_ha_feature_files() -> usize {

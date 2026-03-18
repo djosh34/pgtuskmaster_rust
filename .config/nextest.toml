@@ -15,6 +15,9 @@ default-filter = '''
 not (kind(test) & binary(ha) & test(/^ha_/))
 '''
 slow-timeout = { period = "120s", terminate-after = 1, grace-period = "15s" }
+# Stream test stdout/stderr while the run is still in progress, then repeat it in
+# the final summary so logs are visible even when the terminal scrollback is thin.
+success-output = "immediate-final"
 
 [profile.default.junit]
 path = "junit.xml"
@@ -34,6 +37,10 @@ kind(test) & binary(ha) & test(/^ha_/)
 '''
 test-threads = 128
 slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
+# Let the libtest harness forward stdout/stderr directly instead of buffering it
+# behind test completion, so long HA runs can surface logs while they execute.
+run-extra-args = ["--nocapture"]
+success-output = "immediate-final"
 
 [[profile.ultra-long.scripts]]
 filter = '''

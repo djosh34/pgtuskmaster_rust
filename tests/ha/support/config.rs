@@ -38,12 +38,29 @@ fn load_harness_settings() -> Result<HarnessSettings> {
         path: path.clone(),
         source,
     })?;
-    toml::from_str(raw.as_str()).map_err(|err| {
+    let mut settings: HarnessSettings = toml::from_str(raw.as_str()).map_err(|err| {
         HarnessError::message(format!(
             "failed to parse harness config `{}`: {err}",
             path.display()
         ))
-    })
+    })?;
+    let workspace_candidates = workspace_debug_binary_candidates("pgtm");
+    settings
+        .pgtm
+        .executable_candidates
+        .splice(0..0, workspace_candidates);
+    Ok(settings)
+}
+
+fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
+    let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+    fs::read_dir(target_dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path().join("debug").join(name))
+        .collect()
 }
 
 pub fn configured_executable(
@@ -58,6 +75,19 @@ pub fn configured_executable(
             HarnessError::message(format!(
                 "{label} binary was not found in tests/ha/harness.toml {config_field}"
             ))
-        })?;
+    })?;
     Ok(candidate.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::workspace_debug_binary_candidates;
+    use std::path::PathBuf;
+
+    #[test]
+    fn workspace_debug_binary_candidates_stay_under_target_dir() {
+        let target_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target");
+        let candidates = workspace_debug_binary_candidates("pgtm");
+        assert!(candidates.iter().all(|path| path.starts_with(&target_dir)));
+    }
 }

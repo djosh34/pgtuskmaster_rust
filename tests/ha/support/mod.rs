@@ -7,7 +7,7 @@ mod invariant;
 mod observer;
 mod process;
 pub mod runner;
-// pub mod steps;
+mod steps;
 mod timeouts;
 mod topology;
 mod world;

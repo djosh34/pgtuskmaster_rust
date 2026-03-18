@@ -6,7 +6,6 @@ executable_candidates = [
 
 [pgtm]
 executable_candidates = [
-  "/tmp/pgtuskmaster_rust-target/debug/pgtm",
   "/usr/local/bin/pgtm",
   "/usr/bin/pgtm",
 ]

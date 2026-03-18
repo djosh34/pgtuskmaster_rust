@@ -22,7 +22,6 @@ grep_path="$(require_cmd_path grep)"
 date_path="$(require_cmd_path date)"
 
 test_name="${1:-e2e_no_quorum_enters_failsafe_strict_all_nodes}"
-cargo_target_dir="${CARGO_TARGET_DIR:-/tmp/pgtuskmaster_rust-target}"
 
 run_id="$("${date_path}" -u +%Y%m%dT%H%M%SZ)-$$"
 evidence_dir="${REPO_ROOT}/.ralph/evidence/bug-real-binary-provenance-enforcement-gaps/execve/${run_id}"
@@ -31,12 +30,12 @@ evidence_dir="${REPO_ROOT}/.ralph/evidence/bug-real-binary-provenance-enforcemen
 echo "execve trace evidence dir: ${evidence_dir}"
 
 echo "prebuilding test binaries (avoid tracing compilation)"
-env CARGO_INCREMENTAL=1 CARGO_TARGET_DIR="${cargo_target_dir}" "${cargo_path}" test --all-targets --no-run
+env CARGO_INCREMENTAL=1 "${cargo_path}" test --all-targets --no-run
 
 trace_prefix="${evidence_dir}/strace"
 echo "running ${test_name} under strace (execve/execveat)"
 "${strace_path}" -ff -e trace=execve,execveat -s 256 -o "${trace_prefix}" \
-    env CARGO_INCREMENTAL=1 CARGO_TARGET_DIR="${cargo_target_dir}" "${cargo_path}" test --all-targets "${test_name}" -- --exact
+    env CARGO_INCREMENTAL=1 "${cargo_path}" test --all-targets "${test_name}" -- --exact
 
 expected_etcd="${REPO_ROOT}/.tools/etcd/bin/etcd"
 expected_postgres="${REPO_ROOT}/.tools/postgres16/bin/postgres"

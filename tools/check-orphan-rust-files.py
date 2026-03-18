@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 
-DEFAULT_TARGET_DIR = Path("/tmp/pgtuskmaster_rust-target")
 TRACKED_ROOTS = ("src", "tests", "examples", "benches")
 
 
@@ -30,7 +29,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--target-dir",
         type=Path,
-        default=DEFAULT_TARGET_DIR,
+        default=repo_root / "target",
         help="Cargo target dir containing rustc .d dep-info files.",
     )
     return parser.parse_args()
