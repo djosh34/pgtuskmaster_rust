@@ -23,7 +23,7 @@ apply skill improve-code-boundaries on one of these:
 when done: 
 - make lint
 - make test
-- make test-long
+- DO NOT RUN! make test-long
 - commit (including .ralph changes)
 - push
 - bash .ralph/task_switch.sh
