@@ -460,7 +460,6 @@ async fn wait_for_authoritative_single_primary(
         })();
         match attempt {
             Ok(primary) => {
-                world.harness()?.ensure_background_invariants_ready()?;
                 return Ok(primary);
             }
             Err(err) => last_error = Some(err.to_string()),
@@ -947,7 +946,9 @@ fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
 fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
     let probe_sql =
         "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
-    let _ = harness.sql().execute(dsn, probe_sql)?;
+    let _ = harness
+        .sql()
+        .execute(dsn, probe_sql, harness.timeouts.poll_interval)?;
     Ok(())
 }
 

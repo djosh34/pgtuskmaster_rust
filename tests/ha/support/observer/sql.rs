@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use crate::support::{
     config::{configured_executable, harness_settings},
@@ -16,12 +19,21 @@ impl SqlObserver {
         Self { materialized_dir }
     }
 
-    pub fn execute(&self, dsn: &str, sql: &str) -> Result<String> {
+    pub fn execute(&self, dsn: &str, sql: &str, timeout: Duration) -> Result<String> {
         let binary = resolve_psql_binary()?;
+        let connect_timeout_s = timeout.as_secs().max(1).to_string();
+        let statement_timeout_ms = timeout.as_millis().max(1);
         process::run(
             CommandSpec::new(
                 binary.clone(),
                 format!("executing psql from {}", self.materialized_dir.display()),
+            )
+            .env("PGCONNECT_TIMEOUT", connect_timeout_s)
+            .env(
+                "PGOPTIONS",
+                format!(
+                    "-c statement_timeout={statement_timeout_ms} -c lock_timeout={statement_timeout_ms}"
+                ),
             )
             .env("PATH", "")
             .args([

@@ -74,5 +74,7 @@ Explore and research the long-test runner, `nextest`/test-runner behavior, HA ha
 - Treating primary-count as a blanket per-step readiness gate was incorrect because it punished legitimate `0`-primary transitions and split primary detection away from ensure-health semantics.
 - Treating write-convergence as an explicit activation boundary was also incorrect because the invariant must become independent after narrow connectivity startup and then keep reconnecting/retrying rather than being feature-driven.
 - The next valid execution pass must preserve invariant independence while allowing HA scenarios to run in parallel without waiting on explicit invariant activation steps.
+- The current type direction is now explicit in code: the world-side write-convergence lifecycle is being flattened to invariant-owned `NotStarted` / `Starting` / `Running` / `Failed` state, with no scenario `InvariantRequirement` boundary.
+- The next execution pass should finish the flattening inside `write_convergence.rs` by replacing the one-shot `Client + fatal_error + connection_task` member model with reconnectable member workers, then repair the compile fallout and run the required gates.
 
-TO BE VERIFIED
+NOW EXECUTE

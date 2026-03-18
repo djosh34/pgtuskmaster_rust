@@ -1,6 +1,28 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 18 04:44:44 PM CET 2026
+Generated: Wed Mar 18 07:39:02 PM CET 2026
+
+# Task `.ralph/tasks/bugs/bug-ha-long-runs-leak-docker-networks-and-exhaust-address-pools.md`
+
+```
+## Bug: HA long runs leak Docker networks and exhaust address pools <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test-long` can fail before scenario execution because Docker cannot allocate another compose network:
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-process-postmaster-reload-sighup-test-times-out-with-no-signal-log.md`
+
+```
+## Bug: process postmaster reload SIGHUP test times out with no signal log <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` currently fails in `process::postmaster::tests::reload_managed_postmaster_sends_sighup`.
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-test-long-takes-far-too-long-with-zero-tests-passing-for-minutes.md`
 

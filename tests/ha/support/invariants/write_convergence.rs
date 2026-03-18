@@ -3,7 +3,7 @@ use std::{
     io::Cursor,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc,
     },
     thread,
     time::Duration,
@@ -20,7 +20,7 @@ use tokio::{
     task::JoinHandle,
     time::Instant,
 };
-use tokio_postgres::Client;
+use tokio_postgres::{Client, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use pgtuskmaster_rust::pginfo::conninfo::{
@@ -39,11 +39,10 @@ CREATE TABLE IF NOT EXISTS public.write_convergence_invariant (
     id integer PRIMARY KEY,
     written_count bigint NOT NULL
 )";
-const RESET_FIXTURE_ROW_SQL: &str = "
+const ENSURE_FIXTURE_ROW_SQL: &str = "
 INSERT INTO public.write_convergence_invariant (id, written_count)
 VALUES ($1, 0)
-ON CONFLICT (id) DO UPDATE
-SET written_count = EXCLUDED.written_count";
+ON CONFLICT (id) DO NOTHING";
 const INCREMENT_FIXTURE_ROW_SQL: &str = "
 UPDATE public.write_convergence_invariant
 SET written_count = written_count + 1
@@ -53,14 +52,14 @@ SELECT written_count
 FROM public.write_convergence_invariant
 WHERE id = $1";
 
+type ConnectionTask = JoinHandle<std::result::Result<(), tokio_postgres::Error>>;
+
 pub struct WriteConvergenceInvariantRunner {
+    observer: Option<PgtmObserver>,
     poll_interval: Duration,
     write_deadline: Duration,
-    pause_write: Arc<RwLock<()>>,
     written_count: Arc<AtomicU64>,
-    health_failure: Arc<Mutex<Option<String>>>,
-    members: Vec<MemberWriter>,
-    monitor_task: JoinHandle<()>,
+    members: Vec<MemberWorker>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,12 +68,10 @@ pub enum WriteConvergenceInvariantError {
     Failed(String),
 }
 
-struct MemberWriter {
+struct MemberWorker {
     member: ClusterMember,
-    client: Arc<Client>,
-    fatal_error: Arc<Mutex<Option<String>>>,
-    connection_task: JoinHandle<()>,
-    writer_task: JoinHandle<()>,
+    routing_target: PostgresRoutingTarget,
+    task: JoinHandle<()>,
 }
 
 impl WriteConvergenceInvariantRunner {
@@ -93,56 +90,46 @@ impl WriteConvergenceInvariantRunner {
                 ))
             })?;
 
-        let connected_members =
-            connect_all_members(routing_targets.as_slice(), poll_interval, write_deadline).await?;
-        initialize_fixture(connected_members.as_slice(), poll_interval, write_deadline).await?;
-
         let pause_write = Arc::new(RwLock::new(()));
         let written_count = Arc::new(AtomicU64::new(0));
-        let members = connected_members
+        let members = routing_targets
             .into_iter()
-            .map(|connected_member| {
-                let pause_write = Arc::clone(&pause_write);
-                let written_count = Arc::clone(&written_count);
-                let writer_client = connected_member.client.clone();
-                let writer_task = tokio::spawn(async move {
-                    writer_loop(writer_client, pause_write, written_count, poll_interval).await;
-                });
-                MemberWriter {
-                    member: connected_member.member,
-                    client: connected_member.client,
-                    fatal_error: connected_member.fatal_error,
-                    connection_task: connected_member.connection_task,
-                    writer_task,
-                }
+            .map(|routing_target| {
+                spawn_member_worker(
+                    routing_target,
+                    Arc::clone(&pause_write),
+                    Arc::clone(&written_count),
+                    poll_interval,
+                )
             })
             .collect::<Vec<_>>();
         Ok(Self::new(
+            Some(observer),
             poll_interval,
             write_deadline,
-            pause_write,
             written_count,
             members,
         ))
     }
 
     pub fn ensure_healthy(&self) -> Result<(), WriteConvergenceInvariantError> {
-        self.ensure_tasks_running()?;
-        let pause_write = Arc::clone(&self.pause_write);
-        let expected_count = self.written_count.load(Ordering::SeqCst);
+        self.members.iter().for_each(|member| member.task.abort());
         let write_deadline = self.write_deadline;
-        let members = self
-            .members
-            .iter()
-            .map(|member| MonitoredMember {
-                member: member.member,
-                client: Arc::clone(&member.client),
-            })
-            .collect::<Vec<_>>();
+        let poll_interval = self.poll_interval;
+        let written_count = Arc::clone(&self.written_count);
+        let members = member_observation_targets(self.members.as_slice(), self.observer.clone());
         let future = async move {
-            let _pause_guard = pause_write.write().await;
-            evaluate_health_check_for_members(members.as_slice(), expected_count, write_deadline)
-                .await
+            let expected_count = written_count.load(Ordering::SeqCst);
+            if expected_count == 0 {
+                return Ok(());
+            }
+            wait_for_convergence(
+                members.as_slice(),
+                expected_count,
+                poll_interval,
+                write_deadline,
+            )
+            .await
         };
 
         match Handle::try_current() {
@@ -183,18 +170,14 @@ impl std::fmt::Debug for WriteConvergenceInvariantRunner {
 
 impl Drop for WriteConvergenceInvariantRunner {
     fn drop(&mut self) {
-        self.monitor_task.abort();
-        self.members.iter().for_each(|member| {
-            member.writer_task.abort();
-            member.connection_task.abort();
-        });
+        self.members.iter().for_each(|member| member.task.abort());
     }
 }
 
-impl std::fmt::Debug for MemberWriter {
+impl std::fmt::Debug for MemberWorker {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("MemberWriter")
+            .debug_struct("MemberWorker")
             .field("member", &self.member)
             .finish()
     }
@@ -202,349 +185,323 @@ impl std::fmt::Debug for MemberWriter {
 
 impl WriteConvergenceInvariantRunner {
     fn new(
+        observer: Option<PgtmObserver>,
         poll_interval: Duration,
         write_deadline: Duration,
-        pause_write: Arc<RwLock<()>>,
         written_count: Arc<AtomicU64>,
-        members: Vec<MemberWriter>,
+        members: Vec<MemberWorker>,
     ) -> Self {
-        let health_failure = Arc::new(Mutex::new(None));
-        let monitor_task = tokio::spawn(monitor_loop(
-            poll_interval,
-            write_deadline,
-            Arc::clone(&pause_write),
-            Arc::clone(&written_count),
-            members
-                .iter()
-                .map(|member| MonitoredMember {
-                    member: member.member,
-                    client: Arc::clone(&member.client),
-                })
-                .collect::<Vec<_>>(),
-            Arc::clone(&health_failure),
-        ));
         Self {
+            observer,
             poll_interval,
             write_deadline,
-            pause_write,
             written_count,
-            health_failure,
             members,
-            monitor_task,
         }
     }
-
-    fn ensure_tasks_running(&self) -> Result<(), WriteConvergenceInvariantError> {
-        self.health_failure()?;
-        if self.monitor_task.is_finished() {
-            return Err(WriteConvergenceInvariantError::Failed(
-                "health monitor task stopped".to_string(),
-            ));
-        }
-        self.members.iter().try_for_each(|member| {
-            if member.connection_task.is_finished() {
-                return Err(WriteConvergenceInvariantError::Failed(format!(
-                    "connection task for `{}` stopped",
-                    member.member
-                )));
-            }
-            if member.writer_task.is_finished() {
-                return Err(WriteConvergenceInvariantError::Failed(format!(
-                    "writer task for `{}` stopped",
-                    member.member
-                )));
-            }
-            member
-                .fatal_error
-                .lock()
-                .map_err(|_| {
-                    WriteConvergenceInvariantError::Failed(format!(
-                        "fatal error mutex for `{}` was poisoned",
-                        member.member
-                    ))
-                })?
-                .as_ref()
-                .map_or(Ok(()), |message| {
-                    Err(WriteConvergenceInvariantError::Failed(format!(
-                        "connection for `{}` failed: {message}",
-                        member.member
-                    )))
-                })
-        })
-    }
-
-    fn health_failure(&self) -> Result<(), WriteConvergenceInvariantError> {
-        self.health_failure
-            .lock()
-            .map_err(|_| {
-                WriteConvergenceInvariantError::Failed(
-                    "health failure mutex was poisoned".to_string(),
-                )
-            })?
-            .as_ref()
-            .map_or(Ok(()), |message| {
-                Err(WriteConvergenceInvariantError::Failed(message.clone()))
-            })
-    }
 }
 
-async fn evaluate_health_check_for_members(
-    members: &[MonitoredMember],
-    expected_count: u64,
-    write_deadline: Duration,
-) -> Result<(), WriteConvergenceInvariantError> {
-    if expected_count == 0 {
-        return Err(WriteConvergenceInvariantError::Failed(format!(
-            "no successful writes observed on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}` before {:?}",
-            write_deadline
-        )));
-    }
-    let observations = read_monitored_member_counts(members).await;
-    if observations_match_expected(observations.as_slice(), expected_count) {
-        Ok(())
-    } else {
-        Err(convergence_failure(
-            expected_count,
-            observations.as_slice(),
-            write_deadline,
-        ))
-    }
-}
-
-struct ConnectedMember {
+struct MemberObservationTarget {
     member: ClusterMember,
-    client: Arc<Client>,
-    fatal_error: Arc<Mutex<Option<String>>>,
-    connection_task: JoinHandle<()>,
-}
-
-struct MonitoredMember {
-    member: ClusterMember,
-    client: Arc<Client>,
-}
-
-async fn connect_all_members(
-    routing_targets: &[PostgresRoutingTarget],
-    poll_interval: Duration,
-    write_deadline: Duration,
-) -> Result<Vec<ConnectedMember>, WriteConvergenceInvariantError> {
-    let mut connected_members = Vec::with_capacity(routing_targets.len());
-    for routing_target in routing_targets {
-        let (client, connection) =
-            connect_member(routing_target, poll_interval, write_deadline).await?;
-        let fatal_error = Arc::new(Mutex::new(None));
-        let fatal_error_for_task = Arc::clone(&fatal_error);
-        let member = routing_target.member;
-        let connection_task = tokio::spawn(async move {
-            if let Err(err) = connection.await {
-                if let Ok(mut slot) = fatal_error_for_task.lock() {
-                    *slot = Some(err.to_string());
-                }
-            }
-        });
-        connected_members.push(ConnectedMember {
-            member,
-            client: Arc::new(client),
-            fatal_error,
-            connection_task,
-        });
-    }
-    Ok(connected_members)
+    observer: Option<PgtmObserver>,
+    routing_target: PostgresRoutingTarget,
 }
 
 async fn connect_member(
     routing_target: &PostgresRoutingTarget,
-    poll_interval: Duration,
-    write_deadline: Duration,
-) -> Result<
-    (
-        tokio_postgres::Client,
-        tokio_postgres::Connection<
-            tokio_postgres::Socket,
-            <MakeRustlsConnect as tokio_postgres::tls::MakeTlsConnect<tokio_postgres::Socket>>::Stream,
-        >,
-    ),
-    WriteConvergenceInvariantError,
->{
-    let connect_dsn = connectable_dsn(routing_target.dsn.as_str())?;
-    let deadline = Instant::now() + write_deadline;
+    connect_timeout: Duration,
+) -> Result<(Arc<Client>, ConnectionTask), String> {
+    let connect_dsn =
+        connectable_dsn(routing_target.dsn.as_str()).map_err(|err| err.to_string())?;
+    if dsn_uses_tls_files(routing_target.dsn.as_str())? {
+        let tls =
+            build_tls_connector(routing_target.dsn.as_str()).map_err(|err| err.to_string())?;
+        let (client, connection) = tokio::time::timeout(
+            connect_timeout,
+            tokio_postgres::connect(connect_dsn.as_str(), tls),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "connect to `{}` timed out after {:?}",
+                routing_target.member, connect_timeout
+            )
+        })?
+        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+        let client: Arc<Client> = Arc::new(client);
+        let connection_task = tokio::spawn(connection);
+        match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => {
+                connection_task.abort();
+                return Err(format!(
+                    "connect to `{}` failed: {err}",
+                    routing_target.member
+                ));
+            }
+            Err(_) => {
+                connection_task.abort();
+                return Err(format!(
+                    "connect to `{}` probe timed out after {:?}",
+                    routing_target.member, connect_timeout
+                ));
+            }
+        }
+        return Ok((client, connection_task));
+    }
 
+    let (client, connection) = tokio::time::timeout(
+            connect_timeout,
+            tokio_postgres::connect(connect_dsn.as_str(), NoTls),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "connect to `{}` timed out after {:?}",
+                routing_target.member, connect_timeout
+            )
+        })?
+        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+    let client: Arc<Client> = Arc::new(client);
+    let connection_task = tokio::spawn(connection);
+    match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(err)) => {
+            connection_task.abort();
+            return Err(format!(
+                "connect to `{}` failed: {err}",
+                routing_target.member
+            ));
+        }
+        Err(_) => {
+            connection_task.abort();
+            return Err(format!(
+                "connect to `{}` probe timed out after {:?}",
+                routing_target.member, connect_timeout
+            ));
+        }
+    }
+    Ok((client, connection_task))
+}
+
+async fn apply_fixture_row_setup(client: &Client) -> std::result::Result<(), tokio_postgres::Error> {
+    client
+        .batch_execute(CREATE_FIXTURE_TABLE_SQL)
+        .await?;
+    client
+        .execute(ENSURE_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
+        .await
+        .map(|_| ())
+}
+
+fn write_attempt_requires_reconnect(err: &tokio_postgres::Error) -> bool {
+    err.as_db_error().is_none()
+}
+
+fn spawn_member_worker(
+    routing_target: PostgresRoutingTarget,
+    pause_write: Arc<RwLock<()>>,
+    written_count: Arc<AtomicU64>,
+    poll_interval: Duration,
+) -> MemberWorker {
+    let member = routing_target.member;
+    let task = tokio::spawn(run_member_worker(
+        routing_target.clone(),
+        pause_write,
+        written_count,
+        poll_interval,
+    ));
+    MemberWorker {
+        member,
+        routing_target,
+        task,
+    }
+}
+
+async fn run_member_worker(
+    routing_target: PostgresRoutingTarget,
+    pause_write: Arc<RwLock<()>>,
+    written_count: Arc<AtomicU64>,
+    poll_interval: Duration,
+) {
     loop {
-        let tls = build_tls_connector(routing_target.dsn.as_str())?;
-        match tokio_postgres::connect(connect_dsn.as_str(), tls).await {
-            Ok(connection) => return Ok(connection),
+        match connect_member(&routing_target, poll_interval).await {
+            Ok((client, connection_task)) => {
+                maintain_connected_member(
+                    client,
+                    connection_task,
+                    Arc::clone(&pause_write),
+                    Arc::clone(&written_count),
+                    poll_interval,
+                    poll_interval,
+                )
+                .await;
+            }
             Err(err) => {
-                if Instant::now() >= deadline {
-                    return Err(WriteConvergenceInvariantError::Failed(format!(
-                        "connect to `{}` failed before {:?}: {err}",
-                        routing_target.member, write_deadline
-                    )));
-                }
+                let _ = err;
                 tokio::time::sleep(poll_interval).await;
             }
         }
     }
 }
 
-async fn initialize_fixture(
-    members: &[ConnectedMember],
+async fn maintain_connected_member(
+    client: Arc<Client>,
+    mut connection_task: ConnectionTask,
+    pause_write: Arc<RwLock<()>>,
+    written_count: Arc<AtomicU64>,
     poll_interval: Duration,
-    write_deadline: Duration,
-) -> Result<(), WriteConvergenceInvariantError> {
-    let setup_errors = members
-        .iter()
-        .map(|member| async {
-            member
-                .client
-                .batch_execute(CREATE_FIXTURE_TABLE_SQL)
+    query_timeout: Duration,
+) {
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep(poll_interval) => {
+                let _pause_guard = pause_write.read().await;
+                match tokio::time::timeout(query_timeout, apply_fixture_row_setup(client.as_ref())).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(err)) if write_attempt_requires_reconnect(&err) => {
+                        connection_task.abort();
+                        return;
+                    }
+                    Ok(Err(_)) => {
+                        continue;
+                    }
+                    Err(_) => {
+                        connection_task.abort();
+                        return;
+                    }
+                }
+                match tokio::time::timeout(
+                    query_timeout,
+                    client.execute(INCREMENT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
+                )
                 .await
-                .map_err(|err| format!("`{}`: {err}", member.member))?;
-            member
-                .client
-                .execute(RESET_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
-                .await
-                .map(|_| ())
-                .map_err(|err| format!("`{}`: {err}", member.member))
-        })
-        .collect::<Vec<_>>();
-    let mut write_setup_errors = Vec::new();
-    for setup_result in futures::future::join_all(setup_errors).await {
-        if let Err(err) = setup_result {
-            write_setup_errors.push(err);
-        } else {
-            return wait_for_fixture_visibility(members, poll_interval, write_deadline).await;
+                {
+                    Ok(Ok(1)) => {
+                        written_count.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Ok(Err(err)) if write_attempt_requires_reconnect(&err) => {
+                        connection_task.abort();
+                        return;
+                    }
+                    Ok(Ok(_)) | Ok(Err(_)) => {}
+                    Err(_) => {
+                        connection_task.abort();
+                        return;
+                    }
+                }
+            }
+            connection_result = &mut connection_task => {
+                let _ = connection_result;
+                return;
+            }
         }
     }
-    Err(WriteConvergenceInvariantError::Failed(format!(
-        "failed to initialize `{FIXTURE_TABLE}` on any member: {}",
-        write_setup_errors.join("; ")
-    )))
 }
 
-async fn wait_for_fixture_visibility(
-    members: &[ConnectedMember],
-    poll_interval: Duration,
-    write_deadline: Duration,
-) -> Result<(), WriteConvergenceInvariantError> {
-    let deadline = Instant::now() + write_deadline;
-    loop {
-        let observations = futures::future::join_all(members.iter().map(|member| async {
-            match read_count(&member.client).await {
+fn member_observation_targets(
+    members: &[MemberWorker],
+    observer: Option<PgtmObserver>,
+) -> Vec<MemberObservationTarget> {
+    members
+        .iter()
+        .map(|member| MemberObservationTarget {
+            member: member.member,
+            observer: observer.clone(),
+            routing_target: member.routing_target.clone(),
+        })
+        .collect()
+}
+
+async fn read_monitored_member_counts(
+    members: &[MemberObservationTarget],
+    query_timeout: Duration,
+) -> Vec<MemberCountObservation> {
+    futures::future::join_all(
+        members
+            .iter()
+            .map(|member| read_member_count(member, query_timeout)),
+    )
+    .await
+}
+
+async fn read_member_count(
+    member: &MemberObservationTarget,
+    query_timeout: Duration,
+) -> MemberCountObservation {
+    read_member_count_via_fresh_connection(member, query_timeout, None).await
+}
+
+async fn read_member_count_via_fresh_connection(
+    member: &MemberObservationTarget,
+    connect_timeout: Duration,
+    previous_error: Option<String>,
+) -> MemberCountObservation {
+    let routing_target = match resolve_observation_routing_target(member) {
+        Ok(routing_target) => routing_target,
+        Err(err) => {
+            return MemberCountObservation::Failed {
+                member: member.member,
+                message: previous_error.map_or(err.clone(), |previous| {
+                    format!("existing observation failed: {previous}; refresh routing failed: {err}")
+                }),
+            };
+        }
+    };
+    match connect_member(&routing_target, connect_timeout).await {
+        Ok((client, connection_task)) => {
+            let count_result = read_count(client.as_ref(), connect_timeout).await;
+            connection_task.abort();
+            match count_result {
                 Ok(count) => MemberCountObservation::Observed {
                     member: member.member,
                     count,
                 },
                 Err(err) => MemberCountObservation::Failed {
                     member: member.member,
-                    message: err.to_string(),
+                    message: previous_error.map_or_else(
+                        || err.to_string(),
+                        |previous| format!(
+                            "existing observation failed: {previous}; fresh reconnect read failed: {err}"
+                        ),
+                    ),
                 },
             }
-        }))
-        .await;
-        if observations_match_expected(observations.as_slice(), 0) {
-            return Ok(());
         }
-        if Instant::now() >= deadline {
-            return Err(WriteConvergenceInvariantError::Failed(format!(
-                "fixture row `{FIXTURE_ROW_ID}` did not become visible on all members before {:?}; observed: {}",
-                write_deadline,
-                render_observations(observations.as_slice()),
-            )));
-        }
-        tokio::time::sleep(poll_interval).await;
+        Err(err) => MemberCountObservation::Failed {
+            member: member.member,
+            message: previous_error.map_or_else(
+                || err.clone(),
+                |previous| {
+                    format!("existing observation failed: {previous}; fresh reconnect failed: {err}")
+                },
+            ),
+        },
     }
 }
 
-async fn writer_loop(
-    client: Arc<Client>,
-    pause_write: Arc<RwLock<()>>,
-    written_count: Arc<AtomicU64>,
-    poll_interval: Duration,
-) {
-    loop {
-        {
-            let _pause_guard = pause_write.read().await;
-            if matches!(
-                client
-                    .execute(INCREMENT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
-                    .await,
-                Ok(1)
-            ) {
-                written_count.fetch_add(1, Ordering::SeqCst);
-            }
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-async fn monitor_loop(
-    poll_interval: Duration,
-    write_deadline: Duration,
-    pause_write: Arc<RwLock<()>>,
-    written_count: Arc<AtomicU64>,
-    members: Vec<MonitoredMember>,
-    health_failure: Arc<Mutex<Option<String>>>,
-) {
-    let first_success_deadline = Instant::now() + write_deadline;
-    loop {
-        if written_count.load(Ordering::SeqCst) == 0 {
-            if Instant::now() >= first_success_deadline {
-                store_health_failure(
-                    health_failure.as_ref(),
-                    format!(
-                        "no successful writes observed on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}` before {:?}",
-                        write_deadline
-                    ),
-                );
-                return;
-            }
-            tokio::time::sleep(poll_interval).await;
-            continue;
-        }
-
-        {
-            let _pause_guard = pause_write.write().await;
-            if let Err(err) = wait_for_convergence(
-                members.as_slice(),
-                written_count.load(Ordering::SeqCst),
-                poll_interval,
-                write_deadline,
-            )
-            .await
-            {
-                store_health_failure(health_failure.as_ref(), err.to_string());
-                return;
-            }
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-}
-
-async fn read_monitored_member_counts(members: &[MonitoredMember]) -> Vec<MemberCountObservation> {
-    futures::future::join_all(members.iter().map(|member| async {
-        match read_count(&member.client).await {
-            Ok(count) => MemberCountObservation::Observed {
-                member: member.member,
-                count,
-            },
-            Err(err) => MemberCountObservation::Failed {
-                member: member.member,
-                message: err.to_string(),
-            },
-        }
-    }))
-    .await
+fn resolve_observation_routing_target(
+    member: &MemberObservationTarget,
+) -> Result<PostgresRoutingTarget, String> {
+    member.observer.as_ref().map_or_else(
+        || Ok(member.routing_target.clone()),
+        |observer| {
+            observer
+                .postgres_routing_target(member.member)
+                .map_err(|err| err.to_string())
+        },
+    )
 }
 
 async fn wait_for_convergence(
-    members: &[MonitoredMember],
+    members: &[MemberObservationTarget],
     expected_count: u64,
     poll_interval: Duration,
     write_deadline: Duration,
 ) -> Result<(), WriteConvergenceInvariantError> {
     let deadline = Instant::now() + write_deadline;
     loop {
-        let observations = read_monitored_member_counts(members).await;
+        let observations = read_monitored_member_counts(members, poll_interval).await;
         if observations_match_expected(observations.as_slice(), expected_count) {
             return Ok(());
         }
@@ -559,13 +516,24 @@ async fn wait_for_convergence(
     }
 }
 
-async fn read_count(client: &Client) -> Result<u64, WriteConvergenceInvariantError> {
-    let row = client
-        .query_opt(SELECT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
-        .await
-        .map_err(|err| {
-            WriteConvergenceInvariantError::Failed(format!("select fixture row failed: {err}"))
-        })?
+async fn read_count(
+    client: &Client,
+    query_timeout: Duration,
+) -> Result<u64, WriteConvergenceInvariantError> {
+    let row = tokio::time::timeout(
+        query_timeout,
+        client.query_opt(SELECT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
+    )
+    .await
+    .map_err(|_| {
+        WriteConvergenceInvariantError::Failed(format!(
+            "select fixture row timed out after {:?}",
+            query_timeout
+        ))
+    })?
+    .map_err(|err| {
+        WriteConvergenceInvariantError::Failed(format!("select fixture row failed: {err}"))
+    })?
         .ok_or_else(|| {
             WriteConvergenceInvariantError::Failed(format!(
                 "fixture row `{FIXTURE_ROW_ID}` missing from `{FIXTURE_TABLE}`"
@@ -617,6 +585,14 @@ fn required_conninfo_value(dsn: &str, key: &str) -> Result<String, WriteConverge
         .map_err(WriteConvergenceInvariantError::Failed)?
         .ok_or_else(|| {
             WriteConvergenceInvariantError::Failed(format!("dsn did not contain `{key}`: {dsn}"))
+        })
+}
+
+fn dsn_uses_tls_files(dsn: &str) -> Result<bool, String> {
+    ["sslrootcert", "sslcert", "sslkey"]
+        .into_iter()
+        .try_fold(false, |uses_tls_files, key| {
+            conninfo_value(dsn, key).map(|value| uses_tls_files || value.is_some())
         })
 }
 
@@ -727,21 +703,18 @@ fn convergence_failure(
     ))
 }
 
-fn store_health_failure(failure: &Mutex<Option<String>>, message: String) {
-    if let Ok(mut slot) = failure.lock() {
-        *slot = Some(message);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        connectable_dsn, convergence_failure, observations_match_expected, read_count,
-        required_conninfo_value, writer_loop, MemberCountObservation, MemberWriter,
-        WriteConvergenceInvariantError, WriteConvergenceInvariantRunner, CREATE_FIXTURE_TABLE_SQL,
-        FIXTURE_ROW_ID,
+        connectable_dsn, convergence_failure, maintain_connected_member,
+        observations_match_expected, read_count, required_conninfo_value,
+        MemberCountObservation, MemberWorker, WriteConvergenceInvariantError,
+        WriteConvergenceInvariantRunner, ConnectionTask, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
-    use crate::support::topology::ClusterMember;
+    use crate::support::{
+        observer::pgtm::PostgresRoutingTarget,
+        topology::ClusterMember,
+    };
     use pgtuskmaster_test_support::{
         binaries::require_pg16_bin_for_real_tests,
         namespace::NamespaceGuard,
@@ -754,11 +727,11 @@ mod tests {
         io::Error as IoError,
         sync::{
             atomic::{AtomicU64, Ordering},
-            Arc, Mutex,
+            Arc,
         },
         time::Duration,
     };
-    use tokio::{sync::RwLock, task::JoinHandle, time::Instant};
+    use tokio::{sync::RwLock, time::Instant};
     use tokio_postgres::{Client, NoTls};
 
     #[test]
@@ -862,9 +835,9 @@ mod tests {
             let primary_probe = connect_session(fixture.dsn.as_str(), false).await?;
             let replica_probe = connect_session(fixture.dsn.as_str(), true).await?;
             let runner = WriteConvergenceInvariantRunner::new(
+                None,
                 Duration::from_millis(10),
                 Duration::from_millis(250),
-                Arc::clone(&pause_write),
                 Arc::clone(&written_count),
                 vec![
                     build_member_writer(
@@ -904,8 +877,10 @@ mod tests {
                 .await?;
 
             runner.ensure_healthy()?;
-            let primary_count = read_count(primary_probe.client.as_ref()).await?;
-            let replica_count = read_count(replica_probe.client.as_ref()).await?;
+            let primary_count =
+                read_count(primary_probe.client.as_ref(), Duration::from_millis(250)).await?;
+            let replica_count =
+                read_count(replica_probe.client.as_ref(), Duration::from_millis(250)).await?;
             let shared = written_count.load(Ordering::SeqCst);
             drop(runner);
             drop(primary_probe);
@@ -923,87 +898,23 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn three_replicas_are_not_determined_healthy() -> Result<(), Box<dyn Error + Send + Sync>>
     {
-        let mut fixture = RealPostgresFixture::spawn("write-convergence-three-replicas").await?;
-        let run_result = async {
-            let pause_write = Arc::new(RwLock::new(()));
-            let written_count = Arc::new(AtomicU64::new(0));
-            initialize_fixture_row_via_dsn(fixture.dsn.as_str(), 0).await?;
-            let runner = WriteConvergenceInvariantRunner::new(
-                Duration::from_millis(10),
-                Duration::from_millis(150),
-                Arc::clone(&pause_write),
-                Arc::clone(&written_count),
-                vec![
-                    build_member_writer(
-                        ClusterMember::NodeA,
-                        fixture.dsn.as_str(),
-                        true,
-                        Arc::clone(&pause_write),
-                        Arc::clone(&written_count),
-                        Duration::from_millis(10),
-                    )
-                    .await?,
-                    build_member_writer(
-                        ClusterMember::NodeB,
-                        fixture.dsn.as_str(),
-                        true,
-                        Arc::clone(&pause_write),
-                        Arc::clone(&written_count),
-                        Duration::from_millis(10),
-                    )
-                    .await?,
-                    build_member_writer(
-                        ClusterMember::NodeC,
-                        fixture.dsn.as_str(),
-                        true,
-                        Arc::clone(&pause_write),
-                        Arc::clone(&written_count),
-                        Duration::from_millis(10),
-                    )
-                    .await?,
-                ],
-            );
-
-            let background_message =
-                wait_for_background_failure(&runner, Duration::from_secs(2)).await?;
-            let result = runner.ensure_healthy();
-            drop(runner);
-
-            assert!(background_message.contains("no successful writes observed"));
-            match result {
-                Ok(()) => Err(IoError::other("expected ensure_healthy to fail").into()),
-                Err(WriteConvergenceInvariantError::Failed(message)) => {
-                    assert!(message.contains("no successful writes observed"));
-                    Ok(())
-                }
-            }
-        }
-        .await;
-
-        fixture.handle.shutdown().await?;
-        run_result
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn two_primaries_and_one_replica_fail_in_background_without_ensure_healthy(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let mut fixture_a = RealPostgresFixture::spawn("write-convergence-primary-a").await?;
-        let mut fixture_b = RealPostgresFixture::spawn("write-convergence-primary-b").await?;
+        let mut fixture_a = RealPostgresFixture::spawn("write-convergence-standalone-a").await?;
+        let mut fixture_b = RealPostgresFixture::spawn("write-convergence-standalone-b").await?;
         let run_result = async {
             let pause_write = Arc::new(RwLock::new(()));
             let written_count = Arc::new(AtomicU64::new(0));
             initialize_fixture_row_via_dsn(fixture_a.dsn.as_str(), 0).await?;
             initialize_fixture_row_via_dsn(fixture_b.dsn.as_str(), 0).await?;
             let runner = WriteConvergenceInvariantRunner::new(
+                None,
                 Duration::from_millis(10),
                 Duration::from_millis(150),
-                Arc::clone(&pause_write),
                 Arc::clone(&written_count),
                 vec![
                     build_member_writer(
                         ClusterMember::NodeA,
                         fixture_a.dsn.as_str(),
-                        false,
+                        true,
                         Arc::clone(&pause_write),
                         Arc::clone(&written_count),
                         Duration::from_millis(10),
@@ -1020,7 +931,7 @@ mod tests {
                     .await?,
                     build_member_writer(
                         ClusterMember::NodeC,
-                        fixture_a.dsn.as_str(),
+                        fixture_b.dsn.as_str(),
                         true,
                         Arc::clone(&pause_write),
                         Arc::clone(&written_count),
@@ -1030,20 +941,79 @@ mod tests {
                 ],
             );
 
-            let background_message =
-                wait_for_background_failure(&runner, Duration::from_secs(2)).await?;
+            wait_for_counter_at_least(written_count.as_ref(), 1, Duration::from_secs(5)).await?;
+            let result = runner.ensure_healthy();
             drop(runner);
-
-            assert!(background_message.contains("converge to"));
-            assert!(background_message.contains("`node-a`="));
-            assert!(background_message.contains("`node-b`="));
-            assert!(background_message.contains("`node-c`="));
-            Ok(())
+            match result {
+                Ok(()) => Err(IoError::other("expected ensure_healthy to fail").into()),
+                Err(WriteConvergenceInvariantError::Failed(message)) => {
+                    assert!(message.contains("converge to"));
+                    assert!(message.contains("`node-a`="));
+                    assert!(message.contains("`node-b`="));
+                    assert!(message.contains("`node-c`="));
+                    Ok(())
+                }
+            }
         }
         .await;
 
         fixture_a.handle.shutdown().await?;
         fixture_b.handle.shutdown().await?;
+        run_result
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn three_read_only_members_with_zero_shared_writes_still_count_as_converged(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut fixture = RealPostgresFixture::spawn("write-convergence-zero-writes").await?;
+        let run_result = async {
+            let pause_write = Arc::new(RwLock::new(()));
+            let written_count = Arc::new(AtomicU64::new(0));
+            initialize_fixture_row_via_dsn(fixture.dsn.as_str(), 0).await?;
+            let runner = WriteConvergenceInvariantRunner::new(
+                None,
+                Duration::from_millis(10),
+                Duration::from_millis(150),
+                Arc::clone(&written_count),
+                vec![
+                    build_member_writer(
+                        ClusterMember::NodeA,
+                        fixture.dsn.as_str(),
+                        true,
+                        Arc::clone(&pause_write),
+                        Arc::clone(&written_count),
+                        Duration::from_millis(10),
+                    )
+                    .await?,
+                    build_member_writer(
+                        ClusterMember::NodeB,
+                        fixture.dsn.as_str(),
+                        true,
+                        Arc::clone(&pause_write),
+                        Arc::clone(&written_count),
+                        Duration::from_millis(10),
+                    )
+                    .await?,
+                    build_member_writer(
+                        ClusterMember::NodeC,
+                        fixture.dsn.as_str(),
+                        true,
+                        Arc::clone(&pause_write),
+                        Arc::clone(&written_count),
+                        Duration::from_millis(10),
+                    )
+                    .await?,
+                ],
+            );
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            runner.ensure_healthy()?;
+            drop(runner);
+            Ok(())
+        }
+        .await;
+
+        fixture.handle.shutdown().await?;
         run_result
     }
 
@@ -1093,7 +1063,7 @@ mod tests {
 
     struct SessionHandle {
         client: Arc<Client>,
-        connection_task: JoinHandle<()>,
+        connection_task: ConnectionTask,
     }
 
     impl Drop for SessionHandle {
@@ -1104,28 +1074,16 @@ mod tests {
 
     async fn connect_client(
         dsn: &str,
-    ) -> Result<
-        (Arc<Client>, Arc<Mutex<Option<String>>>, JoinHandle<()>),
-        Box<dyn Error + Send + Sync>,
-    > {
+    ) -> Result<(Arc<Client>, ConnectionTask), Box<dyn Error + Send + Sync>> {
         let (client, connection) = tokio_postgres::connect(dsn, NoTls).await?;
-        let fatal_error = Arc::new(Mutex::new(None));
-        let fatal_error_for_task = Arc::clone(&fatal_error);
-        let connection_task = tokio::spawn(async move {
-            if let Err(err) = connection.await {
-                if let Ok(mut slot) = fatal_error_for_task.lock() {
-                    *slot = Some(err.to_string());
-                }
-            }
-        });
-        Ok((Arc::new(client), fatal_error, connection_task))
+        Ok((Arc::new(client), tokio::spawn(connection)))
     }
 
     async fn connect_session(
         dsn: &str,
         read_only: bool,
     ) -> Result<SessionHandle, Box<dyn Error + Send + Sync>> {
-        let (client, _fatal_error, connection_task) = connect_client(dsn).await?;
+        let (client, connection_task) = connect_client(dsn).await?;
         if read_only {
             client
                 .simple_query("SET default_transaction_read_only = on")
@@ -1144,25 +1102,28 @@ mod tests {
         pause_write: Arc<RwLock<()>>,
         written_count: Arc<AtomicU64>,
         poll_interval: Duration,
-    ) -> Result<MemberWriter, Box<dyn Error + Send + Sync>> {
-        let (client, fatal_error, connection_task) = connect_client(dsn).await?;
+    ) -> Result<MemberWorker, Box<dyn Error + Send + Sync>> {
+        let (client, connection_task) = connect_client(dsn).await?;
         if read_only {
             client
                 .simple_query("SET default_transaction_read_only = on")
                 .await?;
         }
-        let writer_task = tokio::spawn(writer_loop(
+        let task = tokio::spawn(maintain_connected_member(
             Arc::clone(&client),
+            connection_task,
             pause_write,
             written_count,
             poll_interval,
+            poll_interval,
         ));
-        Ok(MemberWriter {
+        Ok(MemberWorker {
             member,
-            client,
-            fatal_error,
-            connection_task,
-            writer_task,
+            routing_target: PostgresRoutingTarget {
+                member,
+                dsn: dsn.to_string(),
+            },
+            task,
         })
     }
 
@@ -1223,7 +1184,7 @@ SET written_count = EXCLUDED.written_count
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let deadline = Instant::now() + timeout;
         loop {
-            let observed = read_count(client).await?;
+            let observed = read_count(client, Duration::from_millis(250)).await?;
             if observed >= minimum {
                 return Ok(());
             }
@@ -1232,23 +1193,6 @@ SET written_count = EXCLUDED.written_count
                     "timed out waiting for row count >= {minimum}; observed {observed}"
                 ))
                 .into());
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
-    }
-
-    async fn wait_for_background_failure(
-        runner: &WriteConvergenceInvariantRunner,
-        timeout: Duration,
-    ) -> Result<String, Box<dyn Error + Send + Sync>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match runner.health_failure() {
-                Ok(()) => {}
-                Err(WriteConvergenceInvariantError::Failed(message)) => return Ok(message),
-            }
-            if Instant::now() >= deadline {
-                return Err(IoError::other("timed out waiting for background failure").into());
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
