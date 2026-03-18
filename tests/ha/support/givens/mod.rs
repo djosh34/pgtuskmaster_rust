@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 use crate::support::{
     error::{HarnessError, Result},
     faults::DCS_SERVICES,
@@ -32,35 +30,23 @@ impl HaGivenId {
             Self::ThreeEtcd => "three_node_three_etcd",
         }
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HaGivenDefinition {
-    pub id: HaGivenId,
-    shared_root: PathBuf,
-}
-
-impl HaGivenDefinition {
-    pub fn shared_root(&self) -> &Path {
-        self.shared_root.as_path()
-    }
 
     pub fn replicator_role(&self) -> &'static str {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::ThreeEtcd => "replicator",
             HaGivenId::CustomRoles => "mirrorbot",
         }
     }
 
     pub fn rewinder_role(&self) -> &'static str {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::ThreeEtcd => "rewinder",
             HaGivenId::CustomRoles => "rewindbot",
         }
     }
 
     pub fn dcs_services(&self) -> Vec<DcsService> {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::CustomRoles => vec![DcsService::SharedEtcd],
             HaGivenId::ThreeEtcd => DCS_SERVICES.into_iter().collect(),
         }
@@ -79,21 +65,21 @@ impl HaGivenDefinition {
     }
 
     pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::CustomRoles => DcsService::SharedEtcd,
             HaGivenId::ThreeEtcd => member.local_dcs_service(),
         }
     }
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::CustomRoles => vec![DcsService::SharedEtcd],
             HaGivenId::ThreeEtcd => [DcsService::EtcdA, DcsService::EtcdB].into_iter().collect(),
         }
     }
 
     pub fn compose_variant_relative_path(&self) -> &'static str {
-        match self.id {
+        match self {
             HaGivenId::Plain | HaGivenId::CustomRoles => "compose/three_node_shared_single.yml",
             HaGivenId::ThreeEtcd => "compose/three_node_three_etcd.yml",
         }
@@ -107,12 +93,4 @@ impl HaGivenDefinition {
             "configs/pg_ident.conf",
         ]
     }
-}
-
-pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefinition> {
-    let givens_root = repo_root.join("tests/ha/givens");
-    Ok(HaGivenDefinition {
-        id: given,
-        shared_root: givens_root.join("three_node_shared"),
-    })
 }

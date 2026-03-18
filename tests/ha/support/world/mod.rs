@@ -26,7 +26,7 @@ use crate::support::{
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_name,
-    givens::{resolve_given, HaGivenDefinition, HaGivenId},
+    givens::HaGivenId,
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner,
@@ -167,7 +167,7 @@ enum StartupPhase {
 pub struct HarnessShared {
     pub run_id: String,
     pub feature_name: String,
-    pub given: HaGivenDefinition,
+    pub given: HaGivenId,
     pub run_dir: PathBuf,
     pub materialized_dir: PathBuf,
     pub artifacts_dir: PathBuf,
@@ -191,7 +191,6 @@ impl HarnessShared {
         docker.verify_daemon()?;
 
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), given)?;
         let run_id = build_run_id(feature_name, scenario_name)?;
         let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
         let run_dir = repo_root
@@ -205,7 +204,7 @@ impl HarnessShared {
         create_dir_all(run_dir.as_path())?;
         create_dir_all(materialized_dir.as_path())?;
         create_dir_all(artifacts_dir.as_path())?;
-        materialize_given_fixture(&given, materialized_dir.as_path())?;
+        materialize_given_fixture(repo_root.as_path(), given, materialized_dir.as_path())?;
         create_fault_directories(materialized_dir.as_path())?;
 
         let timeouts = TimeoutModel::from_runtime_config(
@@ -303,7 +302,7 @@ impl HarnessShared {
     }
 
     pub fn given_name(&self) -> &str {
-        self.given.id.as_str()
+        self.given.as_str()
     }
 
     pub fn compose_file(&self) -> &Path {
@@ -1243,10 +1242,15 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
     apply_private_key_permissions(to)
 }
 
-fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path) -> Result<()> {
+fn materialize_given_fixture(
+    repo_root: &Path,
+    given: HaGivenId,
+    materialized_root: &Path,
+) -> Result<()> {
+    let shared_root = repo_root.join("tests/ha/givens/three_node_shared");
     for relative_path in given.shared_fixture_relative_paths() {
         copy_shared_fixture_path(
-            given.shared_root(),
+            shared_root.as_path(),
             materialized_root,
             Path::new(relative_path),
         )?;
@@ -1334,7 +1338,7 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
 
 fn materialize_runtime_config(
     materialized_root: &Path,
-    given: &HaGivenDefinition,
+    given: HaGivenId,
     member: ClusterMember,
 ) -> Result<()> {
     let target_path = materialized_root.join(member.runtime_config_relative_path());
@@ -1380,7 +1384,7 @@ fn toml_path_string(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-fn render_member_runtime_config(given: &HaGivenDefinition, member: ClusterMember) -> String {
+fn render_member_runtime_config(given: HaGivenId, member: ClusterMember) -> String {
     let member_name = member.service_name();
     let dcs_endpoint = given.local_dcs_service_for(member).client_url();
     let replicator = given.replicator_role();
@@ -1578,11 +1582,11 @@ mod tests {
     #[test]
     fn materializes_plain_fixture_from_shared_assets_and_static_include_compose() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), HaGivenId::Plain)?;
+        let given = HaGivenId::Plain;
         let output_root = temporary_directory("plain")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1632,11 +1636,11 @@ mod tests {
     #[test]
     fn materializes_custom_roles_without_custom_compose_variant() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), HaGivenId::CustomRoles)?;
+        let given = HaGivenId::CustomRoles;
         let output_root = temporary_directory("custom-roles")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1675,11 +1679,11 @@ mod tests {
     #[test]
     fn materializes_three_etcd_fixture_with_node_local_dcs_bindings() -> Result<()> {
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = resolve_given(repo_root.as_path(), HaGivenId::ThreeEtcd)?;
+        let given = HaGivenId::ThreeEtcd;
         let output_root = temporary_directory("three-etcd")?;
 
         let result = (|| -> Result<()> {
-            materialize_given_fixture(&given, output_root.as_path())?;
+            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
 
             let compose =
                 fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
@@ -1791,10 +1795,7 @@ mod tests {
         Ok(HarnessShared {
             run_id: "test-run".to_string(),
             feature_name: "test-feature".to_string(),
-            given: resolve_given(
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
-                HaGivenId::Plain,
-            )?,
+            given: HaGivenId::Plain,
             run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
             materialized_dir,
             artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
