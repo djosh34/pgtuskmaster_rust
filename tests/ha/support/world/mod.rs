@@ -1010,7 +1010,7 @@ impl BackgroundInvariants {
     }
 
     fn ensure_accepted_writes_healthy(&self, harness: &HarnessShared) -> Result<()> {
-        let mut pending_startup = {
+        let pending_startup = {
             let mut state = self
                 .write_convergence
                 .lock()
@@ -1039,32 +1039,26 @@ impl BackgroundInvariants {
             }
         };
 
-        let (result, elapsed) = wait_for_write_convergence_attachment(&mut pending_startup)?;
+        let (settled_state, elapsed) = wait_for_write_convergence_attachment(pending_startup);
 
         let mut state = self
             .write_convergence
             .lock()
             .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
-        match result {
-            Ok(runner) => {
-                harness.record_startup_phase(
-                    StartupPhase::InvariantWriteConvergence,
-                    format!("accepted-write convergence attached after {:?}", elapsed),
-                )?;
-                *state = WriteConvergenceState::Running(runner);
+        let startup_detail = match &settled_state {
+            WriteConvergenceState::Running(_) => {
+                format!("accepted-write convergence attached after {:?}", elapsed)
             }
-            Err(err) => {
-                harness.record_startup_phase(
-                    StartupPhase::InvariantWriteConvergence,
-                    format!(
-                        "accepted-write convergence attachment failed after {:?}: {err}",
-                        elapsed
-                    ),
-                )?;
-                *state = WriteConvergenceState::Failed(err.to_string());
-                return Err(err);
+            WriteConvergenceState::Failed(message) => format!(
+                "accepted-write convergence attachment failed after {:?}: {message}",
+                elapsed
+            ),
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+                unreachable!("write-convergence attachment must settle into a final state")
             }
-        }
+        };
+        harness.record_startup_phase(StartupPhase::InvariantWriteConvergence, startup_detail)?;
+        *state = settled_state;
 
         match &*state {
             WriteConvergenceState::Running(runner) => {
@@ -1130,23 +1124,27 @@ impl StartupPhase {
 }
 
 fn wait_for_write_convergence_attachment(
-    attachment: &mut WriteConvergenceStartup,
-) -> Result<(Result<WriteConvergenceInvariantRunner>, std::time::Duration)> {
+    mut attachment: WriteConvergenceStartup,
+) -> (WriteConvergenceState, std::time::Duration) {
     let elapsed = attachment.started_at.elapsed();
-    let task = attachment.take_task()?;
-    let result = block_on_harness_future(
-        async move {
-            task.await
-                .map_err(|err| {
-                    HarnessError::message(format!(
-                        "write-convergence invariant attachment task failed to join: {err}"
-                    ))
-                })?
-                .map_err(HarnessError::from)
-        },
-        "write-convergence invariant attachment",
-    );
-    Ok((result, elapsed))
+    let settled_state = match attachment.take_task().and_then(|task| {
+        block_on_harness_future(
+            async move {
+                task.await
+                    .map_err(|err| {
+                        HarnessError::message(format!(
+                            "write-convergence invariant attachment task failed to join: {err}"
+                        ))
+                    })?
+                    .map_err(HarnessError::from)
+            },
+            "write-convergence invariant attachment",
+        )
+    }) {
+        Ok(runner) => WriteConvergenceState::Running(runner),
+        Err(err) => WriteConvergenceState::Failed(err.to_string()),
+    };
+    (settled_state, elapsed)
 }
 
 fn block_on_harness_future<T>(
