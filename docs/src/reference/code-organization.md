@@ -232,7 +232,7 @@ flowchart TD
 
 The codebase uses explicit visibility modifiers with compiler-enforced restrictions:
 
-- `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` in `src/lib.rs`
+- Workspace lint policy in `Cargo.toml` denies warnings plus `clippy::unwrap_used`, `clippy::expect_used`, `clippy::panic`, `clippy::todo`, and `clippy::unimplemented`
 - `pub(crate)` for internal modules
 - selective `pub mod` for domain APIs
 - feature-gated conditional compilation for test-only code

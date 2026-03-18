@@ -2,20 +2,11 @@ MDBOOK := .tools/mdbook/bin/mdbook
 MDBOOK_MERMAID := .tools/mdbook/bin/mdbook-mermaid
 
 SHELL := /usr/bin/env bash
+CARGO_GATE_ENV := env CARGO_INCREMENTAL=1
 
 .PHONY: check test test.nextest test.convert-logs test-long test-long.nextest test-long.convert-logs lint lint.no_silent_errors lint.orphan_rust_files docs-build docs-serve docs-hygiene docs-lint ensure-mdbook ensure-mdbook-mermaid ensure-node ensure-docs-node-deps ensure-nextest install-pgtm install-pgtuskmaster
 
-# The workspace mount this repo typically lives on can exhibit intermittent
-# linker/archive flake with incremental artifacts. Disable incremental builds by
-# default for deterministic `make` gates; override with `CARGO_INCREMENTAL=1`
-# if you explicitly want it.
-CARGO_INCREMENTAL ?= 0
 CARGO_GATE_TARGET_DIR := /tmp/pgtuskmaster_rust-target
-ifeq ($(CARGO_INCREMENTAL),1)
-CARGO_INCREMENTAL_BOOL := true
-else
-CARGO_INCREMENTAL_BOOL := false
-endif
 
 TESTS ?=
 TEST_LONG_TARGET_ARGS := --test ha
@@ -43,7 +34,7 @@ install-pgtuskmaster:
 	cargo install --path . --bin pgtuskmaster --force
 
 check:
-	cargo check --all-targets --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	$(CARGO_GATE_ENV) cargo clippy --workspace --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)"
 
 test: ensure-nextest
 	@set -euo pipefail; \
@@ -53,7 +44,7 @@ test: ensure-nextest
 	exit "$$status"
 
 test.nextest: ensure-nextest
-	cargo nextest run --workspace --all-targets --profile default --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"
+	$(CARGO_GATE_ENV) cargo nextest run --workspace --all-targets --profile default --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)"
 
 test.convert-logs:
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/default/junit.xml ./target/nextest/default/logs
@@ -67,7 +58,7 @@ test-long: ensure-nextest
 	exit "$$status"
 
 test-long.nextest: ensure-nextest
-	NEXTEST_DOUBLE_SPAWN=0 cargo nextest run --workspace --profile ultra-long --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" $(TEST_LONG_SELECTION_ARGS)
+	$(CARGO_GATE_ENV) NEXTEST_DOUBLE_SPAWN=0 cargo nextest run --workspace --profile ultra-long --no-tests fail --target-dir "$(CARGO_GATE_TARGET_DIR)" $(TEST_LONG_SELECTION_ARGS)
 
 test-long.convert-logs:
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs
@@ -83,14 +74,11 @@ lint.orphan_rust_files:
 	@set -euo pipefail; \
 	mkdir -p "$(CARGO_GATE_TARGET_DIR)"; \
 	target_dir="$$(mktemp -d "$(CARGO_GATE_TARGET_DIR)/orphan-rust-files.XXXXXX")"; \
-	cargo check -j 1 --all-targets --target-dir "$$target_dir" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)"; \
+	$(CARGO_GATE_ENV) cargo check --workspace --all-targets --target-dir "$$target_dir"; \
 	python3 ./tools/check-orphan-rust-files.py --target-dir "$$target_dir"
 
 lint: docs-lint lint.no_silent_errors lint.orphan_rust_files
-	cargo clippy --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings
-	cargo clippy --lib --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
-	cargo clippy --tests --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
-	cargo clippy --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)" --config "build.incremental=$(CARGO_INCREMENTAL_BOOL)" -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic -D clippy::todo -D clippy::unimplemented
+	$(CARGO_GATE_ENV) cargo clippy --workspace --all-targets --all-features --target-dir "$(CARGO_GATE_TARGET_DIR)"
 
 docs-build: ensure-mdbook-mermaid
 	PATH="$(CURDIR)/.tools/mdbook/bin:$$PATH" "$(MDBOOK)" build docs

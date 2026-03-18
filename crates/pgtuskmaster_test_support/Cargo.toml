@@ -3,5 +3,8 @@ name = "pgtuskmaster_test_support"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 pgtuskmaster_rust = { path = "../..", features = ["internal-test-support"] }
