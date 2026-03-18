@@ -22,12 +22,7 @@ use crate::support::{
     world::HaWorld,
 };
 
-#[derive(Clone, Debug)]
-pub struct FeatureMetadata {
-    pub feature_name: String,
-}
-
-static FEATURE_METADATA: OnceLock<FeatureMetadata> = OnceLock::new();
+static FEATURE_NAME: OnceLock<String> = OnceLock::new();
 static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 // This runner is intentionally independent from the legacy HA harness so the old
@@ -37,7 +32,7 @@ pub async fn run_feature(
     feature_path: &str,
     scenario_name: Option<&str>,
 ) -> std::result::Result<(), String> {
-    install_context(feature_name, feature_path).map_err(|err| err.to_string())?;
+    install_context(feature_name).map_err(|err| err.to_string())?;
 
     let cucumber = HaWorld::cucumber()
         .before(|_, _, scenario, world| {
@@ -88,18 +83,17 @@ pub async fn run_feature(
     }
 }
 
-pub fn feature_metadata() -> Result<&'static FeatureMetadata> {
-    FEATURE_METADATA
+pub fn feature_name() -> Result<&'static str> {
+    FEATURE_NAME
         .get()
-        .ok_or_else(|| HarnessError::message("feature metadata has not been initialized"))
+        .map(String::as_str)
+        .ok_or_else(|| HarnessError::message("feature name has not been initialized"))
 }
 
-fn install_context(feature_name: &str, _feature_path: &str) -> Result<()> {
-    FEATURE_METADATA
-        .set(FeatureMetadata {
-            feature_name: feature_name.to_string(),
-        })
-        .map_err(|_| HarnessError::message("feature metadata was already initialized"))?;
+fn install_context(feature_name: &str) -> Result<()> {
+    FEATURE_NAME
+        .set(feature_name.to_string())
+        .map_err(|_| HarnessError::message("feature name was already initialized"))?;
     Ok(())
 }
 

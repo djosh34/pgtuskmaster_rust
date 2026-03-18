@@ -25,7 +25,7 @@ use crate::support::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
     },
-    feature_metadata,
+    feature_name,
     givens::{resolve_given, HaGivenDefinition, HaGivenId},
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
@@ -169,21 +169,21 @@ pub struct HarnessShared {
 
 impl HarnessShared {
     pub async fn initialize(given: HaGivenId, scenario_name: &str) -> Result<Self> {
-        let feature = feature_metadata()?;
+        let feature_name = feature_name()?;
         let docker = DockerCli::discover()?;
         docker.verify_daemon()?;
 
         let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let given = resolve_given(repo_root.as_path(), given)?;
-        let run_id = build_run_id(feature.feature_name.as_str(), scenario_name)?;
+        let run_id = build_run_id(feature_name, scenario_name)?;
         let cucumber_test_image_run_id = required_env("PGTM_CUCUMBER_TEST_RUN_ID")?;
         let run_dir = repo_root
             .join("tests/ha/runs")
-            .join(feature.feature_name.as_str())
+            .join(feature_name)
             .join(run_id.as_str());
         let materialized_dir = run_dir.join("materialized");
         let artifacts_dir = run_dir.join("artifacts");
-        let compose_project = build_compose_project(feature.feature_name.as_str(), run_id.as_str());
+        let compose_project = build_compose_project(feature_name, run_id.as_str());
         let compose_file = materialized_dir.join("compose.yml");
         create_dir_all(run_dir.as_path())?;
         create_dir_all(materialized_dir.as_path())?;
@@ -218,10 +218,10 @@ impl HarnessShared {
             timeouts.poll_interval,
             timeouts.failover_deadline,
         )
-        .await?;
+            .await?;
         let mut harness = Self {
             run_id,
-            feature_name: feature.feature_name.clone(),
+            feature_name: feature_name.to_string(),
             given,
             run_dir,
             materialized_dir,
