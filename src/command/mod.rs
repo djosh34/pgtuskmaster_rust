@@ -1,14 +1,12 @@
-use std::{fmt, path::PathBuf};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
-
-use crate::pginfo::conninfo::render_conninfo_value;
 
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
     dcs::{ClusterMemberView, MemberPostgresView, SwitchoverView},
     ha::types::{AuthorityProjection, PublicationState},
-    pginfo::state::Readiness,
+    pginfo::state::{PgConnInfo, Readiness},
     state::{MemberId, SwitchoverState},
 };
 
@@ -19,10 +17,10 @@ pub enum CommandOutputDto {
         output: Box<StateCommandOutputDto>,
     },
     Primary {
-        output: RenderedConnectionCommandDto,
+        output: StateDerivedConnectionCommandDto,
     },
     Replicas {
-        output: RenderedConnectionCommandDto,
+        output: StateDerivedConnectionCommandDto,
     },
     Switchover {
         output: AcceptedResponse,
@@ -90,13 +88,6 @@ pub enum StateDerivedConnectionCommandKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RenderedConnectionCommandDto {
-    pub state: StateDerivedConnectionCommandDto,
-    pub local_connection: LocalConnectionMaterialization,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StateDerivedConnectionCommandDto {
     pub projection: StateProjectionDto,
     pub kind: StateDerivedConnectionCommandKind,
@@ -107,35 +98,14 @@ pub struct StateDerivedConnectionCommandDto {
 #[serde(deny_unknown_fields)]
 pub struct StateDerivedConnectionTargetDto {
     pub member_id: String,
-    pub postgres_host: String,
-    pub postgres_port: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LocalConnectionMaterialization {
-    Plaintext,
-    Tls { paths: PathBackedClientTlsDto },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PathBackedClientTlsDto {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ca_cert_path: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_cert_path: Option<PathBuf>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_key_path: Option<PathBuf>,
+    pub conninfo: PgConnInfo,
 }
 
 impl fmt::Display for CommandOutputDto {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let rendered = match self {
             Self::State { output } => render_state_command_text(output),
-            Self::Primary { output } | Self::Replicas { output } => {
-                render_connection_command_text(output)
-            }
+            Self::Primary { output } | Self::Replicas { output } => output.to_string(),
             Self::Switchover { output } => format!("accepted={}", output.accepted),
             Self::ReloadCertificates { output } => match serde_json::to_string_pretty(output) {
                 Ok(json) => json,
@@ -146,49 +116,16 @@ impl fmt::Display for CommandOutputDto {
     }
 }
 
-pub fn materialize_connection_dsn(
-    target: &StateDerivedConnectionTargetDto,
-    local: &LocalConnectionMaterialization,
-) -> String {
-    let base_fields = [
-        ("host", target.postgres_host.clone()),
-        ("port", target.postgres_port.to_string()),
-        ("user", "postgres".to_string()),
-        ("dbname", "postgres".to_string()),
-    ];
-    let tls_fields = match local {
-        LocalConnectionMaterialization::Plaintext => Vec::new(),
-        LocalConnectionMaterialization::Tls { paths } => {
-            let optional_path_fields = [
-                ("sslrootcert", paths.ca_cert_path.as_ref()),
-                ("sslcert", paths.client_cert_path.as_ref()),
-                ("sslkey", paths.client_key_path.as_ref()),
-            ]
-            .into_iter()
-            .filter_map(|(key, path)| path.map(|value| (key, value.to_string_lossy().into_owned())))
-            .collect::<Vec<_>>();
-            [("sslmode", "verify-full".to_string())]
-                .into_iter()
-                .chain(optional_path_fields)
-                .collect::<Vec<_>>()
-        }
-    };
-
-    base_fields
-        .into_iter()
-        .chain(tls_fields)
-        .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn render_connection_command_text(view: &RenderedConnectionCommandDto) -> String {
-    view.state
+impl fmt::Display for StateDerivedConnectionCommandDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let rendered = self
         .targets
         .iter()
-        .map(|target| materialize_connection_dsn(target, &view.local_connection))
+        .map(|target| target.conninfo.to_string())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+        formatter.write_str(rendered.as_str())
+    }
 }
 
 fn render_state_command_text(output: &StateCommandOutputDto) -> String {
@@ -370,5 +307,72 @@ pub fn switchover_projection(snapshot: &crate::dcs::DcsView) -> Option<StateSwit
             target_member_id: Some(member_id.0.clone()),
         }),
         Some(SwitchoverState::None) | None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use crate::{
+        pginfo::{
+            conninfo::{PgClientTls, PgSslMode},
+            state::PgConnInfo,
+        },
+        state::PgEndpoint,
+    };
+
+    use super::{
+        StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
+        StateDerivedConnectionTargetDto, StateHealthDto, StateProjectionDto, StateQueryOriginDto,
+    };
+
+    fn sample_projection() -> StateProjectionDto {
+        StateProjectionDto {
+            cluster_name: "cluster-a".to_string(),
+            scope: "scope-a".to_string(),
+            queried_via: StateQueryOriginDto {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8443".to_string(),
+            },
+            health: StateHealthDto::Healthy,
+            verbose: false,
+            discovered_member_count: 1,
+            warnings: Vec::new(),
+            switchover: None,
+        }
+    }
+
+    #[test]
+    fn connection_command_display_uses_canonical_conninfo_rendering() -> Result<(), String> {
+        let output = StateDerivedConnectionCommandDto {
+            projection: sample_projection(),
+            kind: StateDerivedConnectionCommandKind::Primary,
+            targets: vec![StateDerivedConnectionTargetDto {
+                member_id: "node-a".to_string(),
+                conninfo: PgConnInfo {
+                    endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    ssl_mode: PgSslMode::VerifyFull,
+                    ssl_root_cert: Some(PathBuf::from("/tmp/ca bundle.pem")),
+                    options: None,
+                    tls: PgClientTls {
+                        mode: PgSslMode::VerifyFull,
+                        root_cert: Some(PathBuf::from("/tmp/ca bundle.pem")),
+                        client_cert: Some(PathBuf::from("/tmp/client cert.pem")),
+                        client_key: Some(PathBuf::from("/tmp/client key.pem")),
+                    },
+                },
+            }],
+        };
+
+        assert_eq!(
+            output.to_string(),
+            "host=db.internal port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert='/tmp/ca bundle.pem' sslcert='/tmp/client cert.pem' sslkey='/tmp/client key.pem'"
+        );
+        Ok(())
     }
 }

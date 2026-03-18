@@ -12,11 +12,14 @@ use crate::{
         },
     },
     command::{
-        CommandOutputDto, LocalConnectionMaterialization, PathBackedClientTlsDto,
-        RenderedConnectionCommandDto, StateDerivedConnectionCommandDto,
-        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateQueryOriginDto,
+        CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
+        StateDerivedConnectionTargetDto, StateQueryOriginDto,
     },
     dcs::ClusterMemberView,
+    pginfo::{
+        conninfo::{PgClientTls, PgSslMode},
+        state::PgConnInfo,
+    },
 };
 
 pub(crate) async fn run_primary(
@@ -52,7 +55,7 @@ fn resolve_primary_view(
     queried_via: StateQueryOriginDto,
     tls: &CliTlsConfig,
     emit_tls: bool,
-) -> Result<RenderedConnectionCommandDto, CliError> {
+) -> Result<StateDerivedConnectionCommandDto, CliError> {
     let primary_id = authority_primary_member(state).ok_or_else(|| {
         CliError::Resolution(
             "seed state does not currently expose an authoritative primary".to_string(),
@@ -71,8 +74,7 @@ fn resolve_primary_view(
         state,
         queried_via,
         StateDerivedConnectionCommandKind::Primary,
-        vec![build_connection_target(primary_id.as_str(), member)?],
-        build_local_connection_material(tls, emit_tls)?,
+        vec![build_connection_target(primary_id.as_str(), member, tls, emit_tls)?],
     ))
 }
 
@@ -81,12 +83,12 @@ fn resolve_replicas_view(
     queried_via: StateQueryOriginDto,
     tls: &CliTlsConfig,
     emit_tls: bool,
-) -> Result<RenderedConnectionCommandDto, CliError> {
+) -> Result<StateDerivedConnectionCommandDto, CliError> {
     let targets = state
         .dcs
         .members()
         .filter(|(_member_id, member)| member_is_ready_replica(member))
-        .map(|(member_id, member)| build_connection_target(member_id.0.as_str(), member))
+        .map(|(member_id, member)| build_connection_target(member_id.0.as_str(), member, tls, emit_tls))
         .collect::<Result<Vec<_>, _>>()?;
 
     if targets.is_empty() {
@@ -100,7 +102,6 @@ fn resolve_replicas_view(
         queried_via,
         StateDerivedConnectionCommandKind::Replicas,
         targets,
-        build_local_connection_material(tls, emit_tls)?,
     ))
 }
 
@@ -109,21 +110,19 @@ fn build_connection_view(
     queried_via: StateQueryOriginDto,
     kind: StateDerivedConnectionCommandKind,
     targets: Vec<StateDerivedConnectionTargetDto>,
-    local_connection: LocalConnectionMaterialization,
-) -> RenderedConnectionCommandDto {
-    RenderedConnectionCommandDto {
-        state: StateDerivedConnectionCommandDto {
-            projection: build_state_projection(state, queried_via, false),
-            kind,
-            targets,
-        },
-        local_connection,
+) -> StateDerivedConnectionCommandDto {
+    StateDerivedConnectionCommandDto {
+        projection: build_state_projection(state, queried_via, false),
+        kind,
+        targets,
     }
 }
 
 fn build_connection_target(
     member_id: &str,
     member: &ClusterMemberView,
+    tls: &CliTlsConfig,
+    emit_tls: bool,
 ) -> Result<StateDerivedConnectionTargetDto, CliError> {
     let postgres_host = member.postgres_target().host().trim();
     let postgres_port = member.postgres_target().port();
@@ -135,37 +134,57 @@ fn build_connection_target(
 
     Ok(StateDerivedConnectionTargetDto {
         member_id: member_id.to_string(),
-        postgres_host: postgres_host.to_string(),
-        postgres_port,
+        conninfo: build_connection_conninfo(member, tls, emit_tls)?,
     })
 }
 
-fn build_local_connection_material(
+fn build_connection_conninfo(
+    member: &ClusterMemberView,
     tls: &CliTlsConfig,
     emit_tls: bool,
-) -> Result<LocalConnectionMaterialization, CliError> {
+) -> Result<PgConnInfo, CliError> {
+    let tls = build_connection_tls(tls, emit_tls)?;
+    Ok(PgConnInfo {
+        endpoint: member.postgres_target().clone(),
+        user: "postgres".to_string(),
+        dbname: "postgres".to_string(),
+        application_name: None,
+        connect_timeout_s: None,
+        ssl_mode: tls.mode,
+        ssl_root_cert: tls.root_cert.clone(),
+        options: None,
+        tls,
+    })
+}
+
+fn build_connection_tls(tls: &CliTlsConfig, emit_tls: bool) -> Result<PgClientTls, CliError> {
     if !emit_tls {
-        return Ok(LocalConnectionMaterialization::Plaintext);
+        return Ok(PgClientTls {
+            mode: PgSslMode::Disable,
+            root_cert: None,
+            client_cert: None,
+            client_key: None,
+        });
     }
 
-    let paths = PathBackedClientTlsDto {
-        ca_cert_path: require_path_backed_tls_field(
+    Ok(PgClientTls {
+        mode: PgSslMode::VerifyFull,
+        root_cert: require_path_backed_tls_field(
             "pgtm postgres client CA certificate",
             tls.ca_cert_pem.as_ref(),
             tls.ca_cert_path.clone(),
         )?,
-        client_cert_path: require_path_backed_tls_field(
+        client_cert: require_path_backed_tls_field(
             "pgtm postgres client certificate",
             tls.client_cert_pem.as_ref(),
             tls.client_cert_path.clone(),
         )?,
-        client_key_path: require_path_backed_tls_field(
+        client_key: require_path_backed_tls_field(
             "pgtm postgres client key",
             tls.client_key_pem.as_ref(),
             tls.client_key_path.clone(),
         )?,
-    };
-    Ok(LocalConnectionMaterialization::Tls { paths })
+    })
 }
 
 fn require_path_backed_tls_field(

@@ -2,7 +2,7 @@ use std::{fmt, path::PathBuf, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::{config::SecretSource, state::PgEndpoint};
+use crate::state::PgEndpoint;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
@@ -77,7 +77,7 @@ pub struct PgClientTls {
     pub mode: PgSslMode,
     pub root_cert: Option<PathBuf>,
     pub client_cert: Option<PathBuf>,
-    pub client_key: Option<SecretSource>,
+    pub client_key: Option<PathBuf>,
 }
 
 impl fmt::Display for PgConnInfo {
@@ -137,8 +137,8 @@ impl FromStr for PgConnInfo {
             tls: PgClientTls {
                 mode,
                 root_cert: entries.get("sslrootcert").map(PathBuf::from),
-                client_cert: None,
-                client_key: None,
+                client_cert: entries.get("sslcert").map(PathBuf::from),
+                client_key: entries.get("sslkey").map(PathBuf::from),
             },
         })
     }
@@ -177,6 +177,12 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     pairs.push(("sslmode".to_string(), info.ssl_mode.as_str().to_string()));
     if let Some(value) = &info.ssl_root_cert {
         pairs.push(("sslrootcert".to_string(), value.display().to_string()));
+    }
+    if let Some(value) = &info.tls.client_cert {
+        pairs.push(("sslcert".to_string(), value.display().to_string()));
+    }
+    if let Some(value) = &info.tls.client_key {
+        pairs.push(("sslkey".to_string(), value.display().to_string()));
     }
     if let Some(value) = &info.options {
         pairs.push(("options".to_string(), value.clone()));
@@ -305,8 +311,8 @@ mod tests {
             tls: PgClientTls {
                 mode: PgSslMode::Require,
                 root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
-                client_cert: None,
-                client_key: None,
+                client_cert: Some(PathBuf::from("/etc/pgtm/client cert.pem")),
+                client_key: Some(PathBuf::from("/etc/pgtm/client key.pem")),
             },
         })
     }
@@ -316,7 +322,7 @@ mod tests {
         let rendered = render_pg_conninfo(&sample_conninfo()?);
         assert_eq!(
             rendered,
-            "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' options='-c search_path=public'"
+            "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' sslcert='/etc/pgtm/client cert.pem' sslkey='/etc/pgtm/client key.pem' options='-c search_path=public'"
                 .replace("dbname='postgres'", "dbname=postgres")
         );
         Ok(())
