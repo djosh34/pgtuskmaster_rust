@@ -5,6 +5,7 @@ use std::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex,
     },
+    thread,
     time::Duration,
 };
 
@@ -14,7 +15,7 @@ use rustls::{
     RootCertStore,
 };
 use tokio::{
-    runtime::{Builder, Handle},
+    runtime::{Builder, Handle, RuntimeFlavor},
     sync::RwLock,
     task::JoinHandle,
     time::Instant,
@@ -127,10 +128,45 @@ impl WriteConvergenceInvariantRunner {
 
     pub fn ensure_healthy(&self) -> Result<(), WriteConvergenceInvariantError> {
         self.ensure_tasks_running()?;
-        self.block_on(async {
-            let _pause_guard = self.pause_write.write().await;
-            self.evaluate_health_check().await
-        })?
+        let pause_write = Arc::clone(&self.pause_write);
+        let expected_count = self.written_count.load(Ordering::SeqCst);
+        let write_deadline = self.write_deadline;
+        let members = self
+            .members
+            .iter()
+            .map(|member| MonitoredMember {
+                member: member.member,
+                client: Arc::clone(&member.client),
+            })
+            .collect::<Vec<_>>();
+        let future = async move {
+            let _pause_guard = pause_write.write().await;
+            evaluate_health_check_for_members(members.as_slice(), expected_count, write_deadline)
+                .await
+        };
+
+        match Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Ok(_) | Err(_) => thread::spawn(move || {
+                Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| {
+                        WriteConvergenceInvariantError::Failed(format!(
+                            "build runtime for write convergence invariant failed: {err}"
+                        ))
+                    })?
+                    .block_on(future)
+            })
+            .join()
+            .map_err(|_| {
+                WriteConvergenceInvariantError::Failed(
+                    "write convergence invariant health check thread panicked".to_string(),
+                )
+            })?,
+        }
     }
 }
 
@@ -250,43 +286,28 @@ impl WriteConvergenceInvariantRunner {
                 Err(WriteConvergenceInvariantError::Failed(message.clone()))
             })
     }
+}
 
-    fn block_on<T>(
-        &self,
-        future: impl std::future::Future<Output = T>,
-    ) -> Result<T, WriteConvergenceInvariantError> {
-        match Handle::try_current() {
-            Ok(handle) => Ok(tokio::task::block_in_place(|| handle.block_on(future))),
-            Err(_) => Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map(|runtime| runtime.block_on(future))
-                .map_err(|err| {
-                    WriteConvergenceInvariantError::Failed(format!(
-                        "build runtime for write convergence invariant failed: {err}"
-                    ))
-                }),
-        }
+async fn evaluate_health_check_for_members(
+    members: &[MonitoredMember],
+    expected_count: u64,
+    write_deadline: Duration,
+) -> Result<(), WriteConvergenceInvariantError> {
+    if expected_count == 0 {
+        return Err(WriteConvergenceInvariantError::Failed(format!(
+            "no successful writes observed on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}` before {:?}",
+            write_deadline
+        )));
     }
-
-    async fn evaluate_health_check(&self) -> Result<(), WriteConvergenceInvariantError> {
-        let expected_count = self.written_count.load(Ordering::SeqCst);
-        if expected_count == 0 {
-            return Err(WriteConvergenceInvariantError::Failed(format!(
-                "no successful writes observed on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}` before {:?}",
-                self.write_deadline
-            )));
-        }
-        let observations = read_member_counts(self.members.as_slice()).await;
-        if observations_match_expected(observations.as_slice(), expected_count) {
-            Ok(())
-        } else {
-            Err(convergence_failure(
-                expected_count,
-                observations.as_slice(),
-                self.write_deadline,
-            ))
-        }
+    let observations = read_monitored_member_counts(members).await;
+    if observations_match_expected(observations.as_slice(), expected_count) {
+        Ok(())
+    } else {
+        Err(convergence_failure(
+            expected_count,
+            observations.as_slice(),
+            write_deadline,
+        ))
     }
 }
 
@@ -497,22 +518,6 @@ async fn monitor_loop(
         }
         tokio::time::sleep(poll_interval).await;
     }
-}
-
-async fn read_member_counts(members: &[MemberWriter]) -> Vec<MemberCountObservation> {
-    futures::future::join_all(members.iter().map(|member| async {
-        match read_count(&member.client).await {
-            Ok(count) => MemberCountObservation::Observed {
-                member: member.member,
-                count,
-            },
-            Err(err) => MemberCountObservation::Failed {
-                member: member.member,
-                message: err.to_string(),
-            },
-        }
-    }))
-    .await
 }
 
 async fn read_monitored_member_counts(members: &[MonitoredMember]) -> Vec<MemberCountObservation> {

@@ -2,15 +2,16 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        atomic::{AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
         Arc,
     },
+    thread,
     time::Duration,
 };
 
 use pgtuskmaster_rust::pginfo::state::PgInfoState;
 use tokio::{
-    runtime::{Builder, Handle},
+    runtime::{Builder, Handle, RuntimeFlavor},
     sync::RwLock,
     task::JoinHandle,
     time::Instant,
@@ -31,6 +32,7 @@ pub struct PrimaryCountInvariantRunner {
     health_deadline: Duration,
     num_primaries: Arc<AtomicI32>,
     fatal_error: Arc<RwLock<Option<String>>>,
+    task_stopped: Arc<AtomicBool>,
     task: JoinHandle<()>,
 }
 
@@ -84,9 +86,20 @@ impl PrimaryCountInvariantRunner {
     ) -> Self {
         let num_primaries = Arc::new(AtomicI32::new(0));
         let fatal_error = Arc::new(RwLock::new(None));
+        let task_stopped = Arc::new(AtomicBool::new(false));
         let task_num_primaries = Arc::clone(&num_primaries);
         let task_fatal_error = Arc::clone(&fatal_error);
+        let task_stopped_for_task = Arc::clone(&task_stopped);
         let task = tokio::spawn(async move {
+            struct TaskStoppedFlag(Arc<AtomicBool>);
+
+            impl Drop for TaskStoppedFlag {
+                fn drop(&mut self) {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+
+            let _task_stopped_flag = TaskStoppedFlag(task_stopped_for_task);
             loop {
                 let observations = observe_all().await;
                 if let Some(message) = observations
@@ -129,17 +142,23 @@ impl PrimaryCountInvariantRunner {
             health_deadline,
             num_primaries,
             fatal_error,
+            task_stopped,
             task,
         }
     }
 
     pub fn ensure_healthy(&self) -> Result<()> {
-        self.block_on(async {
-            let deadline = Instant::now() + self.health_deadline;
+        let poll_interval = self.poll_interval;
+        let health_deadline = self.health_deadline;
+        let num_primaries = Arc::clone(&self.num_primaries);
+        let fatal_error = Arc::clone(&self.fatal_error);
+        let task_stopped = Arc::clone(&self.task_stopped);
+        let future = async move {
+            let deadline = Instant::now() + health_deadline;
             loop {
-                self.ensure_task_running().await?;
+                ensure_task_running_state(fatal_error.as_ref(), task_stopped.as_ref()).await?;
 
-                let num_primaries = self.num_primaries.load(Ordering::SeqCst);
+                let num_primaries = num_primaries.load(Ordering::SeqCst);
                 match validate_primary_count(num_primaries) {
                     Ok(true) => return Ok(()),
                     Ok(false) => {}
@@ -149,45 +168,52 @@ impl PrimaryCountInvariantRunner {
                 if Instant::now() >= deadline {
                     return Err(HarnessError::message(format!(
                         "timed out waiting for self-reported primary count to become `1` before {:?}; last observed count was `{num_primaries}`",
-                        self.health_deadline
+                        health_deadline
                     )));
                 }
 
-                tokio::time::sleep(self.poll_interval).await;
+                tokio::time::sleep(poll_interval).await;
             }
-        })?
+        };
+
+        match Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Ok(_) | Err(_) => thread::spawn(move || {
+                Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| {
+                        HarnessError::message(format!(
+                            "build runtime for primary-count invariant failed: {err}"
+                        ))
+                    })?
+                    .block_on(future)
+            })
+            .join()
+            .map_err(|_| HarnessError::message("primary-count health check thread panicked"))?,
+        }
     }
 }
 
-impl PrimaryCountInvariantRunner {
-    async fn ensure_task_running(&self) -> Result<()> {
-        if let Some(message) = self.fatal_error.read().await.clone() {
-            return Err(HarnessError::message(message));
-        }
+impl PrimaryCountInvariantRunner {}
 
-        if self.task.is_finished() {
-            return Err(HarnessError::message(
-                "primary-count runner stopped unexpectedly",
-            ));
-        }
-
-        Ok(())
+async fn ensure_task_running_state(
+    fatal_error: &RwLock<Option<String>>,
+    task_stopped: &AtomicBool,
+) -> Result<()> {
+    if let Some(message) = fatal_error.read().await.clone() {
+        return Err(HarnessError::message(message));
     }
 
-    fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> Result<T> {
-        match Handle::try_current() {
-            Ok(handle) => Ok(tokio::task::block_in_place(|| handle.block_on(future))),
-            Err(_) => Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| {
-                    HarnessError::message(format!(
-                        "build runtime for primary-count invariant failed: {err}"
-                    ))
-                })
-                .map(|runtime| runtime.block_on(future)),
-        }
+    if task_stopped.load(Ordering::SeqCst) {
+        return Err(HarnessError::message(
+            "primary-count runner stopped unexpectedly",
+        ));
     }
+
+    Ok(())
 }
 
 async fn observe_member_primary(

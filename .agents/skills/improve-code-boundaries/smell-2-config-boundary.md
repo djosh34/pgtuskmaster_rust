@@ -16,6 +16,14 @@ That means:
 - if a path must exist internally, do not keep it as `Option`
 - if TLS is enabled, missing cert material must no longer be representable
 - if inline content, file paths, or env variables are only ingestion concerns, downstream code must not care which source form produced the value
+- if a duration matters internally, do not keep it as a raw `u64` count of milliseconds or seconds
+
+Additional hard rules for this repo:
+
+- `const` defaults are a hard no for validated config design
+- serde `#[serde(default = \"...\")]` helper-function defaults are a hard no for validated config design
+- implement `Default` for the owning config type instead
+- convert raw timing counts into `Duration` during validation/materialization so later code does not traffic in `*_ms` or `*_seconds`
 
 The raw input shape is allowed to be messy. The long-lived internal shape is not.
 
@@ -105,8 +113,56 @@ This is still very close to the real-world input document:
 - `SecretSource` is an ingestion concern
 - `Option<PathBuf>` fields may or may not be acceptable internally, depending on whether defaults are required
 - `TlsServerConfig::Enabled { client_auth: Option<_> }` still allows several intermediate states that later code must interpret
+- defaults are being injected through serde helper functions rather than by one owning type
+- raw count-shaped timing fields in the wider config schema encourage later code to keep carrying `*_ms` instead of `Duration`
 
 These shapes are fine as raw DTOs. They are questionable as the long-lived shared runtime API.
+
+The specific defaulting pattern is also a smell:
+
+- `const` defaults plus free functions such as `defaults::default_*`
+- `#[serde(default = "defaults::default_*")]`
+
+That pattern is acceptable only at the raw DTO edge if you absolutely must parse legacy input. It is not acceptable for the validated shared config model.
+
+The validated model should instead:
+
+- implement `Default` on the owning type
+- materialize one final value for each field
+- stop leaking which defaults came from serde versus type ownership
+
+## Example A2: raw timing counts should not survive validation
+
+From `src/config/defaults.rs` and `src/config/schema.rs`, the config layer still speaks in raw counts like:
+
+```rust
+const DEFAULT_HA_LOOP_INTERVAL_MS: u64 = 1_000;
+const DEFAULT_HA_LEASE_TTL_MS: u64 = 10_000;
+const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
+const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
+const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
+```
+
+and fields like:
+
+```rust
+pub struct HaConfig {
+    pub loop_interval_ms: u64,
+    pub lease_ttl_ms: u64,
+}
+```
+
+This is exactly the kind of boundary leak the validated config should remove.
+
+Raw document input may say milliseconds or seconds. Fine.
+
+But after validation and materialization:
+
+- `loop_interval_ms` should be `Duration`
+- `lease_ttl_ms` should be `Duration`
+- process timeout counts should be `Duration`
+
+If later code still has to remember the unit, the boundary did not finish its job.
 
 ## Example B: later code still resolves and validates source-world details
 
@@ -271,6 +327,7 @@ That means later code keeps carrying around:
    - resolving secrets
    - applying defaults or inheritance
    - checking transport or TLS consistency
+   - remembering raw timing units like milliseconds or seconds
 5. Move each of those behaviors back into config ingestion.
 6. Create one flatter internal type where only valid cases exist.
 7. Remove leftover helper functions whose only job was to normalize the old source-world shape.
@@ -290,6 +347,8 @@ Likewise:
 - a required path should already be present
 - a usable certificate or key should already be resolved
 - later code should not ask "was this inline or a file?"
+- later code should not ask "is this milliseconds or seconds?"
+- later code should receive `Duration`, not raw counts
 
 If that source distinction still matters later, your boundary is still wrong.
 
@@ -299,6 +358,13 @@ If a piece of later code is doing something that could have been known when read
 
 Do not stop after moving one validation. Keep following every use of the DTO-derived shape. Many functions on the old type become useless once the validated internal type exists. Remove them. Ten or twenty touched files is acceptable if that is what it takes to make the boundary honest.
 
+That includes:
+
+- free-function default injection
+- `const` default catalogs
+- serde `default = ...` helpers
+- raw `*_ms` or `*_seconds` fields that should already be `Duration`
+
 ## Exceptions
 
 Real-world input and output payloads are allowed to exist. The rule is not "no DTOs." The rule is:
@@ -307,4 +373,3 @@ Real-world input and output payloads are allowed to exist. The rule is not "no D
 - DTOs stay private
 - validation and normalization happen once
 - the rest of the code never re-enters the raw world
-
