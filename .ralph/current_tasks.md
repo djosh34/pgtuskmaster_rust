@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 00:29:02 CET 2026
+Generated: Thu Mar 19 12:34:48 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -203,17 +203,5 @@ The observed error is `signal log /tmp/pgtm-api-worker-reload-success-533849-177
 
 <description>
 The codebase still has several early-error-flattening patterns:
-```
-
-==============
-
-# Task `.ralph/tasks/story-improve-code-boundaries/01-task-find-one-code-boundary-smell-and-fix-it.md`
-
-```
-## Task: Find One Code Boundary Smell And Fix It <status>not_started</status> <passes>meta-task</passes>
-NEVER TICK OFF THIS TASK. ALWAYS KEEP <passes>meta-task</passes>. This is a recurring deep verification task.
-
-<description>
-This is a **RECURRING META-TASK**. Every time this task is picked up, the engineer must do a **FRESH verification** pass. **NEVER set this task's passes to anything other than meta-task**.
 ```
 
