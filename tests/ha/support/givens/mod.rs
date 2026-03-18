@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::support::{
     error::{HarnessError, Result},
     faults::DCS_SERVICES,
-    topology::{ClusterMember, ComposeService, DcsService},
+    topology::{ClusterMember, DcsService},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,35 +60,42 @@ impl HaGivenDefinition {
     }
 
     pub fn dcs_services(&self) -> Vec<DcsService> {
-        self.dcs_layout().dcs_services()
+        match self.id {
+            HaGivenId::Plain | HaGivenId::CustomRoles => vec![DcsService::SharedEtcd],
+            HaGivenId::ThreeEtcd => DCS_SERVICES.into_iter().collect(),
+        }
     }
 
-    pub fn support_services(&self) -> Vec<ComposeService> {
+    pub fn artifact_service_names(&self) -> Vec<&'static str> {
         self.dcs_services()
             .into_iter()
-            .map(ComposeService::from)
-            .collect()
-    }
-
-    pub fn artifact_services(&self) -> Vec<ComposeService> {
-        self.support_services()
-            .into_iter()
-            .chain(ClusterMember::ALL.into_iter().map(ComposeService::from))
+            .map(DcsService::service_name)
+            .chain(
+                ClusterMember::ALL
+                    .into_iter()
+                    .map(ClusterMember::service_name),
+            )
             .collect()
     }
 
     pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
-        self.dcs_layout().service_for(member)
+        match self.id {
+            HaGivenId::Plain | HaGivenId::CustomRoles => DcsService::SharedEtcd,
+            HaGivenId::ThreeEtcd => member.local_dcs_service(),
+        }
     }
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
-        self.dcs_layout().quorum_majority_services()
+        match self.id {
+            HaGivenId::Plain | HaGivenId::CustomRoles => vec![DcsService::SharedEtcd],
+            HaGivenId::ThreeEtcd => [DcsService::EtcdA, DcsService::EtcdB].into_iter().collect(),
+        }
     }
 
     pub fn compose_variant_relative_path(&self) -> &'static str {
-        match self.dcs_layout() {
-            ThreeNodeDcsLayout::SharedSingle => "compose/three_node_shared_single.yml",
-            ThreeNodeDcsLayout::ColocatedThreeMember => "compose/three_node_three_etcd.yml",
+        match self.id {
+            HaGivenId::Plain | HaGivenId::CustomRoles => "compose/three_node_shared_single.yml",
+            HaGivenId::ThreeEtcd => "compose/three_node_three_etcd.yml",
         }
     }
 
@@ -99,44 +106,6 @@ impl HaGivenDefinition {
             "configs/pg_hba.conf",
             "configs/pg_ident.conf",
         ]
-    }
-
-    fn dcs_layout(&self) -> ThreeNodeDcsLayout {
-        match self.id {
-            HaGivenId::Plain | HaGivenId::CustomRoles => ThreeNodeDcsLayout::SharedSingle,
-            HaGivenId::ThreeEtcd => ThreeNodeDcsLayout::ColocatedThreeMember,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThreeNodeDcsLayout {
-    SharedSingle,
-    ColocatedThreeMember,
-}
-
-impl ThreeNodeDcsLayout {
-    pub fn dcs_services(self) -> Vec<DcsService> {
-        match self {
-            Self::SharedSingle => vec![DcsService::SharedEtcd],
-            Self::ColocatedThreeMember => DCS_SERVICES.into_iter().collect(),
-        }
-    }
-
-    pub fn service_for(self, member: ClusterMember) -> DcsService {
-        match self {
-            Self::SharedSingle => DcsService::SharedEtcd,
-            Self::ColocatedThreeMember => member.local_dcs_service(),
-        }
-    }
-
-    pub fn quorum_majority_services(self) -> Vec<DcsService> {
-        match self {
-            Self::SharedSingle => vec![DcsService::SharedEtcd],
-            Self::ColocatedThreeMember => {
-                [DcsService::EtcdA, DcsService::EtcdB].into_iter().collect()
-            }
-        }
     }
 }
 

@@ -96,36 +96,3 @@ impl fmt::Display for DcsService {
         formatter.write_str(self.service_name())
     }
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ComposeService {
-    Member(ClusterMember),
-    Dcs(DcsService),
-}
-
-impl ComposeService {
-    pub fn service_name(self) -> &'static str {
-        match self {
-            Self::Member(member) => member.service_name(),
-            Self::Dcs(service) => service.service_name(),
-        }
-    }
-}
-
-impl fmt::Display for ComposeService {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.service_name())
-    }
-}
-
-impl From<ClusterMember> for ComposeService {
-    fn from(value: ClusterMember) -> Self {
-        Self::Member(value)
-    }
-}
-
-impl From<DcsService> for ComposeService {
-    fn from(value: DcsService) -> Self {
-        Self::Dcs(value)
-    }
-}

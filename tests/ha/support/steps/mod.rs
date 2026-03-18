@@ -967,7 +967,7 @@ fn terminal_container_failure(
         if expected_offline.contains(service) {
             continue;
         }
-        let container_id = match harness.service_container_id((*service).into()) {
+        let container_id = match harness.service_container_id(service.service_name()) {
             Ok(container_id) => container_id,
             Err(err) => {
                 failures.push(format!("{service}=container-resolution-failed({err})"));

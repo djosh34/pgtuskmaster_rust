@@ -37,7 +37,7 @@ use crate::support::{
         sql::SqlObserver,
     },
     timeouts::TimeoutModel,
-    topology::{ClusterMember, ComposeService},
+    topology::ClusterMember,
 };
 
 #[derive(Debug, Default, World)]
@@ -143,7 +143,7 @@ pub struct HarnessRuntime {
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
     pub timeouts: TimeoutModel,
-    service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
+    service_container_ids: Mutex<BTreeMap<String, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
     cleaned_up: bool,
 }
@@ -372,13 +372,13 @@ impl HarnessShared {
     }
 
     pub fn kill_node(&self, member: ClusterMember) -> Result<()> {
-        let container_id = self.service_container_id(member.into())?;
+        let container_id = self.service_container_id(member.service_name())?;
         self.record_note("docker.kill", format!("killing `{member}`"))?;
         self.docker.kill_container(container_id.as_str())
     }
 
     pub fn start_node(&self, member: ClusterMember) -> Result<()> {
-        let container_id = self.service_container_id(member.into())?;
+        let container_id = self.service_container_id(member.service_name())?;
         self.record_note("docker.start", format!("starting `{member}`"))?;
         self.docker.start_container(container_id.as_str())
     }
@@ -401,33 +401,34 @@ impl HarnessShared {
         }))
     }
 
-    pub fn service_container_id(&self, service: ComposeService) -> Result<String> {
-        if let Some(container_id) = self.cached_service_container_id(service)? {
+    pub fn service_container_id(&self, service_name: &str) -> Result<String> {
+        if let Some(container_id) = self.cached_service_container_id(service_name)? {
             return Ok(container_id);
         }
         self.refresh_service_container_ids()?;
-        self.cached_service_container_id(service)?.ok_or_else(|| {
-            HarnessError::message(format!(
-                "docker compose service `{service}` has no container in project `{}`",
-                self.compose_project()
-            ))
-        })
+        self.cached_service_container_id(service_name)?
+            .ok_or_else(|| {
+                HarnessError::message(format!(
+                    "docker compose service `{service_name}` has no container in project `{}`",
+                    self.compose_project()
+                ))
+            })
     }
 
-    pub fn stop_service(&self, service: ComposeService) -> Result<()> {
-        let container_id = self.service_container_id(service)?;
-        self.record_note("docker.stop_service", format!("stopping `{service}`"))?;
+    fn stop_service(&self, service_name: &str) -> Result<()> {
+        let container_id = self.service_container_id(service_name)?;
+        self.record_note("docker.stop_service", format!("stopping `{service_name}`"))?;
         self.docker.kill_container(container_id.as_str())
     }
 
-    pub fn start_service(&self, service: ComposeService) -> Result<()> {
-        let container_id = self.service_container_id(service)?;
-        self.record_note("docker.start_service", format!("starting `{service}`"))?;
+    fn start_service(&self, service_name: &str) -> Result<()> {
+        let container_id = self.service_container_id(service_name)?;
+        self.record_note("docker.start_service", format!("starting `{service_name}`"))?;
         self.docker.start_container(container_id.as_str())
     }
 
-    pub fn run_shell_as_root(&self, service: ComposeService, script: &str) -> Result<String> {
-        let container_id = self.service_container_id(service)?;
+    fn run_shell_as_root(&self, service_name: &str, script: &str) -> Result<String> {
+        let container_id = self.service_container_id(service_name)?;
         self.docker.exec_as_user(
             container_id.as_str(),
             "root",
@@ -436,44 +437,44 @@ impl HarnessShared {
         )
     }
 
-    pub fn ensure_fault_plumbing(&self, service: ComposeService) -> Result<()> {
+    fn ensure_fault_plumbing(&self, service_name: &str) -> Result<()> {
         let script = ensure_fault_plumbing_script();
-        let _ = self.run_shell_as_root(service, script.as_str())?;
-        self.record_note("fault.ensure_plumbing", format!("service={service}"))?;
+        let _ = self.run_shell_as_root(service_name, script.as_str())?;
+        self.record_note("fault.ensure_plumbing", format!("service={service_name}"))?;
         Ok(())
     }
 
-    pub fn clear_network_faults(&self, service: ComposeService) -> Result<()> {
-        if !self.service_is_running(service)? {
+    fn clear_network_faults(&self, service_name: &str) -> Result<()> {
+        if !self.service_is_running(service_name)? {
             self.record_note(
                 "fault.clear_network",
-                format!("service={service} skipped=container_not_running"),
+                format!("service={service_name} skipped=container_not_running"),
             )?;
             return Ok(());
         }
         let script = clear_fault_rules_script();
-        if let Err(err) = self.run_shell_as_root(service, script.as_str()) {
+        if let Err(err) = self.run_shell_as_root(service_name, script.as_str()) {
             if container_not_running_error(&err) {
                 self.record_note(
                     "fault.clear_network",
-                    format!("service={service} skipped=container_not_running"),
+                    format!("service={service_name} skipped=container_not_running"),
                 )?;
                 return Ok(());
             }
             return Err(err);
         }
-        self.record_note("fault.clear_network", format!("service={service}"))?;
+        self.record_note("fault.clear_network", format!("service={service_name}"))?;
         Ok(())
     }
 
     pub fn heal_member_network_faults(&self, member: ClusterMember) -> Result<()> {
-        self.clear_network_faults(member.into())?;
+        self.clear_network_faults(member.service_name())?;
         for peer in DATABASE_MEMBERS {
             if peer == member {
                 continue;
             }
             for path in [TrafficPath::Postgres, TrafficPath::Api, TrafficPath::Dcs] {
-                self.unblock_member_path_to_host(peer, path, member.into())?;
+                self.unblock_member_path_to_host(peer, path, member.service_name())?;
             }
         }
         self.record_note("fault.heal_member_network", format!("member={member}"))?;
@@ -484,45 +485,43 @@ impl HarnessShared {
         &self,
         member: ClusterMember,
         path: TrafficPath,
-        peer_service: ComposeService,
+        peer_service_name: &str,
     ) -> Result<()> {
-        let peer_container_id = self.service_container_id(peer_service)?;
+        let peer_container_id = self.service_container_id(peer_service_name)?;
         let peer_ip = self
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
-        self.block_member_path_to_address(
-            member,
-            path,
-            peer_ip.as_str(),
-            peer_service.service_name(),
-        )
+        self.block_member_path_to_address(member, path, peer_ip.as_str(), peer_service_name)
     }
 
     pub fn unblock_member_path_to_host(
         &self,
         member: ClusterMember,
         path: TrafficPath,
-        peer_service: ComposeService,
+        peer_service_name: &str,
     ) -> Result<()> {
-        if !self.service_is_running(member.into())? {
+        if !self.service_is_running(member.service_name())? {
             self.record_note(
                 "fault.unblock_path",
                 format!(
-                    "member={member} path={} peer={peer_service} skipped=container_not_running",
+                    "member={member} path={} peer={peer_service_name} skipped=container_not_running",
                     path.label()
                 ),
             )?;
             return Ok(());
         }
-        let peer_container_id = self.service_container_id(peer_service)?;
+        let peer_container_id = self.service_container_id(peer_service_name)?;
         let peer_ip = self
             .docker
             .container_ipv4_address(peer_container_id.as_str())?;
         let script = remove_fault_rule_script(peer_ip.as_str(), path.port());
-        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
+        let _ = self.run_shell_as_root(member.service_name(), script.as_str())?;
         self.record_note(
             "fault.unblock_path",
-            format!("member={member} path={} peer={peer_service}", path.label()),
+            format!(
+                "member={member} path={} peer={peer_service_name}",
+                path.label()
+            ),
         )?;
         Ok(())
     }
@@ -534,9 +533,9 @@ impl HarnessShared {
         peer_ip: &str,
         peer_label: &str,
     ) -> Result<()> {
-        self.ensure_fault_plumbing(member.into())?;
+        self.ensure_fault_plumbing(member.service_name())?;
         let script = append_fault_rule_script(peer_ip, path.port());
-        let _ = self.run_shell_as_root(member.into(), script.as_str())?;
+        let _ = self.run_shell_as_root(member.service_name(), script.as_str())?;
         self.record_note(
             "fault.block_path",
             format!("member={member} path={} peer={peer_label}", path.label()),
@@ -550,8 +549,8 @@ impl HarnessShared {
         peer: ClusterMember,
         path: TrafficPath,
     ) -> Result<()> {
-        self.block_member_path_to_host(member, path, peer.into())?;
-        self.block_member_path_to_host(peer, path, member.into())
+        self.block_member_path_to_host(member, path, peer.service_name())?;
+        self.block_member_path_to_host(peer, path, member.service_name())
     }
 
     pub fn isolate_member_from_all_peers_on_path(
@@ -579,7 +578,10 @@ impl HarnessShared {
         self.block_member_path_to_host(
             member,
             TrafficPath::Dcs,
-            self.workspace.given.local_dcs_service_for(member).into(),
+            self.workspace
+                .given
+                .local_dcs_service_for(member)
+                .service_name(),
         )
     }
 
@@ -588,7 +590,7 @@ impl HarnessShared {
             .given
             .dcs_services()
             .into_iter()
-            .try_for_each(|service| self.stop_service(service.into()))
+            .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_all_dcs_services(&self) -> Result<()> {
@@ -596,7 +598,7 @@ impl HarnessShared {
             .given
             .dcs_services()
             .into_iter()
-            .try_for_each(|service| self.start_service(service.into()))
+            .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
@@ -604,7 +606,7 @@ impl HarnessShared {
             .given
             .quorum_majority_dcs_services()
             .into_iter()
-            .try_for_each(|service| self.stop_service(service.into()))
+            .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_dcs_quorum_majority(&self) -> Result<()> {
@@ -612,15 +614,25 @@ impl HarnessShared {
             .given
             .quorum_majority_dcs_services()
             .into_iter()
-            .try_for_each(|service| self.start_service(service.into()))
+            .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.stop_service(self.workspace.given.local_dcs_service_for(member).into())
+        self.stop_service(
+            self.workspace
+                .given
+                .local_dcs_service_for(member)
+                .service_name(),
+        )
     }
 
     pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.start_service(self.workspace.given.local_dcs_service_for(member).into())
+        self.start_service(
+            self.workspace
+                .given
+                .local_dcs_service_for(member)
+                .service_name(),
+        )
     }
 
     pub fn set_blocker(
@@ -654,14 +666,14 @@ impl HarnessShared {
     }
 
     pub fn clear_all_network_faults(&self) -> Result<()> {
-        for service in DATABASE_MEMBERS.into_iter().map(ComposeService::from) {
-            self.clear_network_faults(service)?;
+        for service in DATABASE_MEMBERS {
+            self.clear_network_faults(service.service_name())?;
         }
         Ok(())
     }
 
-    fn service_is_running(&self, service: ComposeService) -> Result<bool> {
-        let container_id = self.service_container_id(service)?;
+    fn service_is_running(&self, service_name: &str) -> Result<bool> {
+        let container_id = self.service_container_id(service_name)?;
         Ok(self.docker.container_state_status(container_id.as_str())? == "running")
     }
 
@@ -672,7 +684,7 @@ impl HarnessShared {
     }
 
     fn member_network_gateway_ipv4(&self, member: ClusterMember) -> Result<String> {
-        let container_id = self.service_container_id(member.into())?;
+        let container_id = self.service_container_id(member.service_name())?;
         self.docker.container_network_gateway(container_id.as_str())
     }
 
@@ -714,7 +726,7 @@ impl HarnessShared {
             "waiting for DCS services to report healthy",
         )?;
         for service in self.workspace.given.dcs_services() {
-            self.wait_for_service_health(service.into()).await?;
+            self.wait_for_service_health(service.service_name()).await?;
         }
         self.record_startup_phase(StartupPhase::DcsReady, "all DCS services are healthy")?;
         self.record_startup_phase(
@@ -746,20 +758,20 @@ impl HarnessShared {
         )
     }
 
-    async fn wait_for_service_health(&self, service: ComposeService) -> Result<()> {
+    async fn wait_for_service_health(&self, service_name: &str) -> Result<()> {
         let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
             let result = match self
-                .service_container_id(service)
+                .service_container_id(service_name)
                 .and_then(|container_id| self.docker.container_health_status(container_id.as_str()))
             {
                 Ok(Some(status)) if status == "healthy" => Ok(()),
                 Ok(Some(status)) => Err(HarnessError::message(format!(
-                    "service `{service}` health is `{status}`"
+                    "service `{service_name}` health is `{status}`"
                 ))),
                 Ok(None) => Err(HarnessError::message(format!(
-                    "service `{service}` does not expose a docker health status"
+                    "service `{service_name}` does not expose a docker health status"
                 ))),
                 Err(err) => Err(err),
             };
@@ -771,7 +783,7 @@ impl HarnessShared {
         }
 
         Err(HarnessError::message(format!(
-            "timed out waiting for service `{service}` to become healthy; last observed error: {}",
+            "timed out waiting for service `{service_name}` to become healthy; last observed error: {}",
             last_error.unwrap_or_else(|| "no health state was observed".to_string())
         )))
     }
@@ -926,21 +938,21 @@ impl HarnessShared {
             Err(err) => failures.push(format!("operator state capture failed: {err}")),
         }
 
-        for service in self.workspace.given.artifact_services() {
-            match self.service_container_id(service) {
+        for service_name in self.workspace.given.artifact_service_names() {
+            match self.service_container_id(service_name) {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
                         let artifact = self
                             .artifacts_dir()
-                            .join(format!("inspect-{}.json", service.service_name()));
+                            .join(format!("inspect-{service_name}.json"));
                         write_text_file(artifact.as_path(), inspect.as_str())?;
                     }
                     Err(err) => failures.push(format!(
-                        "docker inspect artifact capture failed for `{service}`: {err}"
+                        "docker inspect artifact capture failed for `{service_name}`: {err}"
                     )),
                 },
                 Err(err) => failures.push(format!(
-                    "container resolution failed for artifact capture `{service}`: {err}"
+                    "container resolution failed for artifact capture `{service_name}`: {err}"
                 )),
             }
         }
@@ -967,14 +979,15 @@ impl HarnessShared {
             .map_err(|_| HarnessError::message("timeline mutex was poisoned"))
     }
 
-    fn cached_service_container_id(&self, service: ComposeService) -> Result<Option<String>> {
+    fn cached_service_container_id(&self, service_name: &str) -> Result<Option<String>> {
         self.service_container_ids
             .lock()
-            .map(|cache| cache.get(&service).cloned())
+            .map(|cache| cache.get(service_name).cloned())
             .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))
     }
 
     fn refresh_service_container_ids(&self) -> Result<()> {
+        let artifact_service_names = self.workspace.given.artifact_service_names();
         let compose_entries = self
             .docker
             .compose_ps_entries(self.compose_file(), self.compose_project())?;
@@ -984,22 +997,11 @@ impl HarnessShared {
             .map_err(|_| HarnessError::message("service container cache mutex was poisoned"))?;
         compose_entries
             .into_iter()
-            .filter_map(|entry| {
-                self.compose_service_for_name(entry.service.as_str())
-                    .map(|service| (service, entry.id))
-            })
-            .for_each(|(service, container_id)| {
-                let _ = cache.insert(service, container_id);
+            .filter(|entry| artifact_service_names.contains(&entry.service.as_str()))
+            .for_each(|entry| {
+                let _ = cache.insert(entry.service, entry.id);
             });
         Ok(())
-    }
-
-    fn compose_service_for_name(&self, service_name: &str) -> Option<ComposeService> {
-        self.workspace
-            .given
-            .artifact_services()
-            .into_iter()
-            .find(|service| service.service_name() == service_name)
     }
 
     fn start_write_convergence_invariant(&self) -> Result<()> {
