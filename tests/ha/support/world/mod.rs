@@ -386,7 +386,7 @@ impl HarnessShared {
                             Ok(())
                         } else {
                             Err(HarnessError::message(
-                                "write-convergence invariant has not yet observed a Postgres DSN",
+                                "write-convergence invariant is failing",
                             ))
                         }
                     })
