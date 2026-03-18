@@ -6,16 +6,37 @@ use crate::support::error::{HarnessError, Result};
 
 static HARNESS_SETTINGS: OnceLock<HarnessSettings> = OnceLock::new();
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug)]
 pub struct HarnessSettings {
-    pub docker: ExecutableDiscoverySettings,
-    pub pgtm: ExecutableDiscoverySettings,
-    pub psql: ExecutableDiscoverySettings,
+    docker: PathBuf,
+    pgtm: PathBuf,
+    psql: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
-pub struct ExecutableDiscoverySettings {
-    pub executable_candidates: Vec<PathBuf>,
+struct RawHarnessSettings {
+    docker: ExecutableDiscoverySettings,
+    pgtm: ExecutableDiscoverySettings,
+    psql: ExecutableDiscoverySettings,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ExecutableDiscoverySettings {
+    executable_candidates: Vec<PathBuf>,
+}
+
+impl HarnessSettings {
+    pub fn docker_executable(&self) -> &std::path::Path {
+        self.docker.as_path()
+    }
+
+    pub fn pgtm_executable(&self) -> &std::path::Path {
+        self.pgtm.as_path()
+    }
+
+    pub fn psql_executable(&self) -> &std::path::Path {
+        self.psql.as_path()
+    }
 }
 
 pub fn harness_settings() -> Result<&'static HarnessSettings> {
@@ -38,7 +59,7 @@ fn load_harness_settings() -> Result<HarnessSettings> {
         path: path.clone(),
         source,
     })?;
-    let mut settings: HarnessSettings = toml::from_str(raw.as_str()).map_err(|err| {
+    let mut settings: RawHarnessSettings = toml::from_str(raw.as_str()).map_err(|err| {
         HarnessError::message(format!(
             "failed to parse harness config `{}`: {err}",
             path.display()
@@ -49,7 +70,24 @@ fn load_harness_settings() -> Result<HarnessSettings> {
         .pgtm
         .executable_candidates
         .splice(0..0, workspace_candidates);
-    Ok(settings)
+
+    Ok(HarnessSettings {
+        docker: resolve_configured_executable(
+            settings.docker.executable_candidates.as_slice(),
+            "docker.executable_candidates",
+            "docker",
+        )?,
+        pgtm: resolve_configured_executable(
+            settings.pgtm.executable_candidates.as_slice(),
+            "pgtm.executable_candidates",
+            "pgtm",
+        )?,
+        psql: resolve_configured_executable(
+            settings.psql.executable_candidates.as_slice(),
+            "psql.executable_candidates",
+            "psql",
+        )?,
+    })
 }
 
 fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
@@ -72,7 +110,7 @@ fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
     candidates
 }
 
-pub fn configured_executable(
+fn resolve_configured_executable(
     candidates: &[PathBuf],
     config_field: &str,
     label: &str,
@@ -85,12 +123,15 @@ pub fn configured_executable(
                 "{label} binary was not found in tests/ha/harness.toml {config_field}"
             ))
         })?;
+    crate::support::process::ensure_absolute_executable(candidate.as_path())?;
     Ok(candidate.clone())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_debug_binary_candidates;
+    use super::{
+        resolve_configured_executable, workspace_debug_binary_candidates, HarnessError, Result,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -106,5 +147,43 @@ mod tests {
                     .join(format!("pgtm{}", std::env::consts::EXE_SUFFIX))
             )
         );
+    }
+
+    #[test]
+    fn resolve_configured_executable_picks_first_existing_candidate() -> Result<()> {
+        let current = std::env::current_exe().map_err(|source| {
+            HarnessError::message(format!("current executable path was unavailable: {source}"))
+        })?;
+        let selected = resolve_configured_executable(
+            &[PathBuf::from("/definitely/missing"), current.clone()],
+            "test.executable_candidates",
+            "test",
+        )?;
+        assert_eq!(selected, current);
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_configured_executable_rejects_relative_path() -> Result<()> {
+        let error = match resolve_configured_executable(
+            &[PathBuf::from("Cargo.toml")],
+            "test.executable_candidates",
+            "test",
+        ) {
+            Ok(path) => {
+                return Err(HarnessError::message(format!(
+                    "expected relative path rejection, got `{}`",
+                    path.display()
+                )));
+            }
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("expected an absolute executable path"),
+            "unexpected error: {error}"
+        );
+        Ok(())
     }
 }

@@ -11,7 +11,7 @@ use pgtuskmaster_rust::{
 };
 
 use crate::support::{
-    config::{configured_executable, harness_settings},
+    config::harness_settings,
     docker::cli::DockerCli,
     error::{HarnessError, Result},
     process::{self, CommandSpec},
@@ -303,14 +303,7 @@ fn resolve_pgtm_binary() -> Result<PathBuf> {
         .filter(|path| path.exists());
     let candidate = match env_candidate {
         Some(path) => path,
-        None => {
-            let settings = harness_settings()?;
-            configured_executable(
-                settings.pgtm.executable_candidates.as_slice(),
-                "pgtm.executable_candidates",
-                "pgtm",
-            )?
-        }
+        None => harness_settings()?.pgtm_executable().to_path_buf(),
     };
     process::ensure_absolute_executable(candidate.as_path())?;
     Ok(candidate)

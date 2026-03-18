@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::support::{
-    config::{configured_executable, harness_settings},
+    config::harness_settings,
     error::Result,
     process::{self, CommandSpec},
 };
@@ -54,12 +54,5 @@ impl SqlObserver {
 }
 
 fn resolve_psql_binary() -> Result<PathBuf> {
-    let settings = harness_settings()?;
-    let candidate = configured_executable(
-        settings.psql.executable_candidates.as_slice(),
-        "psql.executable_candidates",
-        "psql",
-    )?;
-    process::ensure_absolute_executable(candidate.as_path())?;
-    Ok(Path::new(candidate.as_path()).to_path_buf())
+    Ok(Path::new(harness_settings()?.psql_executable()).to_path_buf())
 }

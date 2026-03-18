@@ -74,20 +74,8 @@ struct DockerHealthState {
 
 impl DockerCli {
     pub fn discover() -> Result<Self> {
-        let settings = harness_settings()?;
-        let candidate = settings
-            .docker
-            .executable_candidates
-            .iter()
-            .find(|path| path.exists())
-            .ok_or_else(|| {
-                HarnessError::message(
-                    "docker binary was not found in tests/ha/harness.toml executable_candidates",
-                )
-            })?;
-        process::ensure_absolute_executable(candidate.as_path())?;
         Ok(Self {
-            executable: candidate.clone(),
+            executable: harness_settings()?.docker_executable().to_path_buf(),
         })
     }
 
