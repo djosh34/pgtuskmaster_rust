@@ -15,6 +15,7 @@ use pgtuskmaster_rust::{
 use crate::support::{
     docker::{cli::DockerCli, ryuk::RyukGuard},
     error::{HarnessError, Result},
+    invariants::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
@@ -24,7 +25,6 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
-    invariant::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -810,11 +810,13 @@ impl HarnessShared {
         let mut failures = Vec::new();
         let compose_network = format!("{}_ha", self.compose_project());
         if let Some(runner) = self.primary_count_invariant.as_mut() {
+            let runner: &mut PrimaryCountInvariantRunner = runner;
             if let Err(err) = runner.stop() {
                 failures.push(format!("primary-count invariant cleanup failed: {err}"));
             }
         }
         if let Some(runner) = self.write_convergence_invariant.as_mut() {
+            let runner: &mut WriteConvergenceInvariantRunner = runner;
             if let Err(err) = runner.stop() {
                 failures.push(format!("write-convergence invariant cleanup failed: {err}"));
             }
@@ -1010,7 +1012,6 @@ impl HarnessShared {
     fn start_primary_count_invariant(&mut self) -> Result<()> {
         self.primary_count_invariant = Some(PrimaryCountInvariantRunner::start(
             self.observer(),
-            self.artifacts_dir().to_path_buf(),
             self.timeouts.poll_interval,
         )?);
         self.record_note(
@@ -1022,8 +1023,6 @@ impl HarnessShared {
     fn start_write_convergence_invariant(&mut self) -> Result<()> {
         self.write_convergence_invariant = Some(WriteConvergenceInvariantRunner::start(
             self.observer(),
-            self.sql(),
-            self.artifacts_dir().to_path_buf(),
             self.timeouts.poll_interval,
             self.timeouts.write_convergence_deadline,
         )?);
