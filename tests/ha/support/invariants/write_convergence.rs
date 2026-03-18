@@ -69,7 +69,6 @@ pub enum WriteConvergenceInvariantError {
 }
 
 struct MemberWorker {
-    member: ClusterMember,
     routing_target: PostgresRoutingTarget,
     task: JoinHandle<()>,
 }
@@ -178,7 +177,7 @@ impl std::fmt::Debug for MemberWorker {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("MemberWorker")
-            .field("member", &self.member)
+            .field("member", &self.routing_target.member)
             .finish()
     }
 }
@@ -202,7 +201,6 @@ impl WriteConvergenceInvariantRunner {
 }
 
 struct MemberObservationTarget {
-    member: ClusterMember,
     observer: Option<PgtmObserver>,
     routing_target: PostgresRoutingTarget,
 }
@@ -304,7 +302,6 @@ fn spawn_member_worker(
     written_count: Arc<AtomicU64>,
     poll_interval: Duration,
 ) -> MemberWorker {
-    let member = routing_target.member;
     let task = tokio::spawn(run_member_worker(
         routing_target.clone(),
         pause_write,
@@ -312,7 +309,6 @@ fn spawn_member_worker(
         poll_interval,
     ));
     MemberWorker {
-        member,
         routing_target,
         task,
     }
@@ -406,7 +402,6 @@ fn member_observation_targets(
     members
         .iter()
         .map(|member| MemberObservationTarget {
-            member: member.member,
             observer: observer.clone(),
             routing_target: member.routing_target.clone(),
         })
@@ -441,7 +436,7 @@ async fn read_member_count_via_fresh_connection(
         Ok(routing_target) => routing_target,
         Err(err) => {
             return MemberCountObservation::Failed {
-                member: member.member,
+                member: member.routing_target.member,
                 message: previous_error.map_or(err.clone(), |previous| {
                     format!(
                         "existing observation failed: {previous}; refresh routing failed: {err}"
@@ -456,11 +451,11 @@ async fn read_member_count_via_fresh_connection(
             connection_task.abort();
             match count_result {
                 Ok(count) => MemberCountObservation::Observed {
-                    member: member.member,
+                    member: member.routing_target.member,
                     count,
                 },
                 Err(err) => MemberCountObservation::Failed {
-                    member: member.member,
+                    member: member.routing_target.member,
                     message: previous_error.map_or_else(
                         || err.to_string(),
                         |previous| format!(
@@ -471,7 +466,7 @@ async fn read_member_count_via_fresh_connection(
             }
         }
         Err(err) => MemberCountObservation::Failed {
-            member: member.member,
+            member: member.routing_target.member,
             message: previous_error.map_or_else(
                 || err.clone(),
                 |previous| {
@@ -491,7 +486,7 @@ fn resolve_observation_routing_target(
         || Ok(member.routing_target.clone()),
         |observer| {
             observer
-                .postgres_routing_target(member.member)
+                .postgres_routing_target(member.routing_target.member)
                 .map_err(|err| err.to_string())
         },
     )
@@ -1119,7 +1114,6 @@ mod tests {
             poll_interval,
         ));
         Ok(MemberWorker {
-            member,
             routing_target: PostgresRoutingTarget {
                 member,
                 dsn: dsn.to_string(),
