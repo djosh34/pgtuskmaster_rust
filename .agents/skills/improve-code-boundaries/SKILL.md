@@ -16,6 +16,11 @@ The goal is narrow and strict:
 
 This skill is not for taste-only refactors. Use it when the current shape forces extra conversions, extra nesting, extra helper signatures, repeated validation, duplicate parse/render logic, premature string building, useless pass-through helpers, or A-talks-to-B-talks-back-to-A request plumbing.
 
+BE BOLD in your refactors: Large-scale code cleanups are encouraged:
+- If you can remove entire type -> Great!
+- If you can remove an entire file -> Greater!
+- If you can remove/merge an entire mod/dir -> GREATEST!
+
 ## Core rule
 
 Do not start by inventing a better abstraction.

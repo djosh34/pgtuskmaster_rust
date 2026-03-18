@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 18 10:20:13 PM CET 2026
+Generated: Wed Mar 18 10:27:11 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-ha-long-runs-leak-docker-networks-and-exhaust-address-pools.md`
 
@@ -36,18 +36,6 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 ==============
 
-# Task `.ralph/tasks/bugs/bug-primary-count-invariant-swallows-observer-failures.md`
-
-```
-## Bug: Primary-count invariant swallows observer failures <status>not_started</status> <passes>false</passes>
-
-<description>
-`tests/ha/support/invariants/primary_count.rs` currently converts `observer.state_via_member(member)` failures into `Ok((member, false))` inside `observe_member_primary`.
-That means the background invariant can silently treat broken observation as "not primary" instead of surfacing a real failure, which hides harness/observer regressions and can report an incorrect zero-primary state.
-```
-
-==============
-
 # Task `.ralph/tasks/bugs/bug-process-postmaster-reload-sighup-test-times-out-with-no-signal-log.md`
 
 ```
@@ -78,18 +66,6 @@ That means the background invariant can silently treat broken observation as "no
 
 <description>
 `make test-long` is taking far too long to show any passing HA tests.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/bug-write-convergence-invariant-swallows-worker-errors.md`
-
-```
-## Bug: Write convergence invariant swallows worker errors <status>not_started</status> <passes>false</passes>
-
-<description>
-`tests/ha/support/invariants/write_convergence.rs` drops connection and worker errors instead of surfacing them.
-This was detected while inspecting `tests/ha/support` for boundary problems: `run_member_worker` ignores `connect_member` failures with `let _ = err`, and `maintain_connected_member` also discards non-reconnect query failures and connection task results.
 ```
 
 ==============
@@ -203,29 +179,6 @@ The observed error is `signal log /tmp/pgtm-api-worker-reload-success-533849-177
 
 <description>
 The codebase still has several early-error-flattening patterns:
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/write-convergence-discards-member-worker-errors.md`
-
-```
-## Bug: Write convergence discards member worker errors <status>not_started</status> <passes>false</passes>
-
-<description>
-`tests/ha/support/invariants/write_convergence.rs` currently drops connection and task results with `let _ = ...` in the member worker loop.
-This hides reconnect failures and completed task errors instead of surfacing them through the invariant health checks.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/write-convergence-invariant-swallows-connect-errors.md`
-
-```
-## Bug: Write convergence invariant swallows connect errors <status>not_started</status> <passes>false</passes>
-
-<description>
-`tests/ha/support/invariants/write_convergence.rs` currently drops `connect_member` failures in `run_member_worker` with `let _ = err;` and then just sleeps and retries.
 ```
 
 ==============
