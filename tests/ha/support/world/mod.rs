@@ -27,10 +27,7 @@ use crate::support::{
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_metadata,
-    givens::{
-        resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
-        SharedFixtureEntry,
-    },
+    givens::{resolve_given, HaGivenDefinition, HaGivenId},
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner,
@@ -1299,18 +1296,17 @@ fn copy_file(from: &Path, to: &Path) -> Result<()> {
 }
 
 fn materialize_given_fixture(given: &HaGivenDefinition, materialized_root: &Path) -> Result<()> {
-    let FixtureMaterialization {
-        shared_root,
-        compose_variant,
-        copies,
-    } = &given.materialization;
-    for entry in copies {
-        copy_shared_fixture_entry(shared_root.as_path(), materialized_root, entry)?;
+    for relative_path in given.shared_fixture_relative_paths() {
+        copy_shared_fixture_path(
+            given.shared_root(),
+            materialized_root,
+            Path::new(relative_path),
+        )?;
     }
     for member in ClusterMember::ALL {
         materialize_runtime_config(materialized_root, given, member)?;
     }
-    materialize_compose_include_file(materialized_root, *compose_variant)?;
+    materialize_compose_include_file(materialized_root, given.compose_variant_relative_path())?;
     Ok(())
 }
 
@@ -1340,33 +1336,21 @@ fn apply_private_key_permissions(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn copy_shared_fixture_entry(
+fn copy_shared_fixture_path(
     shared_root: &Path,
     materialized_root: &Path,
-    entry: &SharedFixtureEntry,
+    relative_path: &Path,
 ) -> Result<()> {
-    match entry {
-        SharedFixtureEntry::Directory {
-            source_relative_path,
-            target_relative_path,
-        } => copy_directory(
-            shared_root.join(source_relative_path).as_path(),
-            materialized_root.join(target_relative_path).as_path(),
-        ),
-        SharedFixtureEntry::File {
-            source_relative_path,
-            target_relative_path,
-        } => {
-            let target_path = materialized_root.join(target_relative_path);
-            if let Some(parent) = target_path.parent() {
-                create_dir_all(parent)?;
-            }
-            copy_file(
-                shared_root.join(source_relative_path).as_path(),
-                target_path.as_path(),
-            )
-        }
+    let source_path = shared_root.join(relative_path);
+    let target_path = materialized_root.join(relative_path);
+    if source_path.is_dir() {
+        return copy_directory(source_path.as_path(), target_path.as_path());
     }
+
+    if let Some(parent) = target_path.parent() {
+        create_dir_all(parent)?;
+    }
+    copy_file(source_path.as_path(), target_path.as_path())
 }
 
 fn copy_directory(from: &Path, to: &Path) -> Result<()> {
@@ -1415,9 +1399,9 @@ fn materialize_runtime_config(
 
 fn materialize_compose_include_file(
     materialized_root: &Path,
-    compose_variant: ComposeVariant,
+    compose_variant_relative_path: &str,
 ) -> Result<()> {
-    let compose_variant_path = compose_variant_absolute_path(compose_variant)?;
+    let compose_variant_path = compose_variant_absolute_path(compose_variant_relative_path)?;
     let rendered = format!(
         "include:\n  - path: {}\n    project_directory: {}\n",
         toml_path_string(compose_variant_path.as_path()),
@@ -1429,11 +1413,11 @@ fn materialize_compose_include_file(
     )
 }
 
-fn compose_variant_absolute_path(compose_variant: ComposeVariant) -> Result<PathBuf> {
+fn compose_variant_absolute_path(compose_variant_relative_path: &str) -> Result<PathBuf> {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let absolute = repo_root
         .join("tests/ha/givens")
-        .join(compose_variant.relative_path());
+        .join(compose_variant_relative_path);
     if absolute.is_file() {
         Ok(absolute)
     } else {
@@ -1451,8 +1435,8 @@ fn toml_path_string(path: &Path) -> String {
 fn render_member_runtime_config(given: &HaGivenDefinition, member: ClusterMember) -> String {
     let member_name = member.service_name();
     let dcs_endpoint = given.local_dcs_service_for(member).client_url();
-    let replicator = given.topology.postgres_roles.replicator.as_str();
-    let rewinder = given.topology.postgres_roles.rewinder.as_str();
+    let replicator = given.replicator_role();
+    let rewinder = given.rewinder_role();
     format!(
         r#"[cluster]
 name = "ha-cucumber-cluster"
@@ -1659,7 +1643,8 @@ mod tests {
                         source,
                     }
                 })?;
-            let expected_variant = compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
+            let expected_variant =
+                compose_variant_absolute_path(given.compose_variant_relative_path())?;
             assert!(compose.contains("include:"));
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
             assert!(compose.contains(output_root.display().to_string().as_str()));
@@ -1712,7 +1697,8 @@ mod tests {
                         source,
                     }
                 })?;
-            let expected_variant = compose_variant_absolute_path(ComposeVariant::SharedSingleDcs)?;
+            let expected_variant =
+                compose_variant_absolute_path(given.compose_variant_relative_path())?;
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let runtime = fs::read_to_string(
@@ -1755,7 +1741,7 @@ mod tests {
                     }
                 })?;
             let expected_variant =
-                compose_variant_absolute_path(ComposeVariant::ColocatedThreeMemberDcs)?;
+                compose_variant_absolute_path(given.compose_variant_relative_path())?;
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let node_a_runtime = fs::read_to_string(

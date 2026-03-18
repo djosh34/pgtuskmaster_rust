@@ -37,13 +37,30 @@ impl HaGivenId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HaGivenDefinition {
     pub id: HaGivenId,
-    pub topology: ThreeNodeTopologyFixture,
-    pub materialization: FixtureMaterialization,
+    shared_root: PathBuf,
 }
 
 impl HaGivenDefinition {
+    pub fn shared_root(&self) -> &Path {
+        self.shared_root.as_path()
+    }
+
+    pub fn replicator_role(&self) -> &'static str {
+        match self.id {
+            HaGivenId::Plain | HaGivenId::ThreeEtcd => "replicator",
+            HaGivenId::CustomRoles => "mirrorbot",
+        }
+    }
+
+    pub fn rewinder_role(&self) -> &'static str {
+        match self.id {
+            HaGivenId::Plain | HaGivenId::ThreeEtcd => "rewinder",
+            HaGivenId::CustomRoles => "rewindbot",
+        }
+    }
+
     pub fn dcs_services(&self) -> Vec<DcsService> {
-        self.topology.dcs_layout.dcs_services()
+        self.dcs_layout().dcs_services()
     }
 
     pub fn support_services(&self) -> Vec<ComposeService> {
@@ -61,36 +78,34 @@ impl HaGivenDefinition {
     }
 
     pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
-        self.topology.dcs_layout.service_for(member)
+        self.dcs_layout().service_for(member)
     }
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
-        self.topology.dcs_layout.quorum_majority_services()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ThreeNodeTopologyFixture {
-    pub postgres_roles: PostgresRoleMapping,
-    pub dcs_layout: ThreeNodeDcsLayout,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PostgresRoleMapping {
-    pub replicator: RoleName,
-    pub rewinder: RoleName,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct RoleName(String);
-
-impl RoleName {
-    pub fn new(value: impl Into<String>) -> Self {
-        Self(value.into())
+        self.dcs_layout().quorum_majority_services()
     }
 
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
+    pub fn compose_variant_relative_path(&self) -> &'static str {
+        match self.dcs_layout() {
+            ThreeNodeDcsLayout::SharedSingle => "compose/three_node_shared_single.yml",
+            ThreeNodeDcsLayout::ColocatedThreeMember => "compose/three_node_three_etcd.yml",
+        }
+    }
+
+    pub fn shared_fixture_relative_paths(&self) -> &'static [&'static str] {
+        &[
+            "configs/tls",
+            "secrets",
+            "configs/pg_hba.conf",
+            "configs/pg_ident.conf",
+        ]
+    }
+
+    fn dcs_layout(&self) -> ThreeNodeDcsLayout {
+        match self.id {
+            HaGivenId::Plain | HaGivenId::CustomRoles => ThreeNodeDcsLayout::SharedSingle,
+            HaGivenId::ThreeEtcd => ThreeNodeDcsLayout::ColocatedThreeMember,
+        }
     }
 }
 
@@ -126,102 +141,10 @@ impl ThreeNodeDcsLayout {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FixtureMaterialization {
-    pub shared_root: PathBuf,
-    pub compose_variant: ComposeVariant,
-    pub copies: Vec<SharedFixtureEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SharedFixtureEntry {
-    Directory {
-        source_relative_path: PathBuf,
-        target_relative_path: PathBuf,
-    },
-    File {
-        source_relative_path: PathBuf,
-        target_relative_path: PathBuf,
-    },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ComposeVariant {
-    SharedSingleDcs,
-    ColocatedThreeMemberDcs,
-}
-
-impl ComposeVariant {
-    pub fn relative_path(self) -> &'static str {
-        match self {
-            Self::SharedSingleDcs => "compose/three_node_shared_single.yml",
-            Self::ColocatedThreeMemberDcs => "compose/three_node_three_etcd.yml",
-        }
-    }
-}
-
 pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefinition> {
     let givens_root = repo_root.join("tests/ha/givens");
-    let shared_root = givens_root.join("three_node_shared");
-    let topology = three_node_topology(given);
-    let materialization = FixtureMaterialization {
-        shared_root,
-        compose_variant: compose_variant(topology.dcs_layout),
-        copies: vec![
-            SharedFixtureEntry::Directory {
-                source_relative_path: PathBuf::from("configs/tls"),
-                target_relative_path: PathBuf::from("configs/tls"),
-            },
-            SharedFixtureEntry::Directory {
-                source_relative_path: PathBuf::from("secrets"),
-                target_relative_path: PathBuf::from("secrets"),
-            },
-            SharedFixtureEntry::File {
-                source_relative_path: PathBuf::from("configs/pg_hba.conf"),
-                target_relative_path: PathBuf::from("configs/pg_hba.conf"),
-            },
-            SharedFixtureEntry::File {
-                source_relative_path: PathBuf::from("configs/pg_ident.conf"),
-                target_relative_path: PathBuf::from("configs/pg_ident.conf"),
-            },
-        ],
-    };
     Ok(HaGivenDefinition {
         id: given,
-        topology,
-        materialization,
+        shared_root: givens_root.join("three_node_shared"),
     })
-}
-
-fn three_node_topology(given: HaGivenId) -> ThreeNodeTopologyFixture {
-    match given {
-        HaGivenId::Plain => ThreeNodeTopologyFixture {
-            postgres_roles: PostgresRoleMapping {
-                replicator: RoleName::new("replicator"),
-                rewinder: RoleName::new("rewinder"),
-            },
-            dcs_layout: ThreeNodeDcsLayout::SharedSingle,
-        },
-        HaGivenId::CustomRoles => ThreeNodeTopologyFixture {
-            postgres_roles: PostgresRoleMapping {
-                replicator: RoleName::new("mirrorbot"),
-                rewinder: RoleName::new("rewindbot"),
-            },
-            dcs_layout: ThreeNodeDcsLayout::SharedSingle,
-        },
-        HaGivenId::ThreeEtcd => ThreeNodeTopologyFixture {
-            postgres_roles: PostgresRoleMapping {
-                replicator: RoleName::new("replicator"),
-                rewinder: RoleName::new("rewinder"),
-            },
-            dcs_layout: ThreeNodeDcsLayout::ColocatedThreeMember,
-        },
-    }
-}
-
-fn compose_variant(layout: ThreeNodeDcsLayout) -> ComposeVariant {
-    match layout {
-        ThreeNodeDcsLayout::SharedSingle => ComposeVariant::SharedSingleDcs,
-        ThreeNodeDcsLayout::ColocatedThreeMember => ComposeVariant::ColocatedThreeMemberDcs,
-    }
 }
