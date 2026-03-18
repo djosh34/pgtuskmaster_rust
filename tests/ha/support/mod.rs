@@ -6,7 +6,6 @@ mod givens;
 mod invariants;
 mod observer;
 mod process;
-pub mod runner;
 mod steps;
 mod timeouts;
 mod topology;
@@ -27,7 +26,19 @@ static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
 
 // This runner is intentionally independent from the legacy HA harness so the old
 // `tests/ha` and `src/test_harness/ha_e2e` flows can be deleted later.
-pub async fn run_feature(
+pub fn run_feature(
+    feature_name: &str,
+    feature_path: &str,
+    scenario_name: Option<&str>,
+) -> std::result::Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("failed to build tokio runtime: {err}"))?;
+    runtime.block_on(run_feature_async(feature_name, feature_path, scenario_name))
+}
+
+async fn run_feature_async(
     feature_name: &str,
     feature_path: &str,
     scenario_name: Option<&str>,

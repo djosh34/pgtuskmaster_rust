@@ -5,7 +5,7 @@ macro_rules! ha_scenario_test {
     ($feature:ident, $name:ident, $scenario_name:literal) => {
         #[test]
         fn $name() -> Result<(), String> {
-            crate::support::runner::run_feature_test(
+            crate::support::run_feature(
                 stringify!($feature),
                 concat!(
                     "tests/ha/features/",
