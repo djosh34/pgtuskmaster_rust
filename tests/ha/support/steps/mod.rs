@@ -168,7 +168,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
     let target_member = wait_for_planned_switchover_precondition(world, seed_member).await?;
     let harness = world.harness()?;
     let response = harness
-        .observer()
+        .observer
         .switchover_request_via_member(seed_member, Some(target_member))?;
     harness.record_note(
         "switchover.request",
@@ -183,7 +183,7 @@ async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: Str
     let seed_member = world.require_member_alias("current_primary")?;
     let harness = world.harness()?;
     let response = harness
-        .observer()
+        .observer
         .switchover_request_via_member(seed_member, Some(member_id))?;
     harness.record_note(
         "switchover.request.targeted",
@@ -204,7 +204,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
     wait_for_targeted_switchover_rejection_precondition(world, seed_member, member_id).await?;
     let request_result = world
         .harness()?
-        .observer()
+        .observer
         .switchover_request_via_member(seed_member, Some(member_id));
     match request_result {
         Ok(output) => Err(HarnessError::message(format!(
@@ -443,7 +443,7 @@ async fn wait_for_authoritative_single_primary(
         let attempt: Result<ClusterMember> = (|| {
             let observation = {
                 let harness = world.harness()?;
-                let observation = harness.observer().observe_states()?;
+                let observation = harness.observer.observe_states()?;
                 record_cluster_observation(harness, phase, &observation)?;
                 observation
             };
@@ -454,7 +454,7 @@ async fn wait_for_authoritative_single_primary(
                 exact_primary,
             )?;
             let harness = world.harness()?;
-            let primary_target = harness.observer().postgres_routing_target(primary)?;
+            let primary_target = harness.observer.postgres_routing_target(primary)?;
             probe_writable_primary(harness, primary_target.dsn.as_str())?;
             Ok(primary)
         })();
@@ -500,7 +500,7 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
     while Instant::now() < deadline {
         let attempt: Result<()> = (|| {
             let harness = world.harness()?;
-            let observation = harness.observer().observe_states()?;
+            let observation = harness.observer.observe_states()?;
             record_cluster_observation(harness, "primary.none", &observation)?;
             match compatible_primary_from_observation(
                 &observation,
@@ -509,7 +509,7 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
                 None,
             ) {
                 Ok(primary) => {
-                    let primary_target = harness.observer().postgres_routing_target(primary)?;
+                    let primary_target = harness.observer.postgres_routing_target(primary)?;
                     match probe_writable_primary(harness, primary_target.dsn.as_str()) {
                         Ok(()) => Err(HarnessError::message(format!(
                             "cluster still exposes a compatible writable primary `{primary}`"
@@ -551,7 +551,7 @@ async fn wait_for_targeted_switchover_rejection_precondition(
     while Instant::now() < deadline {
         let attempt: Result<()> = (|| {
             let harness = world.harness()?;
-            let status = harness.observer().state_via_member(seed_member)?;
+            let status = harness.observer.state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
             match status.dcs.member(&target_member.member_id()) {
                 None => Ok(()),
@@ -592,7 +592,7 @@ async fn wait_for_planned_switchover_precondition(
     while Instant::now() < deadline {
         let attempt: Result<ClusterMember> = (|| {
             let harness = world.harness()?;
-            let status = harness.observer().state_via_member(seed_member)?;
+            let status = harness.observer.state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.request.precondition", &status)?;
             select_planned_switchover_target(&status, seed_member).ok_or_else(|| {
                 HarnessError::message(format!(
@@ -700,7 +700,7 @@ where
     while Instant::now() < deadline {
         let observation_result = {
             let harness = world.harness()?;
-            harness.observer().observe_states()
+            harness.observer.observe_states()
         };
         match observation_result {
             Ok(observation) => {
@@ -932,7 +932,7 @@ fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
     let probe_sql =
         "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
     let _ = sql::execute(
-        harness.materialized_dir(),
+        harness.materialized_dir.as_path(),
         dsn,
         probe_sql,
         harness.timeouts.poll_interval,

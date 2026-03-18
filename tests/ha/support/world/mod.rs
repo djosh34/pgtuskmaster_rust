@@ -169,7 +169,7 @@ pub struct HarnessShared {
     pub compose_project: String,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
-    observer: PgtmObserver,
+    pub(crate) observer: PgtmObserver,
     pub ryuk: Option<RyukGuard>,
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<String, String>>,
@@ -255,7 +255,7 @@ impl HarnessShared {
             StartupPhase::WorkspaceReady,
             format!(
                 "materialized fixture `{}` and started DCS services",
-                harness.given_name()
+                harness.given.as_str()
             ),
         )?;
         harness.record_note(
@@ -288,42 +288,6 @@ impl HarnessShared {
             };
         }
         Ok(harness)
-    }
-
-    pub fn feature_name(&self) -> &str {
-        self.feature_name.as_str()
-    }
-
-    pub fn run_id(&self) -> &str {
-        self.run_id.as_str()
-    }
-
-    pub fn given_name(&self) -> &str {
-        self.given.as_str()
-    }
-
-    pub fn compose_file(&self) -> &Path {
-        self.compose_file.as_path()
-    }
-
-    pub fn compose_project(&self) -> &str {
-        self.compose_project.as_str()
-    }
-
-    pub fn run_dir(&self) -> &Path {
-        self.run_dir.as_path()
-    }
-
-    pub fn materialized_dir(&self) -> &Path {
-        self.materialized_dir.as_path()
-    }
-
-    pub fn artifacts_dir(&self) -> &Path {
-        self.artifacts_dir.as_path()
-    }
-
-    pub fn observer(&self) -> &PgtmObserver {
-        &self.observer
     }
 
     pub fn ensure_primary_count_healthy(&self) -> Result<()> {
@@ -396,7 +360,7 @@ impl HarnessShared {
 
     fn record_startup_phase(&self, phase: StartupPhase, detail: impl Into<String>) -> Result<()> {
         let detail = detail.into();
-        eprintln!("[ha][{}][{}] {}", self.run_id(), phase.as_str(), detail);
+        eprintln!("[ha][{}][{}] {}", self.run_id, phase.as_str(), detail);
         self.record_note(phase.as_str(), detail)
     }
 
@@ -439,7 +403,7 @@ impl HarnessShared {
             .ok_or_else(|| {
                 HarnessError::message(format!(
                     "docker compose service `{service_name}` has no container in project `{}`",
-                    self.compose_project()
+                    self.compose_project
                 ))
             })
     }
@@ -694,7 +658,7 @@ impl HarnessShared {
     }
 
     fn host_fault_dir(&self, member: ClusterMember) -> PathBuf {
-        self.materialized_dir()
+        self.materialized_dir
             .join("faults")
             .join(member.service_name())
     }
@@ -750,8 +714,8 @@ impl HarnessShared {
             "starting seed primary node-b",
         )?;
         self.docker.compose_up_services(
-            self.compose_file(),
-            self.compose_project(),
+            self.compose_file.as_path(),
+            self.compose_project.as_str(),
             &["node-b"],
         )?;
         self.wait_for_seed_primary().await?;
@@ -764,8 +728,8 @@ impl HarnessShared {
             "starting remaining nodes node-a and node-c",
         )?;
         self.docker.compose_up_services(
-            self.compose_file(),
-            self.compose_project(),
+            self.compose_file.as_path(),
+            self.compose_project.as_str(),
             &["node-a", "node-c"],
         )?;
         self.record_startup_phase(
@@ -808,10 +772,7 @@ impl HarnessShared {
         let deadline = Instant::now() + self.timeouts.startup_deadline;
         let mut last_error = None;
         while Instant::now() < deadline {
-            let result = match self
-                .observer()
-                .state_via_member(ClusterMember::SEED_PRIMARY)
-            {
+            let result = match self.observer.state_via_member(ClusterMember::SEED_PRIMARY) {
                 Ok(status) => {
                     self.record_status_snapshot("bootstrap.seed_primary", &status)?;
                     validate_seed_primary(&status)
@@ -837,7 +798,7 @@ impl HarnessShared {
         }
 
         let mut failures = Vec::new();
-        let compose_network = format!("{}_ha", self.compose_project());
+        let compose_network = format!("{}_ha", self.compose_project);
         let invariant_result = self.ensure_accepted_writes_healthy();
         if let Err(err) = &invariant_result {
             failures.push(format!("background invariant check failed: {err}"));
@@ -848,7 +809,7 @@ impl HarnessShared {
         }
         let compose_result = self
             .docker
-            .compose_down(self.compose_file(), self.compose_project());
+            .compose_down(self.compose_file.as_path(), self.compose_project.as_str());
         if let Err(err) = &compose_result {
             failures.push(format!("docker compose down failed: {err}"));
         }
@@ -879,11 +840,12 @@ impl HarnessShared {
     fn capture_artifacts(&self) -> Result<()> {
         let mut failures = Vec::new();
         write_text_file(
-            self.artifacts_dir().join("compose-ps.json").as_path(),
+            self.artifacts_dir.join("compose-ps.json").as_path(),
             serde_json::to_string_pretty(
-                &self
-                    .docker
-                    .compose_ps_entries(self.compose_file(), self.compose_project())?,
+                &self.docker.compose_ps_entries(
+                    self.compose_file.as_path(),
+                    self.compose_project.as_str(),
+                )?,
             )
             .map_err(|source| HarnessError::Json {
                 context: "serializing docker compose ps json".to_string(),
@@ -892,21 +854,21 @@ impl HarnessShared {
             .as_str(),
         )?;
         write_text_file(
-            self.artifacts_dir().join("compose-logs.txt").as_path(),
+            self.artifacts_dir.join("compose-logs.txt").as_path(),
             self.docker
-                .compose_logs(self.compose_file(), self.compose_project())?
+                .compose_logs(self.compose_file.as_path(), self.compose_project.as_str())?
                 .as_str(),
         )?;
         write_text_file(
-            self.artifacts_dir().join("run-metadata.json").as_path(),
+            self.artifacts_dir.join("run-metadata.json").as_path(),
             serde_json::to_string_pretty(&serde_json::json!({
-                "feature_name": self.feature_name(),
-                "given_name": self.given_name(),
-                "run_id": self.run_id(),
-                "run_dir": self.run_dir(),
-                "materialized_dir": self.materialized_dir(),
-                "artifacts_dir": self.artifacts_dir(),
-                "compose_project": self.compose_project(),
+                "feature_name": self.feature_name,
+                "given_name": self.given.as_str(),
+                "run_id": self.run_id,
+                "run_dir": self.run_dir,
+                "materialized_dir": self.materialized_dir,
+                "artifacts_dir": self.artifacts_dir,
+                "compose_project": self.compose_project,
                 "cucumber_test_image_run_id": self.cucumber_test_image_run_id,
             }))
             .map_err(|source| HarnessError::Json {
@@ -917,7 +879,7 @@ impl HarnessShared {
         )?;
         let timeline = self.timeline_entries()?;
         write_text_file(
-            self.artifacts_dir().join("timeline.json").as_path(),
+            self.artifacts_dir.join("timeline.json").as_path(),
             serde_json::to_string_pretty(&timeline)
                 .map_err(|source| HarnessError::Json {
                     context: "serializing cucumber timeline".to_string(),
@@ -925,7 +887,7 @@ impl HarnessShared {
                 })?
                 .as_str(),
         )?;
-        match self.observer().observe_states() {
+        match self.observer.observe_states() {
             Ok(states) => {
                 let serialized = states
                     .iter()
@@ -941,7 +903,7 @@ impl HarnessShared {
                     })
                     .collect::<Vec<_>>();
                 write_text_file(
-                    self.artifacts_dir().join("operator-state.json").as_path(),
+                    self.artifacts_dir.join("operator-state.json").as_path(),
                     serde_json::to_string_pretty(&serialized)
                         .map_err(|source| HarnessError::Json {
                             context: "serializing operator state payload".to_string(),
@@ -958,7 +920,7 @@ impl HarnessShared {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
                         let artifact = self
-                            .artifacts_dir()
+                            .artifacts_dir
                             .join(format!("inspect-{service_name}.json"));
                         write_text_file(artifact.as_path(), inspect.as_str())?;
                     }
@@ -1005,7 +967,7 @@ impl HarnessShared {
         let artifact_service_names = self.given.artifact_service_names();
         let compose_entries = self
             .docker
-            .compose_ps_entries(self.compose_file(), self.compose_project())?;
+            .compose_ps_entries(self.compose_file.as_path(), self.compose_project.as_str())?;
         let mut cache = self
             .service_container_ids
             .lock()
