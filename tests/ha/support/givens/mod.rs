@@ -37,15 +37,13 @@ impl HaGivenId {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HaGivenDefinition {
     pub id: HaGivenId,
-    pub topology: HaTopologyFixture,
+    pub topology: ThreeNodeTopologyFixture,
     pub materialization: FixtureMaterialization,
 }
 
 impl HaGivenDefinition {
     pub fn dcs_services(&self) -> Vec<DcsService> {
-        match &self.topology {
-            HaTopologyFixture::ThreeNode(topology) => topology.dcs_layout.dcs_services(),
-        }
+        self.topology.dcs_layout.dcs_services()
     }
 
     pub fn support_services(&self) -> Vec<ComposeService> {
@@ -63,9 +61,7 @@ impl HaGivenDefinition {
     }
 
     pub fn member_binding(&self, member: ClusterMember) -> MemberDcsBinding {
-        match &self.topology {
-            HaTopologyFixture::ThreeNode(topology) => topology.member_binding(member),
-        }
+        self.topology.member_binding(member)
     }
 
     pub fn local_dcs_service_for(&self, member: ClusterMember) -> DcsService {
@@ -73,17 +69,8 @@ impl HaGivenDefinition {
     }
 
     pub fn quorum_majority_dcs_services(&self) -> Vec<DcsService> {
-        match &self.topology {
-            HaTopologyFixture::ThreeNode(topology) => {
-                topology.dcs_layout.quorum_majority_services()
-            }
-        }
+        self.topology.dcs_layout.quorum_majority_services()
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HaTopologyFixture {
-    ThreeNode(ThreeNodeTopologyFixture),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -234,7 +221,7 @@ pub fn resolve_given(repo_root: &Path, given: HaGivenId) -> Result<HaGivenDefini
     };
     Ok(HaGivenDefinition {
         id: given,
-        topology: HaTopologyFixture::ThreeNode(topology),
+        topology,
         materialization,
     })
 }
