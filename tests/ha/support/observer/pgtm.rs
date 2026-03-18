@@ -6,9 +6,7 @@ use std::{
 };
 
 use pgtuskmaster_rust::{
-    api::{AcceptedResponse, NodeState},
-    command::CommandOutputDto,
-    pginfo::conninfo::render_conninfo_value,
+    api::NodeState, command::CommandOutputDto, pginfo::conninfo::render_conninfo_value,
 };
 
 use crate::support::{
@@ -103,12 +101,19 @@ impl PgtmObserver {
                 .chain(request_args)
                 .collect::<Vec<_>>(),
             "pgtm switchover request",
-            extract_switchover_output,
         )?;
         match output {
-            Ok(accepted) => serde_json::to_string(&accepted).map_err(|source| {
-                HarnessError::message(format!("serializing switchover response failed: {source}"))
-            }),
+            Ok(CommandOutputDto::Switchover { output }) => {
+                serde_json::to_string(&output).map_err(|source| {
+                    HarnessError::message(format!(
+                        "serializing switchover response failed: {source}"
+                    ))
+                })
+            }
+            Ok(other) => Err(HarnessError::message(format!(
+                "expected `pgtm switchover request --json` output, observed command payload `{}`",
+                command_label(&other)
+            ))),
             Err(message) => Err(HarnessError::message(format!(
                 "pgtm switchover request via `{member}` failed: {message}"
             ))),
@@ -127,19 +132,24 @@ impl PgtmObserver {
             runtime_config.as_path(),
             vec!["status".to_string()],
             "pgtm status",
-            extract_state_command_output,
         )
         .map_err(|err| err.to_string())?
+        .and_then(|output| match output {
+            CommandOutputDto::State { output } => Ok(output.state),
+            other => Err(format!(
+                "expected `pgtm status --json` output, observed command payload `{}`",
+                command_label(&other)
+            )),
+        })
     }
 
-    fn run_command_via_member<T>(
+    fn run_command_via_member(
         &self,
         member: ClusterMember,
         runtime_config: &Path,
         command_args: Vec<String>,
         context_label: &str,
-        decode_output: fn(CommandOutputDto) -> Result<T>,
-    ) -> Result<std::result::Result<T, String>> {
+    ) -> Result<std::result::Result<CommandOutputDto, String>> {
         let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
             .map(PathBuf::from)
             .filter(|path| path.exists());
@@ -171,7 +181,7 @@ impl PgtmObserver {
                         source,
                     },
                 )?;
-                decode_output(dto).map(Ok)
+                Ok(Ok(dto))
             }
             Err(HarnessError::CommandFailed {
                 executable,
@@ -227,26 +237,6 @@ impl PgtmObserver {
             source,
         })?;
         Ok(config_path)
-    }
-}
-
-fn extract_state_command_output(output: CommandOutputDto) -> Result<NodeState> {
-    match output {
-        CommandOutputDto::State { output } => Ok(output.state),
-        other => Err(HarnessError::message(format!(
-            "expected `pgtm status --json` output, observed command payload `{}`",
-            command_label(&other)
-        ))),
-    }
-}
-
-fn extract_switchover_output(output: CommandOutputDto) -> Result<AcceptedResponse> {
-    match output {
-        CommandOutputDto::Switchover { output } => Ok(output),
-        other => Err(HarnessError::message(format!(
-            "expected `pgtm switchover request --json` output, observed command payload `{}`",
-            command_label(&other)
-        ))),
     }
 }
 
