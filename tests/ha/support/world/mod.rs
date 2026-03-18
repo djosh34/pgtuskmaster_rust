@@ -321,7 +321,7 @@ impl HarnessShared {
                 ))),
             };
         }
-        if let Err(err) = harness.start_write_convergence_invariant() {
+        if let Err(err) = harness.start_write_convergence_invariant().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
                 None => Err(err),
@@ -1010,12 +1010,13 @@ impl HarnessShared {
         )
     }
 
-    fn start_write_convergence_invariant(&mut self) -> Result<()> {
+    async fn start_write_convergence_invariant(&mut self) -> Result<()> {
         self.write_convergence_invariant = Some(WriteConvergenceInvariantRunner::start(
             self.observer(),
             self.timeouts.poll_interval,
             self.timeouts.write_convergence_deadline,
-        )?);
+        )
+        .await?);
         self.record_note(
             "invariant.write_convergence.start",
             "started perpetual accepted-write convergence runner",
