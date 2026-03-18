@@ -383,11 +383,30 @@ mod tests {
         data_dir: &Path,
         signal_log: &Path,
     ) -> Result<ChildGuard, String> {
-        let script = root.join("fake-postgres.sh");
-        let script_contents = format!(
-            "#!/bin/bash\ntrap 'printf hup >> \"{}\"' HUP\nwhile true; do read -r -t 1 _ || true; done\n",
-            signal_log.display()
-        );
+        let script = root.join("fake-postgres.py");
+        let ready_file = root.join("fake-postgres.ready");
+        let script_contents = r#"#!/usr/bin/env python3
+import signal
+import sys
+import time
+from pathlib import Path
+
+ready_file = Path(sys.argv[1])
+data_dir = sys.argv[2]
+signal_log = sys.argv[3]
+
+def on_hup(_signum, _frame):
+    with open(signal_log, "a", encoding="utf-8") as handle:
+        handle.write("hup")
+        handle.flush()
+
+signal.signal(signal.SIGHUP, on_hup)
+ready_file.write_text(data_dir, encoding="utf-8")
+
+while True:
+    time.sleep(1)
+"#
+        .to_string();
         fs::write(&script, script_contents).map_err(|err| {
             format!(
                 "write fake postgres script {} failed: {err}",
@@ -409,12 +428,15 @@ mod tests {
                 script.display()
             )
         })?;
-        let child = Command::new("/bin/bash")
+        let child = Command::new("/usr/bin/env")
+            .arg("bash")
             .arg("-lc")
             .arg(format!(
-                "exec -a postgres /bin/bash '{}' '{}'",
+                "exec -a postgres python3 '{}' '{}' '{}' '{}'",
                 script.display(),
-                data_dir.display()
+                ready_file.display(),
+                data_dir.display(),
+                signal_log.display(),
             ))
             .spawn()
             .map_err(|err| {
@@ -423,6 +445,7 @@ mod tests {
                     script.display()
                 )
             })?;
+        wait_for_fake_postgres_ready(ready_file.as_path())?;
         Ok(ChildGuard(Some(child)))
     }
 
@@ -462,6 +485,29 @@ mod tests {
         Err(format!(
             "managed postmaster never became ready for {}",
             target.data_dir.display()
+        ))
+    }
+
+    fn wait_for_fake_postgres_ready(ready_file: &Path) -> Result<(), String> {
+        let mut attempts = 0_u8;
+        while attempts < 150 {
+            match fs::read_to_string(ready_file) {
+                Ok(contents) if !contents.trim().is_empty() => return Ok(()),
+                Ok(_) => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!(
+                        "read fake postgres ready file {} failed: {err}",
+                        ready_file.display()
+                    ));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attempts = attempts.saturating_add(1);
+        }
+        Err(format!(
+            "fake postgres ready file {} was not written in time",
+            ready_file.display()
         ))
     }
 

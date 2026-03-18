@@ -213,6 +213,13 @@ impl DockerCli {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn fake_for_tests() -> Self {
+        Self {
+            executable: PathBuf::from("/usr/bin/docker"),
+        }
+    }
+
     pub fn compose_logs(&self, compose_file: &Path, project: &str) -> Result<String> {
         self.run_text_in_dir(
             compose_file.parent().ok_or_else(|| {

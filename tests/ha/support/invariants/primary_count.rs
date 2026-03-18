@@ -195,9 +195,56 @@ impl PrimaryCountInvariantRunner {
             .map_err(|_| HarnessError::message("primary-count health check thread panicked"))?,
         }
     }
+
+    pub fn ensure_running(&self) -> Result<()> {
+        let fatal_error = Arc::clone(&self.fatal_error);
+        let task_stopped = Arc::clone(&self.task_stopped);
+        let future = async move {
+            ensure_task_running_state(fatal_error.as_ref(), task_stopped.as_ref()).await
+        };
+
+        match Handle::try_current() {
+            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(|| handle.block_on(future))
+            }
+            Ok(_) | Err(_) => thread::spawn(move || {
+                Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| {
+                        HarnessError::message(format!(
+                            "build runtime for primary-count invariant failed: {err}"
+                        ))
+                    })?
+                    .block_on(future)
+            })
+            .join()
+            .map_err(|_| HarnessError::message("primary-count health check thread panicked"))?,
+        }
+    }
 }
 
 impl PrimaryCountInvariantRunner {}
+
+#[cfg(test)]
+impl PrimaryCountInvariantRunner {
+    pub(crate) fn healthy_for_tests() -> Self {
+        let observe_all: ObserveAllMembers = Arc::new(|| {
+            Box::pin(async {
+                [
+                    Ok((ClusterMember::NodeA, false)),
+                    Ok((ClusterMember::NodeB, true)),
+                    Ok((ClusterMember::NodeC, false)),
+                ]
+            })
+        });
+        Self::start_with_observe_all(
+            Duration::from_millis(1),
+            Duration::from_millis(10),
+            observe_all,
+        )
+    }
+}
 
 async fn ensure_task_running_state(
     fatal_error: &RwLock<Option<String>>,
@@ -384,5 +431,39 @@ mod tests {
         );
 
         assert!(runner.ensure_healthy().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ensure_running_allows_zero_primaries_while_monitor_is_alive() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            scripted_observer(vec![observed_poll([false, false, false])]),
+        );
+
+        assert!(runner.ensure_running().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ensure_running_still_reports_split_brain_failure() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+            scripted_observer(vec![
+                observed_poll([false, true, false]),
+                observed_poll([true, true, false]),
+            ]),
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        let err = match runner.ensure_running() {
+            Ok(()) => "expected split-brain monitoring failure, but runner was healthy".to_string(),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("observed `2` self-reported primaries at once: `node-a`, `node-b`"),
+            "unexpected error: {err}"
+        );
     }
 }

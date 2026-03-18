@@ -1,8 +1,11 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    future::Future,
+    ops::{Deref, DerefMut},
     path::{Path, PathBuf},
     sync::Mutex,
+    thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -10,6 +13,10 @@ use cucumber::World;
 use pgtuskmaster_rust::{
     api::NodeState,
     ha::types::{AuthorityProjection, PublicationState},
+};
+use tokio::{
+    runtime::{Builder, Handle, RuntimeFlavor},
+    task::JoinHandle,
 };
 
 use crate::support::{
@@ -24,7 +31,10 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
-    invariants::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
+    invariants::{
+        PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
+        WriteConvergenceInvariantRunner,
+    },
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -102,12 +112,9 @@ impl HaWorld {
     }
 
     pub fn harness(&self) -> Result<&HarnessShared> {
-        let harness = self
-            .harness
+        self.harness
             .as_ref()
-            .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))?;
-        harness.ensure_background_invariants_healthy()?;
-        Ok(harness)
+            .ok_or_else(|| HarnessError::message("scenario harness has not been initialized"))
     }
 
     pub fn set_scenario_name(&mut self, scenario_name: String) {
@@ -205,7 +212,7 @@ pub struct ComposeStack {
 }
 
 #[derive(Debug)]
-pub struct HarnessShared {
+pub struct HarnessRuntime {
     pub workspace: HarnessWorkspace,
     pub compose: ComposeStack,
     pub cucumber_test_image_run_id: String,
@@ -214,9 +221,68 @@ pub struct HarnessShared {
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
-    primary_count_invariant: Option<PrimaryCountInvariantRunner>,
-    write_convergence_invariant: Option<WriteConvergenceInvariantRunner>,
     cleaned_up: bool,
+}
+
+#[derive(Debug)]
+struct BackgroundInvariants {
+    primary_count: PrimaryCountInvariantRunner,
+    write_convergence: Mutex<WriteConvergenceActivation>,
+}
+
+#[derive(Debug)]
+enum WriteConvergenceActivation {
+    Dormant,
+    Armed,
+    Activating(WriteConvergenceInvariantAttachment),
+    Active(WriteConvergenceInvariantRunner),
+    Failed(String),
+    Joining,
+}
+
+#[derive(Debug)]
+struct WriteConvergenceInvariantAttachment {
+    started_at: Instant,
+    task: Option<JoinHandle<std::result::Result<
+        WriteConvergenceInvariantRunner,
+        WriteConvergenceInvariantError,
+    >>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum StartupPhase {
+    WorkspaceReady,
+    InvariantPrimaryCount,
+    DcsReady,
+    SeedPrimaryReady,
+    ClusterReady,
+    InvariantWriteConvergence,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum InvariantRequirement {
+    ClusterReady,
+    AcceptedWritesReady,
+}
+
+#[derive(Debug)]
+pub struct HarnessShared {
+    runtime: HarnessRuntime,
+    background_invariants: BackgroundInvariants,
+}
+
+impl Deref for HarnessShared {
+    type Target = HarnessRuntime;
+
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+
+impl DerefMut for HarnessShared {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
 }
 
 impl HarnessShared {
@@ -277,8 +343,7 @@ impl HarnessShared {
             dcs_service_names.as_slice(),
         )?;
         let service_container_ids = Mutex::new(BTreeMap::new());
-
-        let mut harness = Self {
+        let runtime = HarnessRuntime {
             workspace: HarnessWorkspace {
                 run_id,
                 feature_name: feature.feature_name.clone(),
@@ -292,10 +357,25 @@ impl HarnessShared {
             timeouts,
             service_container_ids,
             timeline: Mutex::new(Vec::new()),
-            primary_count_invariant: None,
-            write_convergence_invariant: None,
             cleaned_up: false,
         };
+        let background_invariants = BackgroundInvariants::start_primary_count(
+            runtime.observer(),
+            runtime.timeouts.poll_interval,
+            runtime.timeouts.failover_deadline,
+        )
+        .await?;
+        let mut harness = Self {
+            runtime,
+            background_invariants,
+        };
+        harness.record_startup_phase(
+            StartupPhase::WorkspaceReady,
+            format!(
+                "materialized fixture `{}` and started DCS services",
+                harness.given_name()
+            ),
+        )?;
         harness.record_note(
             "initialize",
             format!(
@@ -303,15 +383,10 @@ impl HarnessShared {
                 harness.cucumber_test_image_run_id
             ),
         )?;
-        if let Err(err) = harness.start_primary_count_invariant().await {
-            let cleanup_error = harness.cleanup().err();
-            return match cleanup_error {
-                None => Err(err),
-                Some(cleanup) => Err(HarnessError::message(format!(
-                    "{err}\ncleanup after invariant startup failure also failed: {cleanup}"
-                ))),
-            };
-        }
+        harness.record_startup_phase(
+            StartupPhase::InvariantPrimaryCount,
+            "started perpetual self-reported primary-count runner",
+        )?;
         if let Err(err) = harness.bootstrap_cluster().await {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
@@ -321,7 +396,7 @@ impl HarnessShared {
                 ))),
             };
         }
-        if let Err(err) = harness.start_write_convergence_invariant().await {
+        if let Err(err) = harness.start_write_convergence_invariant_attachment() {
             let cleanup_error = harness.cleanup().err();
             return match cleanup_error {
                 None => Err(err),
@@ -374,17 +449,20 @@ impl HarnessShared {
         )
     }
 
-    pub fn ensure_background_invariants_healthy(&self) -> Result<()> {
-        self.primary_count_invariant
-            .as_ref()
-            .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
-            .and_then(|_| {
-                if let Some(runner) = self.write_convergence_invariant.as_ref() {
-                    runner.ensure_healthy().map_err(HarnessError::from)?;
-                }
+    pub fn ensure_primary_count_healthy(&self) -> Result<()> {
+        self.background_invariants
+            .ensure_healthy(self, InvariantRequirement::ClusterReady)
+    }
 
-                Ok(())
-            })
+    pub fn ensure_accepted_writes_ready(&self) -> Result<()> {
+        self.background_invariants
+            .ensure_healthy(self, InvariantRequirement::AcceptedWritesReady)
+    }
+
+    fn record_startup_phase(&self, phase: StartupPhase, detail: impl Into<String>) -> Result<()> {
+        let detail = detail.into();
+        eprintln!("[ha][{}][{}] {}", self.run_id(), phase.as_str(), detail);
+        self.record_note(phase.as_str(), detail)
     }
 
     pub fn sql(&self) -> SqlObserver {
@@ -729,21 +807,37 @@ impl HarnessShared {
     }
 
     async fn bootstrap_cluster(&self) -> Result<()> {
+        self.record_startup_phase(
+            StartupPhase::DcsReady,
+            "waiting for DCS services to report healthy",
+        )?;
         for service in self.workspace.given.dcs_services() {
             self.wait_for_service_health(service.into()).await?;
         }
-        self.record_note("bootstrap", "starting seed primary node-b")?;
+        self.record_startup_phase(StartupPhase::DcsReady, "all DCS services are healthy")?;
+        self.record_startup_phase(StartupPhase::SeedPrimaryReady, "starting seed primary node-b")?;
         self.docker.compose_up_services(
             self.compose_file(),
             self.compose_project(),
             &["node-b"],
         )?;
         self.wait_for_seed_primary().await?;
-        self.record_note("bootstrap", "starting remaining nodes node-a and node-c")?;
+        self.record_startup_phase(
+            StartupPhase::SeedPrimaryReady,
+            "seed primary node-b is authoritative",
+        )?;
+        self.record_startup_phase(
+            StartupPhase::ClusterReady,
+            "starting remaining nodes node-a and node-c",
+        )?;
         self.docker.compose_up_services(
             self.compose_file(),
             self.compose_project(),
             &["node-a", "node-c"],
+        )?;
+        self.record_startup_phase(
+            StartupPhase::ClusterReady,
+            "cluster bootstrapped enough for scenario execution",
         )
     }
 
@@ -811,6 +905,10 @@ impl HarnessShared {
 
         let mut failures = Vec::new();
         let compose_network = format!("{}_ha", self.compose_project());
+        let invariant_result = self.ensure_background_invariants_ready();
+        if let Err(err) = &invariant_result {
+            failures.push(format!("background invariant check failed: {err}"));
+        }
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));
@@ -999,34 +1097,294 @@ impl HarnessShared {
             .find(|service| service.service_name() == service_name)
     }
 
-    async fn start_primary_count_invariant(&mut self) -> Result<()> {
-        self.primary_count_invariant = Some(
-            PrimaryCountInvariantRunner::start(
-                self.observer(),
-                self.timeouts.poll_interval,
-                self.timeouts.failover_deadline,
-            )
-            .await?,
-        );
-        self.record_note(
-            "invariant.primary_count.start",
-            "started perpetual self-reported primary-count runner",
+    fn start_write_convergence_invariant_attachment(&self) -> Result<()> {
+        self.background_invariants.attach_write_convergence(
+            self.observer(),
+            self.timeouts.poll_interval,
+            self.timeouts.write_convergence_deadline,
+        )?;
+        self.record_startup_phase(
+            StartupPhase::InvariantWriteConvergence,
+            "started background accepted-write convergence attachment",
         )
     }
+}
 
-    async fn start_write_convergence_invariant(&mut self) -> Result<()> {
-        self.write_convergence_invariant = Some(
-            WriteConvergenceInvariantRunner::start(
-                self.observer(),
-                self.timeouts.poll_interval,
-                self.timeouts.write_convergence_deadline,
-            )
-            .await?,
-        );
-        self.record_note(
-            "invariant.write_convergence.start",
-            "started perpetual accepted-write convergence runner",
+impl HarnessRuntime {
+    fn observer(&self) -> PgtmObserver {
+        PgtmObserver::new(
+            self.docker.clone(),
+            self.compose.file.clone(),
+            self.compose.project.clone(),
+            self.workspace.paths.materialized_dir.clone(),
         )
+    }
+}
+
+impl BackgroundInvariants {
+    async fn start_primary_count(
+        observer: PgtmObserver,
+        poll_interval: std::time::Duration,
+        health_deadline: std::time::Duration,
+    ) -> Result<Self> {
+        let primary_count =
+            PrimaryCountInvariantRunner::start(observer, poll_interval, health_deadline).await?;
+        Ok(Self {
+            primary_count,
+            write_convergence: Mutex::new(WriteConvergenceActivation::Dormant),
+        })
+    }
+
+    fn attach_write_convergence(
+        &self,
+        observer: PgtmObserver,
+        poll_interval: std::time::Duration,
+        write_deadline: std::time::Duration,
+    ) -> Result<()> {
+        let mut capability = self
+            .write_convergence
+            .lock()
+            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+        *capability = WriteConvergenceActivation::Activating(
+            WriteConvergenceInvariantAttachment::spawn(observer, poll_interval, write_deadline),
+        );
+        Ok(())
+    }
+
+    fn ensure_healthy(
+        &self,
+        harness: &HarnessShared,
+        requirement: InvariantRequirement,
+    ) -> Result<()> {
+        self.primary_count.ensure_running()?;
+        self.ensure_write_convergence_healthy(harness, requirement)
+    }
+
+    fn ensure_write_convergence_healthy(
+        &self,
+        harness: &HarnessShared,
+        requirement: InvariantRequirement,
+    ) -> Result<()> {
+        let pending_attachment = {
+            let mut capability = self.write_convergence.lock().map_err(|_| {
+                HarnessError::message("write-convergence state mutex was poisoned")
+            })?;
+            match &mut *capability {
+                WriteConvergenceActivation::Active(runner) => {
+                    return runner.ensure_healthy().map_err(HarnessError::from);
+                }
+                WriteConvergenceActivation::Dormant
+                    if matches!(requirement, InvariantRequirement::ClusterReady) =>
+                {
+                    return Ok(());
+                }
+                WriteConvergenceActivation::Armed
+                    if matches!(requirement, InvariantRequirement::ClusterReady) =>
+                {
+                    return Ok(());
+                }
+                WriteConvergenceActivation::Dormant => {
+                    return Err(HarnessError::message(
+                        "write-convergence activation has not been armed",
+                    ));
+                }
+                WriteConvergenceActivation::Armed => {
+                    return Err(HarnessError::message(
+                        "write-convergence activation has not been started",
+                    ));
+                }
+                WriteConvergenceActivation::Failed(message) => {
+                    return Err(HarnessError::message(message.clone()));
+                }
+                WriteConvergenceActivation::Activating(attachment)
+                    if matches!(requirement, InvariantRequirement::ClusterReady)
+                        && !attachment.is_finished() =>
+                {
+                    return Ok(());
+                }
+                WriteConvergenceActivation::Activating(_) => {}
+                WriteConvergenceActivation::Joining => {
+                    return Err(HarnessError::message(
+                        "write-convergence invariant attachment was re-entered while joining",
+                    ));
+                }
+            }
+
+            match std::mem::replace(
+                &mut *capability,
+                WriteConvergenceActivation::Joining,
+            ) {
+                WriteConvergenceActivation::Activating(attachment) => attachment,
+                WriteConvergenceActivation::Active(runner) => {
+                    *capability = WriteConvergenceActivation::Active(runner);
+                    return Ok(());
+                }
+                WriteConvergenceActivation::Dormant => {
+                    *capability = WriteConvergenceActivation::Dormant;
+                    return Err(HarnessError::message(
+                        "write-convergence activation has not been armed",
+                    ));
+                }
+                WriteConvergenceActivation::Armed => {
+                    *capability = WriteConvergenceActivation::Armed;
+                    return Err(HarnessError::message(
+                        "write-convergence activation has not been started",
+                    ));
+                }
+                WriteConvergenceActivation::Failed(message) => {
+                    *capability = WriteConvergenceActivation::Failed(message.clone());
+                    return Err(HarnessError::message(message));
+                }
+                WriteConvergenceActivation::Joining => {
+                    return Err(HarnessError::message(
+                        "write-convergence invariant attachment was already joining",
+                    ));
+                }
+            }
+        };
+        let (result, elapsed) = wait_for_write_convergence_attachment(pending_attachment)?;
+
+        let mut capability = self
+            .write_convergence
+            .lock()
+            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+        match result {
+            Ok(runner) => {
+                harness.record_startup_phase(
+                    StartupPhase::InvariantWriteConvergence,
+                    format!("accepted-write convergence attached after {:?}", elapsed),
+                )?;
+                *capability = WriteConvergenceActivation::Active(runner);
+            }
+            Err(err) => {
+                harness.record_startup_phase(
+                    StartupPhase::InvariantWriteConvergence,
+                    format!(
+                        "accepted-write convergence attachment failed after {:?}: {err}",
+                        elapsed
+                    ),
+                )?;
+                *capability = WriteConvergenceActivation::Failed(err.to_string());
+                return Err(err);
+            }
+        }
+
+        match &*capability {
+            WriteConvergenceActivation::Active(runner) => {
+                runner.ensure_healthy().map_err(HarnessError::from)
+            }
+            WriteConvergenceActivation::Failed(message) => {
+                Err(HarnessError::message(message.clone()))
+            }
+            WriteConvergenceActivation::Dormant
+            | WriteConvergenceActivation::Armed
+            | WriteConvergenceActivation::Activating(_)
+            | WriteConvergenceActivation::Joining => Err(HarnessError::message(
+                "write-convergence invariant attachment did not settle",
+            )),
+        }
+    }
+}
+
+impl WriteConvergenceInvariantAttachment {
+    fn spawn(
+        observer: PgtmObserver,
+        poll_interval: std::time::Duration,
+        write_deadline: std::time::Duration,
+    ) -> Self {
+        Self {
+            started_at: Instant::now(),
+            task: Some(tokio::spawn(async move {
+                WriteConvergenceInvariantRunner::start(observer, poll_interval, write_deadline)
+                    .await
+            })),
+        }
+    }
+
+    fn is_finished(&self) -> bool {
+        self.task.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+
+    fn take_task(
+        &mut self,
+    ) -> Result<
+        JoinHandle<std::result::Result<
+            WriteConvergenceInvariantRunner,
+            WriteConvergenceInvariantError,
+        >>,
+    > {
+        self.task.take().ok_or_else(|| {
+            HarnessError::message("write-convergence invariant attachment task was missing")
+        })
+    }
+}
+
+impl Drop for WriteConvergenceInvariantAttachment {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+impl StartupPhase {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::WorkspaceReady => "startup.workspace_ready",
+            Self::InvariantPrimaryCount => "startup.invariant.primary_count",
+            Self::DcsReady => "startup.dcs_ready",
+            Self::SeedPrimaryReady => "startup.seed_primary_ready",
+            Self::ClusterReady => "startup.cluster_ready",
+            Self::InvariantWriteConvergence => "startup.invariant.write_convergence",
+        }
+    }
+}
+
+fn wait_for_write_convergence_attachment(
+    mut attachment: WriteConvergenceInvariantAttachment,
+) -> Result<(
+    Result<WriteConvergenceInvariantRunner>,
+    std::time::Duration,
+)> {
+    let elapsed = attachment.started_at.elapsed();
+    let task = attachment.take_task()?;
+    let result = block_on_harness_future(
+        async move {
+            task.await
+                .map_err(|err| {
+                    HarnessError::message(format!(
+                        "write-convergence invariant attachment task failed to join: {err}"
+                    ))
+                })?
+                .map_err(HarnessError::from)
+        },
+        "write-convergence invariant attachment",
+    );
+    Ok((result, elapsed))
+}
+
+fn block_on_harness_future<T>(
+    future: impl Future<Output = Result<T>> + Send + 'static,
+    context: &'static str,
+) -> Result<T>
+where
+    T: Send + 'static,
+{
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| handle.block_on(future))
+        }
+        Ok(_) | Err(_) => thread::spawn(move || {
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| {
+                    HarnessError::message(format!("build runtime for {context} failed: {err}"))
+                })?
+                .block_on(future)
+        })
+        .join()
+        .map_err(|_| HarnessError::message(format!("{context} thread panicked")))?,
     }
 }
 
@@ -1408,7 +1766,14 @@ fn operator_visible_primary(status: &NodeState) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use std::{sync::Mutex, time::Duration};
+
     use super::*;
+    use crate::support::{
+        docker::cli::DockerCli,
+        invariants::WriteConvergenceInvariantError,
+        timeouts::TimeoutModel,
+    };
 
     fn temporary_directory(name: &str) -> Result<PathBuf> {
         let root = std::env::temp_dir().join(format!(
@@ -1617,5 +1982,97 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    fn test_harness_with_write_convergence(
+        write_convergence: WriteConvergenceActivation,
+    ) -> Result<HarnessShared> {
+        Ok(HarnessShared {
+            runtime: HarnessRuntime {
+                workspace: HarnessWorkspace {
+                    run_id: "test-run".to_string(),
+                    feature_name: "test-feature".to_string(),
+                    given: resolve_given(
+                        PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
+                        HaGivenId::Plain,
+                    )?,
+                    paths: WorkspacePaths {
+                        run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
+                        materialized_dir: PathBuf::from(
+                            "tests/ha/runs/test-feature/test-run/materialized",
+                        ),
+                        artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
+                    },
+                },
+                compose: ComposeStack {
+                    file: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized/compose.yml"),
+                    project: "ha-test-run".to_string(),
+                },
+                cucumber_test_image_run_id: "cucumber-test-run".to_string(),
+                docker: DockerCli::fake_for_tests(),
+                ryuk: None,
+                timeouts: TimeoutModel {
+                    poll_interval: Duration::from_millis(1),
+                    startup_deadline: Duration::from_millis(10),
+                    failover_deadline: Duration::from_millis(10),
+                    recovery_deadline: Duration::from_millis(10),
+                    write_convergence_deadline: Duration::from_millis(10),
+                },
+                service_container_ids: Mutex::new(BTreeMap::new()),
+                timeline: Mutex::new(Vec::new()),
+                cleaned_up: false,
+            },
+            background_invariants: BackgroundInvariants {
+                primary_count: PrimaryCountInvariantRunner::healthy_for_tests(),
+                write_convergence: Mutex::new(write_convergence),
+            },
+        })
+    }
+
+    fn delayed_failed_attachment(message: &str) -> WriteConvergenceActivation {
+        let message = message.to_string();
+            WriteConvergenceActivation::Activating(WriteConvergenceInvariantAttachment {
+                started_at: Instant::now(),
+                task: Some(tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    Err(WriteConvergenceInvariantError::Failed(message))
+                })),
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_health_check_allows_pending_write_convergence_attachment() -> Result<()> {
+        let harness = test_harness_with_write_convergence(delayed_failed_attachment("pending"))?;
+        harness.ensure_primary_count_healthy()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cleanup_check_waits_for_write_convergence_attachment_failure() -> Result<()> {
+        let harness = test_harness_with_write_convergence(delayed_failed_attachment("boom"))?;
+        let err = match harness.ensure_accepted_writes_ready() {
+            Ok(()) => {
+                return Err(HarnessError::message(
+                    "required invariant readiness unexpectedly succeeded",
+                ));
+            }
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("boom"));
+        let write_convergence_state = harness
+            .background_invariants
+            .write_convergence
+            .lock()
+            .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
+        match &*write_convergence_state {
+            WriteConvergenceActivation::Failed(message) => {
+                assert!(message.contains("boom"));
+            }
+            other => {
+                return Err(HarnessError::message(format!(
+                    "expected failed write-convergence state after cleanup check, observed {other:?}"
+                )));
+            }
+        }
+        Ok(())
     }
 }

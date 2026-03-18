@@ -459,7 +459,10 @@ async fn wait_for_authoritative_single_primary(
             Ok(primary)
         })();
         match attempt {
-            Ok(primary) => return Ok(primary),
+            Ok(primary) => {
+                world.harness()?.ensure_background_invariants_ready()?;
+                return Ok(primary);
+            }
             Err(err) => last_error = Some(err.to_string()),
         }
         let terminal_error = {

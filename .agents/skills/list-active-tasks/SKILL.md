@@ -21,15 +21,34 @@ Produce a table using only the Ralph-generated task summary and the task-selecti
 
 ## Output
 
-Return only a concise table unless the user explicitly asks for extra explanation.
+Return only a concise fixed-width terminal table unless the user explicitly asks for extra explanation.
 
 The default table order is mandatory: chosen first to chosen last.
 
-Recommended columns:
+Use this default layout:
 
-- Task
-- Path
-- Passes
-- Priority
-- Blocked By
-- Notes
+```text
+Ralph Pick Order
+
++----+-------------+------------+--------------------------------------------------------------+
+| #  | Type        | Status     | Task                                                         |
++----+-------------+------------+--------------------------------------------------------------+
+| 1  | bug         | failing    | example task                                                 |
+| 2  | meta-task   | recurring  | example task                                                 |
++----+-------------+------------+--------------------------------------------------------------+
+
++----+--------------------------------------------------------------+---------------------------------------------+
+| #  | Path                                                         | Why it sits here                            |
++----+--------------------------------------------------------------+---------------------------------------------+
+| 1  | .ralph/tasks/bugs/example.md                                 | bug-first rule or other relevant reason     |
+| 2  | .ralph/tasks/story/example.md                                | selected later due to precedence rules      |
++----+--------------------------------------------------------------+---------------------------------------------+
+```
+
+Required semantics:
+
+- Keep tasks ordered from chosen first to chosen last.
+- `Type` should reflect the visible task kind, such as `bug`, `task`, or `meta-task`.
+- `Status` should be a compact human-readable rendering of the pass state, such as `failing`, `passing`, or `recurring`.
+- `Why it sits here` should explain the ordering using only the selection and blocking rules when relevant.
+- Include `Priority` or `Blocked By` inside `Why it sits here` only when those fields materially affect ordering.

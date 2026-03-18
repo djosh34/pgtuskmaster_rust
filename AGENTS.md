@@ -10,6 +10,10 @@ When creating new enums/structs, always first verifiably search the codebase for
 You should always aim to 'reduce code': 
  - remove unnecessary 'combine functions', replace with larger match against rust enums
  - remove unnecessary extra calls, or function calling one other function: that is a big code smell
+ - when designing, always make sure to NOT do smells listed inside skill improve-code-boundaries, you must for each struct creation use that skill
+
+Use explore agent often to not bloat context for when wanting to change something.
+For large scale simple changes, spin up do_fast agent with ultra simple instructions
 
 Also never swallow/ignore any errors. That is a huge anti-pattern, and must be reported as add-bug task.
 

@@ -52,7 +52,7 @@ exporter = { otlp-grpc = { endpoint = "http://10.0.4.30:5081", headers = { "Auth
 max_threads = 50
 max_depth = 1
 
-[agents.explore_spark]
+[agents.explore]
 description = "ultra fast explorer"
 config_file = "agents/spark_review.toml"
 
