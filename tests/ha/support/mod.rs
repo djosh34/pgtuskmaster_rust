@@ -1,16 +1,16 @@
 mod config;
-pub mod docker;
+mod docker;
 mod error;
-pub mod faults;
-pub mod givens;
+mod faults;
+mod givens;
 mod invariant;
-pub mod observer;
+mod observer;
 mod process;
 pub mod runner;
-pub mod steps;
-pub mod timeouts;
-pub mod topology;
-pub mod world;
+// pub mod steps;
+mod timeouts;
+mod topology;
+mod world;
 
 use std::sync::{Mutex, OnceLock};
 
