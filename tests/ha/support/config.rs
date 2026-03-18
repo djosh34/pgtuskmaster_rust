@@ -1,23 +1,22 @@
 use std::{fs, path::PathBuf, sync::OnceLock};
 
-use serde::Deserialize;
+use serde::{
+    de::{Deserializer, Error as _},
+    Deserialize,
+};
 
 use crate::support::error::{HarnessError, Result};
 
 static HARNESS_SETTINGS: OnceLock<HarnessSettings> = OnceLock::new();
 
-#[derive(Clone, Debug)]
-pub struct HarnessSettings {
-    docker: PathBuf,
-    pgtm: PathBuf,
-    psql: PathBuf,
-}
-
 #[derive(Clone, Debug, Deserialize)]
-struct RawHarnessSettings {
-    docker: ExecutableDiscoverySettings,
-    pgtm: ExecutableDiscoverySettings,
-    psql: ExecutableDiscoverySettings,
+pub struct HarnessSettings {
+    #[serde(deserialize_with = "deserialize_docker_executable")]
+    docker: PathBuf,
+    #[serde(deserialize_with = "deserialize_pgtm_executable")]
+    pgtm: PathBuf,
+    #[serde(deserialize_with = "deserialize_psql_executable")]
+    psql: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -59,35 +58,59 @@ fn load_harness_settings() -> Result<HarnessSettings> {
         path: path.clone(),
         source,
     })?;
-    let mut settings: RawHarnessSettings = toml::from_str(raw.as_str()).map_err(|err| {
+    toml::from_str::<HarnessSettings>(raw.as_str()).map_err(|err| {
         HarnessError::message(format!(
             "failed to parse harness config `{}`: {err}",
             path.display()
         ))
-    })?;
-    let workspace_candidates = workspace_debug_binary_candidates("pgtm");
-    settings
-        .pgtm
-        .executable_candidates
-        .splice(0..0, workspace_candidates);
-
-    Ok(HarnessSettings {
-        docker: resolve_configured_executable(
-            settings.docker.executable_candidates.as_slice(),
-            "docker.executable_candidates",
-            "docker",
-        )?,
-        pgtm: resolve_configured_executable(
-            settings.pgtm.executable_candidates.as_slice(),
-            "pgtm.executable_candidates",
-            "pgtm",
-        )?,
-        psql: resolve_configured_executable(
-            settings.psql.executable_candidates.as_slice(),
-            "psql.executable_candidates",
-            "psql",
-        )?,
     })
+}
+
+fn deserialize_docker_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_configured_executable(deserializer, "docker.executable_candidates", "docker", None)
+}
+
+fn deserialize_pgtm_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_configured_executable(
+        deserializer,
+        "pgtm.executable_candidates",
+        "pgtm",
+        Some("pgtm"),
+    )
+}
+
+fn deserialize_psql_executable<'de, D>(deserializer: D) -> std::result::Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserialize_configured_executable(deserializer, "psql.executable_candidates", "psql", None)
+}
+
+fn deserialize_configured_executable<'de, D>(
+    deserializer: D,
+    config_field: &'static str,
+    label: &'static str,
+    workspace_binary: Option<&str>,
+) -> std::result::Result<PathBuf, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let settings = ExecutableDiscoverySettings::deserialize(deserializer)?;
+    let candidates = match workspace_binary {
+        Some(name) => workspace_debug_binary_candidates(name)
+            .into_iter()
+            .chain(settings.executable_candidates)
+            .collect::<Vec<_>>(),
+        None => settings.executable_candidates,
+    };
+    resolve_configured_executable(candidates.as_slice(), config_field, label)
+        .map_err(D::Error::custom)
 }
 
 fn workspace_debug_binary_candidates(name: &str) -> Vec<PathBuf> {
@@ -130,9 +153,16 @@ fn resolve_configured_executable(
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_configured_executable, workspace_debug_binary_candidates, HarnessError, Result,
+        resolve_configured_executable, workspace_debug_binary_candidates, HarnessError,
+        HarnessSettings, Result,
     };
     use std::path::PathBuf;
+
+    fn current_executable() -> Result<PathBuf> {
+        std::env::current_exe().map_err(|source| {
+            HarnessError::message(format!("current executable path was unavailable: {source}"))
+        })
+    }
 
     #[test]
     fn workspace_debug_binary_candidates_stay_under_target_dir() {
@@ -151,9 +181,7 @@ mod tests {
 
     #[test]
     fn resolve_configured_executable_picks_first_existing_candidate() -> Result<()> {
-        let current = std::env::current_exe().map_err(|source| {
-            HarnessError::message(format!("current executable path was unavailable: {source}"))
-        })?;
+        let current = current_executable()?;
         let selected = resolve_configured_executable(
             &[PathBuf::from("/definitely/missing"), current.clone()],
             "test.executable_candidates",
@@ -184,6 +212,34 @@ mod tests {
                 .contains("expected an absolute executable path"),
             "unexpected error: {error}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn harness_settings_deserializes_directly_into_resolved_paths() -> Result<()> {
+        let current = current_executable()?;
+        let raw = format!(
+            r#"[docker]
+executable_candidates = ["{path}"]
+
+[pgtm]
+executable_candidates = ["{path}"]
+
+[psql]
+executable_candidates = ["{path}"]
+"#,
+            path = current.display(),
+        );
+        let settings = toml::from_str::<HarnessSettings>(raw.as_str()).map_err(|err| {
+            HarnessError::message(format!(
+                "expected harness settings to parse directly: {err}"
+            ))
+        })?;
+
+        assert_eq!(settings.docker_executable(), current.as_path());
+        assert!(settings.pgtm_executable().is_absolute());
+        assert!(settings.pgtm_executable().exists());
+        assert_eq!(settings.psql_executable(), current.as_path());
         Ok(())
     }
 }
