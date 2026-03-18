@@ -158,6 +158,7 @@ pub struct HarnessShared {
     pub compose_project: String,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
+    observer: PgtmObserver,
     pub ryuk: Option<RyukGuard>,
     pub timeouts: TimeoutModel,
     service_container_ids: Mutex<BTreeMap<String, String>>,
@@ -206,13 +207,14 @@ impl HarnessShared {
             compose_project.as_str(),
             dcs_service_names.as_slice(),
         )?;
+        let observer = PgtmObserver::new(
+            docker.clone(),
+            compose_file.clone(),
+            compose_project.clone(),
+            materialized_dir.clone(),
+        );
         let background_invariants = BackgroundInvariants::start_primary_count(
-            PgtmObserver::new(
-                docker.clone(),
-                compose_file.clone(),
-                compose_project.clone(),
-                materialized_dir.clone(),
-            ),
+            observer.clone(),
             timeouts.poll_interval,
             timeouts.failover_deadline,
         )
@@ -228,6 +230,7 @@ impl HarnessShared {
             compose_project,
             cucumber_test_image_run_id,
             docker,
+            observer,
             ryuk: Some(ryuk),
             timeouts,
             service_container_ids: Mutex::new(BTreeMap::new()),
@@ -306,13 +309,8 @@ impl HarnessShared {
         self.artifacts_dir.as_path()
     }
 
-    pub fn observer(&self) -> PgtmObserver {
-        PgtmObserver::new(
-            self.docker.clone(),
-            self.compose_file.clone(),
-            self.compose_project.clone(),
-            self.materialized_dir().to_path_buf(),
-        )
+    pub fn observer(&self) -> &PgtmObserver {
+        &self.observer
     }
 
     pub fn ensure_primary_count_healthy(&self) -> Result<()> {
@@ -948,7 +946,7 @@ impl HarnessShared {
 
     fn start_write_convergence_invariant(&self) -> Result<()> {
         self.background_invariants.start_write_convergence(
-            self.observer(),
+            self.observer.clone(),
             self.timeouts.poll_interval,
             self.timeouts.write_convergence_deadline,
         )?;
@@ -1746,6 +1744,17 @@ mod tests {
     fn test_harness_with_write_convergence(
         write_convergence: WriteConvergenceState,
     ) -> Result<HarnessShared> {
+        let docker = DockerCli::fake_for_tests();
+        let compose_file =
+            PathBuf::from("tests/ha/runs/test-feature/test-run/materialized/compose.yml");
+        let compose_project = "ha-test-run".to_string();
+        let materialized_dir = PathBuf::from("tests/ha/runs/test-feature/test-run/materialized");
+        let observer = PgtmObserver::new(
+            docker.clone(),
+            compose_file.clone(),
+            compose_project.clone(),
+            materialized_dir.clone(),
+        );
         Ok(HarnessShared {
             run_id: "test-run".to_string(),
             feature_name: "test-feature".to_string(),
@@ -1754,14 +1763,13 @@ mod tests {
                 HaGivenId::Plain,
             )?,
             run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
-            materialized_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized"),
+            materialized_dir,
             artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
-            compose_file: PathBuf::from(
-                "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
-            ),
-            compose_project: "ha-test-run".to_string(),
+            compose_file,
+            compose_project,
             cucumber_test_image_run_id: "cucumber-test-run".to_string(),
-            docker: DockerCli::fake_for_tests(),
+            docker,
+            observer,
             ryuk: None,
             timeouts: TimeoutModel {
                 poll_interval: Duration::from_millis(1),
