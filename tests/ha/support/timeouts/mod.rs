@@ -6,10 +6,14 @@ use crate::support::error::{HarnessError, Result};
 
 const FAILOVER_SLACK_LOOPS: u64 = 3;
 const DCS_DETECTION_SLACK_LOOPS: u64 = 1;
-const FAILOVER_EXTRA_BUFFER_MS: u64 = 12_000;
-const RECOVERY_SLACK_LOOPS: u64 = 10;
-const HARNESS_POLL_INTERVAL_MULTIPLIER: u64 = 2;
-const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 2_000;
+const FAILOVER_EXTRA_BUFFER_MS: u64 = 4_000;
+const RECOVERY_SLACK_LOOPS: u64 = 4;
+const HARNESS_POLL_INTERVAL_MULTIPLIER: u64 = 1;
+const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 1_000;
+const MAX_FAILOVER_DEADLINE_MS: u64 = 20_000;
+const MAX_STARTUP_DEADLINE_MS: u64 = 20_000;
+const MAX_RECOVERY_DEADLINE_MS: u64 = 30_000;
+const MAX_WRITE_CONVERGENCE_DEADLINE_MS: u64 = 15_000;
 
 #[derive(Clone, Debug)]
 pub struct TimeoutModel {
@@ -54,11 +58,16 @@ fn derive_timeout_model(
         ha_loop_interval.mul_f64((FAILOVER_SLACK_LOOPS + DCS_DETECTION_SLACK_LOOPS) as f64);
     let failover_buffer = Duration::from_millis(FAILOVER_EXTRA_BUFFER_MS);
     let recovery_slack = ha_loop_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
-    let failover_deadline = Duration::from_millis(lease_ttl_ms) + failover_slack + failover_buffer;
-    let startup_deadline = Duration::from_millis(bootstrap_ms) + recovery_slack;
+    let failover_deadline =
+        (Duration::from_millis(lease_ttl_ms) + failover_slack + failover_buffer)
+            .min(Duration::from_millis(MAX_FAILOVER_DEADLINE_MS));
+    let startup_deadline = (Duration::from_millis(bootstrap_ms) + recovery_slack)
+        .min(Duration::from_millis(MAX_STARTUP_DEADLINE_MS));
     let recovery_base = bootstrap_ms.max(pg_rewind_ms);
-    let recovery_deadline = Duration::from_millis(recovery_base) + recovery_slack;
-    let write_convergence_deadline = failover_deadline + recovery_deadline;
+    let recovery_deadline = (Duration::from_millis(recovery_base) + recovery_slack)
+        .min(Duration::from_millis(MAX_RECOVERY_DEADLINE_MS));
+    let write_convergence_deadline = (failover_deadline + recovery_deadline)
+        .min(Duration::from_millis(MAX_WRITE_CONVERGENCE_DEADLINE_MS));
     let poll_interval = Duration::from_millis(
         ha_loop_interval_ms
             .saturating_mul(HARNESS_POLL_INTERVAL_MULTIPLIER)
@@ -82,16 +91,20 @@ mod tests {
     #[test]
     fn doubles_harness_poll_interval_for_fast_ha_loops() {
         let model = derive_timeout_model(1_000, 10_000, 300_000, 120_000);
-        assert_eq!(model.poll_interval, Duration::from_secs(2));
-        assert_eq!(model.failover_deadline, Duration::from_secs(26));
-        assert_eq!(model.write_convergence_deadline, Duration::from_secs(336));
+        assert_eq!(model.poll_interval, Duration::from_secs(1));
+        assert_eq!(model.failover_deadline, Duration::from_secs(18));
+        assert_eq!(model.startup_deadline, Duration::from_secs(20));
+        assert_eq!(model.recovery_deadline, Duration::from_secs(30));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(15));
     }
 
     #[test]
     fn preserves_longer_harness_poll_intervals_above_the_minimum() {
         let model = derive_timeout_model(3_000, 10_000, 300_000, 120_000);
-        assert_eq!(model.poll_interval, Duration::from_secs(6));
-        assert_eq!(model.failover_deadline, Duration::from_secs(34));
-        assert_eq!(model.write_convergence_deadline, Duration::from_secs(364));
+        assert_eq!(model.poll_interval, Duration::from_secs(3));
+        assert_eq!(model.failover_deadline, Duration::from_secs(20));
+        assert_eq!(model.startup_deadline, Duration::from_secs(20));
+        assert_eq!(model.recovery_deadline, Duration::from_secs(30));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(15));
     }
 }

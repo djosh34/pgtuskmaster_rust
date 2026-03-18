@@ -33,7 +33,7 @@ default-filter = '''
 kind(test) & binary(ha) & test(/^ha_/)
 '''
 test-threads = 128
-slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 # Let the libtest harness forward stdout/stderr directly instead of buffering it
 # behind test completion, so long HA runs can surface logs while they execute.
 success-output = "immediate-final"
