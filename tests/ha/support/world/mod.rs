@@ -380,10 +380,10 @@ impl HarnessShared {
             .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
             .and_then(|_| {
                 if let Some(runner) = self.write_convergence_invariant.as_ref() {
-                    runner.ensure_healthy()?
-                } else {
-                    Ok(())
+                    runner.ensure_healthy().map_err(HarnessError::from)?;
                 }
+
+                Ok(())
             })
     }
 

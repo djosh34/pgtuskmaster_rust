@@ -17,7 +17,8 @@ const SELECT_ONE_SQL: &str = "SELECT 1";
 
 #[derive(Debug)]
 pub struct WriteConvergenceInvariantRunner {
-    request_sender: mpsc::UnboundedSender<oneshot::Sender<Result<(), WriteConvergenceInvariantError>>>,
+    request_sender:
+        mpsc::UnboundedSender<oneshot::Sender<Result<bool, WriteConvergenceInvariantError>>>,
     write_deadline: Duration,
     runtime: Runtime,
 }
@@ -40,8 +41,12 @@ pub enum WriteConvergenceInvariantError {
     ProbeTarget {
         member: ClusterMember,
         #[source]
-        source: HarnessError,
+        source: Box<HarnessError>,
     },
+
+    #[error("write-convergence invariant check failed")]
+    HealthRequestUnhealthy,
+    
 
     #[error("write-convergence probe for {member} failed to connect to `{dsn}`: {source}")]
     ProbeConnectFailed {
@@ -88,9 +93,9 @@ impl WriteConvergenceInvariantRunner {
         })?;
 
         let (request_sender, mut request_receiver) =
-            mpsc::unbounded_channel::<oneshot::Sender<_>>();
+            mpsc::unbounded_channel::<oneshot::Sender<Result<bool, WriteConvergenceInvariantError>>>();
 
-        let _ = runtime.spawn(async move {
+        let invariant_task = runtime.spawn(async move {
             let mut probes: Vec<Probe> = Vec::new();
             let mut interval = time::interval(poll_interval);
             let mut current_health = false;
@@ -99,22 +104,20 @@ impl WriteConvergenceInvariantRunner {
                 tokio::select! {
                     maybe_sender = request_receiver.recv() => match maybe_sender {
                         Some(response_sender) => {
-                            let _ = response_sender.send(current_health);
+                            let _ = response_sender.send(Ok(current_health));
                         }
                         None => break,
                     },
                     _ = interval.tick() => {
-                        current_health = match poll_probes(&observer, &mut probes).await {
-                            Ok(next_health) => next_health,
-                            Err(err) => {
+                        current_health = poll_probes(&observer, &mut probes).await.unwrap_or_else(|err| {
                                 eprintln!("{err}");
                                 false
-                            }
-                        };
+                            });
                     },
                 }
             }
         });
+        drop(invariant_task);
 
         Ok(Self {
             request_sender,
@@ -124,7 +127,8 @@ impl WriteConvergenceInvariantRunner {
     }
 
     pub fn ensure_healthy(&self) -> Result<(), WriteConvergenceInvariantError> {
-        let (response_sender, response_receiver) = oneshot::channel::<Result<(), WriteConvergenceInvariantError>>();
+        let (response_sender, response_receiver) =
+            oneshot::channel::<Result<bool, WriteConvergenceInvariantError>>();
 
         self.request_sender
             .send(response_sender)
@@ -134,6 +138,16 @@ impl WriteConvergenceInvariantRunner {
             .block_on(timeout(self.write_deadline, response_receiver))
             .map_err(|_| WriteConvergenceInvariantError::HealthCheckTimedOut {
                 deadline: self.write_deadline,
+            })
+            .and_then(|probe_health| {
+                probe_health.map_err(|_| WriteConvergenceInvariantError::HealthRequestChannelClosed)?
+            })
+            .and_then(|is_healthy| {
+                if is_healthy {
+                    Ok(())
+                } else {
+                    Err(WriteConvergenceInvariantError::HealthRequestUnhealthy)
+                }
             })
     }
 }
@@ -169,7 +183,10 @@ async fn initialize_probes(
     for member in ClusterMember::ALL {
         let target = observer
             .postgres_routing_target(member)
-            .map_err(|source| WriteConvergenceInvariantError::ProbeTarget { member, source })?;
+            .map_err(|source| WriteConvergenceInvariantError::ProbeTarget {
+                member,
+                source: Box::new(source),
+            })?;
         connect_tasks.spawn(async move { connect_probe(target).await });
     }
 
@@ -202,11 +219,12 @@ async fn connect_probe(target: PostgresRoutingTarget) -> Result<Probe, WriteConv
             source,
         })?;
 
-    let _ = tokio::spawn(async move {
+    let connection_task = tokio::spawn(async move {
         if let Err(source) = connection.await {
             eprintln!("write-convergence probe connection task failed: {source}");
         }
     });
+    drop(connection_task);
 
     Ok(Probe {
         member: target.member,
