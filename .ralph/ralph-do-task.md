@@ -1,4 +1,21 @@
+## Progress Log
 
+On startup, read your previous progress
+```bash
+/bin/bash .ralph/progress_read.sh "<codex>"
+```
+
+Append to the progress log — it is your working memory across context windows.
+Please write very often.
+```bash
+/bin/bash .ralph/progress_append.sh "<codex>" << 'EOF_APPEND_PROGRESS_LOG'
+- what you did
+- what happened
+- should do next, after quitting immediately due to context limit
+EOF_APPEND_PROGRESS_LOG
+```
+
+# Your task
 - [ ] read .ralph/current_task.txt
     - [ ] this file will contain a path to a task
     - [ ] from this on we will call that [task name].md
@@ -16,11 +33,9 @@
         - [ ] If switched, QUIT IMMEDIATELY, else continue until checks pass (only if design is still right)
 
 - [ ] you are really done if and only if ALL of these pass 100%:
-    - [ ] `make check`
-    - [ ] `make lint`
+    - [ ] `make check` & `make lint` (they are the same)
     - [ ] `make test`
     - [ ] `make test-long`
-    - [ ] docs are updated with new/updated/deleted features (remove stale/old docs; use `k2-docs-loop` skill for docs updates), this is only allowed to be done AFTER 'all tests pass' or 'the goal of the task is achieved'
 
 - [ ] only when you're done, and all checks pass:
     - [ ] set in [task name].md
