@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{defaults, endpoint::DcsEndpoint};
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum InlineOrPath {
     Path(PathBuf),
@@ -85,7 +85,7 @@ pub struct TlsServerIdentityConfig {
     pub private_key: InlineOrPath,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TlsClientIdentityConfig {
     pub cert: InlineOrPath,
@@ -852,14 +852,14 @@ pub type ApiAuthConfig = TokenAuth;
 pub type PgtmApiAuthConfig = TokenAuth;
 pub type ApiRoleTokensConfig = RoleTokens;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PgtmApiTransportExpectation {
     Http,
     Https,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmConfig {
     #[serde(default)]
@@ -868,7 +868,7 @@ pub struct PgtmConfig {
     pub postgres: PgtmPostgresConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmApiConfig {
     pub base_url: Option<String>,
@@ -881,14 +881,14 @@ pub struct PgtmApiConfig {
     pub tls: PgtmClientTlsConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmPostgresConfig {
     #[serde(default)]
     pub tls: PgtmClientTlsConfig,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PgtmClientTlsConfig {
     pub ca_cert: Option<InlineOrPath>,

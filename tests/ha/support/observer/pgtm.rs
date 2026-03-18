@@ -6,7 +6,14 @@ use std::{
 };
 
 use pgtuskmaster_rust::{
-    api::NodeState, command::CommandOutputDto, pginfo::conninfo::render_conninfo_value,
+    api::NodeState,
+    command::CommandOutputDto,
+    config::{
+        InlineOrPath, PgtmApiAuthConfig, PgtmApiConfig, PgtmApiTransportExpectation,
+        PgtmClientTlsConfig, PgtmConfig, PgtmPostgresConfig, RoleTokens, SecretSource,
+        TlsClientIdentityConfig,
+    },
+    pginfo::conninfo::render_conninfo_value,
 };
 
 use crate::support::{
@@ -224,7 +231,7 @@ impl PgtmObserver {
                 source,
             })?;
         }
-        let rendered = render_host_observer_config(
+        let config = build_host_observer_config(
             member,
             SocketAddr::from(([127, 0, 0, 1], published_api_port)),
             ca_cert_path.as_path(),
@@ -233,6 +240,11 @@ impl PgtmObserver {
             observer_cert_path.as_path(),
             observer_key_path.as_path(),
         );
+        let rendered = toml::to_string(&config).map_err(|source| {
+            HarnessError::message(format!(
+                "serializing observer config for `{member}` failed: {source}"
+            ))
+        })?;
         fs::write(config_path.as_path(), rendered).map_err(|source| HarnessError::Io {
             path: config_path.clone(),
             source,
@@ -275,7 +287,7 @@ fn host_postgres_dsn(
     .join(" ")
 }
 
-fn render_host_observer_config(
+fn build_host_observer_config(
     member: ClusterMember,
     resolve_to: SocketAddr,
     ca_cert_path: &Path,
@@ -283,37 +295,50 @@ fn render_host_observer_config(
     admin_token_path: &Path,
     observer_cert_path: &Path,
     observer_key_path: &Path,
-) -> String {
-    format!(
-        r#"[api]
-base_url = "https://{}:{}"
-expected_transport = "https"
-resolve_to = "{resolve_to}"
-auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "{}" }}, admin_token = {{ type = "file", path = "{}" }} }} }}
-tls = {{ ca_cert = {{ path = "{}" }}, identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }} }}
-
-[postgres.tls]
-ca_cert = {{ path = "{}" }}
-identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }}
-"#,
-        member.service_name(),
-        resolve_to.port(),
-        read_token_path.display(),
-        admin_token_path.display(),
-        ca_cert_path.display(),
-        observer_cert_path.display(),
-        observer_key_path.display(),
-        ca_cert_path.display(),
-        observer_cert_path.display(),
-        observer_key_path.display(),
-    )
+) -> PgtmConfig {
+    let tls = PgtmClientTlsConfig {
+        ca_cert: Some(InlineOrPath::PathConfig {
+            path: ca_cert_path.to_path_buf(),
+        }),
+        identity: Some(TlsClientIdentityConfig {
+            cert: InlineOrPath::PathConfig {
+                path: observer_cert_path.to_path_buf(),
+            },
+            key: SecretSource::File {
+                path: observer_key_path.to_path_buf(),
+            },
+        }),
+    };
+    PgtmConfig {
+        api: PgtmApiConfig {
+            base_url: Some(format!(
+                "https://{}:{}",
+                member.service_name(),
+                resolve_to.port()
+            )),
+            advertised_url: None,
+            expected_transport: Some(PgtmApiTransportExpectation::Https),
+            resolve_to: Some(resolve_to),
+            auth: PgtmApiAuthConfig::RoleTokens(RoleTokens {
+                read_token: SecretSource::File {
+                    path: read_token_path.to_path_buf(),
+                },
+                admin_token: SecretSource::File {
+                    path: admin_token_path.to_path_buf(),
+                },
+            }),
+            tls: tls.clone(),
+        },
+        postgres: PgtmPostgresConfig { tls },
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::host_postgres_dsn;
+    use super::{build_host_observer_config, host_postgres_dsn};
     use crate::support::topology::ClusterMember;
-    use std::path::Path;
+    use pgtuskmaster_rust::config::PgtmConfig;
+    use std::{net::SocketAddr, path::Path};
 
     #[test]
     fn host_postgres_dsn_quotes_tls_paths() {
@@ -328,5 +353,23 @@ mod tests {
         assert!(dsn.contains("sslrootcert='/tmp/ca bundle.pem'"));
         assert!(dsn.contains("sslcert='/tmp/observer cert.pem'"));
         assert!(dsn.contains("sslkey='/tmp/observer key.pem'"));
+    }
+
+    #[test]
+    fn host_observer_config_round_trips_through_toml() -> Result<(), String> {
+        let config = build_host_observer_config(
+            ClusterMember::NodeB,
+            SocketAddr::from(([127, 0, 0, 1], 18443)),
+            Path::new("/tmp/ca bundle.pem"),
+            Path::new("/tmp/read token"),
+            Path::new("/tmp/admin token"),
+            Path::new("/tmp/observer cert.pem"),
+            Path::new("/tmp/observer key.pem"),
+        );
+        let rendered = toml::to_string(&config).map_err(|err| err.to_string())?;
+        let reparsed =
+            toml::from_str::<PgtmConfig>(rendered.as_str()).map_err(|err| err.to_string())?;
+        assert_eq!(reparsed, config);
+        Ok(())
     }
 }
