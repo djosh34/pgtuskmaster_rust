@@ -744,9 +744,9 @@ fn record_cluster_observation(
         .members()
         .iter()
         .try_for_each(|member| match &member.outcome {
-            Ok(output) => harness.record_status_snapshot(
+            Ok(state) => harness.record_status_snapshot(
                 format!("{phase}.{}", member.member.service_name()).as_str(),
-                &output.state,
+                state,
             ),
             Err(message) => harness.record_note(
                 format!("{phase}.{}", member.member.service_name()).as_str(),
@@ -810,7 +810,6 @@ fn require_observed_member_state(
         .member(member)?
         .outcome
         .as_ref()
-        .map(|output| &output.state)
         .ok()
         .ok_or_else(|| HarnessError::message(member_observation_failure(observation, member)))
 }

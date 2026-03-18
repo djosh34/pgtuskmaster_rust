@@ -6,7 +6,7 @@ use std::{
 
 use pgtuskmaster_rust::{
     api::{AcceptedResponse, NodeState},
-    command::{CommandOutputDto, StateCommandOutputDto},
+    command::CommandOutputDto,
     pginfo::conninfo::render_conninfo_value,
 };
 
@@ -18,8 +18,6 @@ use crate::support::{
     topology::ClusterMember,
 };
 
-pub type ClusterStatusView = NodeState;
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostgresRoutingTarget {
     pub member: ClusterMember,
@@ -29,7 +27,7 @@ pub struct PostgresRoutingTarget {
 #[derive(Clone, Debug)]
 pub struct MemberStateObservation {
     pub member: ClusterMember,
-    pub outcome: std::result::Result<StateCommandOutputDto, String>,
+    pub outcome: std::result::Result<NodeState, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,10 +83,10 @@ impl PgtmObserver {
         Ok(ClusterStateObservation { members })
     }
 
-    pub fn state_via_member(&self, member: ClusterMember) -> Result<ClusterStatusView> {
+    pub fn state_via_member(&self, member: ClusterMember) -> Result<NodeState> {
         let observation = self.observe_state_via_member(member)?;
         match observation.outcome {
-            Ok(output) => Ok(output.state),
+            Ok(state) => Ok(state),
             Err(message) => Err(HarnessError::message(format!(
                 "pgtm status via `{member}` failed: {message}"
             ))),
@@ -183,8 +181,7 @@ impl PgtmObserver {
         );
         match output {
             Ok(stdout) => {
-                let rendered = stdout.stdout_text(format!("{context} stdout"))?;
-                let dto = serde_json::from_str::<CommandOutputDto>(rendered.as_str()).map_err(
+                let dto = serde_json::from_str::<CommandOutputDto>(stdout.as_str()).map_err(
                     |source| HarnessError::Json {
                         context: context.clone(),
                         source,
@@ -279,9 +276,9 @@ fn resolve_pgtm_binary() -> Result<PathBuf> {
     Ok(candidate)
 }
 
-fn extract_state_command_output(output: CommandOutputDto) -> Result<StateCommandOutputDto> {
+fn extract_state_command_output(output: CommandOutputDto) -> Result<NodeState> {
     match output {
-        CommandOutputDto::State { output } => Ok(*output),
+        CommandOutputDto::State { output } => Ok(output.state),
         other => Err(HarnessError::message(format!(
             "expected `pgtm status --json` output, observed command payload `{}`",
             command_label(&other)

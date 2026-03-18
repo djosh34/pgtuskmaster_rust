@@ -16,20 +16,6 @@ pub struct CommandSpec {
     pub context: String,
 }
 
-#[derive(Debug)]
-pub struct CommandOutput {
-    pub stdout: Vec<u8>,
-}
-
-impl CommandOutput {
-    pub fn stdout_text(&self, context: impl Into<String>) -> Result<String> {
-        String::from_utf8(self.stdout.clone()).map_err(|source| HarnessError::Utf8 {
-            context: context.into(),
-            source,
-        })
-    }
-}
-
 impl CommandSpec {
     pub fn new(executable: impl Into<PathBuf>, context: impl Into<String>) -> Self {
         Self {
@@ -92,7 +78,7 @@ pub fn ensure_absolute_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run(spec: CommandSpec) -> Result<CommandOutput> {
+pub fn run(spec: CommandSpec) -> Result<String> {
     ensure_absolute_executable(spec.executable.as_path())?;
 
     let mut command = Command::new(spec.executable.as_path());
@@ -108,8 +94,9 @@ pub fn run(spec: CommandSpec) -> Result<CommandOutput> {
         source,
     })?;
     if output.status.success() {
-        return Ok(CommandOutput {
-            stdout: output.stdout,
+        return String::from_utf8(output.stdout).map_err(|source| HarnessError::Utf8 {
+            context: format!("decoding stdout for {}", spec.context),
+            source,
         });
     }
 

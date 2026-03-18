@@ -48,8 +48,7 @@ impl SqlObserver {
                 "--command",
                 sql,
             ]),
-        )?
-        .stdout_text("decoding psql stdout")
+        )
     }
 }
 

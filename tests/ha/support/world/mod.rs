@@ -861,9 +861,9 @@ impl HarnessShared {
                     .members()
                     .iter()
                     .map(|observation| match &observation.outcome {
-                        Ok(output) => serde_json::json!({
+                        Ok(state) => serde_json::json!({
                             "member": observation.member.service_name(),
-                            "state": output,
+                            "state": state,
                         }),
                         Err(message) => serde_json::json!({
                             "member": observation.member.service_name(),

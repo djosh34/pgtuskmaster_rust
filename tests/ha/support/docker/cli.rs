@@ -175,7 +175,7 @@ impl DockerCli {
         compose_file: &Path,
         project: &str,
     ) -> Result<Vec<ComposePsEntry>> {
-        let output = self.run_text_in_dir(
+        let output = self.run_in_dir(
             compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
                     "compose file `{}` has no parent directory",
@@ -209,7 +209,7 @@ impl DockerCli {
     }
 
     pub fn compose_logs(&self, compose_file: &Path, project: &str) -> Result<String> {
-        self.run_text_in_dir(
+        self.run_in_dir(
             compose_file.parent().ok_or_else(|| {
                 HarnessError::message(format!(
                     "compose file `{}` has no parent directory",
@@ -258,7 +258,7 @@ impl DockerCli {
     }
 
     pub fn inspect_container(&self, container: &str) -> Result<String> {
-        self.run_text(
+        self.run(
             ["inspect".to_string(), container.to_string()],
             format!("inspecting docker container `{container}`"),
         )
@@ -448,21 +448,21 @@ impl DockerCli {
         );
         command.extend([container.to_string(), binary.display().to_string()]);
         command.extend(args.iter().map(|value| value.to_string()));
-        self.run_text(
+        self.run(
             command,
             format!("executing `{}` in `{container}`", binary.display()),
         )
     }
 
     pub fn run_detached(&self, args: Vec<String>, context: impl Into<String>) -> Result<String> {
-        self.run_text(args, context)
+        self.run(args, context)
     }
 
     pub fn sleep_for_resource_cleanup(&self) {
         std::thread::sleep(Duration::from_secs(2));
     }
 
-    fn run<I, S>(&self, args: I, context: impl Into<String>) -> Result<process::CommandOutput>
+    fn run<I, S>(&self, args: I, context: impl Into<String>) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -475,21 +475,7 @@ impl DockerCli {
         process::run(spec)
     }
 
-    fn run_text<I, S>(&self, args: I, context: impl Into<String>) -> Result<String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let context = context.into();
-        self.run(args, context.clone())?.stdout_text(context)
-    }
-
-    fn run_in_dir<I, S>(
-        &self,
-        cwd: &Path,
-        args: I,
-        context: impl Into<String>,
-    ) -> Result<process::CommandOutput>
+    fn run_in_dir<I, S>(&self, cwd: &Path, args: I, context: impl Into<String>) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: Into<String>,
@@ -507,21 +493,6 @@ impl DockerCli {
         forwarded_environment()
             .into_iter()
             .fold(spec, |current, (key, value)| current.env(key, value))
-    }
-
-    fn run_text_in_dir<I, S>(
-        &self,
-        cwd: &Path,
-        args: I,
-        context: impl Into<String>,
-    ) -> Result<String>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let context = context.into();
-        self.run_in_dir(cwd, args, context.clone())?
-            .stdout_text(context)
     }
 
     fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {
