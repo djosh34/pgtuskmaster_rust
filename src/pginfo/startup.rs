@@ -6,8 +6,8 @@ use crate::{
 };
 
 use super::state::{
-    PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerBootstrap,
-    PgInfoWorkerCtx, PgProbeTarget,
+    PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx,
+    PgProbeTarget,
 };
 
 pub(crate) struct PgInfoRuntimeRequest {
@@ -35,7 +35,7 @@ pub(crate) fn bootstrap(request: PgInfoRuntimeRequest) -> PgInfoRuntimeBundle {
 
     PgInfoRuntimeBundle {
         state,
-        worker: PgInfoWorker(PgInfoWorkerCtx::new(PgInfoWorkerBootstrap {
+        worker: PgInfoWorker(PgInfoWorkerCtx {
             identity: request.identity,
             probe: request.probe,
             cadence: PgInfoCadence {
@@ -46,6 +46,6 @@ pub(crate) fn bootstrap(request: PgInfoRuntimeRequest) -> PgInfoRuntimeBundle {
                 last_emitted_sql_status: None,
             },
             runtime: PgInfoRuntime { log: request.log },
-        })),
+        }),
     }
 }

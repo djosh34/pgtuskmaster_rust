@@ -217,33 +217,6 @@ pub(crate) struct PgInfoRuntime {
     pub(crate) log: LogSender,
 }
 
-pub(crate) struct PgInfoWorkerBootstrap {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) probe: PgProbeTarget,
-    pub(crate) cadence: PgInfoCadence,
-    pub(crate) state_channel: PgInfoStateChannel,
-    pub(crate) runtime: PgInfoRuntime,
-}
-
-impl PgInfoWorkerCtx {
-    pub(crate) fn new(bootstrap: PgInfoWorkerBootstrap) -> Self {
-        let PgInfoWorkerBootstrap {
-            identity,
-            probe,
-            cadence,
-            state_channel,
-            runtime,
-        } = bootstrap;
-        Self {
-            identity,
-            probe,
-            cadence,
-            state_channel,
-            runtime,
-        }
-    }
-}
-
 impl PgProbeTarget {
     pub(crate) fn local_from_config(
         cfg: &RuntimeConfig,

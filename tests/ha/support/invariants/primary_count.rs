@@ -228,15 +228,8 @@ impl PrimaryCountInvariantRunner {
 #[cfg(test)]
 impl PrimaryCountInvariantRunner {
     pub(crate) fn healthy_for_tests() -> Self {
-        let observe_all: ObserveAllMembers = Arc::new(|| {
-            Box::pin(async {
-                [
-                    Ok(false),
-                    Ok(true),
-                    Ok(false),
-                ]
-            })
-        });
+        let observe_all: ObserveAllMembers =
+            Arc::new(|| Box::pin(async { [Ok(false), Ok(true), Ok(false)] }));
         Self::start_with_observe_all(
             Duration::from_millis(1),
             Duration::from_millis(10),

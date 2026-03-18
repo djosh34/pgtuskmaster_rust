@@ -24,6 +24,6 @@ when done:
 - make lint
 - make test
 - make test-long
-- commit
+- commit (including .ralph changes)
 - push
 - bash .ralph/task_switch.sh

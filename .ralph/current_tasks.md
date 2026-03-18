@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Wed Mar 18 11:40:17 PM CET 2026
+Generated: Wed Mar 18 11:54:03 PM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -21,6 +21,18 @@ Generated: Wed Mar 18 11:40:17 PM CET 2026
 
 <description>
 `make test-long` can fail before scenario execution because Docker cannot allocate another compose network:
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-ha-rewind-failure-old-primary-rejoins-flakes.md`
+
+```
+## Bug: HA rewind failure rejoin scenario flakes between no-primary recovery and write convergence cleanup <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test-long` currently fails in `pgtuskmaster_rust::ha::ha_rejoin_and_restart_recovery::rewind_failure_old_primary_rejoins`.
+Observed failure modes:
 ```
 
 ==============

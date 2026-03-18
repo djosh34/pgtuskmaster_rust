@@ -34,4 +34,4 @@ read -r added removed < <(
 
 net=$(( ${added:-0} - ${removed:-0} ))
 
-printf 'since %s: +%s -%s diff: %+d\n' "$base_ref" "${added:-0}" "${removed:-0}" "$net"
+printf '+%s -%s diff: %+d\n' "${added:-0}" "${removed:-0}" "$net"

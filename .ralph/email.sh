@@ -138,22 +138,24 @@ PROGRESS=$("$SCRIPT_DIR/progress_read.sh" EMAIL 2>/dev/null) || true
 # Build gauges
 TASK_PATH_VAL="${CURRENT_TASK_PATH:-(not set)}"
 TASK_NAME_VAL="${CURRENT_TASK_NAME:-(not set)}"
+LINE_DIFF_VAL=$("$SCRIPT_DIR/git_diff_lines_since.sh" bb18fdd1ff37af2dee0c6b0cc7ff7b6e880c78e1 2>/dev/null) || true
 PROGRESS_VAL="not found"
 [[ -n "$PROGRESS" ]] && PROGRESS_VAL="exists (see below)"
 
 GAUGES="task_passes:                 $TASK_COUNTS
 task_name:                      $TASK_NAME_VAL
 progress:                         $PROGRESS_VAL
-task_file:                         $TASK_PATH_VAL"
+task_file:                         $TASK_PATH_VAL
+line-diffs:                         $LINE_DIFF_VAL"
 
 # Build email
 # Choose subject prefix
 if [[ "$FINISH_MODE" == true ]]; then
     SUBJECT_ACTION="Finished"
 else
-    SUBJECT_ACTION="Update"
+    SUBJECT_ACTION=""
 fi
-SUBJECT="[$ITERATION_NUMBER] $TASK_COUNTS $SUBJECT_ACTION: $CURRENT_TASK_NAME"
+SUBJECT="[$ITERATION_NUMBER] $TASK_COUNTS $SUBJECT_ACTION: $CURRENT_TASK_NAME $LINE_DIFF_VAL"
 
 TASK_ITERATION=$("$RALPH_DIR/task_get_iteration.sh" 2>/dev/null) || true
 
