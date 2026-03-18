@@ -132,19 +132,19 @@ impl HaWorld {
 #[derive(Debug)]
 enum WriteConvergenceState {
     NotStarted,
-    Starting(WriteConvergenceStartup),
+    Starting {
+        started_at: Instant,
+        task: Option<
+            JoinHandle<
+                std::result::Result<
+                    WriteConvergenceInvariantRunner,
+                    WriteConvergenceInvariantError,
+                >,
+            >,
+        >,
+    },
     Running(WriteConvergenceInvariantRunner),
     Failed(String),
-}
-
-#[derive(Debug)]
-struct WriteConvergenceStartup {
-    started_at: Instant,
-    task: Option<
-        JoinHandle<
-            std::result::Result<WriteConvergenceInvariantRunner, WriteConvergenceInvariantError>,
-        >,
-    >,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -295,7 +295,7 @@ impl HarnessShared {
     }
 
     pub fn ensure_accepted_writes_healthy(&self) -> Result<()> {
-        let pending_startup = {
+        let (pending_started_at, pending_task) = {
             let mut state = self
                 .write_convergence_state
                 .lock()
@@ -320,11 +320,12 @@ impl HarnessShared {
                         "write-convergence invariant was not started during harness bootstrap",
                     ));
                 }
-                WriteConvergenceState::Starting(startup) => startup,
+                WriteConvergenceState::Starting { started_at, task } => (started_at, task),
             }
         };
 
-        let (settled_state, elapsed) = wait_for_write_convergence_attachment(pending_startup);
+        let (settled_state, elapsed) =
+            wait_for_write_convergence_attachment(pending_started_at, pending_task);
 
         let mut state = self
             .write_convergence_state
@@ -338,7 +339,7 @@ impl HarnessShared {
                 "accepted-write convergence attachment failed after {:?}: {message}",
                 elapsed
             ),
-            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting { .. } => {
                 unreachable!("write-convergence attachment must settle into a final state")
             }
         };
@@ -350,7 +351,7 @@ impl HarnessShared {
                 runner.ensure_healthy().map_err(HarnessError::from)
             }
             WriteConvergenceState::Failed(message) => Err(HarnessError::message(message.clone())),
-            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting { .. } => {
                 Err(HarnessError::message(
                     "write-convergence invariant startup did not settle into a running state",
                 ))
@@ -982,55 +983,24 @@ impl HarnessShared {
     }
 
     fn start_write_convergence_invariant(&self) -> Result<()> {
+        let observer = self.observer.clone();
+        let poll_interval = self.timeouts.poll_interval;
+        let write_deadline = self.timeouts.write_convergence_deadline;
         let mut state = self
             .write_convergence_state
             .lock()
             .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
-        *state = WriteConvergenceState::Starting(WriteConvergenceStartup::spawn(
-            self.observer.clone(),
-            self.timeouts.poll_interval,
-            self.timeouts.write_convergence_deadline,
-        ));
-        self.record_startup_phase(
-            StartupPhase::InvariantWriteConvergence,
-            "started background accepted-write convergence attachment",
-        )
-    }
-}
-
-impl WriteConvergenceStartup {
-    fn spawn(
-        observer: PgtmObserver,
-        poll_interval: std::time::Duration,
-        write_deadline: std::time::Duration,
-    ) -> Self {
-        Self {
+        *state = WriteConvergenceState::Starting {
             started_at: Instant::now(),
             task: Some(tokio::spawn(async move {
                 WriteConvergenceInvariantRunner::start(observer, poll_interval, write_deadline)
                     .await
             })),
-        }
-    }
-
-    fn take_task(
-        &mut self,
-    ) -> Result<
-        JoinHandle<
-            std::result::Result<WriteConvergenceInvariantRunner, WriteConvergenceInvariantError>,
-        >,
-    > {
-        self.task.take().ok_or_else(|| {
-            HarnessError::message("write-convergence invariant attachment task was missing")
-        })
-    }
-}
-
-impl Drop for WriteConvergenceStartup {
-    fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        };
+        self.record_startup_phase(
+            StartupPhase::InvariantWriteConvergence,
+            "started background accepted-write convergence attachment",
+        )
     }
 }
 
@@ -1048,23 +1018,32 @@ impl StartupPhase {
 }
 
 fn wait_for_write_convergence_attachment(
-    mut attachment: WriteConvergenceStartup,
+    started_at: Instant,
+    maybe_task: Option<
+        JoinHandle<
+            std::result::Result<WriteConvergenceInvariantRunner, WriteConvergenceInvariantError>,
+        >,
+    >,
 ) -> (WriteConvergenceState, std::time::Duration) {
-    let elapsed = attachment.started_at.elapsed();
-    let settled_state = match attachment.take_task().and_then(|task| {
-        block_on_harness_future(
-            async move {
-                task.await
-                    .map_err(|err| {
-                        HarnessError::message(format!(
-                            "write-convergence invariant attachment task failed to join: {err}"
-                        ))
-                    })?
-                    .map_err(HarnessError::from)
-            },
-            "write-convergence invariant attachment",
-        )
-    }) {
+    let elapsed = started_at.elapsed();
+    let settled_state = match maybe_task
+        .ok_or_else(|| {
+            HarnessError::message("write-convergence invariant attachment task was missing")
+        })
+        .and_then(|task| {
+            block_on_harness_future(
+                async move {
+                    task.await
+                        .map_err(|err| {
+                            HarnessError::message(format!(
+                                "write-convergence invariant attachment task failed to join: {err}"
+                            ))
+                        })?
+                        .map_err(HarnessError::from)
+                },
+                "write-convergence invariant attachment",
+            )
+        }) {
         Ok(runner) => WriteConvergenceState::Running(runner),
         Err(err) => WriteConvergenceState::Failed(err.to_string()),
     };
@@ -1744,13 +1723,13 @@ mod tests {
 
     fn delayed_failed_attachment(message: &str) -> WriteConvergenceState {
         let message = message.to_string();
-        WriteConvergenceState::Starting(WriteConvergenceStartup {
+        WriteConvergenceState::Starting {
             started_at: Instant::now(),
             task: Some(tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 Err(WriteConvergenceInvariantError::Failed(message))
             })),
-        })
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
