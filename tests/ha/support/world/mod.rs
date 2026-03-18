@@ -381,7 +381,15 @@ impl HarnessShared {
             .and_then(|_| {
                 self.write_convergence_invariant
                     .as_ref()
-                    .map_or(Ok(()), WriteConvergenceInvariantRunner::ensure_healthy)
+                    .map_or(Ok(()), |runner| {
+                        if runner.ensure_healthy() {
+                            Ok(())
+                        } else {
+                            Err(HarnessError::message(
+                                "write-convergence invariant has not yet observed a Postgres DSN",
+                            ))
+                        }
+                    })
             })
     }
 
@@ -809,18 +817,6 @@ impl HarnessShared {
 
         let mut failures = Vec::new();
         let compose_network = format!("{}_ha", self.compose_project());
-        if let Some(runner) = self.primary_count_invariant.as_mut() {
-            let runner: &mut PrimaryCountInvariantRunner = runner;
-            if let Err(err) = runner.stop() {
-                failures.push(format!("primary-count invariant cleanup failed: {err}"));
-            }
-        }
-        if let Some(runner) = self.write_convergence_invariant.as_mut() {
-            let runner: &mut WriteConvergenceInvariantRunner = runner;
-            if let Err(err) = runner.stop() {
-                failures.push(format!("write-convergence invariant cleanup failed: {err}"));
-            }
-        }
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));

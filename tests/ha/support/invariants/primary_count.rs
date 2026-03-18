@@ -24,7 +24,4 @@ impl PrimaryCountInvariantRunner {
         Ok(())
     }
 
-    pub fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
 }

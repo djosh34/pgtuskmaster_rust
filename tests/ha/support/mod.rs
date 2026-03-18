@@ -3,7 +3,6 @@ mod docker;
 mod error;
 mod faults;
 mod givens;
-mod invariant;
 mod invariants;
 mod observer;
 mod process;

@@ -1,33 +1,51 @@
-use std::{time::Duration};
-
-use crate::support::{
-    error::{Result},
-    observer::{pgtm::PgtmObserver},
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration},
 };
+
+use crate::support::{error::Result, observer::pgtm::PgtmObserver, topology::ClusterMember};
 
 #[derive(Debug)]
 pub struct WriteConvergenceInvariantRunner {
-    _poll_interval: Duration,
-    _write_deadline: Duration,
+    dsn_found: Arc<AtomicBool>,
+    _thread: Option<JoinHandle<()>>,
 }
 
 impl WriteConvergenceInvariantRunner {
     pub fn start(
-        _observer: PgtmObserver,
+        observer: PgtmObserver,
         poll_interval: Duration,
-        write_deadline: Duration,
+        _write_deadline: Duration,
     ) -> Result<Self> {
+        let dsn_found = Arc::new(AtomicBool::new(false));
+        let thread_dsn_found = Arc::clone(&dsn_found);
+
+        let thread = thread::spawn(move || {
+            loop {
+                let found = ClusterMember::ALL
+                    .into_iter()
+                    .any(|member| observer.postgres_routing_target(member).is_ok());
+                if found {
+                    thread_dsn_found.store(true, Ordering::Release);
+                    return;
+                }
+                thread::sleep(poll_interval);
+            }
+        });
+
         Ok(Self {
-            _poll_interval: poll_interval,
-            _write_deadline: write_deadline,
+            dsn_found,
+            _thread: Some(thread),
         })
     }
 
-    pub fn ensure_healthy(&self) -> Result<()> {
-        Ok(())
+    pub fn ensure_healthy(&self) -> bool {
+        self.dsn_found.load(Ordering::Acquire)
     }
 
-    pub fn stop(&mut self) -> Result<()> {
-        Ok(())
-    }
 }
+
