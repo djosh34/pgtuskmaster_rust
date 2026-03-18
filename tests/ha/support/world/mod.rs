@@ -379,17 +379,11 @@ impl HarnessShared {
             .as_ref()
             .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
             .and_then(|_| {
-                self.write_convergence_invariant
-                    .as_ref()
-                    .map_or(Ok(()), |runner| {
-                        if runner.ensure_healthy() {
-                            Ok(())
-                        } else {
-                            Err(HarnessError::message(
-                                "write-convergence invariant is failing",
-                            ))
-                        }
-                    })
+                if let Some(runner) = self.write_convergence_invariant.as_ref() {
+                    runner.ensure_healthy()?
+                } else {
+                    Ok(())
+                }
             })
     }
 
