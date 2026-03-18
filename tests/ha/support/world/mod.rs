@@ -26,7 +26,7 @@ use crate::support::{
         remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
     },
     feature_name,
-    givens::HaGivenId,
+    givens::{HaGivenDefinition, HaGivenId},
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner,
@@ -214,8 +214,10 @@ impl HarnessShared {
         )?;
         let ryuk = RyukGuard::start(docker.clone(), compose_project.as_str())?;
         let dcs_service_names = given
-            .dcs_services()
-            .into_iter()
+            .definition()
+            .dcs_services
+            .iter()
+            .copied()
             .map(|service| service.service_name())
             .collect::<Vec<_>>();
         docker.compose_up_services(
@@ -551,44 +553,65 @@ impl HarnessShared {
         self.block_member_path_to_host(
             member,
             TrafficPath::Dcs,
-            self.given.local_dcs_service_for(member).service_name(),
+            self.given
+                .definition()
+                .local_dcs_service_for(member)
+                .service_name(),
         )
     }
 
     pub fn stop_all_dcs_services(&self) -> Result<()> {
         self.given
-            .dcs_services()
-            .into_iter()
+            .definition()
+            .dcs_services
+            .iter()
+            .copied()
             .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_all_dcs_services(&self) -> Result<()> {
         self.given
-            .dcs_services()
-            .into_iter()
+            .definition()
+            .dcs_services
+            .iter()
+            .copied()
             .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
         self.given
-            .quorum_majority_dcs_services()
-            .into_iter()
+            .definition()
+            .quorum_majority_dcs_services
+            .iter()
+            .copied()
             .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_dcs_quorum_majority(&self) -> Result<()> {
         self.given
-            .quorum_majority_dcs_services()
-            .into_iter()
+            .definition()
+            .quorum_majority_dcs_services
+            .iter()
+            .copied()
             .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.stop_service(self.given.local_dcs_service_for(member).service_name())
+        self.stop_service(
+            self.given
+                .definition()
+                .local_dcs_service_for(member)
+                .service_name(),
+        )
     }
 
     pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.start_service(self.given.local_dcs_service_for(member).service_name())
+        self.start_service(
+            self.given
+                .definition()
+                .local_dcs_service_for(member)
+                .service_name(),
+        )
     }
 
     pub fn set_blocker(
@@ -681,7 +704,7 @@ impl HarnessShared {
             StartupPhase::DcsReady,
             "waiting for DCS services to report healthy",
         )?;
-        for service in self.given.dcs_services() {
+        for service in self.given.definition().dcs_services {
             self.wait_for_service_health(service.service_name()).await?;
         }
         self.record_startup_phase(StartupPhase::DcsReady, "all DCS services are healthy")?;
@@ -894,7 +917,7 @@ impl HarnessShared {
             Err(err) => failures.push(format!("operator state capture failed: {err}")),
         }
 
-        for service_name in self.given.artifact_service_names() {
+        for service_name in self.given.definition().artifact_service_names() {
             match self.service_container_id(service_name) {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
@@ -943,7 +966,7 @@ impl HarnessShared {
     }
 
     fn refresh_service_container_ids(&self) -> Result<()> {
-        let artifact_service_names = self.given.artifact_service_names();
+        let artifact_service_names = self.given.definition().artifact_service_names();
         let compose_entries = self
             .docker
             .compose_ps_entries(self.compose_file(), self.compose_project())?;
@@ -1245,8 +1268,9 @@ fn materialize_given_fixture(
     given: HaGivenId,
     materialized_root: &Path,
 ) -> Result<()> {
+    let given = given.definition();
     let shared_root = repo_root.join("tests/ha/givens/three_node_shared");
-    for relative_path in given.shared_fixture_relative_paths() {
+    for relative_path in given.shared_fixture_relative_paths {
         copy_shared_fixture_path(
             shared_root.as_path(),
             materialized_root,
@@ -1256,7 +1280,7 @@ fn materialize_given_fixture(
     for member in ClusterMember::ALL {
         materialize_runtime_config(materialized_root, given, member)?;
     }
-    materialize_compose_include_file(materialized_root, given.compose_variant_relative_path())?;
+    materialize_compose_include_file(materialized_root, given.compose_variant_relative_path)?;
     Ok(())
 }
 
@@ -1336,7 +1360,7 @@ fn copy_directory(from: &Path, to: &Path) -> Result<()> {
 
 fn materialize_runtime_config(
     materialized_root: &Path,
-    given: HaGivenId,
+    given: HaGivenDefinition,
     member: ClusterMember,
 ) -> Result<()> {
     let target_path = materialized_root.join(member.runtime_config_relative_path());
@@ -1382,11 +1406,11 @@ fn toml_path_string(path: &Path) -> String {
     format!("{:?}", path.display().to_string())
 }
 
-fn render_member_runtime_config(given: HaGivenId, member: ClusterMember) -> String {
+fn render_member_runtime_config(given: HaGivenDefinition, member: ClusterMember) -> String {
     let member_name = member.service_name();
     let dcs_endpoint = given.local_dcs_service_for(member).client_url();
-    let replicator = given.replicator_role();
-    let rewinder = given.rewinder_role();
+    let replicator = given.replicator_role;
+    let rewinder = given.rewinder_role;
     format!(
         r#"[cluster]
 name = "ha-cucumber-cluster"
@@ -1594,7 +1618,7 @@ mod tests {
                     }
                 })?;
             let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
+                compose_variant_absolute_path(given.definition().compose_variant_relative_path)?;
             assert!(compose.contains("include:"));
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
             assert!(compose.contains(output_root.display().to_string().as_str()));
@@ -1648,7 +1672,7 @@ mod tests {
                     }
                 })?;
             let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
+                compose_variant_absolute_path(given.definition().compose_variant_relative_path)?;
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let runtime = fs::read_to_string(
@@ -1691,7 +1715,7 @@ mod tests {
                     }
                 })?;
             let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
+                compose_variant_absolute_path(given.definition().compose_variant_relative_path)?;
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
             let node_a_runtime = fs::read_to_string(
