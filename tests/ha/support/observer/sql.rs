@@ -1,7 +1,4 @@
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{path::Path, time::Duration};
 
 use crate::support::{
     config::harness_settings,
@@ -10,12 +7,11 @@ use crate::support::{
 };
 
 pub fn execute(materialized_dir: &Path, dsn: &str, sql: &str, timeout: Duration) -> Result<String> {
-    let binary = resolve_psql_binary()?;
     let connect_timeout_s = timeout.as_secs().max(1).to_string();
     let statement_timeout_ms = timeout.as_millis().max(1);
     process::run(
         CommandSpec::new(
-            binary.clone(),
+            harness_settings()?.psql_executable(),
             format!("executing psql from {}", materialized_dir.display()),
         )
         .env("PGCONNECT_TIMEOUT", connect_timeout_s)
@@ -39,8 +35,4 @@ pub fn execute(materialized_dir: &Path, dsn: &str, sql: &str, timeout: Duration)
             sql,
         ]),
     )
-}
-
-fn resolve_psql_binary() -> Result<PathBuf> {
-    Ok(Path::new(harness_settings()?.psql_executable()).to_path_buf())
 }

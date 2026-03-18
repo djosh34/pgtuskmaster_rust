@@ -95,14 +95,17 @@ impl PgtmObserver {
 
     pub fn postgres_routing_target(&self, member: ClusterMember) -> Result<PostgresRoutingTarget> {
         let published_port = self.member_published_port(member, "5432/tcp")?;
+        let ca_cert_path = self.materialized_dir.join("configs/tls/ca.crt");
+        let observer_cert_path = self.materialized_dir.join("configs/tls/observer.crt");
+        let observer_key_path = self.materialized_dir.join("configs/tls/observer.key");
         Ok(PostgresRoutingTarget {
             member,
             dsn: host_postgres_dsn(
                 member,
                 published_port,
-                self.ca_cert_path().as_path(),
-                self.observer_cert_path().as_path(),
-                self.observer_key_path().as_path(),
+                ca_cert_path.as_path(),
+                observer_cert_path.as_path(),
+                observer_key_path.as_path(),
             ),
         })
     }
@@ -164,7 +167,14 @@ impl PgtmObserver {
         context_label: &str,
         decode_output: fn(CommandOutputDto) -> Result<T>,
     ) -> Result<std::result::Result<T, String>> {
-        let binary = resolve_pgtm_binary()?;
+        let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
+            .map(PathBuf::from)
+            .filter(|path| path.exists());
+        let executable = match env_candidate {
+            Some(path) => path,
+            None => harness_settings()?.pgtm_executable().to_path_buf(),
+        };
+        process::ensure_absolute_executable(executable.as_path())?;
         let args = [
             "--config".to_string(),
             runtime_config.display().to_string(),
@@ -175,7 +185,7 @@ impl PgtmObserver {
         .collect::<Vec<_>>();
         let context = format!("{context_label} via `{member}`");
         let output = process::run(
-            CommandSpec::new(binary.clone(), context.clone())
+            CommandSpec::new(executable.clone(), context.clone())
                 .env("PATH", "")
                 .args(args.as_slice()),
         );
@@ -212,35 +222,17 @@ impl PgtmObserver {
         self.docker.published_host_port(container_id.as_str(), port)
     }
 
-    fn ca_cert_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/ca.crt")
-    }
-
-    fn read_token_path(&self) -> PathBuf {
-        self.materialized_dir.join("secrets/api-read-token")
-    }
-
-    fn admin_token_path(&self) -> PathBuf {
-        self.materialized_dir.join("secrets/api-admin-token")
-    }
-
-    fn observer_cert_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/observer.crt")
-    }
-
-    fn observer_key_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/observer.key")
-    }
-
-    fn host_observer_config_path(&self, member: ClusterMember) -> PathBuf {
-        self.materialized_dir
-            .join("configs/observer")
-            .join(format!("{}-pgtm.toml", member.service_name()))
-    }
-
     fn materialize_host_observer_config(&self, member: ClusterMember) -> Result<PathBuf> {
         let published_api_port = self.member_published_port(member, "8443/tcp")?;
-        let config_path = self.host_observer_config_path(member);
+        let config_path = self
+            .materialized_dir
+            .join("configs/observer")
+            .join(format!("{}-pgtm.toml", member.service_name()));
+        let ca_cert_path = self.materialized_dir.join("configs/tls/ca.crt");
+        let read_token_path = self.materialized_dir.join("secrets/api-read-token");
+        let admin_token_path = self.materialized_dir.join("secrets/api-admin-token");
+        let observer_cert_path = self.materialized_dir.join("configs/tls/observer.crt");
+        let observer_key_path = self.materialized_dir.join("configs/tls/observer.key");
         if let Some(parent) = config_path.parent() {
             fs::create_dir_all(parent).map_err(|source| HarnessError::Io {
                 path: parent.to_path_buf(),
@@ -250,11 +242,11 @@ impl PgtmObserver {
         let rendered = render_host_observer_config(
             member,
             SocketAddr::from(([127, 0, 0, 1], published_api_port)),
-            self.ca_cert_path().as_path(),
-            self.read_token_path().as_path(),
-            self.admin_token_path().as_path(),
-            self.observer_cert_path().as_path(),
-            self.observer_key_path().as_path(),
+            ca_cert_path.as_path(),
+            read_token_path.as_path(),
+            admin_token_path.as_path(),
+            observer_cert_path.as_path(),
+            observer_key_path.as_path(),
         );
         fs::write(config_path.as_path(), rendered).map_err(|source| HarnessError::Io {
             path: config_path.clone(),
@@ -262,18 +254,6 @@ impl PgtmObserver {
         })?;
         Ok(config_path)
     }
-}
-
-fn resolve_pgtm_binary() -> Result<PathBuf> {
-    let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
-        .map(PathBuf::from)
-        .filter(|path| path.exists());
-    let candidate = match env_candidate {
-        Some(path) => path,
-        None => harness_settings()?.pgtm_executable().to_path_buf(),
-    };
-    process::ensure_absolute_executable(candidate.as_path())?;
-    Ok(candidate)
 }
 
 fn extract_state_command_output(output: CommandOutputDto) -> Result<NodeState> {
