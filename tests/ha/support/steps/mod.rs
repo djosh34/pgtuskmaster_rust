@@ -741,15 +741,14 @@ fn record_cluster_observation(
     observation: &ClusterStateObservation,
 ) -> Result<()> {
     observation
-        .members()
         .iter()
-        .try_for_each(|member| match &member.outcome {
+        .try_for_each(|(member, outcome)| match outcome {
             Ok(state) => harness.record_status_snapshot(
-                format!("{phase}.{}", member.member.service_name()).as_str(),
+                format!("{phase}.{}", member.service_name()).as_str(),
                 state,
             ),
             Err(message) => harness.record_note(
-                format!("{phase}.{}", member.member.service_name()).as_str(),
+                format!("{phase}.{}", member.service_name()).as_str(),
                 format!("status_failed={message}"),
             ),
         })
@@ -807,8 +806,12 @@ fn require_observed_member_state(
     member: ClusterMember,
 ) -> Result<&NodeState> {
     observation
-        .member(member)?
-        .outcome
+        .get(&member)
+        .ok_or_else(|| {
+            HarnessError::message(format!(
+                "cluster observation did not include member `{member}`"
+            ))
+        })?
         .as_ref()
         .ok()
         .ok_or_else(|| HarnessError::message(member_observation_failure(observation, member)))
@@ -819,9 +822,8 @@ fn member_observation_failure(
     member: ClusterMember,
 ) -> String {
     observation
-        .member(member)
-        .ok()
-        .and_then(|observation| observation.outcome.as_ref().err().map(String::as_str))
+        .get(&member)
+        .and_then(|observation| observation.as_ref().err().map(String::as_str))
         .map(|failure| {
             format!(
                 "expected `pgtm status --json` via `{member}` to succeed, but it failed: {failure}"

@@ -891,15 +891,14 @@ impl HarnessShared {
         match self.observer().observe_states() {
             Ok(states) => {
                 let serialized = states
-                    .members()
                     .iter()
-                    .map(|observation| match &observation.outcome {
+                    .map(|(member, outcome)| match outcome {
                         Ok(state) => serde_json::json!({
-                            "member": observation.member.service_name(),
+                            "member": member.service_name(),
                             "state": state,
                         }),
                         Err(message) => serde_json::json!({
-                            "member": observation.member.service_name(),
+                            "member": member.service_name(),
                             "failure": message,
                         }),
                     })

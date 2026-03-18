@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -24,33 +25,7 @@ pub struct PostgresRoutingTarget {
     pub dsn: String,
 }
 
-#[derive(Clone, Debug)]
-pub struct MemberStateObservation {
-    pub member: ClusterMember,
-    pub outcome: std::result::Result<NodeState, String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ClusterStateObservation {
-    members: Vec<MemberStateObservation>,
-}
-
-impl ClusterStateObservation {
-    pub fn members(&self) -> &[MemberStateObservation] {
-        self.members.as_slice()
-    }
-
-    pub fn member(&self, member: ClusterMember) -> Result<&MemberStateObservation> {
-        self.members
-            .iter()
-            .find(|observation| observation.member == member)
-            .ok_or_else(|| {
-                HarnessError::message(format!(
-                    "cluster observation did not include member `{member}`"
-                ))
-            })
-    }
-}
+pub type ClusterStateObservation = BTreeMap<ClusterMember, std::result::Result<NodeState, String>>;
 
 #[derive(Clone, Debug)]
 pub struct PgtmObserver {
@@ -76,21 +51,16 @@ impl PgtmObserver {
     }
 
     pub fn observe_states(&self) -> Result<ClusterStateObservation> {
-        let members = ClusterMember::ALL
+        ClusterMember::ALL
             .into_iter()
-            .map(|member| self.observe_state_via_member(member))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ClusterStateObservation { members })
+            .map(|member| Ok((member, self.observe_state_via_member(member))))
+            .collect()
     }
 
     pub fn state_via_member(&self, member: ClusterMember) -> Result<NodeState> {
-        let observation = self.observe_state_via_member(member)?;
-        match observation.outcome {
-            Ok(state) => Ok(state),
-            Err(message) => Err(HarnessError::message(format!(
-                "pgtm status via `{member}` failed: {message}"
-            ))),
-        }
+        self.observe_state_via_member(member).map_err(|message| {
+            HarnessError::message(format!("pgtm status via `{member}` failed: {message}"))
+        })
     }
 
     pub fn postgres_routing_target(&self, member: ClusterMember) -> Result<PostgresRoutingTarget> {
@@ -145,18 +115,21 @@ impl PgtmObserver {
         }
     }
 
-    fn observe_state_via_member(&self, member: ClusterMember) -> Result<MemberStateObservation> {
-        let outcome = match self.materialize_host_observer_config(member) {
-            Ok(runtime_config) => self.run_command_via_member(
-                member,
-                runtime_config.as_path(),
-                vec!["status".to_string()],
-                "pgtm status",
-                extract_state_command_output,
-            )?,
-            Err(err) => Err(err.to_string()),
-        };
-        Ok(MemberStateObservation { member, outcome })
+    fn observe_state_via_member(
+        &self,
+        member: ClusterMember,
+    ) -> std::result::Result<NodeState, String> {
+        let runtime_config = self
+            .materialize_host_observer_config(member)
+            .map_err(|err| err.to_string())?;
+        self.run_command_via_member(
+            member,
+            runtime_config.as_path(),
+            vec!["status".to_string()],
+            "pgtm status",
+            extract_state_command_output,
+        )
+        .map_err(|err| err.to_string())?
     }
 
     fn run_command_via_member<T>(
