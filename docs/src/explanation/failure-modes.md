@@ -102,11 +102,15 @@ Fencing is the process of forcibly stopping a misbehaving primary. The system en
 
 The fencing process runs as an independent job. Success transitions back to `WaitingDcsTrusted` with a lease release. Failure transitions to `FailSafe`, halting all further action. This conservative approach reflects that fencing failure indicates deeper infrastructure problems.
 
-### Harness split-brain detection
+### The HA invariant runners
 
-The HA test harness runs a perpetual primary-count invariant runner for every HA scenario. It continuously samples all members individually through the host-side `pgtm status --json` observation surface. The invariant counts only each node's local self-report from `NodeState.pg`: `PgInfoState::Primary` counts as primary, while `PgInfoState::Replica` and `PgInfoState::Unknown` count as not primary. Command failure for a member counts as absence of self-report for that member. The allowed self-reported primary counts are `{0, 1}`. The scenario fails immediately when the sampled primary count is outside that set, and the violating sample is persisted to `artifacts/primary-count-invariant-violation.json`. This replaced feature-local dual-primary assertions and transition-history bookkeeping.
+The HA test harness now runs two perpetual invariant runners for every HA scenario. These are host-side safety checks, not optional diagnostics.
 
-That host-side validation path demonstrates that split-brain prevention is a first-class design goal, not an afterthought. It also shows how operators can implement similar independent monitoring in production without relying on an in-cluster observer sidecar.
+The first runner is the primary-count invariant. It continuously samples all members individually through the host-side `pgtm status --json` observation surface. It counts only each node's local self-report from `NodeState.pg`: `PgInfoState::Primary` counts as primary, while `PgInfoState::Replica` and `PgInfoState::Unknown` count as not primary. Command failure for a member counts as absence of self-report. The allowed self-reported primary counts are `{0, 1}`. The scenario fails immediately when the sampled primary count is outside that set, and the violating sample is persisted to `artifacts/primary-count-invariant-violation.json`.
+
+The second runner is the write-convergence invariant. It starts after bootstrap succeeds, waits until the invariant table `public.ha_write_convergence_invariant` is visible on all members, and then keeps probing the cluster in the background. Accepted writes are defined narrowly: the runner observes the cluster's current authority projection from `NodeState.ha.publication` and writes only through the authoritative primary. Rejected-write probes are sent to non-authoritative members. Any write accepted through the authoritative primary must eventually become visible on all members. The runner records structured evidence in `artifacts/write-convergence-invariant-events.jsonl` and `artifacts/write-convergence-invariant-summary.json`, and it persists `artifacts/write-convergence-invariant-violation.json` if a tracked accepted write exceeds `TimeoutModel::write_convergence_deadline`.
+
+Together these runners replace feature-local dual-primary assertions, proof-row propagation checks, and bounded-workload bookkeeping with always-on safety checks. That host-side validation path demonstrates that split-brain prevention and committed-write convergence are first-class design goals, not afterthoughts.
 
 ## Fail-safe mode
 

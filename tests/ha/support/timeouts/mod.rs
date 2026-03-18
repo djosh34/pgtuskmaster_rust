@@ -16,6 +16,7 @@ pub struct TimeoutModel {
     pub startup_deadline: Duration,
     pub failover_deadline: Duration,
     pub recovery_deadline: Duration,
+    pub write_convergence_deadline: Duration,
     pub poll_interval: Duration,
 }
 
@@ -57,6 +58,7 @@ fn derive_timeout_model(
     let startup_deadline = Duration::from_millis(bootstrap_ms) + recovery_slack;
     let recovery_base = bootstrap_ms.max(pg_rewind_ms);
     let recovery_deadline = Duration::from_millis(recovery_base) + recovery_slack;
+    let write_convergence_deadline = failover_deadline + recovery_deadline;
     let poll_interval = Duration::from_millis(
         ha_loop_interval_ms
             .saturating_mul(HARNESS_POLL_INTERVAL_MULTIPLIER)
@@ -66,6 +68,7 @@ fn derive_timeout_model(
         startup_deadline,
         failover_deadline,
         recovery_deadline,
+        write_convergence_deadline,
         poll_interval,
     }
 }
@@ -81,6 +84,7 @@ mod tests {
         let model = derive_timeout_model(1_000, 10_000, 300_000, 120_000);
         assert_eq!(model.poll_interval, Duration::from_secs(2));
         assert_eq!(model.failover_deadline, Duration::from_secs(26));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(336));
     }
 
     #[test]
@@ -88,5 +92,6 @@ mod tests {
         let model = derive_timeout_model(3_000, 10_000, 300_000, 120_000);
         assert_eq!(model.poll_interval, Duration::from_secs(6));
         assert_eq!(model.failover_deadline, Duration::from_secs(34));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(364));
     }
 }

@@ -24,7 +24,7 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
-    invariant::PrimaryCountInvariantRunner,
+    invariant::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -215,6 +215,7 @@ pub struct HarnessShared {
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
     primary_count_invariant: Option<PrimaryCountInvariantRunner>,
+    write_convergence_invariant: Option<WriteConvergenceInvariantRunner>,
     cleaned_up: bool,
 }
 
@@ -292,6 +293,7 @@ impl HarnessShared {
             service_container_ids,
             timeline: Mutex::new(Vec::new()),
             primary_count_invariant: None,
+            write_convergence_invariant: None,
             cleaned_up: false,
         };
         harness.record_note(
@@ -316,6 +318,15 @@ impl HarnessShared {
                 None => Err(err),
                 Some(cleanup) => Err(HarnessError::message(format!(
                     "{err}\ncleanup after bootstrap failure also failed: {cleanup}"
+                ))),
+            };
+        }
+        if let Err(err) = harness.start_write_convergence_invariant() {
+            let cleanup_error = harness.cleanup().err();
+            return match cleanup_error {
+                None => Err(err),
+                Some(cleanup) => Err(HarnessError::message(format!(
+                    "{err}\ncleanup after invariant startup failure also failed: {cleanup}"
                 ))),
             };
         }
@@ -367,6 +378,11 @@ impl HarnessShared {
         self.primary_count_invariant
             .as_ref()
             .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
+            .and_then(|_| {
+                self.write_convergence_invariant
+                    .as_ref()
+                    .map_or(Ok(()), WriteConvergenceInvariantRunner::ensure_healthy)
+            })
     }
 
     pub fn sql(&self) -> SqlObserver {
@@ -798,6 +814,11 @@ impl HarnessShared {
                 failures.push(format!("primary-count invariant cleanup failed: {err}"));
             }
         }
+        if let Some(runner) = self.write_convergence_invariant.as_mut() {
+            if let Err(err) = runner.stop() {
+                failures.push(format!("write-convergence invariant cleanup failed: {err}"));
+            }
+        }
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));
@@ -995,6 +1016,20 @@ impl HarnessShared {
         self.record_note(
             "invariant.primary_count.start",
             "started perpetual self-reported primary-count runner",
+        )
+    }
+
+    fn start_write_convergence_invariant(&mut self) -> Result<()> {
+        self.write_convergence_invariant = Some(WriteConvergenceInvariantRunner::start(
+            self.observer(),
+            self.sql(),
+            self.artifacts_dir().to_path_buf(),
+            self.timeouts.poll_interval,
+            self.timeouts.write_convergence_deadline,
+        )?);
+        self.record_note(
+            "invariant.write_convergence.start",
+            "started perpetual accepted-write convergence runner",
         )
     }
 }

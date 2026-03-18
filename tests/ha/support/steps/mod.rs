@@ -454,7 +454,7 @@ async fn wait_for_authoritative_single_primary(
                 exact_primary,
             )?;
             let harness = world.harness()?;
-            let primary_target = harness.observer().primary_routing_target(primary)?;
+            let primary_target = harness.observer().postgres_routing_target(primary)?;
             probe_writable_primary(harness, primary_target.dsn.as_str())?;
             Ok(primary)
         })();
@@ -507,7 +507,7 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
                 None,
             ) {
                 Ok(primary) => {
-                    let primary_target = harness.observer().primary_routing_target(primary)?;
+                    let primary_target = harness.observer().postgres_routing_target(primary)?;
                     match probe_writable_primary(harness, primary_target.dsn.as_str()) {
                         Ok(()) => Err(HarnessError::message(format!(
                             "cluster still exposes a compatible writable primary `{primary}`"

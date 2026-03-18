@@ -223,3 +223,4 @@ NONE
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/03-task-delete-observer-compose-rendering-and-collapse-ha-fixtures-to-two-static-compose-variants.md
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/04-task-rebuild-the-ha-observation-surface-around-host-side-pgtm-json-and-minimal-outcomes.md
 .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/05-task-add-a-perpetual-self-reported-primary-count-invariant-runner.md
+.ralph/tasks/story-ha-acceptance-deletion-first-rewrite/06-task-add-a-perpetual-accepted-write-convergence-invariant-runner.md

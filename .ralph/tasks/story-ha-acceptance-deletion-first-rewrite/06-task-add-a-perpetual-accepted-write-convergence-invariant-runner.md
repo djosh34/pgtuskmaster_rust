@@ -1,4 +1,4 @@
-## Task: Add A Perpetual Accepted-Write Convergence Invariant Runner <status>not_started</status> <passes>false</passes>
+## Task: Add A Perpetual Accepted-Write Convergence Invariant Runner <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
 
@@ -34,16 +34,16 @@
 </description>
 
 <acceptance_criteria>
-- [ ] Add a perpetual HA invariant runner that continuously records accepted versus rejected writes and verifies eventual convergence of every accepted write across all nodes.
-- [ ] Start this runner automatically for every HA scenario and stop/clean it up deterministically at scenario end.
-- [ ] Treat rejected writes to non-writable targets as allowed rejections, not invariant failures.
-- [ ] Fail the scenario immediately when an accepted write does not converge as required.
-- [ ] Remove feature-level proof-table, proof-row, bounded-workload, and workload-summary assertions once this runner replaces them.
-- [ ] Persist structured artifacts that show accepted writes, rejected writes, and convergence outcomes without requiring log scraping.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
+- [x] Add a perpetual HA invariant runner that continuously records accepted versus rejected writes and verifies eventual convergence of every accepted write across all nodes.
+- [x] Start this runner automatically for every HA scenario and stop/clean it up deterministically at scenario end.
+- [x] Treat rejected writes to non-writable targets as allowed rejections, not invariant failures.
+- [x] Fail the scenario immediately when an accepted write does not converge as required.
+- [x] Remove feature-level proof-table, proof-row, bounded-workload, and workload-summary assertions once this runner replaces them.
+- [x] Persist structured artifacts that show accepted writes, rejected writes, and convergence outcomes without requiring log scraping.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
 
 ### Execution plan

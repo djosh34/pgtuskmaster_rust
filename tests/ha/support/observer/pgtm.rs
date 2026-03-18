@@ -20,7 +20,7 @@ use crate::support::{
 pub type ClusterStatusView = NodeState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryRoutingTarget {
+pub struct PostgresRoutingTarget {
     pub member: ClusterMember,
     pub dsn: String,
 }
@@ -120,15 +120,12 @@ impl PgtmObserver {
         }
     }
 
-    pub fn primary_routing_target(
-        &self,
-        primary_member: ClusterMember,
-    ) -> Result<PrimaryRoutingTarget> {
-        let published_port = self.member_published_port(primary_member, "5432/tcp")?;
-        Ok(PrimaryRoutingTarget {
-            member: primary_member,
+    pub fn postgres_routing_target(&self, member: ClusterMember) -> Result<PostgresRoutingTarget> {
+        let published_port = self.member_published_port(member, "5432/tcp")?;
+        Ok(PostgresRoutingTarget {
+            member,
             dsn: host_postgres_dsn(
-                primary_member,
+                member,
                 published_port,
                 self.ca_cert_path().as_path(),
                 self.observer_cert_path().as_path(),

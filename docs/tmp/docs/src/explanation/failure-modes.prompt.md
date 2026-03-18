@@ -819,6 +819,8 @@ docker/pg/pg_ident.conf
 docker/pgtm.toml
 docs/book.toml
 docs/draft/docs/src/explanation/failure-modes.md
+docs/draft/docs/src/explanation/failure-modes.revised.md
+docs/draft/docs/src/explanation/failure-modes.surgical.md
 docs/draft/docs/src/explanation/process-management.md
 docs/draft/docs/src/explanation/trust-model.md
 docs/examples/docker-cluster-node-a.toml
@@ -867,192 +869,150 @@ docs/src/tutorial/validating-cluster-behavior.md
 docs/tmp/docs/src/explanation/failure-modes.prompt.md
 docs/tmp/docs/src/explanation/process-management.prompt.md
 docs/tmp/docs/src/explanation/trust-model.prompt.md
+docs/tmp/verbose_extra_context/ha-invariant-runners.md
 docs/tmp/verbose_extra_context/ha-primary-count-invariant-runner.md
 docs/tmp/verbose_extra_context/managed-postgres-roles.md
 docs/tmp/verbose_extra_context/process-logging-boundary.md
 docs/tmp/verbose_extra_context/trust-model.md
 
 
-===== docs/tmp/verbose_extra_context/ha-primary-count-invariant-runner.md =====
-# HA primary-count invariant runner context
+===== docs/src/explanation/failure-modes.md =====
+# Failure modes and recovery behavior
 
-This context file exists only to give K2 exhaustive raw facts about the HA test harness change completed in task `05-task-add-a-perpetual-self-reported-primary-count-invariant-runner.md`.
+This page explains how pgtuskmaster responds to component failures. It covers the system's trust model, how failures are categorized, and the reasoning behind recovery strategies. Understanding these concepts helps operators predict system behavior during outages and make informed decisions about deployment topology and configuration.
 
-## Task goal
+## The DCS trust model
 
-The task adds a scenario-agnostic invariant runner to the HA acceptance harness. The runner continuously queries each node individually and immediately fails the scenario unless the total number of self-reported primaries is in the allowed set `{0, 1}`.
+pgtuskmaster's behavior depends heavily on its view of cluster state, which comes from a distributed configuration store (DCS). The system does not treat DCS as either fully reliable or fully unreliable. Instead, it evaluates trust continuously and makes distinct decisions at each trust level.
 
-The important intent is:
+### Trust levels
 
-- remove split-brain / dual-primary assertions from individual feature text
-- remove any older transition-history or ad hoc bookkeeping approach
-- make the safety property run for the whole scenario lifetime
-- count only what each queried node says about itself
-- treat command failure as absence of a self-report for that node
-- persist direct structured evidence of the violating sample
+The system uses three discrete trust evaluations:
 
-## Actual implementation location
+**FullQuorum**
+The DCS is healthy and at least two members have fresh metadata. The system can safely perform leader elections, coordinate switchovers, and enforce split-brain prevention.
 
-The new runner lives in `tests/ha/support/invariant.rs`.
+**FailSafe**
+The DCS is accessible but does not meet full consensus requirements. This occurs when the local member record is stale or fewer than two members appear fresh in a multi-member view. In this state the system limits its activity to prevent data corruption.
 
-It is wired into the harness lifecycle through `tests/ha/support/world/mod.rs`.
+**NotTrusted**
+The DCS is unreachable or otherwise unhealthy. All trust-dependent operations are suspended.
 
-The support module now includes `mod invariant;` in `tests/ha/support/mod.rs`.
+### Why trust degrades
 
-## How the runner starts and stops
+Trust degrades to protect against split-brain scenarios. If a node cannot verify that its view of the cluster is current, acting on stale information could cause it to promote itself while another primary is still active. The system prefers to pause or enter a safe mode rather than risk data divergence.
 
-`HarnessShared::initialize()` now starts the invariant runner before cluster bootstrap continues. That means the invariant is active for the full harness lifetime after the run workspace exists, not only after a later feature step.
+Trust evaluation follows a specific sequence:
 
-The runner is stopped in `HarnessShared::cleanup()` before artifact capture and compose teardown continue.
+1. If etcd itself reports unhealthy, trust becomes `NotTrusted`
+2. If the local member record is missing or older than `ha.lease_ttl_ms`, trust becomes `FailSafe`
+3. In clusters larger than one node, if fewer than two members have fresh records, trust becomes `FailSafe`
+4. Only when all checks pass does trust become `FullQuorum`
 
-If startup of the invariant runner fails, `initialize()` performs cleanup and returns an error.
+This design reflects a key principle: membership metadata freshness acts as a heartbeat. A node that stops updating its record is treated as failed, even if the DCS remains healthy.
 
-If stopping the invariant runner fails or the runner has already recorded a failure, `cleanup()` records that as a scenario cleanup failure.
+Leader liveness is lease-backed rather than inferred from stale metadata. The etcd store attaches `/{scope}/leader` to an etcd lease derived from `ha.lease_ttl_ms`. If the owner releases leadership, it revokes its own lease. If the owner dies hard, keepalive stops and etcd deletes the leader key automatically when the lease expires. The watch-fed DCS cache then removes the leader record, allowing a healthy majority to continue election without manual DCS cleanup.
 
-## How failures surface to step execution
+## PostgreSQL reachability as a distinct axis
 
-`HaWorld::harness()` now calls `harness.ensure_background_invariants_healthy()?` before returning the harness reference.
+While DCS trust affects coordination safety, PostgreSQL reachability determines what local actions are possible. The system treats these as orthogonal concerns. A node can have `FullQuorum` trust while its local PostgreSQL is unreachable, or vice versa.
 
-This means normal scenario steps and the existing polling helpers fail through the shared harness access path if the invariant runner has recorded a failure.
+PostgreSQL reachability is binary in decision logic: either `SqlStatus::Healthy` or not. `Unknown` and `Unreachable` states both block replication and promotion actions. This binary approach simplifies state management but has important implications for recovery behavior.
 
-The runner also still causes the scenario to fail at cleanup time if the violation happens after the final step but before scenario teardown finishes.
+## Failure classification and phase transitions
 
-## What is counted as a self-reported primary
+When failures occur, the system transitions through specific HA phases. Each phase represents a coherent state where the system waits for a condition or performs a bounded set of actions.
 
-The runner does not use the operator-visible authority projection in `state.ha.publication` to count primaries.
+### Initial failure response
 
-Instead it uses the local PostgreSQL role from the node-local `NodeState.pg` value returned by `pgtm status --json` through the host-side observer path:
+The decision logic in `src/ha/decide.rs` prioritizes safety over availability. If DCS trust is not `FullQuorum`, the system immediately routes to `FailSafe` phase. The only exception is when the local PostgreSQL is a confirmed healthy primary, in which case it emits `EnterFailSafe` to ensure the leader lease is released.
 
-- `PgInfoState::Primary` counts as one self-reported primary
-- `PgInfoState::Replica` counts as not primary
-- `PgInfoState::Unknown` counts as not primary
-- a command failure for that member counts as absence, not as primary
+This behavior ensures that network partitions or DCS outages do not create split-brain scenarios. By entering `FailSafe`, nodes avoid taking coordinated actions until they can verify cluster state.
 
-The runner also validates that the local identity returned by `pgtm status --json` matches the member that was queried. If the queried member returns a different local identity, the runner records that as a runner error because the sample would not be trustworthy.
+### Primary failure handling
 
-## Observation path and artifact behavior
+When a primary node fails, the recovery sequence depends on whether the failure is detected internally (postgres stops) or externally (DCS marks it stale).
 
-The runner uses the existing host-side `PgtmObserver`.
+**Internal detection (postgres becomes unreachable):**
+If the node holds the leader lease, it releases its lease with reason `PostgresUnreachable` and transitions to `Rewinding`. This signals other nodes that the primary is stepping down intentionally.
 
-That observer already queries each member individually by materializing a host-side observer config for the specific node, then running `pgtm --config <host-config> --json status`.
+**External detection (other nodes observe failure):**
+When replicas observe that the old leader lease has expired and no active leader remains in DCS, they follow standard leader election. A replica transitions from `Replica` to `CandidateLeader`, attempts to acquire the leader lease, and promotes to primary if successful.
 
-The runner transforms the full per-member observation into a smaller sample focused only on per-member self-report:
+The `Rewinding` phase is intentional: it provides a dedicated state where the node reconciles its potentially diverged state before rejoining as a replica. This prevents a former primary from immediately following a new leader without first rewinding or re-cloning.
 
-- member name
-- whether it self-reported `primary`
-- or whether it self-reported `replica` / `unknown`
-- or whether the command failed
+### Replica failure handling
 
-On violation, the runner writes a structured artifact:
+Replica failure follows a simpler path. If PostgreSQL becomes unreachable, the replica enters `WaitingPostgresReachable` and periodically attempts to start it. The allowed source set supports that waiting behavior and the `WaitForPostgres` decision, but not a stronger claim about a separate timeout-based escalation policy for prolonged outages.
 
-- `artifacts/primary-count-invariant-violation.json`
+## Recovery mechanisms
 
-That artifact stores:
+The system supports three recovery strategies, each with specific use cases and safety implications.
 
-- `observed_at_ms`
-- `allowed_primary_counts`
-- `primary_count`
-- `members`
+### Rewind recovery
 
-Each member entry stores the member name and the reduced self-report result.
+Rewind uses `pg_rewind` to reconcile a diverged former primary with its new upstream. This is efficient because it only transfers changed blocks. The decision engine emits `StartRewind` when a timeline divergence is detected.
 
-The error message surfaced back to the harness mentions the structured artifact path explicitly.
+The engine detects divergence by comparing timelines: if the local timeline does not match the leader's timeline, rewind is required. This check prevents unnecessary rewind operations when timelines are already consistent.
 
-## What was already true before this task
+### Base backup recovery
 
-Before this task, the harness already:
+When rewind is not possible or fails, the system falls back to base backup. This performs a full physical copy from the primary. The decision engine emits `StartBaseBackup` after rewind failure or when no local timeline exists.
 
-- queried node state from the host with `pgtm`
-- recorded timeline notes and status snapshots
-- used scenario steps and polling helpers to check cluster health / authoritative primary behavior
+Base backup is slower and more resource-intensive than rewind.
 
-There was already explanatory doc text in `docs/src/explanation/failure-modes.md` that said the harness samples cluster state from the host and fails if more than one primary is observed.
+### Bootstrap recovery
 
-That existing explanation should now be made more precise:
+Bootstrap creates a new cluster from scratch. This is used only during initial cluster formation, not for recovery. The distinction is important: bootstrap assumes an empty data directory, while recovery assumes a potentially corrupted or diverged existing directory.
 
-- the invariant is perpetual / always-on for HA scenarios
-- the sample is based on per-node self-reported local PostgreSQL role
-- command failure is treated as missing self-report, not as inferred state
-- the failure evidence is written to a dedicated structured artifact
+## Safety mechanisms and split-brain prevention
 
-## What should not be claimed
+The system prevents split-brain through a combination of leader leases, fencing, and explicit phase constraints.
 
-Please do not claim any production runtime behavior changed. This is HA test harness behavior, not daemon control-plane logic.
+### Leader leases
 
-Please do not claim the runner uses cluster-wide inference, authority projection, or timeline-based dual-primary history. The task explicitly removes the need for those approaches.
+A leader lease is a DCS entry that a primary must hold to be considered authoritative. Acquiring the lease requires a DCS write that succeeds only if no other node holds it. Releasing the lease is a deliberate action that triggers specific downstream behaviors.
 
-Please do not claim the runner proves more than it does. It only counts self-reported primaries sampled from each node individually over time.
+In the etcd-backed store, the leader key is attached to an etcd lease. When a primary detects it should step down (switchover or external leader detection), it revokes its own lease before demoting. If the process dies hard, the missing keepalive causes etcd to expire the lease and delete the key automatically. This ensures that no node can rely on a blind delete of another node's leader key.
 
-Please do not claim command failures are treated as a failure by themselves. A command failure alone is treated as absence for that member unless some other runner/internal error occurs.
+### Fencing
 
+Fencing is the process of forcibly stopping a misbehaving primary. The system enters `Fencing` phase when it detects an apparent split-brain: local PostgreSQL is primary but DCS shows a different leader.
 
-===== .ralph/tasks/story-ha-acceptance-deletion-first-rewrite/05-task-add-a-perpetual-self-reported-primary-count-invariant-runner.md =====
-## Task: Add A Perpetual Self-Reported Primary-Count Invariant Runner <status>not_started</status> <passes>false</passes>
+The fencing process runs as an independent job. Success transitions back to `WaitingDcsTrusted` with a lease release. Failure transitions to `FailSafe`, halting all further action. This conservative approach reflects that fencing failure indicates deeper infrastructure problems.
 
-<priority>high</priority>
+### Harness split-brain detection
 
-<description>
-**Goal:** Add a scenario-agnostic invariant runner that continuously queries each node individually and fails immediately unless the sum of self-reported primaries is either 0 or 1. The higher-order goal is to move "no dual primary" logic completely out of feature files and out of ad hoc transition-history bookkeeping. This invariant must run independently of scenario text and must be stronger than the current step-based assertions because it applies for the whole scenario lifetime.
+The HA test harness runs a perpetual primary-count invariant runner for every HA scenario. It continuously samples all members individually through the host-side `pgtm status --json` observation surface. The invariant counts only each node's local self-report from `NodeState.pg`: `PgInfoState::Primary` counts as primary, while `PgInfoState::Replica` and `PgInfoState::Unknown` count as not primary. Command failure for a member counts as absence of self-report for that member. The allowed self-reported primary counts are `{0, 1}`. The scenario fails immediately when the sampled primary count is outside that set, and the violating sample is persisted to `artifacts/primary-count-invariant-violation.json`. This replaced feature-local dual-primary assertions and transition-history bookkeeping.
 
-**Context from research and PO direction:**
-- The current suite encodes this concern indirectly through feature steps like `there is no dual-primary evidence during the transition window` plus timeline/history helpers such as `assert_no_dual_primary_evidence`.
-- The PO explicitly wants this as one of the two stronger continuous expectations:
-  - query each node individually
-  - look only at how each node reports its own state
-  - the total number of primary self-reports must be 0 or 1
-  - fail directly when violated
-- After task 04, the suite should already have the direct per-node JSON observation surface needed to implement this cleanly.
+That host-side validation path demonstrates that split-brain prevention is a first-class design goal, not an afterthought. It also shows how operators can implement similar independent monitoring in production without relying on an in-cluster observer sidecar.
 
-**Scope:**
-- Add the invariant runner under `tests/ha/support/` in whatever minimal module shape best fits the reduced harness.
-- Wire the invariant runner into scenario startup/shutdown so it runs automatically for every HA scenario.
-- Delete the old dual-primary transition-history bookkeeping once the perpetual runner replaces it.
+## Fail-safe mode
 
-**Required behavior:**
-- Poll every node individually through the direct host-side `pgtm` observation surface.
-- Use only each node's self-report to count primaries.
-- Treat command failure as absence of a self-report for that node, not as an excuse to infer state from another node.
-- Fail immediately on any sample where the primary count is greater than 1 or otherwise outside the allowed `0 | 1` set.
-- Emit an artifact or timeline snapshot that makes the failure obvious without log-scraping.
+`FailSafe` is the system's panic mode. It is not a recovery state but a holding pattern. Unlike other phases, `FailSafe` does not automatically attempt recovery. It persists until DCS trust is restored, at which point it exits to `WaitingDcsTrusted`.
 
-**Expected outcome:**
-- The suite has one always-on primary-count safety gate instead of repeated feature-local "no dual primary evidence" steps.
-- The world/step layer no longer needs timeline-based dual-primary bookkeeping.
-- Scenarios become simpler because this safety property is enforced globally.
+The rationale is that entering `FailSafe` indicates insufficient information to make safe decisions. Automated recovery would risk exacerbating an unknown failure mode. Human operators must investigate and restore trust conditions.
 
-</description>
+The system may emit `SignalFailSafe` to local processes.
 
-<acceptance_criteria>
-- [ ] Add a perpetual HA invariant runner that continuously samples all nodes' self-reported status and enforces the allowed primary-count set `{0, 1}`.
-- [ ] Start this runner automatically for every HA scenario and stop/clean it up deterministically at scenario end.
-- [ ] Fail the scenario immediately when the invariant is violated; do not wait for a later step to notice.
-- [ ] Delete `assert_no_dual_primary_evidence`, transition-window primary-history dependence, and any equivalent feature-local dual-primary assertion machinery after the runner replaces it.
-- [ ] Remove all feature text that explicitly asserts "no dual primary evidence"; this property must now live only in the perpetual runner.
-- [ ] Persist enough structured failure evidence that the violating sample can be inspected without grepping logs.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] `make test-long` — passes cleanly (ultra-long-only)
-</acceptance_criteria>
+## Timeout behavior and missing source support
 
-### Execution plan
-1. Build the perpetual invariant runner on top of the per-node observation surface from task 04.
-2. Wire it into the HA scenario lifecycle so it starts automatically and owns its own failure channel/artifacts.
-3. Delete the old dual-primary step/history machinery after the runner proves the same property continuously.
-4. Run the required repo validation gates after the invariant runner is active in the reduced suite.
+The source code shows several timeout mechanisms but does not expose operator-configurable retry policies or maximum outage durations before escalation. For example:
 
-### Constraints for execution
-- Use only node-local self-reports for this invariant. Do not reintroduce cluster-wide inference or seed-selection heuristics.
-- Do not preserve the old timeline/history mechanism as a parallel implementation.
-- Keep the failure payload structured and small; the point is direct evidence, not more log scraping.
-- Do not run `cargo test`; use the required `make` targets, and use `cargo nextest` only for focused local iteration if absolutely needed before the final validation gates.
+- etcd commands have a hard-coded 2-second timeout
+- Process jobs have deadlines but the decision engine does not automatically escalate after repeated timeouts
+- The HA loop polls at a configured interval but does not implement backoff
 
-NOW EXECUTE
+Missing source support for specific retry counts and escalation timers means the safest statement is simply that the code exposes timeouts and deadlines, but the provided source set does not prove a richer operator-facing escalation policy.
+
+The source-backed behavior is intentionally conservative: degraded trust routes to `FailSafe`, primary loss can release leadership and move through rewind or base-backup recovery, and fencing exists to handle foreign-leader detection.
 
 
 ===== tests/ha/support/invariant.rs =====
 use std::{
-    fs,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, OpenOptions},
+    io::Write as _,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -1062,16 +1022,30 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use pgtuskmaster_rust::{api::NodeState, pginfo::state::PgInfoState};
+use pgtuskmaster_rust::{
+    api::NodeState,
+    ha::types::{AuthorityProjection, PublicationState},
+    pginfo::state::PgInfoState,
+};
 use serde::Serialize;
 
 use crate::support::{
     error::{HarnessError, Result},
-    observer::pgtm::{ClusterStateObservation, MemberCommandOutcome, PgtmObserver},
+    observer::{
+        pgtm::{
+            ClusterStateObservation, MemberCommandOutcome, PgtmObserver, PostgresRoutingTarget,
+        },
+        sql::SqlObserver,
+    },
     topology::ClusterMember,
 };
 
-const VIOLATION_ARTIFACT_NAME: &str = "primary-count-invariant-violation.json";
+const PRIMARY_COUNT_VIOLATION_ARTIFACT_NAME: &str = "primary-count-invariant-violation.json";
+const WRITE_CONVERGENCE_EVENTS_ARTIFACT_NAME: &str = "write-convergence-invariant-events.jsonl";
+const WRITE_CONVERGENCE_SUMMARY_ARTIFACT_NAME: &str = "write-convergence-invariant-summary.json";
+const WRITE_CONVERGENCE_VIOLATION_ARTIFACT_NAME: &str =
+    "write-convergence-invariant-violation.json";
+const WRITE_CONVERGENCE_TABLE_NAME: &str = "public.ha_write_convergence_invariant";
 
 #[derive(Debug)]
 pub struct PrimaryCountInvariantRunner {
@@ -1111,16 +1085,152 @@ struct MemberPrimaryCountSample {
     self_report: MemberSelfReport,
 }
 
+#[derive(Debug)]
+pub struct WriteConvergenceInvariantRunner {
+    shared: Arc<SharedWriteConvergenceInvariantState>,
+    join_handle: Option<JoinHandle<Result<()>>>,
+}
+
+#[derive(Debug)]
+struct SharedWriteConvergenceInvariantState {
+    stop_requested: AtomicBool,
+    failure: Mutex<Option<WriteConvergenceInvariantFailure>>,
+}
+
+#[derive(Clone, Debug)]
+enum WriteConvergenceInvariantFailure {
+    Violation(WriteConvergenceInvariantViolation),
+    RunnerError(String),
+}
+
+#[derive(Clone, Debug)]
+struct WriteConvergenceInvariantViolation {
+    artifact_path: PathBuf,
+    summary: WriteConvergenceSummary,
+}
+
+#[derive(Clone, Debug)]
+struct WriteConvergenceArtifacts {
+    events_path: PathBuf,
+    summary_path: PathBuf,
+    violation_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct WriteConvergenceTracker {
+    convergence_window: Duration,
+    next_target_index: usize,
+    next_token_index: u64,
+    accepted_count: usize,
+    rejected_count: usize,
+    converged_count: usize,
+    pending: BTreeMap<String, PendingAcceptedWrite>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum WriteConvergenceEvent {
+    Accepted(AcceptedWriteRecord),
+    Rejected(RejectedWriteRecord),
+    Converged(ConvergedWriteRecord),
+}
+
+#[derive(Clone, Debug)]
+enum WriteAttemptOutcome {
+    Accepted(AcceptedWriteRecord),
+    Rejected(RejectedWriteRecord),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct AcceptedWriteRecord {
+    token: String,
+    target_member: String,
+    target_self_report: MemberSelfReport,
+    accepted_at_ms: u128,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RejectedWriteRecord {
+    token: String,
+    target_member: String,
+    target_self_report: MemberSelfReport,
+    rejected_at_ms: u128,
+    reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ConvergedWriteRecord {
+    token: String,
+    target_member: String,
+    accepted_at_ms: u128,
+    converged_at_ms: u128,
+    lag_ms: u128,
+    visibility: Vec<MemberTokenVisibility>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingAcceptedWrite {
+    accepted: AcceptedWriteRecord,
+    visibility: Vec<MemberTokenVisibility>,
+}
+
+#[derive(Clone, Debug)]
+struct MemberTokenSnapshot {
+    member: ClusterMember,
+    observation: MemberTokenObservation,
+}
+
+#[derive(Clone, Debug)]
+enum MemberTokenObservation {
+    VisibleTokens(BTreeSet<String>),
+    QueryFailed(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct WriteConvergenceSummary {
+    observed_at_ms: u128,
+    convergence_window_ms: u128,
+    counts: WriteConvergenceCounts,
+    pending: Vec<PendingAcceptedWriteSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct WriteConvergenceCounts {
+    accepted: usize,
+    rejected: usize,
+    converged: usize,
+    pending: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PendingAcceptedWriteSummary {
+    token: String,
+    target_member: String,
+    accepted_at_ms: u128,
+    age_ms: u128,
+    visibility: Vec<MemberTokenVisibility>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct MemberTokenVisibility {
+    member: String,
+    state: TokenVisibilityState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum TokenVisibilityState {
+    Visible,
+    Missing,
+    QueryFailed { message: String },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum MemberSelfReport {
     Primary,
-    NotPrimary {
-        pg_state: NonPrimaryPgState,
-    },
-    CommandFailed {
-        message: String,
-    },
+    NotPrimary { pg_state: NonPrimaryPgState },
+    CommandFailed { message: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1142,14 +1252,20 @@ impl PrimaryCountInvariantRunner {
         let join_handle = thread::Builder::new()
             .name(thread_name.clone())
             .spawn(move || {
-                let result =
-                    run_primary_count_invariant_loop(observer, artifacts_dir, poll_interval, &thread_shared);
-                if let Err(err) = &result {
-                    let _ = thread_shared.store_failure(PrimaryCountInvariantFailure::RunnerError(
-                        err.to_string(),
-                    ));
+                match run_primary_count_invariant_loop(
+                    observer,
+                    artifacts_dir,
+                    poll_interval,
+                    &thread_shared,
+                ) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        thread_shared.store_failure(PrimaryCountInvariantFailure::RunnerError(
+                            err.to_string(),
+                        ))?;
+                        Err(err)
+                    }
                 }
-                result
             })
             .map_err(|err| {
                 HarnessError::message(format!(
@@ -1174,6 +1290,71 @@ impl PrimaryCountInvariantRunner {
         let joined = self.join_handle.take().map(|handle| {
             handle.join().map_err(|_| {
                 HarnessError::message("primary-count invariant runner thread panicked")
+            })
+        });
+
+        if let Some(result) = joined.transpose()? {
+            result?;
+        }
+
+        self.ensure_healthy()
+    }
+}
+
+impl WriteConvergenceInvariantRunner {
+    pub fn start(
+        observer: PgtmObserver,
+        sql: SqlObserver,
+        artifacts_dir: PathBuf,
+        poll_interval: Duration,
+        convergence_window: Duration,
+    ) -> Result<Self> {
+        let shared = Arc::new(SharedWriteConvergenceInvariantState::new());
+        let thread_shared = Arc::clone(&shared);
+        let thread_name = "ha-write-convergence-invariant".to_string();
+        let join_handle = thread::Builder::new()
+            .name(thread_name.clone())
+            .spawn(move || {
+                match run_write_convergence_invariant_loop(
+                    observer,
+                    sql,
+                    artifacts_dir,
+                    poll_interval,
+                    convergence_window,
+                    &thread_shared,
+                ) {
+                    Ok(()) => Ok(()),
+                    Err(err) => {
+                        thread_shared.store_failure(
+                            WriteConvergenceInvariantFailure::RunnerError(err.to_string()),
+                        )?;
+                        Err(err)
+                    }
+                }
+            })
+            .map_err(|err| {
+                HarnessError::message(format!(
+                    "failed to spawn `{thread_name}` background runner: {err}"
+                ))
+            })?;
+
+        Ok(Self {
+            shared,
+            join_handle: Some(join_handle),
+        })
+    }
+
+    pub fn ensure_healthy(&self) -> Result<()> {
+        self.shared.load_failure()?.map_or(Ok(()), |failure| {
+            Err(HarnessError::message(failure.message()))
+        })
+    }
+
+    pub fn stop(&mut self) -> Result<()> {
+        self.shared.stop_requested.store(true, Ordering::SeqCst);
+        let joined = self.join_handle.take().map(|handle| {
+            handle.join().map_err(|_| {
+                HarnessError::message("write-convergence invariant runner thread panicked")
             })
         });
 
@@ -1216,6 +1397,37 @@ impl SharedPrimaryCountInvariantState {
     }
 }
 
+impl SharedWriteConvergenceInvariantState {
+    fn new() -> Self {
+        Self {
+            stop_requested: AtomicBool::new(false),
+            failure: Mutex::new(None),
+        }
+    }
+
+    fn stop_requested(&self) -> bool {
+        self.stop_requested.load(Ordering::SeqCst)
+    }
+
+    fn load_failure(&self) -> Result<Option<WriteConvergenceInvariantFailure>> {
+        self.failure
+            .lock()
+            .map(|failure| failure.clone())
+            .map_err(|_| HarnessError::message("write-convergence invariant mutex was poisoned"))
+    }
+
+    fn store_failure(&self, failure: WriteConvergenceInvariantFailure) -> Result<()> {
+        self.failure
+            .lock()
+            .map(|mut slot| {
+                if slot.is_none() {
+                    *slot = Some(failure);
+                }
+            })
+            .map_err(|_| HarnessError::message("write-convergence invariant mutex was poisoned"))
+    }
+}
+
 impl PrimaryCountInvariantFailure {
     fn message(&self) -> String {
         match self {
@@ -1231,11 +1443,35 @@ impl PrimaryCountInvariantFailure {
     }
 }
 
+impl WriteConvergenceInvariantFailure {
+    fn message(&self) -> String {
+        match self {
+            Self::Violation(violation) => format!(
+                "write-convergence invariant violated: {}. structured summary: {}",
+                violation.summary.summary(),
+                violation.artifact_path.display()
+            ),
+            Self::RunnerError(message) => {
+                format!("write-convergence invariant runner failed: {message}")
+            }
+        }
+    }
+}
+
 impl PrimaryCountInvariantViolation {
     fn new(artifact_path: PathBuf, sample: PrimaryCountSample) -> Self {
         Self {
             artifact_path,
             sample,
+        }
+    }
+}
+
+impl WriteConvergenceInvariantViolation {
+    fn new(artifact_path: PathBuf, summary: WriteConvergenceSummary) -> Self {
+        Self {
+            artifact_path,
+            summary,
         }
     }
 }
@@ -1280,22 +1516,333 @@ impl MemberPrimaryCountSample {
     fn from_observation(
         observation: &crate::support::observer::pgtm::MemberStateObservation,
     ) -> Result<Self> {
-        let member = observation.member;
-        let self_report = match &observation.outcome {
-            MemberCommandOutcome::Observed(output) => classify_self_report(member, &output.state)?,
-            MemberCommandOutcome::Failed(message) => MemberSelfReport::CommandFailed {
-                message: message.clone(),
-            },
-        };
-
         Ok(Self {
-            member: member.service_name().to_string(),
-            self_report,
+            member: observation.member.service_name().to_string(),
+            self_report: member_self_report_from_observation(observation)?,
         })
     }
 
     fn summary(&self) -> String {
         format!("{}={}", self.member, self.self_report.summary())
+    }
+}
+
+impl WriteConvergenceArtifacts {
+    fn new(artifacts_dir: PathBuf) -> Self {
+        Self {
+            events_path: artifacts_dir.join(WRITE_CONVERGENCE_EVENTS_ARTIFACT_NAME),
+            summary_path: artifacts_dir.join(WRITE_CONVERGENCE_SUMMARY_ARTIFACT_NAME),
+            violation_path: artifacts_dir.join(WRITE_CONVERGENCE_VIOLATION_ARTIFACT_NAME),
+        }
+    }
+
+    fn append_event(&self, event: &WriteConvergenceEvent) -> Result<()> {
+        let rendered = serde_json::to_string(event).map_err(|source| HarnessError::Json {
+            context: "serializing write-convergence event".to_string(),
+            source,
+        })?;
+        append_line(self.events_path.as_path(), rendered.as_str())
+    }
+
+    fn persist_summary(&self, summary: &WriteConvergenceSummary) -> Result<()> {
+        let rendered =
+            serde_json::to_string_pretty(summary).map_err(|source| HarnessError::Json {
+                context: "serializing write-convergence summary".to_string(),
+                source,
+            })?;
+        write_text_file(self.summary_path.as_path(), rendered.as_str())
+    }
+
+    fn persist_violation(&self, summary: &WriteConvergenceSummary) -> Result<PathBuf> {
+        let rendered =
+            serde_json::to_string_pretty(summary).map_err(|source| HarnessError::Json {
+                context: "serializing write-convergence violation".to_string(),
+                source,
+            })?;
+        write_text_file(self.violation_path.as_path(), rendered.as_str())?;
+        Ok(self.violation_path.clone())
+    }
+}
+
+impl WriteConvergenceTracker {
+    fn new(convergence_window: Duration) -> Self {
+        Self {
+            convergence_window,
+            next_target_index: 0,
+            next_token_index: 0,
+            accepted_count: 0,
+            rejected_count: 0,
+            converged_count: 0,
+            pending: BTreeMap::new(),
+        }
+    }
+
+    fn next_target<'a>(
+        &mut self,
+        routing_targets: &'a [PostgresRoutingTarget],
+    ) -> Result<&'a PostgresRoutingTarget> {
+        let target_count = routing_targets.len();
+        if target_count == 0 {
+            return Err(HarnessError::message(
+                "write-convergence invariant has no postgres routing targets",
+            ));
+        }
+        let index = self.next_target_index % target_count;
+        self.next_target_index = (index + 1) % target_count;
+        routing_targets.get(index).ok_or_else(|| {
+            HarnessError::message(format!(
+                "write-convergence invariant target index `{index}` was out of bounds"
+            ))
+        })
+    }
+
+    fn next_non_authoritative_target<'a>(
+        &mut self,
+        routing_targets: &'a [PostgresRoutingTarget],
+        authoritative_primary: Option<ClusterMember>,
+    ) -> Result<Option<&'a PostgresRoutingTarget>> {
+        let target_count = routing_targets.len();
+        if target_count == 0 {
+            return Ok(None);
+        }
+
+        for _ in 0..target_count {
+            let target = self.next_target(routing_targets)?;
+            if Some(target.member) != authoritative_primary {
+                return Ok(Some(target));
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn next_token(&mut self, target_member: ClusterMember, attempted_at_ms: u128) -> String {
+        let sequence = self.next_token_index;
+        self.next_token_index = self.next_token_index.saturating_add(1);
+        format!(
+            "ha-write-{}-{}-{}",
+            attempted_at_ms,
+            target_member.service_name(),
+            sequence
+        )
+    }
+
+    fn record_attempt(
+        &mut self,
+        attempted_at_ms: u128,
+        outcome: WriteAttemptOutcome,
+        artifacts: &WriteConvergenceArtifacts,
+    ) -> Result<()> {
+        match outcome {
+            WriteAttemptOutcome::Accepted(record) => {
+                self.accepted_count = self.accepted_count.saturating_add(1);
+                let token = record.token.clone();
+                let previous = self
+                    .pending
+                    .insert(token, PendingAcceptedWrite::new(record.clone()));
+                if previous.is_some() {
+                    return Err(HarnessError::message(
+                        "write-convergence invariant generated a duplicate token",
+                    ));
+                }
+                artifacts.append_event(&WriteConvergenceEvent::Accepted(record))?;
+            }
+            WriteAttemptOutcome::Rejected(record) => {
+                self.rejected_count = self.rejected_count.saturating_add(1);
+                artifacts.append_event(&WriteConvergenceEvent::Rejected(record))?;
+            }
+        }
+        artifacts.persist_summary(&self.summary(attempted_at_ms))
+    }
+
+    fn reconcile_visibility(
+        &mut self,
+        observed_at_ms: u128,
+        snapshots: &[MemberTokenSnapshot],
+        artifacts: &WriteConvergenceArtifacts,
+    ) -> Result<Option<WriteConvergenceInvariantViolation>> {
+        self.pending
+            .values_mut()
+            .for_each(|pending| pending.refresh_visibility(snapshots));
+
+        let converged_tokens = self
+            .pending
+            .iter()
+            .filter_map(|(token, pending)| pending.is_converged().then_some(token.clone()))
+            .collect::<Vec<_>>();
+
+        let converged_records = converged_tokens
+            .iter()
+            .map(|token| {
+                self.pending
+                    .remove(token.as_str())
+                    .map(|pending| pending.into_converged_record(observed_at_ms))
+                    .ok_or_else(|| {
+                        HarnessError::message(format!(
+                            "pending write `{token}` disappeared before convergence recording"
+                        ))
+                    })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        converged_records.iter().try_for_each(|record| {
+            self.converged_count = self.converged_count.saturating_add(1);
+            artifacts.append_event(&WriteConvergenceEvent::Converged(record.clone()))
+        })?;
+
+        let summary = self.summary(observed_at_ms);
+        artifacts.persist_summary(&summary)?;
+
+        let violation = summary
+            .pending
+            .iter()
+            .any(|pending| pending.age_ms > self.convergence_window.as_millis())
+            .then(|| {
+                artifacts.persist_violation(&summary).map(|artifact_path| {
+                    WriteConvergenceInvariantViolation::new(artifact_path, summary.clone())
+                })
+            })
+            .transpose()?;
+
+        Ok(violation)
+    }
+
+    fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    fn summary(&self, observed_at_ms: u128) -> WriteConvergenceSummary {
+        let pending = self
+            .pending
+            .values()
+            .map(|pending| pending.summary(observed_at_ms))
+            .collect::<Vec<_>>();
+
+        WriteConvergenceSummary {
+            observed_at_ms,
+            convergence_window_ms: self.convergence_window.as_millis(),
+            counts: WriteConvergenceCounts {
+                accepted: self.accepted_count,
+                rejected: self.rejected_count,
+                converged: self.converged_count,
+                pending: pending.len(),
+            },
+            pending,
+        }
+    }
+}
+
+impl PendingAcceptedWrite {
+    fn new(accepted: AcceptedWriteRecord) -> Self {
+        Self {
+            accepted,
+            visibility: Vec::new(),
+        }
+    }
+
+    fn refresh_visibility(&mut self, snapshots: &[MemberTokenSnapshot]) {
+        self.visibility = snapshots
+            .iter()
+            .map(|snapshot| MemberTokenVisibility {
+                member: snapshot.member.service_name().to_string(),
+                state: match &snapshot.observation {
+                    MemberTokenObservation::VisibleTokens(tokens) => {
+                        if tokens.contains(self.accepted.token.as_str()) {
+                            TokenVisibilityState::Visible
+                        } else {
+                            TokenVisibilityState::Missing
+                        }
+                    }
+                    MemberTokenObservation::QueryFailed(message) => {
+                        TokenVisibilityState::QueryFailed {
+                            message: message.clone(),
+                        }
+                    }
+                },
+            })
+            .collect::<Vec<_>>();
+    }
+
+    fn is_converged(&self) -> bool {
+        self.visibility
+            .iter()
+            .all(|entry| matches!(entry.state, TokenVisibilityState::Visible))
+    }
+
+    fn into_converged_record(self, converged_at_ms: u128) -> ConvergedWriteRecord {
+        ConvergedWriteRecord {
+            token: self.accepted.token,
+            target_member: self.accepted.target_member,
+            accepted_at_ms: self.accepted.accepted_at_ms,
+            converged_at_ms,
+            lag_ms: converged_at_ms.saturating_sub(self.accepted.accepted_at_ms),
+            visibility: self.visibility,
+        }
+    }
+
+    fn summary(&self, observed_at_ms: u128) -> PendingAcceptedWriteSummary {
+        PendingAcceptedWriteSummary {
+            token: self.accepted.token.clone(),
+            target_member: self.accepted.target_member.clone(),
+            accepted_at_ms: self.accepted.accepted_at_ms,
+            age_ms: observed_at_ms.saturating_sub(self.accepted.accepted_at_ms),
+            visibility: self.visibility.clone(),
+        }
+    }
+}
+
+impl WriteConvergenceSummary {
+    fn summary(&self) -> String {
+        if self.pending.is_empty() {
+            format!(
+                "accepted={} rejected={} converged={} pending=0",
+                self.counts.accepted, self.counts.rejected, self.counts.converged
+            )
+        } else {
+            format!(
+                "accepted={} rejected={} converged={} pending={} ({})",
+                self.counts.accepted,
+                self.counts.rejected,
+                self.counts.converged,
+                self.counts.pending,
+                self.pending
+                    .iter()
+                    .map(PendingAcceptedWriteSummary::summary)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        }
+    }
+}
+
+impl PendingAcceptedWriteSummary {
+    fn summary(&self) -> String {
+        format!(
+            "{} age_ms={} visibility={}",
+            self.token,
+            self.age_ms,
+            self.visibility
+                .iter()
+                .map(MemberTokenVisibility::summary)
+                .collect::<Vec<_>>()
+                .join("|")
+        )
+    }
+}
+
+impl MemberTokenVisibility {
+    fn summary(&self) -> String {
+        format!("{}={}", self.member, self.state.summary())
+    }
+}
+
+impl TokenVisibilityState {
+    fn summary(&self) -> String {
+        match self {
+            Self::Visible => "visible".to_string(),
+            Self::Missing => "missing".to_string(),
+            Self::QueryFailed { .. } => "query_failed".to_string(),
+        }
     }
 }
 
@@ -1332,7 +1879,7 @@ fn run_primary_count_invariant_loop(
         let observation = observer.observe_states()?;
         let sample = PrimaryCountSample::from_observation(&observation)?;
         if sample.violates_allowed_primary_counts() {
-            let artifact_path = artifacts_dir.join(VIOLATION_ARTIFACT_NAME);
+            let artifact_path = artifacts_dir.join(PRIMARY_COUNT_VIOLATION_ARTIFACT_NAME);
             persist_violation_sample(artifact_path.as_path(), &sample)?;
             shared.store_failure(PrimaryCountInvariantFailure::Violation(
                 PrimaryCountInvariantViolation::new(artifact_path, sample),
@@ -1343,6 +1890,123 @@ fn run_primary_count_invariant_loop(
     }
 
     Ok(())
+}
+
+fn run_write_convergence_invariant_loop(
+    observer: PgtmObserver,
+    sql: SqlObserver,
+    artifacts_dir: PathBuf,
+    poll_interval: Duration,
+    convergence_window: Duration,
+    shared: &SharedWriteConvergenceInvariantState,
+) -> Result<()> {
+    let artifacts = WriteConvergenceArtifacts::new(artifacts_dir);
+    let routing_targets = cluster_postgres_routing_targets(&observer)?;
+    let initialized = initialize_write_convergence_table(
+        &sql,
+        routing_targets.as_slice(),
+        poll_interval,
+        shared,
+    )?;
+    if !initialized {
+        return Ok(());
+    }
+
+    let mut tracker = WriteConvergenceTracker::new(convergence_window);
+    artifacts.persist_summary(&tracker.summary(timestamp_millis()?))?;
+
+    while !shared.stop_requested() || tracker.has_pending() {
+        let loop_started_at_ms = timestamp_millis()?;
+        let observation = observer.observe_states()?;
+        let authoritative_primary = cluster_authoritative_primary(&observation);
+
+        if !shared.stop_requested() {
+            if let Some(primary_member) = authoritative_primary {
+                let target = routing_targets
+                    .iter()
+                    .find(|target| target.member == primary_member)
+                    .ok_or_else(|| {
+                        HarnessError::message(format!(
+                            "write-convergence invariant has no routing target for authoritative primary `{primary_member}`"
+                        ))
+                    })?;
+                let target_observation = observation.member(target.member)?;
+                let target_self_report = member_self_report_from_observation(target_observation)?;
+                let token = tracker.next_token(target.member, loop_started_at_ms);
+                let outcome = attempt_invariant_write(
+                    &sql,
+                    target,
+                    target_self_report,
+                    token,
+                    loop_started_at_ms,
+                );
+                tracker.record_attempt(loop_started_at_ms, outcome, &artifacts)?;
+            }
+
+            let rejection_target = tracker
+                .next_non_authoritative_target(routing_targets.as_slice(), authoritative_primary)?;
+            let rejection_outcome = match rejection_target {
+                Some(target) => {
+                    let target_observation = observation.member(target.member)?;
+                    let target_self_report =
+                        member_self_report_from_observation(target_observation)?;
+                    let token = tracker.next_token(target.member, loop_started_at_ms);
+                    attempt_rejected_write(
+                        &sql,
+                        target,
+                        target_self_report,
+                        token,
+                        loop_started_at_ms,
+                        authoritative_primary,
+                    )?
+                }
+                None => {
+                    let target = tracker.next_target(routing_targets.as_slice())?;
+                    let target_observation = observation.member(target.member)?;
+                    let target_self_report =
+                        member_self_report_from_observation(target_observation)?;
+                    let token = tracker.next_token(target.member, loop_started_at_ms);
+                    rejected_without_attempt(
+                        target,
+                        target_self_report,
+                        token,
+                        loop_started_at_ms,
+                        "cluster had no non-authoritative target available".to_string(),
+                    )
+                }
+            };
+            tracker.record_attempt(loop_started_at_ms, rejection_outcome, &artifacts)?;
+        }
+
+        let visibility_snapshots = observe_member_token_snapshots(&sql, routing_targets.as_slice());
+        if let Some(violation) = tracker.reconcile_visibility(
+            timestamp_millis()?,
+            visibility_snapshots.as_slice(),
+            &artifacts,
+        )? {
+            shared.store_failure(WriteConvergenceInvariantFailure::Violation(violation))?;
+            return Ok(());
+        }
+
+        if !shared.stop_requested() || tracker.has_pending() {
+            thread::sleep(poll_interval);
+        }
+    }
+
+    artifacts.persist_summary(&tracker.summary(timestamp_millis()?))
+}
+
+fn member_self_report_from_observation(
+    observation: &crate::support::observer::pgtm::MemberStateObservation,
+) -> Result<MemberSelfReport> {
+    match &observation.outcome {
+        MemberCommandOutcome::Observed(output) => {
+            classify_self_report(observation.member, &output.state)
+        }
+        MemberCommandOutcome::Failed(message) => Ok(MemberSelfReport::CommandFailed {
+            message: message.clone(),
+        }),
+    }
 }
 
 fn classify_self_report(member: ClusterMember, state: &NodeState) -> Result<MemberSelfReport> {
@@ -1364,10 +2028,225 @@ fn classify_self_report(member: ClusterMember, state: &NodeState) -> Result<Memb
     })
 }
 
-fn persist_violation_sample(path: &Path, sample: &PrimaryCountSample) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        create_dir_all(parent)?;
+fn cluster_postgres_routing_targets(observer: &PgtmObserver) -> Result<Vec<PostgresRoutingTarget>> {
+    ClusterMember::ALL
+        .into_iter()
+        .map(|member| observer.postgres_routing_target(member))
+        .collect::<Result<Vec<_>>>()
+}
+
+fn initialize_write_convergence_table(
+    sql: &SqlObserver,
+    routing_targets: &[PostgresRoutingTarget],
+    poll_interval: Duration,
+    shared: &SharedWriteConvergenceInvariantState,
+) -> Result<bool> {
+    let mut table_created = false;
+
+    while !shared.stop_requested() {
+        if !table_created {
+            for target in routing_targets {
+                if sql
+                    .execute(target.dsn.as_str(), write_convergence_table_sql().as_str())
+                    .is_ok()
+                {
+                    table_created = true;
+                    break;
+                }
+            }
+        }
+
+        if table_created && invariant_table_visible_on_all_members(sql, routing_targets) {
+            return Ok(true);
+        }
+
+        thread::sleep(poll_interval);
     }
+
+    Ok(false)
+}
+
+fn write_convergence_table_sql() -> String {
+    format!(
+        "CREATE TABLE IF NOT EXISTS {WRITE_CONVERGENCE_TABLE_NAME} (\
+         token TEXT PRIMARY KEY,\
+         accepted_via TEXT NOT NULL,\
+         accepted_at_ms BIGINT NOT NULL\
+         );"
+    )
+}
+
+fn attempt_invariant_write(
+    sql: &SqlObserver,
+    target: &PostgresRoutingTarget,
+    target_self_report: MemberSelfReport,
+    token: String,
+    attempted_at_ms: u128,
+) -> WriteAttemptOutcome {
+    let insert_sql = format!(
+        "INSERT INTO {WRITE_CONVERGENCE_TABLE_NAME} (token, accepted_via, accepted_at_ms) \
+         VALUES ('{token}', '{}', {attempted_at_ms}) RETURNING token;",
+        target.member.service_name()
+    );
+    match sql.execute(target.dsn.as_str(), insert_sql.as_str()) {
+        Ok(_) => WriteAttemptOutcome::Accepted(AcceptedWriteRecord {
+            token,
+            target_member: target.member.service_name().to_string(),
+            target_self_report,
+            accepted_at_ms: attempted_at_ms,
+        }),
+        Err(err) => WriteAttemptOutcome::Rejected(RejectedWriteRecord {
+            token,
+            target_member: target.member.service_name().to_string(),
+            target_self_report,
+            rejected_at_ms: attempted_at_ms,
+            reason: err.to_string(),
+        }),
+    }
+}
+
+fn attempt_rejected_write(
+    sql: &SqlObserver,
+    target: &PostgresRoutingTarget,
+    target_self_report: MemberSelfReport,
+    token: String,
+    attempted_at_ms: u128,
+    authoritative_primary: Option<ClusterMember>,
+) -> Result<WriteAttemptOutcome> {
+    if matches!(target_self_report, MemberSelfReport::Primary) {
+        return Ok(rejected_without_attempt(
+            target,
+            target_self_report,
+            token,
+            attempted_at_ms,
+            format!(
+                "target was not the authoritative primary (authoritative_primary={})",
+                authoritative_primary
+                    .map(|member| member.service_name().to_string())
+                    .unwrap_or_else(|| "none".to_string())
+            ),
+        ));
+    }
+
+    let insert_sql = format!(
+        "INSERT INTO {WRITE_CONVERGENCE_TABLE_NAME} (token, accepted_via, accepted_at_ms) \
+         VALUES ('{token}', '{}', {attempted_at_ms}) RETURNING token;",
+        target.member.service_name()
+    );
+
+    match sql.execute(target.dsn.as_str(), insert_sql.as_str()) {
+        Ok(_) => Err(HarnessError::message(format!(
+            "non-authoritative target `{}` unexpectedly accepted an invariant write",
+            target.member
+        ))),
+        Err(err) => Ok(WriteAttemptOutcome::Rejected(RejectedWriteRecord {
+            token,
+            target_member: target.member.service_name().to_string(),
+            target_self_report,
+            rejected_at_ms: attempted_at_ms,
+            reason: err.to_string(),
+        })),
+    }
+}
+
+fn rejected_without_attempt(
+    target: &PostgresRoutingTarget,
+    target_self_report: MemberSelfReport,
+    token: String,
+    rejected_at_ms: u128,
+    reason: String,
+) -> WriteAttemptOutcome {
+    WriteAttemptOutcome::Rejected(RejectedWriteRecord {
+        token,
+        target_member: target.member.service_name().to_string(),
+        target_self_report,
+        rejected_at_ms,
+        reason,
+    })
+}
+
+fn observe_member_token_snapshots(
+    sql: &SqlObserver,
+    routing_targets: &[PostgresRoutingTarget],
+) -> Vec<MemberTokenSnapshot> {
+    routing_targets
+        .iter()
+        .map(|target| MemberTokenSnapshot {
+            member: target.member,
+            observation: match sql.execute(target.dsn.as_str(), visible_tokens_sql().as_str()) {
+                Ok(stdout) => {
+                    MemberTokenObservation::VisibleTokens(parse_visible_tokens(stdout.as_str()))
+                }
+                Err(err) if relation_missing_error(&err) => {
+                    MemberTokenObservation::VisibleTokens(BTreeSet::new())
+                }
+                Err(err) => MemberTokenObservation::QueryFailed(err.to_string()),
+            },
+        })
+        .collect::<Vec<_>>()
+}
+
+fn visible_tokens_sql() -> String {
+    format!("SELECT token FROM {WRITE_CONVERGENCE_TABLE_NAME} ORDER BY token;")
+}
+
+fn parse_visible_tokens(stdout: &str) -> BTreeSet<String> {
+    stdout
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect::<BTreeSet<_>>()
+}
+
+fn invariant_table_visible_on_all_members(
+    sql: &SqlObserver,
+    routing_targets: &[PostgresRoutingTarget],
+) -> bool {
+    routing_targets.iter().all(|target| {
+        sql.execute(target.dsn.as_str(), invariant_table_presence_sql().as_str())
+            .map(|stdout| stdout.trim() == WRITE_CONVERGENCE_TABLE_NAME)
+            .unwrap_or(false)
+    })
+}
+
+fn invariant_table_presence_sql() -> String {
+    format!("SELECT to_regclass('{WRITE_CONVERGENCE_TABLE_NAME}');")
+}
+
+fn cluster_authoritative_primary(observation: &ClusterStateObservation) -> Option<ClusterMember> {
+    let mut authoritative_holders = observation
+        .members()
+        .iter()
+        .filter_map(|member| member.state().and_then(authoritative_primary))
+        .collect::<BTreeSet<_>>()
+        .into_iter();
+
+    match (authoritative_holders.next(), authoritative_holders.next()) {
+        (Some(primary), None) => Some(primary),
+        _ => None,
+    }
+}
+
+fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
+    match &status.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
+            ClusterMember::parse(epoch.holder.0.as_str()).ok()
+        }
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
+    }
+}
+
+fn relation_missing_error(err: &HarnessError) -> bool {
+    matches!(
+        err,
+        HarnessError::CommandFailed { stderr, .. }
+        if stderr.contains("relation \"public.ha_write_convergence_invariant\" does not exist")
+    )
+}
+
+fn persist_violation_sample(path: &Path, sample: &PrimaryCountSample) -> Result<()> {
     let rendered = serde_json::to_string_pretty(sample).map_err(|source| HarnessError::Json {
         context: "serializing primary-count invariant violation".to_string(),
         source,
@@ -1382,7 +2261,28 @@ fn create_dir_all(path: &Path) -> Result<()> {
     })
 }
 
+fn append_line(path: &Path, line: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(|source| HarnessError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    writeln!(file, "{line}").map_err(|source| HarnessError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 fn write_text_file(path: &Path, content: &str) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        create_dir_all(parent)?;
+    }
     fs::write(path, content).map_err(|source| HarnessError::Io {
         path: path.to_path_buf(),
         source,
@@ -1426,6 +2326,61 @@ mod tests {
 
         assert!(sample.violates_allowed_primary_counts());
     }
+
+    #[test]
+    fn pending_write_marks_convergence_once_all_members_see_the_token() {
+        let accepted = AcceptedWriteRecord {
+            token: "token-1".to_string(),
+            target_member: "node-b".to_string(),
+            target_self_report: MemberSelfReport::Primary,
+            accepted_at_ms: 50,
+        };
+        let mut pending = PendingAcceptedWrite::new(accepted);
+        pending.refresh_visibility(
+            [
+                MemberTokenSnapshot {
+                    member: ClusterMember::NodeA,
+                    observation: MemberTokenObservation::VisibleTokens(
+                        ["token-1".to_string()].into_iter().collect::<BTreeSet<_>>(),
+                    ),
+                },
+                MemberTokenSnapshot {
+                    member: ClusterMember::NodeB,
+                    observation: MemberTokenObservation::VisibleTokens(
+                        ["token-1".to_string()].into_iter().collect::<BTreeSet<_>>(),
+                    ),
+                },
+                MemberTokenSnapshot {
+                    member: ClusterMember::NodeC,
+                    observation: MemberTokenObservation::VisibleTokens(
+                        ["token-1".to_string()].into_iter().collect::<BTreeSet<_>>(),
+                    ),
+                },
+            ]
+            .as_slice(),
+        );
+
+        assert!(pending.is_converged());
+    }
+
+    #[test]
+    fn summary_reports_pending_timeout_candidates() {
+        let accepted = AcceptedWriteRecord {
+            token: "token-2".to_string(),
+            target_member: "node-a".to_string(),
+            target_self_report: MemberSelfReport::Primary,
+            accepted_at_ms: 10,
+        };
+        let mut tracker = WriteConvergenceTracker::new(Duration::from_millis(20));
+        tracker.accepted_count = 1;
+        let _ = tracker
+            .pending
+            .insert(accepted.token.clone(), PendingAcceptedWrite::new(accepted));
+        let summary = tracker.summary(40);
+
+        assert_eq!(summary.counts.pending, 1);
+        assert_eq!(summary.pending[0].age_ms, 30);
+    }
 }
 
 
@@ -1456,7 +2411,7 @@ use crate::support::{
         resolve_given, ComposeVariant, FixtureMaterialization, HaGivenDefinition, HaGivenId,
         MemberRuntimeConfigMaterialization, NodeRuntimeTemplate, SharedFixtureEntry,
     },
-    invariant::PrimaryCountInvariantRunner,
+    invariant::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     observer::{
         pgtm::{MemberCommandOutcome, PgtmObserver},
         sql::SqlObserver,
@@ -1647,6 +2602,7 @@ pub struct HarnessShared {
     service_container_ids: Mutex<BTreeMap<ComposeService, String>>,
     timeline: Mutex<Vec<serde_json::Value>>,
     primary_count_invariant: Option<PrimaryCountInvariantRunner>,
+    write_convergence_invariant: Option<WriteConvergenceInvariantRunner>,
     cleaned_up: bool,
 }
 
@@ -1724,6 +2680,7 @@ impl HarnessShared {
             service_container_ids,
             timeline: Mutex::new(Vec::new()),
             primary_count_invariant: None,
+            write_convergence_invariant: None,
             cleaned_up: false,
         };
         harness.record_note(
@@ -1748,6 +2705,15 @@ impl HarnessShared {
                 None => Err(err),
                 Some(cleanup) => Err(HarnessError::message(format!(
                     "{err}\ncleanup after bootstrap failure also failed: {cleanup}"
+                ))),
+            };
+        }
+        if let Err(err) = harness.start_write_convergence_invariant() {
+            let cleanup_error = harness.cleanup().err();
+            return match cleanup_error {
+                None => Err(err),
+                Some(cleanup) => Err(HarnessError::message(format!(
+                    "{err}\ncleanup after invariant startup failure also failed: {cleanup}"
                 ))),
             };
         }
@@ -1799,6 +2765,11 @@ impl HarnessShared {
         self.primary_count_invariant
             .as_ref()
             .map_or(Ok(()), PrimaryCountInvariantRunner::ensure_healthy)
+            .and_then(|_| {
+                self.write_convergence_invariant
+                    .as_ref()
+                    .map_or(Ok(()), WriteConvergenceInvariantRunner::ensure_healthy)
+            })
     }
 
     pub fn sql(&self) -> SqlObserver {
@@ -2230,6 +3201,11 @@ impl HarnessShared {
                 failures.push(format!("primary-count invariant cleanup failed: {err}"));
             }
         }
+        if let Some(runner) = self.write_convergence_invariant.as_mut() {
+            if let Err(err) = runner.stop() {
+                failures.push(format!("write-convergence invariant cleanup failed: {err}"));
+            }
+        }
         let capture_result = self.capture_artifacts();
         if let Err(err) = &capture_result {
             failures.push(format!("artifact capture failed: {err}"));
@@ -2427,6 +3403,20 @@ impl HarnessShared {
         self.record_note(
             "invariant.primary_count.start",
             "started perpetual self-reported primary-count runner",
+        )
+    }
+
+    fn start_write_convergence_invariant(&mut self) -> Result<()> {
+        self.write_convergence_invariant = Some(WriteConvergenceInvariantRunner::start(
+            self.observer(),
+            self.sql(),
+            self.artifacts_dir().to_path_buf(),
+            self.timeouts.poll_interval,
+            self.timeouts.write_convergence_deadline,
+        )?);
+        self.record_note(
+            "invariant.write_convergence.start",
+            "started perpetual accepted-write convergence runner",
         )
     }
 }
@@ -3022,546 +4012,382 @@ mod tests {
 }
 
 
-===== tests/ha/support/observer/pgtm.rs =====
-use std::{
-    fs,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+===== tests/ha/support/timeouts/mod.rs =====
+use std::{path::Path, time::Duration};
 
-use pgtuskmaster_rust::{
-    api::{AcceptedResponse, NodeState},
-    command::{CommandOutputDto, StateCommandOutputDto},
-};
+use pgtuskmaster_rust::config::RuntimeConfig;
 
-use crate::support::{
-    config::{configured_executable, harness_settings},
-    docker::cli::DockerCli,
-    error::{HarnessError, Result},
-    process::{self, CommandSpec},
-    topology::ClusterMember,
-};
+use crate::support::error::{HarnessError, Result};
 
-pub type ClusterStatusView = NodeState;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PrimaryRoutingTarget {
-    pub member: ClusterMember,
-    pub dsn: String,
-}
+const FAILOVER_SLACK_LOOPS: u64 = 3;
+const DCS_DETECTION_SLACK_LOOPS: u64 = 1;
+const FAILOVER_EXTRA_BUFFER_MS: u64 = 12_000;
+const RECOVERY_SLACK_LOOPS: u64 = 10;
+const HARNESS_POLL_INTERVAL_MULTIPLIER: u64 = 2;
+const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 2_000;
 
 #[derive(Clone, Debug)]
-pub enum MemberCommandOutcome<T> {
-    Observed(T),
-    Failed(String),
+pub struct TimeoutModel {
+    pub startup_deadline: Duration,
+    pub failover_deadline: Duration,
+    pub recovery_deadline: Duration,
+    pub write_convergence_deadline: Duration,
+    pub poll_interval: Duration,
 }
 
-#[derive(Clone, Debug)]
-pub struct MemberStateObservation {
-    pub member: ClusterMember,
-    pub outcome: MemberCommandOutcome<StateCommandOutputDto>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ClusterStateObservation {
-    members: Vec<MemberStateObservation>,
-}
-
-impl MemberStateObservation {
-    pub fn output(&self) -> Option<&StateCommandOutputDto> {
-        match &self.outcome {
-            MemberCommandOutcome::Observed(output) => Some(output),
-            MemberCommandOutcome::Failed(_) => None,
-        }
-    }
-
-    pub fn state(&self) -> Option<&NodeState> {
-        self.output().map(|output| &output.state)
-    }
-
-    pub fn failure(&self) -> Option<&str> {
-        match &self.outcome {
-            MemberCommandOutcome::Observed(_) => None,
-            MemberCommandOutcome::Failed(message) => Some(message.as_str()),
-        }
-    }
-}
-
-impl ClusterStateObservation {
-    pub fn members(&self) -> &[MemberStateObservation] {
-        self.members.as_slice()
-    }
-
-    pub fn member(&self, member: ClusterMember) -> Result<&MemberStateObservation> {
-        self.members
-            .iter()
-            .find(|observation| observation.member == member)
-            .ok_or_else(|| {
-                HarnessError::message(format!(
-                    "cluster observation did not include member `{member}`"
-                ))
-            })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct PgtmObserver {
-    docker: DockerCli,
-    compose_file: PathBuf,
-    compose_project: String,
-    materialized_dir: PathBuf,
-}
-
-impl PgtmObserver {
-    pub fn new(
-        docker: DockerCli,
-        compose_file: PathBuf,
-        compose_project: String,
-        materialized_dir: PathBuf,
-    ) -> Self {
-        Self {
-            docker,
-            compose_file,
-            compose_project,
-            materialized_dir,
-        }
-    }
-
-    pub fn observe_states(&self) -> Result<ClusterStateObservation> {
-        let members = ClusterMember::ALL
-            .into_iter()
-            .map(|member| self.observe_state_via_member(member))
-            .collect::<Result<Vec<_>>>()?;
-        Ok(ClusterStateObservation { members })
-    }
-
-    pub fn state_via_member(&self, member: ClusterMember) -> Result<ClusterStatusView> {
-        let observation = self.observe_state_via_member(member)?;
-        match observation.outcome {
-            MemberCommandOutcome::Observed(output) => Ok(output.state),
-            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
-                "pgtm status via `{member}` failed: {message}"
-            ))),
-        }
-    }
-
-    pub fn primary_routing_target(
-        &self,
-        primary_member: ClusterMember,
-    ) -> Result<PrimaryRoutingTarget> {
-        let published_port = self.member_published_port(primary_member, "5432/tcp")?;
-        Ok(PrimaryRoutingTarget {
-            member: primary_member,
-            dsn: host_postgres_dsn(
-                primary_member,
-                published_port,
-                self.ca_cert_path().as_path(),
-                self.observer_cert_path().as_path(),
-                self.observer_key_path().as_path(),
-            ),
-        })
-    }
-
-    pub fn switchover_request_via_member(
-        &self,
-        member: ClusterMember,
-        target: Option<ClusterMember>,
-    ) -> Result<String> {
-        let runtime_config = self.materialize_host_observer_config(member)?;
-        let request_args = target
-            .into_iter()
-            .flat_map(|target_member| {
-                [
-                    "--switchover-to".to_string(),
-                    target_member.service_name().to_string(),
-                ]
-            })
-            .collect::<Vec<_>>();
-        let output = self.run_command_via_member(
-            member,
-            runtime_config.as_path(),
-            ["switchover".to_string(), "request".to_string()]
-                .into_iter()
-                .chain(request_args)
-                .collect::<Vec<_>>(),
-            "pgtm switchover request",
-            extract_switchover_output,
-        )?;
-        match output {
-            MemberCommandOutcome::Observed(accepted) => {
-                serde_json::to_string(&accepted).map_err(|source| {
-                    HarnessError::message(format!(
-                        "serializing switchover response failed: {source}"
-                    ))
-                })
-            }
-            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
-                "pgtm switchover request via `{member}` failed: {message}"
-            ))),
-        }
-    }
-
-    fn observe_state_via_member(&self, member: ClusterMember) -> Result<MemberStateObservation> {
-        let outcome = match self.materialize_host_observer_config(member) {
-            Ok(runtime_config) => self.run_command_via_member(
-                member,
-                runtime_config.as_path(),
-                vec!["status".to_string()],
-                "pgtm status",
-                extract_state_command_output,
-            )?,
-            Err(err) => MemberCommandOutcome::Failed(err.to_string()),
-        };
-        Ok(MemberStateObservation { member, outcome })
-    }
-
-    fn run_command_via_member<T>(
-        &self,
-        member: ClusterMember,
-        runtime_config: &Path,
-        command_args: Vec<String>,
-        context_label: &str,
-        decode_output: fn(CommandOutputDto) -> Result<T>,
-    ) -> Result<MemberCommandOutcome<T>> {
-        let binary = resolve_pgtm_binary()?;
-        let args = [
-            "--config".to_string(),
-            runtime_config.display().to_string(),
-            "--json".to_string(),
-        ]
-        .into_iter()
-        .chain(command_args)
-        .collect::<Vec<_>>();
-        let context = format!("{context_label} via `{member}`");
-        let output = process::run(
-            CommandSpec::new(binary.clone(), context.clone())
-                .env("PATH", "")
-                .args(args.as_slice()),
-        );
-        match output {
-            Ok(stdout) => {
-                let rendered = stdout.stdout_text(format!("{context} stdout"))?;
-                let dto = serde_json::from_str::<CommandOutputDto>(rendered.as_str()).map_err(
-                    |source| HarnessError::Json {
-                        context: context.clone(),
-                        source,
-                    },
-                )?;
-                decode_output(dto).map(MemberCommandOutcome::Observed)
-            }
-            Err(HarnessError::CommandFailed {
-                executable,
-                context,
-                status,
-                stdout,
-                stderr,
-            }) => Ok(MemberCommandOutcome::Failed(format!(
-                "command `{}` failed while {context}: status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                executable.display()
-            ))),
-            Err(err) => Err(err),
-        }
-    }
-
-    fn member_published_port(&self, member: ClusterMember, port: &str) -> Result<u16> {
-        let container_id = self.docker.compose_container_id(
-            self.compose_file.as_path(),
-            self.compose_project.as_str(),
-            member.service_name(),
-        )?;
-        self.docker.published_host_port(container_id.as_str(), port)
-    }
-
-    fn ca_cert_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/ca.crt")
-    }
-
-    fn read_token_path(&self) -> PathBuf {
-        self.materialized_dir.join("secrets/api-read-token")
-    }
-
-    fn admin_token_path(&self) -> PathBuf {
-        self.materialized_dir.join("secrets/api-admin-token")
-    }
-
-    fn observer_cert_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/observer.crt")
-    }
-
-    fn observer_key_path(&self) -> PathBuf {
-        self.materialized_dir.join("configs/tls/observer.key")
-    }
-
-    fn host_observer_config_path(&self, member: ClusterMember) -> PathBuf {
-        self.materialized_dir
-            .join("configs/observer")
-            .join(format!("{}-pgtm.toml", member.service_name()))
-    }
-
-    fn materialize_host_observer_config(&self, member: ClusterMember) -> Result<PathBuf> {
-        let published_api_port = self.member_published_port(member, "8443/tcp")?;
-        let config_path = self.host_observer_config_path(member);
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent).map_err(|source| HarnessError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let rendered = render_host_observer_config(
-            member,
-            SocketAddr::from(([127, 0, 0, 1], published_api_port)),
-            self.ca_cert_path().as_path(),
-            self.read_token_path().as_path(),
-            self.admin_token_path().as_path(),
-            self.observer_cert_path().as_path(),
-            self.observer_key_path().as_path(),
-        );
-        fs::write(config_path.as_path(), rendered).map_err(|source| HarnessError::Io {
-            path: config_path.clone(),
-            source,
+impl TimeoutModel {
+    pub fn from_runtime_config(path: &Path) -> Result<Self> {
+        let contents = std::fs::read_to_string(path).map_err(|err| {
+            HarnessError::message(format!(
+                "failed to read runtime config `{}` for timeout derivation: {err}",
+                path.display()
+            ))
         })?;
-        Ok(config_path)
+        let config = toml::from_str::<RuntimeConfig>(contents.as_str()).map_err(|err| {
+            HarnessError::message(format!(
+                "failed to parse runtime config `{}` for timeout derivation: {err}",
+                path.display()
+            ))
+        })?;
+        Ok(derive_timeout_model(
+            config.ha.loop_interval_ms,
+            config.ha.lease_ttl_ms,
+            config.process.timeouts.bootstrap_ms,
+            config.process.timeouts.pg_rewind_ms,
+        ))
     }
 }
 
-fn resolve_pgtm_binary() -> Result<PathBuf> {
-    let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
-        .map(PathBuf::from)
-        .filter(|path| path.exists());
-    let candidate = match env_candidate {
-        Some(path) => path,
-        None => {
-            let settings = harness_settings()?;
-            configured_executable(
-                settings.pgtm.executable_candidates.as_slice(),
-                "pgtm.executable_candidates",
-                "pgtm",
-            )?
-        }
-    };
-    process::ensure_absolute_executable(candidate.as_path())?;
-    Ok(candidate)
-}
-
-fn extract_state_command_output(output: CommandOutputDto) -> Result<StateCommandOutputDto> {
-    match output {
-        CommandOutputDto::State { output } => Ok(*output),
-        other => Err(HarnessError::message(format!(
-            "expected `pgtm status --json` output, observed command payload `{}`",
-            command_label(&other)
-        ))),
+fn derive_timeout_model(
+    ha_loop_interval_ms: u64,
+    lease_ttl_ms: u64,
+    bootstrap_ms: u64,
+    pg_rewind_ms: u64,
+) -> TimeoutModel {
+    let ha_loop_interval = Duration::from_millis(ha_loop_interval_ms);
+    let failover_slack =
+        ha_loop_interval.mul_f64((FAILOVER_SLACK_LOOPS + DCS_DETECTION_SLACK_LOOPS) as f64);
+    let failover_buffer = Duration::from_millis(FAILOVER_EXTRA_BUFFER_MS);
+    let recovery_slack = ha_loop_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
+    let failover_deadline = Duration::from_millis(lease_ttl_ms) + failover_slack + failover_buffer;
+    let startup_deadline = Duration::from_millis(bootstrap_ms) + recovery_slack;
+    let recovery_base = bootstrap_ms.max(pg_rewind_ms);
+    let recovery_deadline = Duration::from_millis(recovery_base) + recovery_slack;
+    let write_convergence_deadline = failover_deadline + recovery_deadline;
+    let poll_interval = Duration::from_millis(
+        ha_loop_interval_ms
+            .saturating_mul(HARNESS_POLL_INTERVAL_MULTIPLIER)
+            .max(MIN_HARNESS_POLL_INTERVAL_MS),
+    );
+    TimeoutModel {
+        startup_deadline,
+        failover_deadline,
+        recovery_deadline,
+        write_convergence_deadline,
+        poll_interval,
     }
 }
 
-fn extract_switchover_output(output: CommandOutputDto) -> Result<AcceptedResponse> {
-    match output {
-        CommandOutputDto::Switchover { output } => Ok(output),
-        other => Err(HarnessError::message(format!(
-            "expected `pgtm switchover request --json` output, observed command payload `{}`",
-            command_label(&other)
-        ))),
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::derive_timeout_model;
+
+    #[test]
+    fn doubles_harness_poll_interval_for_fast_ha_loops() {
+        let model = derive_timeout_model(1_000, 10_000, 300_000, 120_000);
+        assert_eq!(model.poll_interval, Duration::from_secs(2));
+        assert_eq!(model.failover_deadline, Duration::from_secs(26));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(336));
+    }
+
+    #[test]
+    fn preserves_longer_harness_poll_intervals_above_the_minimum() {
+        let model = derive_timeout_model(3_000, 10_000, 300_000, 120_000);
+        assert_eq!(model.poll_interval, Duration::from_secs(6));
+        assert_eq!(model.failover_deadline, Duration::from_secs(34));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(364));
     }
 }
 
-fn command_label(output: &CommandOutputDto) -> &'static str {
-    match output {
-        CommandOutputDto::State { .. } => "state",
-        CommandOutputDto::Primary { .. } => "primary",
-        CommandOutputDto::Replicas { .. } => "replicas",
-        CommandOutputDto::Switchover { .. } => "switchover",
-        CommandOutputDto::ReloadCertificates { .. } => "reload_certificates",
-    }
-}
 
-fn host_postgres_dsn(
-    member: ClusterMember,
-    port: u16,
-    ca_cert_path: &Path,
-    observer_cert_path: &Path,
-    observer_key_path: &Path,
-) -> String {
-    [
-        format!("host={}", member.service_name()),
-        "hostaddr=127.0.0.1".to_string(),
-        format!("port={port}"),
-        "user=postgres".to_string(),
-        "dbname=postgres".to_string(),
-        "sslmode=verify-full".to_string(),
-        format!("sslrootcert={}", ca_cert_path.display()),
-        format!("sslcert={}", observer_cert_path.display()),
-        format!("sslkey={}", observer_key_path.display()),
-    ]
-    .join(" ")
-}
+===== docs/src/how-to/run-tests.md =====
+# Run the Test Suite
 
-fn render_host_observer_config(
-    member: ClusterMember,
-    resolve_to: SocketAddr,
-    ca_cert_path: &Path,
-    read_token_path: &Path,
-    admin_token_path: &Path,
-    observer_cert_path: &Path,
-    observer_key_path: &Path,
-) -> String {
-    format!(
-        r#"[api]
-base_url = "https://{}:{}"
-expected_transport = "https"
-resolve_to = "{resolve_to}"
-auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "{}" }}, admin_token = {{ type = "file", path = "{}" }} }} }}
-tls = {{ ca_cert = {{ path = "{}" }}, identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }} }}
+Execute the project's test and validation gates.
 
-[postgres.tls]
-ca_cert = {{ path = "{}" }}
-identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }}
-"#,
-        member.service_name(),
-        resolve_to.port(),
-        read_token_path.display(),
-        admin_token_path.display(),
-        ca_cert_path.display(),
-        observer_cert_path.display(),
-        observer_key_path.display(),
-        ca_cert_path.display(),
-        observer_cert_path.display(),
-        observer_key_path.display(),
-    )
-}
+## Prerequisites
+
+Install required binaries:
+
+```bash
+./tools/install-etcd.sh
+./tools/install-postgres16.sh
+```
+
+Also required:
+
+- Rust toolchain with cargo
+- cargo-nextest
+- Docker and Docker Compose plugin
+- Permission to access Docker daemon
+
+## Fast compile check
+
+For quick compilation feedback:
+
+```bash
+make check
+```
+
+## Default test suite
+
+For normal validation of most code changes:
+
+```bash
+make test
+```
+
+Convert nextest JUnit output to per-test logs:
+
+```bash
+make test.convert-logs
+```
+
+## HA validation tests
+
+For changes affecting HA behavior:
+
+```bash
+make test-long
+```
+
+The HA harness prepares a per-run materialized workspace assembled from shared fixture assets, per-node runtime configs, and a tiny include-only `compose.yml` that points at one of two checked-in Docker Compose variants. The harness still bind-mounts per-node `faults/` directories into `/var/lib/pgtuskmaster/faults` for explicit fault control, but it no longer renders a large per-run compose file or starts a dedicated observer container. Cluster health, failover, and switchover checks are driven from the host by running `pgtm --json` against each member individually and by probing PostgreSQL writeability through the published node ports exposed by those static compose variants.
+
+Run specific HA scenarios:
+
+```bash
+make test-long TESTS="ha_replica_faults_keep_cluster_healthy"
+```
+
+Multiple scenarios:
+
+```bash
+make test-long TESTS="ha_replica_faults_keep_cluster_healthy ha_primary_faults_fail_over_then_recover ha_operator_switchovers"
+```
+
+The current merged HA feature inventory is:
+
+- `ha_replica_faults_keep_cluster_healthy`
+- `ha_primary_faults_fail_over_then_recover`
+- `ha_quorum_loss_and_dcs_loss`
+- `ha_rejoin_and_restart_recovery`
+- `ha_operator_switchovers`
+
+Convert HA logs:
+
+```bash
+make test-long.convert-logs
+```
+
+Individual targets:
+
+- `make test.nextest`
+- `make test.convert-logs`
+- `make test-long.nextest`
+- `make test-long.convert-logs`
+
+## Lint and documentation checks
+
+For documentation changes or full style validation:
+
+```bash
+make lint
+```
+
+This runs:
+
+- Mermaid diagram linting
+- Documentation no-code guard checks
+- Silent-error linting
+- Strict clippy passes (no unwrap/expect/panic/todo)
+
+## Picking the right command
+
+| Change type | Command |
+|-------------|---------|
+| Rust code only, quick compile check | `make check` |
+| General behavior changes | `make test` |
+| HA behavior changes | `make test-long` |
+| Specific HA scenarios | `make test-long TESTS="..."` |
+| Documentation or full validation | `make lint` |
+
+## Troubleshooting
+
+### `make test` fails before executing scenarios
+
+- Verify `cargo-nextest` is installed and on PATH
+
+### HA scenarios fail because binaries are missing
+
+```bash
+./tools/install-etcd.sh
+./tools/install-postgres16.sh
+```
+
+### `make test-long` fails immediately
+
+Check Docker access:
+
+```bash
+docker info
+```
+
+Linux permission denied errors mean the current account cannot access the Docker socket. Add user to Docker group or set `DOCKER_HOST` to a reachable daemon endpoint.
+
+### Lint fails on documentation-only work
+
+- Review docs-lint output first
+- Documentation validation is required, not optional
 
 
-===== tests/ha/support/mod.rs =====
-mod config;
-pub mod docker;
-mod error;
-pub mod faults;
-pub mod givens;
-mod invariant;
-pub mod observer;
-mod process;
-pub mod runner;
-pub mod steps;
-pub mod timeouts;
-pub mod topology;
-pub mod world;
+===== docs/tmp/verbose_extra_context/ha-invariant-runners.md =====
+# HA invariant runners context
 
-use std::sync::{Mutex, OnceLock};
+This note exists only as raw context for the docs drafting workflow. It summarizes the current HA acceptance harness behavior after the accepted-write convergence task.
 
-use cucumber::{writer, World as _, WriterExt as _};
-use futures::FutureExt as _;
+## Current background invariants
 
-use crate::support::{
-    error::{HarnessError, Result},
-    world::HaWorld,
-};
+The HA harness now runs two background invariant runners for every HA scenario:
 
-#[derive(Clone, Debug)]
-pub struct FeatureMetadata {
-    pub feature_name: String,
-}
+1. `PrimaryCountInvariantRunner`
+2. `WriteConvergenceInvariantRunner`
 
-static FEATURE_METADATA: OnceLock<FeatureMetadata> = OnceLock::new();
-static CLEANUP_ERRORS: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+They both live in `tests/ha/support/invariant.rs`.
 
-// This runner is intentionally independent from the legacy HA harness so the old
-// `tests/ha` and `src/test_harness/ha_e2e` flows can be deleted later.
-pub async fn run_feature(
-    feature_name: &str,
-    feature_path: &str,
-) -> std::result::Result<(), String> {
-    install_context(feature_name, feature_path).map_err(|err| err.to_string())?;
+## Primary-count invariant
 
-    let writer = HaWorld::cucumber()
-        .before(|_, _, scenario, world| {
-            async move {
-                world.reset();
-                world.set_scenario_name(scenario.name.clone());
-            }
-            .boxed_local()
-        })
-        .after(|_, _, _, _, world| {
-            async move {
-                if let Some(world) = world {
-                    if let Err(err) = world.cleanup() {
-                        record_cleanup_error(err.to_string());
-                    }
-                }
-            }
-            .boxed_local()
-        })
-        .max_concurrent_scenarios(1)
-        .with_writer(writer::Basic::stdout().summarized())
-        .with_default_cli()
-        .run(feature_path)
-        .await;
+The primary-count runner starts during `HarnessShared::initialize()` before cluster bootstrap begins.
 
-    let stats_error = summarize_result(writer.scenarios_stats(), writer.steps_stats()).err();
-    let cleanup_error = cleanup_recorded_errors().err();
+It continuously samples every member through the host-side `pgtm status --json` observation surface.
 
-    match (stats_error, cleanup_error) {
-        (None, None) => Ok(()),
-        (Some(stats), None) => Err(stats.to_string()),
-        (None, Some(cleanup)) => Err(cleanup.to_string()),
-        (Some(stats), Some(cleanup)) => Err(format!("{stats}\ncleanup also failed: {cleanup}")),
-    }
-}
+It counts only each member's local self-report from `NodeState.pg`:
 
-pub fn feature_metadata() -> Result<&'static FeatureMetadata> {
-    FEATURE_METADATA
-        .get()
-        .ok_or_else(|| HarnessError::message("feature metadata has not been initialized"))
-}
+- `PgInfoState::Primary` counts as primary
+- `PgInfoState::Replica` counts as not-primary
+- `PgInfoState::Unknown` counts as not-primary
+- a command failure to a member is recorded as `command_failed` and does not count as a primary
 
-fn install_context(feature_name: &str, _feature_path: &str) -> Result<()> {
-    FEATURE_METADATA
-        .set(FeatureMetadata {
-            feature_name: feature_name.to_string(),
-        })
-        .map_err(|_| HarnessError::message("feature metadata was already initialized"))?;
-    Ok(())
-}
+The only allowed total self-reported primary counts are `{0, 1}`.
 
-fn summarize_result(
-    scenario_stats: &cucumber::writer::summarize::Stats,
-    step_stats: &cucumber::writer::summarize::Stats,
-) -> Result<()> {
-    if scenario_stats.total() == 0 {
-        return Err(HarnessError::message("cucumber executed zero scenarios"));
-    }
-    if scenario_stats.failed > 0 || step_stats.failed > 0 {
-        return Err(HarnessError::message(format!(
-            "cucumber feature failed: scenarios_failed={} steps_failed={}",
-            scenario_stats.failed, step_stats.failed
-        )));
-    }
-    if scenario_stats.skipped > 0 || step_stats.skipped > 0 {
-        return Err(HarnessError::message(format!(
-            "cucumber feature skipped steps unexpectedly: scenarios_skipped={} steps_skipped={}",
-            scenario_stats.skipped, step_stats.skipped
-        )));
-    }
-    Ok(())
-}
+If the sampled total is outside `{0, 1}`, the runner immediately persists `artifacts/primary-count-invariant-violation.json` and the scenario fails.
 
-fn cleanup_recorded_errors() -> Result<()> {
-    let recorded = CLEANUP_ERRORS.get_or_init(|| Mutex::new(Vec::new()));
-    let errors = {
-        let mut guard = recorded
-            .lock()
-            .map_err(|_| HarnessError::message("cleanup error registry mutex was poisoned"))?;
-        std::mem::take(&mut *guard)
-    };
+## Write-convergence invariant
 
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(HarnessError::message(errors.join("\n")))
-    }
-}
+The write-convergence runner starts after bootstrap succeeds. It is also wired from `HarnessShared::initialize()`, but only after `bootstrap_cluster().await` returns successfully.
 
-fn record_cleanup_error(error: String) {
-    let recorded = CLEANUP_ERRORS.get_or_init(|| Mutex::new(Vec::new()));
-    match recorded.lock() {
-        Ok(mut guard) => guard.push(error),
-        Err(poisoned) => poisoned.into_inner().push(error),
-    }
-}
+The write-convergence runner is intended to enforce this rule:
+
+- every write that the cluster accepted as committed must eventually be visible on all nodes
+
+The runner does not treat every successful direct SQL write on every node as "cluster accepted". That would be too broad during failure scenarios. Instead it uses the current HA authority projection from `NodeState.ha.publication` to decide which member is the authoritative primary for the current sample.
+
+## Activation behavior
+
+Before the write-convergence runner starts issuing writes, it waits for the invariant table to become visible on all members.
+
+The table name is:
+
+- `public.ha_write_convergence_invariant`
+
+The runner first issues `CREATE TABLE IF NOT EXISTS ...` against the member Postgres endpoints until one target accepts the DDL.
+
+After that it waits until every member reports that `to_regclass('public.ha_write_convergence_invariant')` resolves to the table name. This means the runner does not start counting writes during the initial cluster bootstrap window before the relation exists everywhere.
+
+If scenario cleanup starts before the table becomes visible on all members, the runner exits cleanly instead of turning cleanup into a failure.
+
+## Accepted writes versus rejected writes
+
+Each loop iteration can record both an accepted-write probe and a rejected-write probe.
+
+Accepted-write probe:
+
+- the runner observes the cluster state
+- it extracts the single authoritative primary from `PublicationState::Projected(AuthorityProjection::Primary(...))`
+- it writes only through that authoritative primary's Postgres endpoint
+- if that SQL succeeds, the write is recorded as an accepted write
+- if that SQL fails, the attempt is recorded as a rejection, not an accepted write
+
+Rejected-write probe:
+
+- the runner round-robins over non-authoritative members
+- if a target self-reports primary but is not the authoritative primary, the runner records a rejection without counting that target as cluster-accepted
+- if a non-authoritative target accepts the SQL write anyway, the runner treats that as a runner failure because a non-authoritative target unexpectedly accepted the invariant write
+
+This split is important. The runner is modeling "cluster accepted as committed", not merely "some node accepted a direct SQL connection".
+
+## Convergence tracking
+
+Accepted writes are tracked until they are visible on every member.
+
+The runner persists and updates:
+
+- `artifacts/write-convergence-invariant-events.jsonl`
+- `artifacts/write-convergence-invariant-summary.json`
+- `artifacts/write-convergence-invariant-violation.json` on timeout/failure
+
+The summary includes:
+
+- accepted count
+- rejected count
+- converged count
+- pending accepted writes
+- per-member visibility state for each pending write
+
+Per-member visibility states are:
+
+- `visible`
+- `missing`
+- `query_failed`
+
+The runner treats `relation does not exist` as `missing` instead of a transport failure. Transport-level SQL failures such as connection refusal remain `query_failed`.
+
+## Convergence timeout
+
+The harness derives a dedicated convergence window in `tests/ha/support/timeouts/mod.rs`.
+
+The field is:
+
+- `TimeoutModel::write_convergence_deadline`
+
+It is derived as:
+
+- `failover_deadline + recovery_deadline`
+
+This window is intentionally longer than a single poll or failover loop because accepted writes may need both a failover interval and a node recovery interval before they can become visible on every member again.
+
+## Cleanup and failure surfacing
+
+`HarnessShared::ensure_background_invariants_healthy()` checks both runners.
+
+That means normal HA steps fail through the shared harness access path if either background invariant has already recorded a failure.
+
+During cleanup:
+
+- the primary-count runner is stopped
+- the write-convergence runner is stopped
+- artifact capture runs afterward
+
+If either runner fails during stop or has already persisted a failure, cleanup reports that failure.
+
+## Documentation implications
+
+The failure-modes explanation page currently mentions only the primary-count invariant.
+
+It should now explain that the HA harness enforces two always-on safety checks:
+
+1. self-reported primary count must stay in `{0, 1}`
+2. writes accepted through the authoritative primary must eventually converge to all members
+
+It should also mention the concrete write-convergence artifacts and the fact that accepted writes are defined by authoritative-primary routing, not by arbitrary direct SQL success on any node.
