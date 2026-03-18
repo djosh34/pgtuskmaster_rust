@@ -1317,7 +1317,7 @@ mod tests {
         use crate::process::state::{
             ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
             ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-            ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+            ProcessStateChannel, ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{
@@ -1442,7 +1442,7 @@ mod tests {
             let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
             let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
             (
-                ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+                ProcessWorkerCtx {
                     cadence: ProcessCadence {
                         poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
                         now: Box::new(crate::process::worker::system_now_unix_millis),
@@ -1473,7 +1473,7 @@ mod tests {
                         capture_subprocess_output: true,
                         command_runner: Box::new(TokioCommandRunner),
                     },
-                }),
+                },
                 subscriber,
             )
         }

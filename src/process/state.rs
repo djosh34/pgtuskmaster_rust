@@ -124,17 +124,6 @@ pub(crate) struct ProcessRuntimePlan {
     pub(crate) replica_access: ReplicaAccessRuntime,
 }
 
-pub(crate) struct ProcessWorkerBootstrap {
-    pub(crate) cadence: ProcessCadence,
-    pub(crate) config: ProcessConfig,
-    pub(crate) identity: ProcessNodeIdentity,
-    pub(crate) observed: ProcessObservedState,
-    pub(crate) plan: ProcessRuntimePlan,
-    pub(crate) state_channel: ProcessStateChannel,
-    pub(crate) control: ProcessControlPlane,
-    pub(crate) runtime: ProcessRuntime,
-}
-
 pub(crate) struct ProcessWorkerCtx {
     pub(crate) cadence: ProcessCadence,
     pub(crate) config: ProcessConfig,
@@ -182,31 +171,6 @@ pub(crate) struct ProcessRuntime {
     pub(crate) log: LogSender,
     pub(crate) capture_subprocess_output: bool,
     pub(crate) command_runner: Box<dyn ProcessCommandRunner>,
-}
-
-impl ProcessWorkerCtx {
-    pub(crate) fn new(bootstrap: ProcessWorkerBootstrap) -> Self {
-        let ProcessWorkerBootstrap {
-            cadence,
-            config,
-            identity,
-            observed,
-            plan,
-            state_channel,
-            control,
-            runtime,
-        } = bootstrap;
-        Self {
-            cadence,
-            config,
-            identity,
-            observed,
-            plan,
-            state_channel,
-            control,
-            runtime,
-        }
-    }
 }
 
 impl ProcessRuntimePlan {

@@ -671,9 +671,11 @@ mod tests {
         signal_log: &Path,
     ) -> Result<ChildGuard, String> {
         let script = root.join("fake-postgres.sh");
+        let ready_file = root.join("fake-postgres.ready");
         let script_contents = format!(
-            "#!/bin/bash\ntrap 'printf hup >> \"{}\"' HUP\nwhile true; do read -r -t 1 _ || true; done\n",
-            signal_log.display()
+            "#!/bin/bash\ntrap 'printf hup >> \"{}\"' HUP\nprintf ready > \"{}\"\nwhile true; do sleep 1; done\n",
+            signal_log.display(),
+            ready_file.display(),
         );
         fs::write(&script, script_contents).map_err(|err| {
             format!(
@@ -710,6 +712,7 @@ mod tests {
                     script.display()
                 )
             })?;
+        wait_for_fake_postgres_ready(ready_file.as_path())?;
         Ok(ChildGuard(Some(child)))
     }
 
@@ -748,6 +751,29 @@ mod tests {
         Err(format!(
             "signal log {} was not written in time",
             signal_log.display()
+        ))
+    }
+
+    fn wait_for_fake_postgres_ready(ready_file: &Path) -> Result<(), String> {
+        let mut attempts = 0_u8;
+        while attempts < 150 {
+            match fs::read_to_string(ready_file) {
+                Ok(contents) if !contents.is_empty() => return Ok(()),
+                Ok(_) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!(
+                        "read fake postgres ready file {} failed: {err}",
+                        ready_file.display()
+                    ));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            attempts = attempts.saturating_add(1);
+        }
+        Err(format!(
+            "fake postgres ready file {} was not written in time",
+            ready_file.display()
         ))
     }
 

@@ -13,7 +13,7 @@ use super::{
     state::{
         ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
         ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-        ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+        ProcessStateChannel, ProcessWorkerCtx,
     },
     worker::{system_now_unix_millis, TokioCommandRunner},
 };
@@ -58,7 +58,7 @@ pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle 
     ProcessRuntimeBundle {
         state,
         control: ProcessControlHandle { intents },
-        worker: ProcessWorker(ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+        worker: ProcessWorker(ProcessWorkerCtx {
             cadence: ProcessCadence {
                 poll_interval: PROCESS_WORKER_POLL_INTERVAL,
                 now: Box::new(system_now_unix_millis),
@@ -89,6 +89,6 @@ pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle 
                 capture_subprocess_output: request.capture_subprocess_output,
                 command_runner: Box::new(TokioCommandRunner),
             },
-        })),
+        }),
     }
 }

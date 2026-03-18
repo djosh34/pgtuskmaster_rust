@@ -1091,7 +1091,7 @@ mod tests {
             state::{
                 ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
                 ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-                ProcessStateChannel, ProcessWorkerBootstrap, ProcessWorkerCtx,
+                ProcessStateChannel, ProcessWorkerCtx,
             },
         },
         state::{new_state_channel, JobId, MemberId, StateSubscriber},
@@ -1253,7 +1253,7 @@ mod tests {
         let (_tx, inbox) = unbounded_channel();
 
         Ok((
-            ProcessWorkerCtx::new(ProcessWorkerBootstrap {
+            ProcessWorkerCtx {
                 cadence: ProcessCadence {
                     poll_interval: Duration::from_millis(10),
                     now: Box::new(super::system_now_unix_millis),
@@ -1284,7 +1284,7 @@ mod tests {
                     capture_subprocess_output: true,
                     command_runner: Box::new(UnexpectedSpawnRunner),
                 },
-            }),
+            },
             subscriber,
         ))
     }
