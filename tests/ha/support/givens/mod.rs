@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use crate::support::{
     error::{HarnessError, Result},
-    faults::DCS_MEMBERS,
-    topology::{ClusterMember, ComposeService, DcsMember, DcsService},
+    faults::DCS_SERVICES,
+    topology::{ClusterMember, ComposeService, DcsService},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -119,24 +119,23 @@ impl ThreeNodeDcsLayout {
     pub fn dcs_services(self) -> Vec<DcsService> {
         match self {
             Self::SharedSingle => vec![DcsService::SharedEtcd],
-            Self::ColocatedThreeMember => DCS_MEMBERS.into_iter().map(DcsService::Member).collect(),
+            Self::ColocatedThreeMember => DCS_SERVICES.into_iter().collect(),
         }
     }
 
     pub fn service_for(self, member: ClusterMember) -> DcsService {
         match self {
             Self::SharedSingle => DcsService::SharedEtcd,
-            Self::ColocatedThreeMember => DcsService::Member(member.local_dcs_member()),
+            Self::ColocatedThreeMember => member.local_dcs_service(),
         }
     }
 
     pub fn quorum_majority_services(self) -> Vec<DcsService> {
         match self {
             Self::SharedSingle => vec![DcsService::SharedEtcd],
-            Self::ColocatedThreeMember => [DcsMember::EtcdA, DcsMember::EtcdB]
-                .into_iter()
-                .map(DcsService::Member)
-                .collect(),
+            Self::ColocatedThreeMember => {
+                [DcsService::EtcdA, DcsService::EtcdB].into_iter().collect()
+            }
         }
     }
 }

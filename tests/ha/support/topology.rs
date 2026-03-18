@@ -35,11 +35,11 @@ impl ClusterMember {
         MemberId(self.service_name().to_string())
     }
 
-    pub fn local_dcs_member(self) -> DcsMember {
+    pub fn local_dcs_service(self) -> DcsService {
         match self {
-            Self::NodeA => DcsMember::EtcdA,
-            Self::NodeB => DcsMember::EtcdB,
-            Self::NodeC => DcsMember::EtcdC,
+            Self::NodeA => DcsService::EtcdA,
+            Self::NodeB => DcsService::EtcdB,
+            Self::NodeC => DcsService::EtcdC,
         }
     }
 
@@ -62,17 +62,19 @@ impl fmt::Display for ClusterMember {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DcsMember {
+pub enum DcsService {
+    SharedEtcd,
     EtcdA,
     EtcdB,
     EtcdC,
 }
 
-impl DcsMember {
-    pub const ALL: [Self; 3] = [Self::EtcdA, Self::EtcdB, Self::EtcdC];
+impl DcsService {
+    pub const COLOCATED_ALL: [Self; 3] = [Self::EtcdA, Self::EtcdB, Self::EtcdC];
 
     pub fn service_name(self) -> &'static str {
         match self {
+            Self::SharedEtcd => "etcd",
             Self::EtcdA => "etcd-a",
             Self::EtcdB => "etcd-b",
             Self::EtcdC => "etcd-c",
@@ -81,37 +83,10 @@ impl DcsMember {
 
     pub fn client_url(self) -> &'static str {
         match self {
+            Self::SharedEtcd => "http://etcd:2379",
             Self::EtcdA => "http://etcd-a:2379",
             Self::EtcdB => "http://etcd-b:2379",
             Self::EtcdC => "http://etcd-c:2379",
-        }
-    }
-}
-
-impl fmt::Display for DcsMember {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.service_name())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DcsService {
-    SharedEtcd,
-    Member(DcsMember),
-}
-
-impl DcsService {
-    pub fn service_name(self) -> &'static str {
-        match self {
-            Self::SharedEtcd => "etcd",
-            Self::Member(member) => member.service_name(),
-        }
-    }
-
-    pub fn client_url(self) -> &'static str {
-        match self {
-            Self::SharedEtcd => "http://etcd:2379",
-            Self::Member(member) => member.client_url(),
         }
     }
 }

@@ -1,7 +1,7 @@
-use crate::support::topology::{ClusterMember, DcsMember};
+use crate::support::topology::{ClusterMember, DcsService};
 
 pub const DATABASE_MEMBERS: [ClusterMember; 3] = ClusterMember::ALL;
-pub const DCS_MEMBERS: [DcsMember; 3] = DcsMember::ALL;
+pub const DCS_SERVICES: [DcsService; 3] = DcsService::COLOCATED_ALL;
 pub const IPTABLES_CHAIN: &str = "PGTM_HA_FAULTS";
 pub const FAULT_DIR: &str = "/var/lib/pgtuskmaster/faults";
 
