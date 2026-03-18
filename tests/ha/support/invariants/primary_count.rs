@@ -1,4 +1,6 @@
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{
         atomic::{AtomicI32, Ordering},
         Arc,
@@ -20,6 +22,10 @@ use crate::support::{
     topology::ClusterMember,
 };
 
+type MemberPrimaryObservation = std::result::Result<(ClusterMember, bool), String>;
+type ObserveAllMembersFuture = Pin<Box<dyn Future<Output = [MemberPrimaryObservation; 3]> + Send>>;
+type ObserveAllMembers = Arc<dyn Fn() -> ObserveAllMembersFuture + Send + Sync>;
+
 pub struct PrimaryCountInvariantRunner {
     poll_interval: Duration,
     health_deadline: Duration,
@@ -34,18 +40,55 @@ impl PrimaryCountInvariantRunner {
         poll_interval: Duration,
         health_deadline: Duration,
     ) -> Result<Self> {
+        let observe_all: ObserveAllMembers = Arc::new(move || {
+            let observer = observer.clone();
+            Box::pin(async move {
+                let (node_a, node_b, node_c) = tokio::join!(
+                    observe_member_primary(observer.clone(), ClusterMember::NodeA),
+                    observe_member_primary(observer.clone(), ClusterMember::NodeB),
+                    observe_member_primary(observer, ClusterMember::NodeC),
+                );
+                [node_a, node_b, node_c]
+            })
+        });
+        Ok(Self::start_with_observe_all(
+            poll_interval,
+            health_deadline,
+            observe_all,
+        ))
+    }
+}
+
+impl std::fmt::Debug for PrimaryCountInvariantRunner {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PrimaryCountInvariantRunner")
+            .field("poll_interval", &self.poll_interval)
+            .field("health_deadline", &self.health_deadline)
+            .field("num_primaries", &self.num_primaries.load(Ordering::SeqCst))
+            .finish()
+    }
+}
+
+impl Drop for PrimaryCountInvariantRunner {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl PrimaryCountInvariantRunner {
+    fn start_with_observe_all(
+        poll_interval: Duration,
+        health_deadline: Duration,
+        observe_all: ObserveAllMembers,
+    ) -> Self {
         let num_primaries = Arc::new(AtomicI32::new(0));
         let fatal_error = Arc::new(RwLock::new(None));
         let task_num_primaries = Arc::clone(&num_primaries);
         let task_fatal_error = Arc::clone(&fatal_error);
         let task = tokio::spawn(async move {
             loop {
-                let (node_a, node_b, node_c) = tokio::join!(
-                    observe_member_primary(observer.clone(), ClusterMember::NodeA),
-                    observe_member_primary(observer.clone(), ClusterMember::NodeB),
-                    observe_member_primary(observer.clone(), ClusterMember::NodeC),
-                );
-                let observations = [node_a, node_b, node_c];
+                let observations = observe_all().await;
                 if let Some(message) = observations
                     .iter()
                     .find_map(|outcome| outcome.as_ref().err().cloned())
@@ -81,13 +124,13 @@ impl PrimaryCountInvariantRunner {
             }
         });
 
-        Ok(Self {
+        Self {
             poll_interval,
             health_deadline,
             num_primaries,
             fatal_error,
             task,
-        })
+        }
     }
 
     pub fn ensure_healthy(&self) -> Result<()> {
@@ -113,23 +156,6 @@ impl PrimaryCountInvariantRunner {
                 tokio::time::sleep(self.poll_interval).await;
             }
         })?
-    }
-}
-
-impl std::fmt::Debug for PrimaryCountInvariantRunner {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("PrimaryCountInvariantRunner")
-            .field("poll_interval", &self.poll_interval)
-            .field("health_deadline", &self.health_deadline)
-            .field("num_primaries", &self.num_primaries.load(Ordering::SeqCst))
-            .finish()
-    }
-}
-
-impl Drop for PrimaryCountInvariantRunner {
-    fn drop(&mut self) {
-        self.task.abort();
     }
 }
 
@@ -167,16 +193,15 @@ impl PrimaryCountInvariantRunner {
 async fn observe_member_primary(
     observer: PgtmObserver,
     member: ClusterMember,
-) -> std::result::Result<(ClusterMember, bool), String> {
+) -> MemberPrimaryObservation {
     tokio::task::spawn_blocking(move || {
-        let is_primary = observer
+        observer
             .state_via_member(member)
-            .map(|state| matches!(state.pg, PgInfoState::Primary { .. }))
-            .unwrap_or(false);
-        (member, is_primary)
+            .map(|state| (member, matches!(state.pg, PgInfoState::Primary { .. })))
+            .or(Ok((member, false)))
     })
     .await
-    .map_err(|err| format!("join self-primary observation for `{member}` failed: {err}"))
+    .map_err(|err| format!("join self-primary observation for `{member}` failed: {err}"))?
 }
 
 fn validate_primary_count(num_primaries: i32) -> std::result::Result<bool, String> {
@@ -191,7 +216,50 @@ fn validate_primary_count(num_primaries: i32) -> std::result::Result<bool, Strin
 
 #[cfg(test)]
 mod tests {
-    use super::validate_primary_count;
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
+
+    use super::{
+        validate_primary_count, MemberPrimaryObservation, ObserveAllMembers,
+        PrimaryCountInvariantRunner,
+    };
+    use crate::support::topology::ClusterMember;
+
+    fn observed_poll(states: [bool; 3]) -> [MemberPrimaryObservation; 3] {
+        [
+            Ok((ClusterMember::NodeA, states[0])),
+            Ok((ClusterMember::NodeB, states[1])),
+            Ok((ClusterMember::NodeC, states[2])),
+        ]
+    }
+
+    fn unavailable_poll() -> [MemberPrimaryObservation; 3] {
+        [
+            Ok((ClusterMember::NodeA, false)),
+            Ok((ClusterMember::NodeB, false)),
+            Ok((ClusterMember::NodeC, false)),
+        ]
+    }
+
+    fn scripted_observer(polls: Vec<[MemberPrimaryObservation; 3]>) -> ObserveAllMembers {
+        let polls = Arc::new(polls);
+        let next_poll = Arc::new(AtomicUsize::new(0));
+        Arc::new(move || {
+            let polls = Arc::clone(&polls);
+            let next_poll = Arc::clone(&next_poll);
+            Box::pin(async move {
+                let index = next_poll
+                    .fetch_add(1, Ordering::SeqCst)
+                    .min(polls.len().saturating_sub(1));
+                polls[index].clone()
+            })
+        })
+    }
 
     #[test]
     fn zero_primaries_keeps_waiting() {
@@ -209,5 +277,86 @@ mod tests {
             validate_primary_count(2),
             Err("observed `2` self-reported primaries at once".to_string())
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn healthy_when_exactly_one_primary_is_reported() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+            scripted_observer(vec![observed_poll([false, true, false])]),
+        );
+
+        assert!(runner.ensure_healthy().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn healthy_after_waiting_for_primary_count_to_reach_one() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+            scripted_observer(vec![
+                observed_poll([false, false, false]),
+                observed_poll([false, true, false]),
+            ]),
+        );
+
+        assert!(runner.ensure_healthy().is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn times_out_when_primary_count_never_reaches_one() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(20),
+            scripted_observer(vec![observed_poll([false, false, false])]),
+        );
+
+        let err = match runner.ensure_healthy() {
+            Ok(()) => "expected timeout error, but runner was healthy".to_string(),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("timed out waiting for self-reported primary count to become `1`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn split_brain_fails_even_if_health_is_checked_later() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+            scripted_observer(vec![
+                observed_poll([false, true, false]),
+                observed_poll([true, true, false]),
+            ]),
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        assert!(runner.task.is_finished());
+        let err = match runner.ensure_healthy() {
+            Ok(()) => "expected split-brain error, but runner was healthy".to_string(),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("observed `2` self-reported primaries at once: `node-a`, `node-b`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn probe_failure_counts_as_not_primary() {
+        let runner = PrimaryCountInvariantRunner::start_with_observe_all(
+            Duration::from_millis(5),
+            Duration::from_millis(50),
+            scripted_observer(vec![
+                unavailable_poll(),
+                observed_poll([false, true, false]),
+            ]),
+        );
+
+        assert!(runner.ensure_healthy().is_ok());
     }
 }
