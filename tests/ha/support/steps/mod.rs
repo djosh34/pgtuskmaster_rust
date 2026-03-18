@@ -45,8 +45,8 @@ async fn i_wait_for_exactly_one_stable_primary_as(
         None,
     )
     .await?;
-    record_alias(world, alias.as_str(), primary, "wait.stable_primary")?;
-    record_alias(world, "current_primary", primary, "wait.current_primary")?;
+    world.record_member_alias(alias.as_str(), primary, "wait.stable_primary")?;
+    world.record_member_alias("current_primary", primary, "wait.current_primary")?;
     Ok(())
 }
 
@@ -78,7 +78,7 @@ async fn i_choose_one_non_primary_node_as(world: &mut HaWorld, alias: String) ->
         .first()
         .copied()
         .ok_or_else(|| HarnessError::message("cluster has no non-primary node to choose"))?;
-    record_alias(world, alias.as_str(), member_id, "choose_one_replica")
+    world.record_member_alias(alias.as_str(), member_id, "choose_one_replica")
 }
 
 #[given(regex = r#"^I choose the two non-primary nodes as "([^"]+)" and "([^"]+)"$"#)]
@@ -95,8 +95,8 @@ async fn i_choose_the_two_non_primary_nodes_as(
     .await?;
     match replicas.as_slice() {
         [member_a, member_b] => {
-            record_alias(world, alias_a.as_str(), *member_a, "choose_two_replicas")?;
-            record_alias(world, alias_b.as_str(), *member_b, "choose_two_replicas")
+            world.record_member_alias(alias_a.as_str(), *member_a, "choose_two_replicas")?;
+            world.record_member_alias(alias_b.as_str(), *member_b, "choose_two_replicas")
         }
         _ => Err(HarnessError::message(format!(
             "expected exactly two non-primary nodes, observed {}",
@@ -111,7 +111,7 @@ async fn i_choose_the_two_non_primary_nodes_as(
 
 #[when(regex = r#"^I kill the node named "([^"]+)"$"#)]
 async fn i_kill_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.kill_node(member_id)?;
     world.add_stopped_node(member_id);
     Ok(())
@@ -124,7 +124,7 @@ async fn i_kill_the_nodes_named(
     member_ref_b: String,
 ) -> Result<()> {
     for member_ref in [member_ref_a.as_str(), member_ref_b.as_str()] {
-        let member_id = resolve_member_reference(world, member_ref)?;
+        let member_id = world.resolve_member_reference(member_ref)?;
         world.harness()?.kill_node(member_id)?;
         world.add_stopped_node(member_id);
     }
@@ -142,7 +142,7 @@ async fn i_kill_all_database_nodes(world: &mut HaWorld) -> Result<()> {
 
 #[when(regex = r#"^I restart the node named "([^"]+)"$"#)]
 async fn i_restart_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.start_node(member_id)?;
     world.remove_stopped_node(member_id);
     Ok(())
@@ -155,7 +155,7 @@ async fn i_start_only_the_fixed_nodes(
     member_ref_b: String,
 ) -> Result<()> {
     for member_ref in [member_ref_a.as_str(), member_ref_b.as_str()] {
-        let member_id = resolve_member_reference(world, member_ref)?;
+        let member_id = world.resolve_member_reference(member_ref)?;
         world.harness()?.start_node(member_id)?;
         world.remove_stopped_node(member_id);
     }
@@ -179,7 +179,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 
 #[when(regex = r#"^I request a targeted switchover to "([^"]+)"$"#)]
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
     let harness = world.harness()?;
     let response = harness
@@ -199,7 +199,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
     wait_for_targeted_switchover_rejection_precondition(world, seed_member, member_id).await?;
     let request_result = world
@@ -223,7 +223,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
 
 #[then(regex = r#"^"([^"]+)" becomes primary$"#)]
 async fn quoted_member_becomes_primary(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let observed = wait_for_authoritative_single_primary(
         world,
         format!("outcome.primary.{member_id}").as_str(),
@@ -267,7 +267,7 @@ async fn i_stop_the_local_dcs_service_for_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.stop_member_local_dcs(member_id)
 }
 
@@ -276,7 +276,7 @@ async fn i_start_the_local_dcs_service_for_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.start_member_local_dcs(member_id)
 }
 
@@ -285,7 +285,7 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let harness = world.harness()?;
     for path in [TrafficPath::Dcs, TrafficPath::Api, TrafficPath::Postgres] {
         harness.isolate_member_from_all_peers_on_path(member_id, path)?;
@@ -298,7 +298,7 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
 
 #[when(regex = r#"^I cut the node named "([^"]+)" off from DCS$"#)]
 async fn i_cut_the_node_named_off_from_dcs(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.cut_member_off_from_dcs(member_id)
 }
 
@@ -307,7 +307,7 @@ async fn i_isolate_the_node_named_from_observer_api_access(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world
         .harness()?
         .isolate_member_from_observer_on_api(member_id)?;
@@ -320,7 +320,7 @@ async fn i_heal_network_faults_on_the_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.heal_member_network_faults(member_id)?;
     world.clear_observer_unreachable(member_id);
     Ok(())
@@ -340,7 +340,7 @@ async fn i_enable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
     world.harness()?.set_blocker(member_id, blocker, true)
 }
@@ -352,7 +352,7 @@ async fn i_disable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let blocker = parse_blocker_kind(blocker_name.as_str())?;
     world.harness()?.set_blocker(member_id, blocker, false)
 }
@@ -362,7 +362,7 @@ async fn i_wipe_the_data_directory_on_the_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member_reference(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     world.harness()?.wipe_member_data_dir(member_id)
 }
 
@@ -858,25 +858,6 @@ fn format_observed_authorities(states: &[(ClusterMember, &NodeState)]) -> String
         .map(|(member, state)| format!("{member}={}", format_authority(state)))
         .collect::<Vec<_>>()
         .join("; ")
-}
-
-fn record_alias(
-    world: &mut HaWorld,
-    alias: &str,
-    member: ClusterMember,
-    phase: &str,
-) -> Result<()> {
-    world
-        .harness()?
-        .record_note(phase, format!("alias `{alias}` -> `{member}`"))?;
-    world.remember_member_alias(alias, member);
-    Ok(())
-}
-
-fn resolve_member_reference(world: &HaWorld, member_ref: &str) -> Result<ClusterMember> {
-    world
-        .require_member_alias(member_ref)
-        .or_else(|_| ClusterMember::parse(member_ref))
 }
 
 fn replica_members(status: &NodeState) -> Vec<ClusterMember> {

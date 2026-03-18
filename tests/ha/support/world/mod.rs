@@ -74,11 +74,28 @@ impl HaWorld {
         self.aliases_by_name.insert(alias.into(), member);
     }
 
+    pub fn record_member_alias(
+        &mut self,
+        alias: &str,
+        member: ClusterMember,
+        phase: &str,
+    ) -> Result<()> {
+        self.harness()?
+            .record_note(phase, format!("alias `{alias}` -> `{member}`"))?;
+        self.remember_member_alias(alias, member);
+        Ok(())
+    }
+
     pub fn require_member_alias(&self, alias: &str) -> Result<ClusterMember> {
         self.aliases_by_name
             .get(alias)
             .copied()
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
+    }
+
+    pub fn resolve_member_reference(&self, member_ref: &str) -> Result<ClusterMember> {
+        self.require_member_alias(member_ref)
+            .or_else(|_| ClusterMember::parse(member_ref))
     }
 
     pub fn add_stopped_node(&mut self, member: ClusterMember) {
@@ -218,7 +235,7 @@ impl HarnessShared {
             timeouts.poll_interval,
             timeouts.failover_deadline,
         )
-            .await?;
+        .await?;
         let mut harness = Self {
             run_id,
             feature_name: feature_name.to_string(),
@@ -1724,6 +1741,22 @@ mod tests {
         world.remember_member_alias("replica", ClusterMember::NodeB);
 
         assert_eq!(world.require_member_alias("replica")?, ClusterMember::NodeB);
+        Ok(())
+    }
+
+    #[test]
+    fn member_reference_resolves_alias_before_service_name() -> Result<()> {
+        let mut world = HaWorld::default();
+        world.remember_member_alias("candidate", ClusterMember::NodeC);
+
+        assert_eq!(
+            world.resolve_member_reference("candidate")?,
+            ClusterMember::NodeC
+        );
+        assert_eq!(
+            world.resolve_member_reference("node-a")?,
+            ClusterMember::NodeA
+        );
         Ok(())
     }
 
