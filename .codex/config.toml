@@ -55,3 +55,7 @@ max_depth = 1
 [agents.explore_spark]
 description = "ultra fast explorer"
 config_file = "agents/spark_review.toml"
+
+[agents.do_fast]
+description = "ultra fast worker"
+config_file = "agents/spark_worker.toml"
