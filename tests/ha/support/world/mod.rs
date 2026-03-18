@@ -52,57 +52,9 @@ pub struct HaWorld {
 #[derive(Debug, Default)]
 pub struct ScenarioState {
     pub name: Option<String>,
-    pub aliases: AliasRegistry,
-    pub availability: ScenarioAvailability,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AliasName(String);
-
-impl From<&str> for AliasName {
-    fn from(value: &str) -> Self {
-        Self(value.to_string())
-    }
-}
-
-impl From<String> for AliasName {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct MemberSet {
-    members: BTreeSet<ClusterMember>,
-}
-
-impl MemberSet {
-    pub fn insert(&mut self, member: ClusterMember) -> bool {
-        self.members.insert(member)
-    }
-
-    pub fn remove(&mut self, member: ClusterMember) -> bool {
-        self.members.remove(&member)
-    }
-
-    pub fn contains(&self, member: ClusterMember) -> bool {
-        self.members.contains(&member)
-    }
-
-    pub fn clear(&mut self) {
-        self.members.clear();
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct AliasRegistry {
-    pub aliases_by_name: BTreeMap<AliasName, ClusterMember>,
-}
-
-#[derive(Debug, Default)]
-pub struct ScenarioAvailability {
-    pub stopped_members: MemberSet,
-    pub observer_unreachable_members: MemberSet,
+    pub aliases_by_name: BTreeMap<String, ClusterMember>,
+    pub stopped_members: BTreeSet<ClusterMember>,
+    pub observer_unreachable_members: BTreeSet<ClusterMember>,
 }
 
 impl HaWorld {
@@ -132,51 +84,36 @@ impl HaWorld {
         self.harness = Some(harness);
     }
 
-    pub fn remember_member_alias(&mut self, alias: impl Into<AliasName>, member: ClusterMember) {
-        self.scenario
-            .aliases
-            .aliases_by_name
-            .insert(alias.into(), member);
+    pub fn remember_member_alias(&mut self, alias: impl Into<String>, member: ClusterMember) {
+        self.scenario.aliases_by_name.insert(alias.into(), member);
     }
 
     pub fn require_member_alias(&self, alias: &str) -> Result<ClusterMember> {
         self.scenario
-            .aliases
             .aliases_by_name
-            .get(&AliasName::from(alias))
+            .get(alias)
             .copied()
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
     }
 
     pub fn add_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.availability.stopped_members.insert(member);
+        let _ = self.scenario.stopped_members.insert(member);
     }
 
     pub fn remove_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.availability.stopped_members.remove(member);
+        let _ = self.scenario.stopped_members.remove(&member);
     }
 
     pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
-        let _ = self
-            .scenario
-            .availability
-            .observer_unreachable_members
-            .insert(member);
+        let _ = self.scenario.observer_unreachable_members.insert(member);
     }
 
     pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
-        let _ = self
-            .scenario
-            .availability
-            .observer_unreachable_members
-            .remove(member);
+        let _ = self.scenario.observer_unreachable_members.remove(&member);
     }
 
     pub fn clear_observer_unreachable_members(&mut self) {
-        self.scenario
-            .availability
-            .observer_unreachable_members
-            .clear();
+        self.scenario.observer_unreachable_members.clear();
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
@@ -231,10 +168,11 @@ enum WriteConvergenceState {
 #[derive(Debug)]
 struct WriteConvergenceStartup {
     started_at: Instant,
-    task: Option<JoinHandle<std::result::Result<
-        WriteConvergenceInvariantRunner,
-        WriteConvergenceInvariantError,
-    >>>,
+    task: Option<
+        JoinHandle<
+            std::result::Result<WriteConvergenceInvariantRunner, WriteConvergenceInvariantError>,
+        >,
+    >,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -782,7 +720,10 @@ impl HarnessShared {
             self.wait_for_service_health(service.into()).await?;
         }
         self.record_startup_phase(StartupPhase::DcsReady, "all DCS services are healthy")?;
-        self.record_startup_phase(StartupPhase::SeedPrimaryReady, "starting seed primary node-b")?;
+        self.record_startup_phase(
+            StartupPhase::SeedPrimaryReady,
+            "starting seed primary node-b",
+        )?;
         self.docker.compose_up_services(
             self.compose_file(),
             self.compose_project(),
@@ -1126,9 +1067,10 @@ impl BackgroundInvariants {
 
     fn ensure_accepted_writes_healthy(&self, harness: &HarnessShared) -> Result<()> {
         let mut pending_startup = {
-            let mut state = self.write_convergence.lock().map_err(|_| {
-                HarnessError::message("write-convergence state mutex was poisoned")
-            })?;
+            let mut state = self
+                .write_convergence
+                .lock()
+                .map_err(|_| HarnessError::message("write-convergence state mutex was poisoned"))?;
             match std::mem::replace(&mut *state, WriteConvergenceState::NotStarted) {
                 WriteConvergenceState::Running(runner) => {
                     *state = WriteConvergenceState::Running(runner);
@@ -1185,11 +1127,11 @@ impl BackgroundInvariants {
                 runner.ensure_healthy().map_err(HarnessError::from)
             }
             WriteConvergenceState::Failed(message) => Err(HarnessError::message(message.clone())),
-            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => Err(
-                HarnessError::message(
+            WriteConvergenceState::NotStarted | WriteConvergenceState::Starting(_) => {
+                Err(HarnessError::message(
                     "write-convergence invariant startup did not settle into a running state",
-                ),
-            ),
+                ))
+            }
         }
     }
 }
@@ -1212,10 +1154,9 @@ impl WriteConvergenceStartup {
     fn take_task(
         &mut self,
     ) -> Result<
-        JoinHandle<std::result::Result<
-            WriteConvergenceInvariantRunner,
-            WriteConvergenceInvariantError,
-        >>,
+        JoinHandle<
+            std::result::Result<WriteConvergenceInvariantRunner, WriteConvergenceInvariantError>,
+        >,
     > {
         self.task.take().ok_or_else(|| {
             HarnessError::message("write-convergence invariant attachment task was missing")
@@ -1246,10 +1187,7 @@ impl StartupPhase {
 
 fn wait_for_write_convergence_attachment(
     attachment: &mut WriteConvergenceStartup,
-) -> Result<(
-    Result<WriteConvergenceInvariantRunner>,
-    std::time::Duration,
-)> {
+) -> Result<(Result<WriteConvergenceInvariantRunner>, std::time::Duration)> {
     let elapsed = attachment.started_at.elapsed();
     let task = attachment.take_task()?;
     let result = block_on_harness_future(
@@ -1674,9 +1612,7 @@ mod tests {
 
     use super::*;
     use crate::support::{
-        docker::cli::DockerCli,
-        invariants::WriteConvergenceInvariantError,
-        timeouts::TimeoutModel,
+        docker::cli::DockerCli, invariants::WriteConvergenceInvariantError, timeouts::TimeoutModel,
     };
 
     fn temporary_directory(name: &str) -> Result<PathBuf> {

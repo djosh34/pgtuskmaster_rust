@@ -251,17 +251,17 @@ async fn connect_member(
     }
 
     let (client, connection) = tokio::time::timeout(
-            connect_timeout,
-            tokio_postgres::connect(connect_dsn.as_str(), NoTls),
+        connect_timeout,
+        tokio_postgres::connect(connect_dsn.as_str(), NoTls),
+    )
+    .await
+    .map_err(|_| {
+        format!(
+            "connect to `{}` timed out after {:?}",
+            routing_target.member, connect_timeout
         )
-        .await
-        .map_err(|_| {
-            format!(
-                "connect to `{}` timed out after {:?}",
-                routing_target.member, connect_timeout
-            )
-        })?
-        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+    })?
+    .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
     let client: Arc<Client> = Arc::new(client);
     let connection_task = tokio::spawn(connection);
     match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
@@ -284,10 +284,10 @@ async fn connect_member(
     Ok((client, connection_task))
 }
 
-async fn apply_fixture_row_setup(client: &Client) -> std::result::Result<(), tokio_postgres::Error> {
-    client
-        .batch_execute(CREATE_FIXTURE_TABLE_SQL)
-        .await?;
+async fn apply_fixture_row_setup(
+    client: &Client,
+) -> std::result::Result<(), tokio_postgres::Error> {
+    client.batch_execute(CREATE_FIXTURE_TABLE_SQL).await?;
     client
         .execute(ENSURE_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
         .await
@@ -443,7 +443,9 @@ async fn read_member_count_via_fresh_connection(
             return MemberCountObservation::Failed {
                 member: member.member,
                 message: previous_error.map_or(err.clone(), |previous| {
-                    format!("existing observation failed: {previous}; refresh routing failed: {err}")
+                    format!(
+                        "existing observation failed: {previous}; refresh routing failed: {err}"
+                    )
                 }),
             };
         }
@@ -473,7 +475,9 @@ async fn read_member_count_via_fresh_connection(
             message: previous_error.map_or_else(
                 || err.clone(),
                 |previous| {
-                    format!("existing observation failed: {previous}; fresh reconnect failed: {err}")
+                    format!(
+                        "existing observation failed: {previous}; fresh reconnect failed: {err}"
+                    )
                 },
             ),
         },
@@ -534,11 +538,11 @@ async fn read_count(
     .map_err(|err| {
         WriteConvergenceInvariantError::Failed(format!("select fixture row failed: {err}"))
     })?
-        .ok_or_else(|| {
-            WriteConvergenceInvariantError::Failed(format!(
-                "fixture row `{FIXTURE_ROW_ID}` missing from `{FIXTURE_TABLE}`"
-            ))
-        })?;
+    .ok_or_else(|| {
+        WriteConvergenceInvariantError::Failed(format!(
+            "fixture row `{FIXTURE_ROW_ID}` missing from `{FIXTURE_TABLE}`"
+        ))
+    })?;
     u64::try_from(row.get::<_, i64>(0)).map_err(|err| {
         WriteConvergenceInvariantError::Failed(format!("fixture count was negative: {err}"))
     })
@@ -707,14 +711,11 @@ fn convergence_failure(
 mod tests {
     use super::{
         connectable_dsn, convergence_failure, maintain_connected_member,
-        observations_match_expected, read_count, required_conninfo_value,
+        observations_match_expected, read_count, required_conninfo_value, ConnectionTask,
         MemberCountObservation, MemberWorker, WriteConvergenceInvariantError,
-        WriteConvergenceInvariantRunner, ConnectionTask, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
+        WriteConvergenceInvariantRunner, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
-    use crate::support::{
-        observer::pgtm::PostgresRoutingTarget,
-        topology::ClusterMember,
-    };
+    use crate::support::{observer::pgtm::PostgresRoutingTarget, topology::ClusterMember};
     use pgtuskmaster_test_support::{
         binaries::require_pg16_bin_for_real_tests,
         namespace::NamespaceGuard,

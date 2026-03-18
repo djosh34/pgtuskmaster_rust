@@ -18,7 +18,7 @@ use crate::support::{
     givens::HaGivenId,
     observer::pgtm::{ClusterStateObservation, MemberCommandOutcome},
     topology::ClusterMember,
-    world::{HaWorld, HarnessShared, MemberSet},
+    world::{HaWorld, HarnessShared},
 };
 
 #[given(regex = r#"^the "([^"]+)" harness is running$"#)]
@@ -466,7 +466,7 @@ async fn wait_for_authoritative_single_primary(
         }
         let terminal_error = {
             let harness = world.harness()?;
-            terminal_container_failure(harness, &world.scenario.availability.stopped_members, kind)?
+            terminal_container_failure(harness, &world.scenario.stopped_members, kind)?
         };
         if let Some(terminal_error) = terminal_error {
             return Err(HarnessError::message(format!(
@@ -717,7 +717,7 @@ where
         }
         let terminal_error = {
             let harness = world.harness()?;
-            terminal_container_failure(harness, &world.scenario.availability.stopped_members, kind)?
+            terminal_container_failure(harness, &world.scenario.stopped_members, kind)?
         };
         if let Some(terminal_error) = terminal_error {
             return Err(HarnessError::message(format!(
@@ -954,7 +954,7 @@ fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
 
 fn terminal_container_failure(
     harness: &HarnessShared,
-    expected_offline: &MemberSet,
+    expected_offline: &BTreeSet<ClusterMember>,
     kind: PollKind,
 ) -> Result<Option<String>> {
     let cluster_members = all_cluster_members();
@@ -964,7 +964,7 @@ fn terminal_container_failure(
 
     let mut failures = Vec::new();
     for service in services {
-        if expected_offline.contains(*service) {
+        if expected_offline.contains(service) {
             continue;
         }
         let container_id = match harness.service_container_id((*service).into()) {
@@ -997,16 +997,11 @@ fn online_member_ids(world: &HaWorld) -> Vec<ClusterMember> {
     all_cluster_members()
         .iter()
         .filter(|member| {
-            !world
-                .scenario
-                .availability
-                .stopped_members
-                .contains(**member)
+            !world.scenario.stopped_members.contains(*member)
                 && !world
                     .scenario
-                    .availability
                     .observer_unreachable_members
-                    .contains(**member)
+                    .contains(*member)
         })
         .copied()
         .collect::<Vec<_>>()
