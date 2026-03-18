@@ -27,40 +27,14 @@ pub struct PostgresRoutingTarget {
 }
 
 #[derive(Clone, Debug)]
-pub enum MemberCommandOutcome<T> {
-    Observed(T),
-    Failed(String),
-}
-
-#[derive(Clone, Debug)]
 pub struct MemberStateObservation {
     pub member: ClusterMember,
-    pub outcome: MemberCommandOutcome<StateCommandOutputDto>,
+    pub outcome: std::result::Result<StateCommandOutputDto, String>,
 }
 
 #[derive(Clone, Debug)]
 pub struct ClusterStateObservation {
     members: Vec<MemberStateObservation>,
-}
-
-impl MemberStateObservation {
-    pub fn output(&self) -> Option<&StateCommandOutputDto> {
-        match &self.outcome {
-            MemberCommandOutcome::Observed(output) => Some(output),
-            MemberCommandOutcome::Failed(_) => None,
-        }
-    }
-
-    pub fn state(&self) -> Option<&NodeState> {
-        self.output().map(|output| &output.state)
-    }
-
-    pub fn failure(&self) -> Option<&str> {
-        match &self.outcome {
-            MemberCommandOutcome::Observed(_) => None,
-            MemberCommandOutcome::Failed(message) => Some(message.as_str()),
-        }
-    }
 }
 
 impl ClusterStateObservation {
@@ -114,8 +88,8 @@ impl PgtmObserver {
     pub fn state_via_member(&self, member: ClusterMember) -> Result<ClusterStatusView> {
         let observation = self.observe_state_via_member(member)?;
         match observation.outcome {
-            MemberCommandOutcome::Observed(output) => Ok(output.state),
-            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
+            Ok(output) => Ok(output.state),
+            Err(message) => Err(HarnessError::message(format!(
                 "pgtm status via `{member}` failed: {message}"
             ))),
         }
@@ -161,14 +135,10 @@ impl PgtmObserver {
             extract_switchover_output,
         )?;
         match output {
-            MemberCommandOutcome::Observed(accepted) => {
-                serde_json::to_string(&accepted).map_err(|source| {
-                    HarnessError::message(format!(
-                        "serializing switchover response failed: {source}"
-                    ))
-                })
-            }
-            MemberCommandOutcome::Failed(message) => Err(HarnessError::message(format!(
+            Ok(accepted) => serde_json::to_string(&accepted).map_err(|source| {
+                HarnessError::message(format!("serializing switchover response failed: {source}"))
+            }),
+            Err(message) => Err(HarnessError::message(format!(
                 "pgtm switchover request via `{member}` failed: {message}"
             ))),
         }
@@ -183,7 +153,7 @@ impl PgtmObserver {
                 "pgtm status",
                 extract_state_command_output,
             )?,
-            Err(err) => MemberCommandOutcome::Failed(err.to_string()),
+            Err(err) => Err(err.to_string()),
         };
         Ok(MemberStateObservation { member, outcome })
     }
@@ -195,7 +165,7 @@ impl PgtmObserver {
         command_args: Vec<String>,
         context_label: &str,
         decode_output: fn(CommandOutputDto) -> Result<T>,
-    ) -> Result<MemberCommandOutcome<T>> {
+    ) -> Result<std::result::Result<T, String>> {
         let binary = resolve_pgtm_binary()?;
         let args = [
             "--config".to_string(),
@@ -220,7 +190,7 @@ impl PgtmObserver {
                         source,
                     },
                 )?;
-                decode_output(dto).map(MemberCommandOutcome::Observed)
+                decode_output(dto).map(Ok)
             }
             Err(HarnessError::CommandFailed {
                 executable,
@@ -228,7 +198,7 @@ impl PgtmObserver {
                 status,
                 stdout,
                 stderr,
-            }) => Ok(MemberCommandOutcome::Failed(format!(
+            }) => Ok(Err(format!(
                 "command `{}` failed while {context}: status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
                 executable.display()
             ))),

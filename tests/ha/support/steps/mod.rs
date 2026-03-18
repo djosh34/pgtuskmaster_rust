@@ -16,7 +16,7 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
-    observer::pgtm::{ClusterStateObservation, MemberCommandOutcome},
+    observer::pgtm::ClusterStateObservation,
     topology::ClusterMember,
     world::{HaWorld, HarnessShared},
 };
@@ -744,11 +744,11 @@ fn record_cluster_observation(
         .members()
         .iter()
         .try_for_each(|member| match &member.outcome {
-            MemberCommandOutcome::Observed(output) => harness.record_status_snapshot(
+            Ok(output) => harness.record_status_snapshot(
                 format!("{phase}.{}", member.member.service_name()).as_str(),
                 &output.state,
             ),
-            MemberCommandOutcome::Failed(message) => harness.record_note(
+            Err(message) => harness.record_note(
                 format!("{phase}.{}", member.member.service_name()).as_str(),
                 format!("status_failed={message}"),
             ),
@@ -808,7 +808,10 @@ fn require_observed_member_state(
 ) -> Result<&NodeState> {
     observation
         .member(member)?
-        .state()
+        .outcome
+        .as_ref()
+        .map(|output| &output.state)
+        .ok()
         .ok_or_else(|| HarnessError::message(member_observation_failure(observation, member)))
 }
 
@@ -819,7 +822,7 @@ fn member_observation_failure(
     observation
         .member(member)
         .ok()
-        .and_then(|observation| observation.failure())
+        .and_then(|observation| observation.outcome.as_ref().err().map(String::as_str))
         .map(|failure| {
             format!(
                 "expected `pgtm status --json` via `{member}` to succeed, but it failed: {failure}"

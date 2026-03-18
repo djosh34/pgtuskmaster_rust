@@ -31,10 +31,7 @@ use crate::support::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner,
     },
-    observer::{
-        pgtm::{MemberCommandOutcome, PgtmObserver},
-        sql::SqlObserver,
-    },
+    observer::{pgtm::PgtmObserver, sql::SqlObserver},
     timeouts::TimeoutModel,
     topology::ClusterMember,
 };
@@ -124,18 +121,6 @@ impl HaWorld {
 }
 
 #[derive(Debug)]
-pub struct HarnessWorkspace {
-    pub run_id: String,
-    pub feature_name: String,
-    pub given: HaGivenDefinition,
-    pub run_dir: PathBuf,
-    pub materialized_dir: PathBuf,
-    pub artifacts_dir: PathBuf,
-    pub compose_file: PathBuf,
-    pub compose_project: String,
-}
-
-#[derive(Debug)]
 struct BackgroundInvariants {
     primary_count: PrimaryCountInvariantRunner,
     write_convergence: Mutex<WriteConvergenceState>,
@@ -171,7 +156,14 @@ enum StartupPhase {
 
 #[derive(Debug)]
 pub struct HarnessShared {
-    pub workspace: HarnessWorkspace,
+    pub run_id: String,
+    pub feature_name: String,
+    pub given: HaGivenDefinition,
+    pub run_dir: PathBuf,
+    pub materialized_dir: PathBuf,
+    pub artifacts_dir: PathBuf,
+    pub compose_file: PathBuf,
+    pub compose_project: String,
     pub cucumber_test_image_run_id: String,
     pub docker: DockerCli,
     pub ryuk: Option<RyukGuard>,
@@ -222,7 +214,18 @@ impl HarnessShared {
             compose_project.as_str(),
             dcs_service_names.as_slice(),
         )?;
-        let workspace = HarnessWorkspace {
+        let background_invariants = BackgroundInvariants::start_primary_count(
+            PgtmObserver::new(
+                docker.clone(),
+                compose_file.clone(),
+                compose_project.clone(),
+                materialized_dir.clone(),
+            ),
+            timeouts.poll_interval,
+            timeouts.failover_deadline,
+        )
+        .await?;
+        let mut harness = Self {
             run_id,
             feature_name: feature.feature_name.clone(),
             given,
@@ -231,20 +234,6 @@ impl HarnessShared {
             artifacts_dir,
             compose_file,
             compose_project,
-        };
-        let background_invariants = BackgroundInvariants::start_primary_count(
-            PgtmObserver::new(
-                docker.clone(),
-                workspace.compose_file.clone(),
-                workspace.compose_project.clone(),
-                workspace.materialized_dir.clone(),
-            ),
-            timeouts.poll_interval,
-            timeouts.failover_deadline,
-        )
-        .await?;
-        let mut harness = Self {
-            workspace,
             cucumber_test_image_run_id,
             docker,
             ryuk: Some(ryuk),
@@ -294,42 +283,42 @@ impl HarnessShared {
     }
 
     pub fn feature_name(&self) -> &str {
-        self.workspace.feature_name.as_str()
+        self.feature_name.as_str()
     }
 
     pub fn run_id(&self) -> &str {
-        self.workspace.run_id.as_str()
+        self.run_id.as_str()
     }
 
     pub fn given_name(&self) -> &str {
-        self.workspace.given.id.as_str()
+        self.given.id.as_str()
     }
 
     pub fn compose_file(&self) -> &Path {
-        self.workspace.compose_file.as_path()
+        self.compose_file.as_path()
     }
 
     pub fn compose_project(&self) -> &str {
-        self.workspace.compose_project.as_str()
+        self.compose_project.as_str()
     }
 
     pub fn run_dir(&self) -> &Path {
-        self.workspace.run_dir.as_path()
+        self.run_dir.as_path()
     }
 
     pub fn materialized_dir(&self) -> &Path {
-        self.workspace.materialized_dir.as_path()
+        self.materialized_dir.as_path()
     }
 
     pub fn artifacts_dir(&self) -> &Path {
-        self.workspace.artifacts_dir.as_path()
+        self.artifacts_dir.as_path()
     }
 
     pub fn observer(&self) -> PgtmObserver {
         PgtmObserver::new(
             self.docker.clone(),
-            self.workspace.compose_file.clone(),
-            self.workspace.compose_project.clone(),
+            self.compose_file.clone(),
+            self.compose_project.clone(),
             self.materialized_dir().to_path_buf(),
         )
     }
@@ -560,61 +549,44 @@ impl HarnessShared {
         self.block_member_path_to_host(
             member,
             TrafficPath::Dcs,
-            self.workspace
-                .given
-                .local_dcs_service_for(member)
-                .service_name(),
+            self.given.local_dcs_service_for(member).service_name(),
         )
     }
 
     pub fn stop_all_dcs_services(&self) -> Result<()> {
-        self.workspace
-            .given
+        self.given
             .dcs_services()
             .into_iter()
             .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_all_dcs_services(&self) -> Result<()> {
-        self.workspace
-            .given
+        self.given
             .dcs_services()
             .into_iter()
             .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
-        self.workspace
-            .given
+        self.given
             .quorum_majority_dcs_services()
             .into_iter()
             .try_for_each(|service| self.stop_service(service.service_name()))
     }
 
     pub fn start_dcs_quorum_majority(&self) -> Result<()> {
-        self.workspace
-            .given
+        self.given
             .quorum_majority_dcs_services()
             .into_iter()
             .try_for_each(|service| self.start_service(service.service_name()))
     }
 
     pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.stop_service(
-            self.workspace
-                .given
-                .local_dcs_service_for(member)
-                .service_name(),
-        )
+        self.stop_service(self.given.local_dcs_service_for(member).service_name())
     }
 
     pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.start_service(
-            self.workspace
-                .given
-                .local_dcs_service_for(member)
-                .service_name(),
-        )
+        self.start_service(self.given.local_dcs_service_for(member).service_name())
     }
 
     pub fn set_blocker(
@@ -707,7 +679,7 @@ impl HarnessShared {
             StartupPhase::DcsReady,
             "waiting for DCS services to report healthy",
         )?;
-        for service in self.workspace.given.dcs_services() {
+        for service in self.given.dcs_services() {
             self.wait_for_service_health(service.service_name()).await?;
         }
         self.record_startup_phase(StartupPhase::DcsReady, "all DCS services are healthy")?;
@@ -897,11 +869,11 @@ impl HarnessShared {
                     .members()
                     .iter()
                     .map(|observation| match &observation.outcome {
-                        MemberCommandOutcome::Observed(output) => serde_json::json!({
+                        Ok(output) => serde_json::json!({
                             "member": observation.member.service_name(),
                             "state": output,
                         }),
-                        MemberCommandOutcome::Failed(message) => serde_json::json!({
+                        Err(message) => serde_json::json!({
                             "member": observation.member.service_name(),
                             "failure": message,
                         }),
@@ -920,7 +892,7 @@ impl HarnessShared {
             Err(err) => failures.push(format!("operator state capture failed: {err}")),
         }
 
-        for service_name in self.workspace.given.artifact_service_names() {
+        for service_name in self.given.artifact_service_names() {
             match self.service_container_id(service_name) {
                 Ok(container_id) => match self.docker.inspect_container(container_id.as_str()) {
                     Ok(inspect) => {
@@ -969,7 +941,7 @@ impl HarnessShared {
     }
 
     fn refresh_service_container_ids(&self) -> Result<()> {
-        let artifact_service_names = self.workspace.given.artifact_service_names();
+        let artifact_service_names = self.given.artifact_service_names();
         let compose_entries = self
             .docker
             .compose_ps_entries(self.compose_file(), self.compose_project())?;
@@ -1787,21 +1759,19 @@ mod tests {
         write_convergence: WriteConvergenceState,
     ) -> Result<HarnessShared> {
         Ok(HarnessShared {
-            workspace: HarnessWorkspace {
-                run_id: "test-run".to_string(),
-                feature_name: "test-feature".to_string(),
-                given: resolve_given(
-                    PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
-                    HaGivenId::Plain,
-                )?,
-                run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
-                materialized_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized"),
-                artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
-                compose_file: PathBuf::from(
-                    "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
-                ),
-                compose_project: "ha-test-run".to_string(),
-            },
+            run_id: "test-run".to_string(),
+            feature_name: "test-feature".to_string(),
+            given: resolve_given(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path(),
+                HaGivenId::Plain,
+            )?,
+            run_dir: PathBuf::from("tests/ha/runs/test-feature/test-run"),
+            materialized_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/materialized"),
+            artifacts_dir: PathBuf::from("tests/ha/runs/test-feature/test-run/artifacts"),
+            compose_file: PathBuf::from(
+                "tests/ha/runs/test-feature/test-run/materialized/compose.yml",
+            ),
+            compose_project: "ha-test-run".to_string(),
             cucumber_test_image_run_id: "cucumber-test-run".to_string(),
             docker: DockerCli::fake_for_tests(),
             ryuk: None,
