@@ -39,21 +39,15 @@ use crate::support::{
 #[derive(Debug, Default, World)]
 pub struct HaWorld {
     pub harness: Option<HarnessShared>,
-    pub scenario: ScenarioState,
-}
-
-#[derive(Debug, Default)]
-pub struct ScenarioState {
-    pub name: Option<String>,
-    pub aliases_by_name: BTreeMap<String, ClusterMember>,
     pub stopped_members: BTreeSet<ClusterMember>,
     pub observer_unreachable_members: BTreeSet<ClusterMember>,
+    scenario_name: Option<String>,
+    aliases_by_name: BTreeMap<String, ClusterMember>,
 }
 
 impl HaWorld {
     pub fn reset(&mut self) {
-        self.harness = None;
-        self.scenario = ScenarioState::default();
+        *self = Self::default();
     }
 
     pub fn harness(&self) -> Result<&HarnessShared> {
@@ -63,12 +57,11 @@ impl HaWorld {
     }
 
     pub fn set_scenario_name(&mut self, scenario_name: String) {
-        self.scenario.name = Some(scenario_name);
+        self.scenario_name = Some(scenario_name);
     }
 
     pub fn scenario_name(&self) -> Result<&str> {
-        self.scenario
-            .name
+        self.scenario_name
             .as_deref()
             .ok_or_else(|| HarnessError::message("scenario name has not been initialized"))
     }
@@ -78,35 +71,34 @@ impl HaWorld {
     }
 
     pub fn remember_member_alias(&mut self, alias: impl Into<String>, member: ClusterMember) {
-        self.scenario.aliases_by_name.insert(alias.into(), member);
+        self.aliases_by_name.insert(alias.into(), member);
     }
 
     pub fn require_member_alias(&self, alias: &str) -> Result<ClusterMember> {
-        self.scenario
-            .aliases_by_name
+        self.aliases_by_name
             .get(alias)
             .copied()
             .ok_or_else(|| HarnessError::message(format!("alias `{alias}` was not recorded")))
     }
 
     pub fn add_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.stopped_members.insert(member);
+        let _ = self.stopped_members.insert(member);
     }
 
     pub fn remove_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.scenario.stopped_members.remove(&member);
+        let _ = self.stopped_members.remove(&member);
     }
 
     pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
-        let _ = self.scenario.observer_unreachable_members.insert(member);
+        let _ = self.observer_unreachable_members.insert(member);
     }
 
     pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
-        let _ = self.scenario.observer_unreachable_members.remove(&member);
+        let _ = self.observer_unreachable_members.remove(&member);
     }
 
     pub fn clear_observer_unreachable_members(&mut self) {
-        self.scenario.observer_unreachable_members.clear();
+        self.observer_unreachable_members.clear();
     }
 
     pub fn cleanup(&mut self) -> Result<()> {

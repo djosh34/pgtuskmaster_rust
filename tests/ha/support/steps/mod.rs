@@ -466,7 +466,7 @@ async fn wait_for_authoritative_single_primary(
         }
         let terminal_error = {
             let harness = world.harness()?;
-            terminal_container_failure(harness, &world.scenario.stopped_members, kind)?
+            terminal_container_failure(harness, &world.stopped_members, kind)?
         };
         if let Some(terminal_error) = terminal_error {
             return Err(HarnessError::message(format!(
@@ -717,7 +717,7 @@ where
         }
         let terminal_error = {
             let harness = world.harness()?;
-            terminal_container_failure(harness, &world.scenario.stopped_members, kind)?
+            terminal_container_failure(harness, &world.stopped_members, kind)?
         };
         if let Some(terminal_error) = terminal_error {
             return Err(HarnessError::message(format!(
@@ -1000,11 +1000,8 @@ fn online_member_ids(world: &HaWorld) -> Vec<ClusterMember> {
     all_cluster_members()
         .iter()
         .filter(|member| {
-            !world.scenario.stopped_members.contains(*member)
-                && !world
-                    .scenario
-                    .observer_unreachable_members
-                    .contains(*member)
+            !world.stopped_members.contains(*member)
+                && !world.observer_unreachable_members.contains(*member)
         })
         .copied()
         .collect::<Vec<_>>()
