@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::support::{
     config::harness_settings,
     error::{HarnessError, Result},
-    process::{self, CommandSpec},
+    process,
 };
 
 #[derive(Clone, Debug)]
@@ -468,11 +468,9 @@ impl DockerCli {
         S: Into<String>,
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let spec = self
-            .apply_forwarded_environment(CommandSpec::new(self.executable.clone(), context.into()))
-            .env("PATH", "")
-            .args(args);
-        process::run(spec)
+        let mut env = forwarded_environment();
+        env.push(("PATH".to_string(), String::new()));
+        process::run(self.executable.as_path(), context.into(), args, env)
     }
 
     fn run_in_dir<I, S>(&self, cwd: &Path, args: I, context: impl Into<String>) -> Result<String>
@@ -481,18 +479,9 @@ impl DockerCli {
         S: Into<String>,
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let spec = self
-            .apply_forwarded_environment(CommandSpec::new(self.executable.clone(), context.into()))
-            .cwd(cwd)
-            .env("PATH", "")
-            .args(args);
-        process::run(spec)
-    }
-
-    fn apply_forwarded_environment(&self, spec: CommandSpec) -> CommandSpec {
-        forwarded_environment()
-            .into_iter()
-            .fold(spec, |current, (key, value)| current.env(key, value))
+        let mut env = forwarded_environment();
+        env.push(("PATH".to_string(), String::new()));
+        process::run_in_dir(self.executable.as_path(), cwd, context.into(), args, env)
     }
 
     fn inspect_container_entries(&self, container: &str) -> Result<Vec<DockerInspectEntry>> {

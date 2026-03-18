@@ -1,55 +1,6 @@
-use std::{
-    collections::BTreeMap,
-    ffi::{OsStr, OsString},
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{ffi::OsStr, path::Path, process::Command};
 
 use crate::support::error::{HarnessError, Result};
-
-#[derive(Clone, Debug, Default)]
-pub struct CommandSpec {
-    pub executable: PathBuf,
-    pub args: Vec<OsString>,
-    pub cwd: Option<PathBuf>,
-    pub env: BTreeMap<String, String>,
-    pub context: String,
-}
-
-impl CommandSpec {
-    pub fn new(executable: impl Into<PathBuf>, context: impl Into<String>) -> Self {
-        Self {
-            executable: executable.into(),
-            args: Vec::new(),
-            cwd: None,
-            env: BTreeMap::new(),
-            context: context.into(),
-        }
-    }
-
-    pub fn args<I, S>(mut self, values: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<OsStr>,
-    {
-        self.args.extend(
-            values
-                .into_iter()
-                .map(|value| value.as_ref().to_os_string()),
-        );
-        self
-    }
-
-    pub fn cwd(mut self, value: impl Into<PathBuf>) -> Self {
-        self.cwd = Some(value.into());
-        self
-    }
-
-    pub fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.env.insert(key.into(), value.into());
-        self
-    }
-}
 
 pub fn ensure_absolute_path(path: &Path) -> Result<()> {
     if !path.is_absolute() {
@@ -78,31 +29,77 @@ pub fn ensure_absolute_executable(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub fn run(spec: CommandSpec) -> Result<String> {
-    ensure_absolute_executable(spec.executable.as_path())?;
+pub fn run<I, S, E, K, V>(
+    executable: &Path,
+    context: impl Into<String>,
+    args: I,
+    env: E,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    run_with_options(executable, None, context.into(), args, env)
+}
 
-    let mut command = Command::new(spec.executable.as_path());
-    command.args(spec.args.iter());
-    if let Some(cwd) = spec.cwd.as_ref() {
+pub fn run_in_dir<I, S, E, K, V>(
+    executable: &Path,
+    cwd: &Path,
+    context: impl Into<String>,
+    args: I,
+    env: E,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    run_with_options(executable, Some(cwd), context.into(), args, env)
+}
+
+fn run_with_options<I, S, E, K, V>(
+    executable: &Path,
+    cwd: Option<&Path>,
+    context: String,
+    args: I,
+    env: E,
+) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+    E: IntoIterator<Item = (K, V)>,
+    K: AsRef<OsStr>,
+    V: AsRef<OsStr>,
+{
+    ensure_absolute_executable(executable)?;
+
+    let mut command = Command::new(executable);
+    command.args(args);
+    if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
     command.env_clear();
-    command.envs(spec.env.iter());
+    command.envs(env);
 
     let output = command.output().map_err(|source| HarnessError::Io {
-        path: spec.executable.clone(),
+        path: executable.to_path_buf(),
         source,
     })?;
     if output.status.success() {
         return String::from_utf8(output.stdout).map_err(|source| HarnessError::Utf8 {
-            context: format!("decoding stdout for {}", spec.context),
+            context: format!("decoding stdout for {context}"),
             source,
         });
     }
 
     Err(HarnessError::CommandFailed {
-        executable: spec.executable,
-        context: spec.context,
+        executable: executable.to_path_buf(),
+        context,
         status: render_exit_status(output.status.code()),
         stdout: String::from_utf8_lossy(output.stdout.as_slice()).into_owned(),
         stderr: String::from_utf8_lossy(output.stderr.as_slice()).into_owned(),

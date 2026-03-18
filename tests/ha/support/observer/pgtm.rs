@@ -15,7 +15,7 @@ use crate::support::{
     config::harness_settings,
     docker::cli::DockerCli,
     error::{HarnessError, Result},
-    process::{self, CommandSpec},
+    process,
     topology::ClusterMember,
 };
 
@@ -158,9 +158,10 @@ impl PgtmObserver {
         .collect::<Vec<_>>();
         let context = format!("{context_label} via `{member}`");
         let output = process::run(
-            CommandSpec::new(executable.clone(), context.clone())
-                .env("PATH", "")
-                .args(args.as_slice()),
+            executable.as_path(),
+            context.clone(),
+            args.as_slice(),
+            [("PATH", "")],
         );
         match output {
             Ok(stdout) => {
