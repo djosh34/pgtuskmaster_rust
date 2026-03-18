@@ -31,7 +31,7 @@ use crate::support::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner,
     },
-    observer::{pgtm::PgtmObserver, sql::SqlObserver},
+    observer::pgtm::PgtmObserver,
     timeouts::TimeoutModel,
     topology::ClusterMember,
 };
@@ -328,10 +328,6 @@ impl HarnessShared {
         let detail = detail.into();
         eprintln!("[ha][{}][{}] {}", self.run_id(), phase.as_str(), detail);
         self.record_note(phase.as_str(), detail)
-    }
-
-    pub fn sql(&self) -> SqlObserver {
-        SqlObserver::new(self.materialized_dir().to_path_buf())
     }
 
     pub fn kill_node(&self, member: ClusterMember) -> Result<()> {

@@ -16,7 +16,7 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
-    observer::pgtm::ClusterStateObservation,
+    observer::{pgtm::ClusterStateObservation, sql},
     topology::ClusterMember,
     world::{HaWorld, HarnessShared},
 };
@@ -948,9 +948,12 @@ fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
 fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
     let probe_sql =
         "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
-    let _ = harness
-        .sql()
-        .execute(dsn, probe_sql, harness.timeouts.poll_interval)?;
+    let _ = sql::execute(
+        harness.materialized_dir(),
+        dsn,
+        probe_sql,
+        harness.timeouts.poll_interval,
+    )?;
     Ok(())
 }
 
