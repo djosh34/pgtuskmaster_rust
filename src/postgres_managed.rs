@@ -14,8 +14,8 @@ use crate::{
     postgres_managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
         ManagedPostgresConfError, ManagedPostgresStartIntent, ManagedPostgresTlsConfig,
-        ManagedRecoverySignal, ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME,
-        MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
+        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+        MANAGED_STANDBY_SIGNAL_NAME,
     },
 };
 
@@ -100,8 +100,30 @@ pub(crate) fn materialize_managed_postgres_config(
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
 
     let tls_files = materialize_tls_files(cfg)?;
-    let normalized_start_intent =
-        normalize_standby_auth_paths(start_intent, managed_standby_passfile.as_path());
+    let normalized_start_intent = match start_intent {
+        ManagedPostgresStartIntent::Primary => ManagedPostgresStartIntent::primary(),
+        ManagedPostgresStartIntent::DetachedStandby => {
+            ManagedPostgresStartIntent::detached_standby()
+        }
+        ManagedPostgresStartIntent::Replica {
+            primary_conninfo,
+            primary_slot_name,
+            ..
+        } => ManagedPostgresStartIntent::replica(
+            primary_conninfo.clone(),
+            managed_standby_passfile.clone(),
+            primary_slot_name.clone(),
+        ),
+        ManagedPostgresStartIntent::Recovery {
+            primary_conninfo,
+            primary_slot_name,
+            ..
+        } => ManagedPostgresStartIntent::recovery(
+            primary_conninfo.clone(),
+            managed_standby_passfile.clone(),
+            primary_slot_name.clone(),
+        ),
+    };
     let standby_passfile_path = materialize_managed_standby_passfile(
         cfg,
         &normalized_start_intent,
@@ -220,47 +242,6 @@ fn materialize_tls_files(
     }
 }
 
-fn normalize_standby_auth_paths(
-    start_intent: &ManagedPostgresStartIntent,
-    managed_passfile_path: &Path,
-) -> ManagedPostgresStartIntent {
-    match start_intent {
-        ManagedPostgresStartIntent::Primary => ManagedPostgresStartIntent::primary(),
-        ManagedPostgresStartIntent::DetachedStandby => {
-            ManagedPostgresStartIntent::detached_standby()
-        }
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        } => ManagedPostgresStartIntent::replica(
-            primary_conninfo.clone(),
-            normalize_standby_auth(standby_auth, managed_passfile_path),
-            primary_slot_name.clone(),
-        ),
-        ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_auth,
-            primary_slot_name,
-        } => ManagedPostgresStartIntent::recovery(
-            primary_conninfo.clone(),
-            normalize_standby_auth(standby_auth, managed_passfile_path),
-            primary_slot_name.clone(),
-        ),
-    }
-}
-
-fn normalize_standby_auth(
-    standby_auth: &ManagedStandbyAuth,
-    managed_passfile_path: &Path,
-) -> ManagedStandbyAuth {
-    match standby_auth {
-        ManagedStandbyAuth::PasswordPassfile { .. } => ManagedStandbyAuth::PasswordPassfile {
-            path: managed_passfile_path.to_path_buf(),
-        },
-    }
-}
-
 fn materialize_managed_standby_passfile(
     cfg: &RuntimeConfig,
     start_intent: &ManagedPostgresStartIntent,
@@ -270,32 +251,28 @@ fn materialize_managed_standby_passfile(
         ManagedPostgresStartIntent::Primary | ManagedPostgresStartIntent::DetachedStandby => None,
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             ..
         }
         | ManagedPostgresStartIntent::Recovery {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             ..
-        } => Some((primary_conninfo, standby_auth)),
+        } => Some((primary_conninfo, standby_passfile_path)),
     };
 
-    let Some((primary_conninfo, standby_auth)) = standby_details else {
+    let Some((primary_conninfo, standby_passfile_path)) = standby_details else {
         remove_file_if_exists(managed_passfile_path)?;
         return Ok(None);
     };
 
-    match standby_auth {
-        ManagedStandbyAuth::PasswordPassfile { path } => {
-            let password = resolve_role_password(
-                "postgres.roles.mandatory.replicator.auth",
-                &cfg.postgres.roles.mandatory.replicator.auth,
-            )?;
-            let rendered = render_libpq_passfile_entry(primary_conninfo, password.as_str())?;
-            write_atomic(path, rendered.as_bytes(), Some(0o600))?;
-            Ok(Some(path.clone()))
-        }
-    }
+    let password = resolve_role_password(
+        "postgres.roles.mandatory.replicator.auth",
+        &cfg.postgres.roles.mandatory.replicator.auth,
+    )?;
+    let rendered = render_libpq_passfile_entry(primary_conninfo, password.as_str())?;
+    write_atomic(standby_passfile_path, rendered.as_bytes(), Some(0o600))?;
+    Ok(Some(standby_passfile_path.clone()))
 }
 
 fn resolve_role_password(key: &str, auth: &RoleAuthConfig) -> Result<String, ManagedPostgresError> {
@@ -633,7 +610,7 @@ mod tests {
         },
         postgres_managed_conf::{
             managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
-            ManagedStandbyAuth, MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
+            MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME,
         },
         state::PgEndpoint,
     };
@@ -744,7 +721,7 @@ mod tests {
                     client_key: None,
                 },
             },
-            sample_password_standby_auth(&data_dir),
+            sample_standby_passfile_path(&data_dir),
             None,
         );
 
@@ -817,7 +794,7 @@ mod tests {
                         client_key: None,
                     },
                 },
-                sample_password_standby_auth(&data_dir),
+                sample_standby_passfile_path(&data_dir),
                 None,
             ),
         )
@@ -850,7 +827,7 @@ mod tests {
             &cfg,
             &ManagedPostgresStartIntent::replica(
                 sample_replica_conninfo()?,
-                sample_password_standby_auth(&data_dir),
+                sample_standby_passfile_path(&data_dir),
                 None,
             ),
         )
@@ -1177,7 +1154,7 @@ mod tests {
                             client_key: None,
                         },
                     },
-                    sample_password_standby_auth(&replica_data),
+                    sample_standby_passfile_path(&replica_data),
                     None,
                 ),
             )
@@ -1335,7 +1312,7 @@ mod tests {
         let cfg = sample_runtime_config(data_dir.clone());
         let expected = ManagedPostgresStartIntent::replica(
             sample_replica_conninfo()?,
-            sample_password_standby_auth(&data_dir),
+            sample_standby_passfile_path(&data_dir),
             Some("slot_a".to_string()),
         );
 
@@ -1448,10 +1425,8 @@ mod tests {
         })
     }
 
-    fn sample_password_standby_auth(data_dir: &Path) -> ManagedStandbyAuth {
-        ManagedStandbyAuth::PasswordPassfile {
-            path: managed_standby_passfile_path(data_dir),
-        }
+    fn sample_standby_passfile_path(data_dir: &Path) -> PathBuf {
+        managed_standby_passfile_path(data_dir)
     }
 
     fn tcp_connect_target(host: &str, port: u16) -> Result<PgEndpoint, String> {

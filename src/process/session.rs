@@ -1,7 +1,7 @@
 use crate::{
     config::RuntimeConfig,
     postgres_managed::{materialize_managed_postgres_config, ManagedPostgresConfig},
-    postgres_managed_conf::{managed_standby_auth_from_role_auth, ManagedPostgresStartIntent},
+    postgres_managed_conf::{managed_standby_passfile_path, ManagedPostgresStartIntent},
     process::{
         planner::{ClusterProcessPlan, DesiredManagedPostgresSession},
         state::ProcessRuntimePlan,
@@ -34,8 +34,7 @@ impl ManagedPostgresSessionMaterializer {
                     DesiredManagedPostgresSession::Follow(plan) => {
                         ManagedPostgresStartIntent::replica(
                             plan.source.conninfo,
-                            managed_standby_auth_from_role_auth(
-                                &plan.source.auth,
+                            managed_standby_passfile_path(
                                 runtime_config.postgres.paths.data_dir.as_path(),
                             ),
                             plan.primary_slot_name,

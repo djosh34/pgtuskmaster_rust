@@ -5,7 +5,6 @@ use std::{
 
 use thiserror::Error;
 
-use crate::config::RoleAuthConfig;
 use crate::pginfo::{conninfo::render_conninfo_value, state::PgConnInfo};
 
 pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
@@ -57,22 +56,17 @@ pub(crate) enum ManagedRecoverySignal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ManagedStandbyAuth {
-    PasswordPassfile { path: PathBuf },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresStartIntent {
     Primary,
     DetachedStandby,
     Replica {
         primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
+        standby_passfile_path: PathBuf,
         primary_slot_name: Option<String>,
     },
     Recovery {
         primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
+        standby_passfile_path: PathBuf,
         primary_slot_name: Option<String>,
     },
 }
@@ -88,24 +82,24 @@ impl ManagedPostgresStartIntent {
 
     pub(crate) fn replica(
         primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
+        standby_passfile_path: PathBuf,
         primary_slot_name: Option<String>,
     ) -> Self {
         Self::Replica {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             primary_slot_name,
         }
     }
 
     pub(crate) fn recovery(
         primary_conninfo: PgConnInfo,
-        standby_auth: ManagedStandbyAuth,
+        standby_passfile_path: PathBuf,
         primary_slot_name: Option<String>,
     ) -> Self {
         Self::Recovery {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             primary_slot_name,
         }
     }
@@ -199,19 +193,19 @@ pub(crate) fn render_managed_postgres_conf(
         }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             primary_slot_name,
         }
         | ManagedPostgresStartIntent::Recovery {
             primary_conninfo,
-            standby_auth,
+            standby_passfile_path,
             primary_slot_name,
         } => {
             push_bool_setting(&mut rendered, "hot_standby", true);
             push_string_setting(
                 &mut rendered,
                 "primary_conninfo",
-                render_managed_primary_conninfo(primary_conninfo, standby_auth).as_str(),
+                render_managed_primary_conninfo(primary_conninfo, standby_passfile_path).as_str(),
             );
             if let Some(slot) = primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
@@ -241,26 +235,13 @@ pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
 }
 
-pub(crate) fn managed_standby_auth_from_role_auth(
-    auth: &RoleAuthConfig,
-    data_dir: &Path,
-) -> ManagedStandbyAuth {
-    match auth {
-        RoleAuthConfig::Password { .. } => ManagedStandbyAuth::PasswordPassfile {
-            path: managed_standby_passfile_path(data_dir),
-        },
-    }
-}
-
-fn render_managed_primary_conninfo(
-    conninfo: &PgConnInfo,
-    standby_auth: &ManagedStandbyAuth,
-) -> String {
-    let ManagedStandbyAuth::PasswordPassfile { path } = standby_auth;
+fn render_managed_primary_conninfo(conninfo: &PgConnInfo, standby_passfile_path: &Path) -> String {
     let mut rendered = conninfo.to_string();
     rendered.push(' ');
     rendered.push_str("passfile=");
-    rendered.push_str(render_conninfo_value(path.display().to_string().as_str()).as_str());
+    rendered.push_str(
+        render_conninfo_value(standby_passfile_path.display().to_string().as_str()).as_str(),
+    );
     rendered
 }
 
@@ -395,8 +376,8 @@ mod tests {
     use super::{
         managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
         ManagedPostgresConf, ManagedPostgresConfError, ManagedPostgresStartIntent,
-        ManagedPostgresTlsConfig, ManagedRecoverySignal, ManagedStandbyAuth,
-        MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_STANDBY_PASSFILE_NAME,
+        ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
+        MANAGED_STANDBY_PASSFILE_NAME,
     };
 
     fn sample_conf() -> Result<ManagedPostgresConf, String> {
@@ -427,11 +408,7 @@ mod tests {
                         client_key: None,
                     },
                 },
-                ManagedStandbyAuth::PasswordPassfile {
-                    path: managed_standby_passfile_path(
-                        PathBuf::from("/var/lib/postgresql/data").as_path(),
-                    ),
-                },
+                managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path()),
                 Some("slot_a".to_string()),
             ),
             extra_gucs: BTreeMap::from([
@@ -613,10 +590,7 @@ mod tests {
                         client_key: None,
                     },
                 },
-                ManagedStandbyAuth::PasswordPassfile {
-                    path: PathBuf::from("/var/lib/postgresql/data")
-                        .join(MANAGED_STANDBY_PASSFILE_NAME),
-                },
+                PathBuf::from("/var/lib/postgresql/data").join(MANAGED_STANDBY_PASSFILE_NAME),
                 None,
             )
             .recovery_signal(),
