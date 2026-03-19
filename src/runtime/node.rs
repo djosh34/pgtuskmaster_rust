@@ -136,9 +136,9 @@ async fn run_workers(
 
     let ((), pginfo_result, dcs_result, process_result, ingest_result, ha_result, api_result) = tokio::join!(
         log_worker.run(),
-        pginfo.worker.run(),
-        dcs.worker.run(),
-        process.worker.run(),
+        crate::pginfo::startup::run(pginfo.worker),
+        crate::dcs::startup::run(dcs.worker),
+        crate::process::startup::run(process.worker),
         crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
             cfg.clone(),
             log.clone(),

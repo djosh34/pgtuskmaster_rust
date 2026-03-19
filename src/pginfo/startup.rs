@@ -14,15 +14,11 @@ use super::state::{
 
 pub(crate) struct PgInfoRuntimeBundle {
     pub(crate) state: crate::state::StateSubscriber<PgInfoState>,
-    pub(crate) worker: PgInfoWorker,
+    pub(crate) worker: PgInfoWorkerCtx,
 }
 
-pub(crate) struct PgInfoWorker(PgInfoWorkerCtx);
-
-impl PgInfoWorker {
-    pub(crate) async fn run(self) -> Result<(), WorkerError> {
-        super::worker::run(self.0).await
-    }
+pub(crate) async fn run(ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
+    super::worker::run(ctx).await
 }
 
 pub(crate) fn bootstrap(
@@ -35,7 +31,7 @@ pub(crate) fn bootstrap(
 
     PgInfoRuntimeBundle {
         state,
-        worker: PgInfoWorker(PgInfoWorkerCtx {
+        worker: PgInfoWorkerCtx {
             identity,
             probe_conninfo: PgConnInfo {
                 endpoint: PgEndpoint::UnixSocket {
@@ -70,6 +66,6 @@ pub(crate) fn bootstrap(
                 last_emitted_sql_status: None,
             },
             runtime: PgInfoRuntime { log },
-        }),
+        },
     }
 }

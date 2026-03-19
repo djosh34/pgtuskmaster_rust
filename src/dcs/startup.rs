@@ -19,15 +19,11 @@ use super::{
 pub(crate) struct DcsRuntime {
     pub(crate) state: crate::state::StateSubscriber<DcsSnapshot>,
     pub(crate) handle: DcsHandle,
-    pub(crate) worker: DcsWorker,
+    pub(crate) worker: DcsRuntimeCtx,
 }
 
-pub(crate) struct DcsWorker(pub(super) DcsRuntimeCtx);
-
-impl DcsWorker {
-    pub(crate) async fn run(self) -> Result<(), WorkerError> {
-        super::worker::run(self.0).await
-    }
+pub(crate) async fn run(ctx: DcsRuntimeCtx) -> Result<(), WorkerError> {
+    super::worker::run(ctx).await
 }
 
 pub(crate) fn bootstrap(
@@ -67,6 +63,6 @@ pub(crate) fn bootstrap(
     Ok(DcsRuntime {
         state,
         handle,
-        worker: DcsWorker(ctx),
+        worker: ctx,
     })
 }

@@ -155,7 +155,7 @@ impl DcsSnapshot {
     }
 }
 
-pub(super) struct DcsRuntimeCtx {
+pub(crate) struct DcsRuntimeCtx {
     pub(super) identity: NodeIdentity,
     pub(super) endpoints: Vec<DcsEndpoint>,
     pub(super) client: DcsClientConfig,

@@ -26,15 +26,11 @@ pub(crate) struct ProcessControlHandle {
 pub(crate) struct ProcessRuntimeBundle {
     pub(crate) state: crate::state::StateSubscriber<ProcessState>,
     pub(crate) control: ProcessControlHandle,
-    pub(crate) worker: ProcessWorker,
+    pub(crate) worker: ProcessWorkerCtx,
 }
 
-pub(crate) struct ProcessWorker(ProcessWorkerCtx);
-
-impl ProcessWorker {
-    pub(crate) async fn run(self) -> Result<(), WorkerError> {
-        super::worker::run(self.0).await
-    }
+pub(crate) async fn run(ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
+    super::worker::run(ctx).await
 }
 
 pub(crate) fn bootstrap(
@@ -51,7 +47,7 @@ pub(crate) fn bootstrap(
     ProcessRuntimeBundle {
         state,
         control: ProcessControlHandle { intents },
-        worker: ProcessWorker(ProcessWorkerCtx {
+        worker: ProcessWorkerCtx {
             cadence: ProcessCadence {
                 poll_interval: PROCESS_WORKER_POLL_INTERVAL,
                 now: Box::new(system_now_unix_millis),
@@ -75,6 +71,6 @@ pub(crate) fn bootstrap(
                 capture_subprocess_output: cfg.logging.capture_subprocess_output,
                 command_runner: Box::new(TokioCommandRunner),
             },
-        }),
+        },
     }
 }
