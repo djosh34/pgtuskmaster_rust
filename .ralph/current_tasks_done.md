@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Thu Mar 19 12:09:44 PM CET 2026
+Generated: Thu Mar 19 12:41:51 PM CET 2026
 
 # Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
 
@@ -20,6 +20,17 @@ Generated: Thu Mar 19 12:09:44 PM CET 2026
 
 <description>
 `make test` exposed a failure in `tests/ha/support/invariants/write_convergence.rs::one_primary_and_two_replicas_are_determined_healthy` where `ensure_healthy()` expected all members to converge to count `3` but observed `4` on every member instead.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md`
+
+```
+## Bug: Write convergence overcounts isolated-primary writes during failover and cleanup <status>completed</status> <passes>true</passes>
+
+<description>
+`make test-long` exposed a second write-convergence failure mode while executing the health-check race refactor.
 ```
 
 ==============

@@ -337,3 +337,4 @@ NONE
 .ralph/tasks/smells/ha-flat-observation-and-decision-collapse.md
 .ralph/tasks/bugs/write-convergence-health-check-race.md
 .ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md
+.ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md

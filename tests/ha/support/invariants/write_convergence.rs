@@ -24,9 +24,12 @@ use tokio::{
 use tokio_postgres::{Client, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use pgtuskmaster_rust::pginfo::{
-    conninfo::PgClientTls,
-    state::{PgConnInfo, PgSslMode},
+use pgtuskmaster_rust::{
+    api::authoritative_primary_member,
+    pginfo::{
+        conninfo::PgClientTls,
+        state::{PgConnInfo, PgSslMode},
+    },
 };
 
 use crate::support::{
@@ -48,7 +51,8 @@ ON CONFLICT (id) DO NOTHING";
 const INCREMENT_FIXTURE_ROW_SQL: &str = "
 UPDATE public.write_convergence_invariant
 SET written_count = written_count + 1
-WHERE id = $1";
+WHERE id = $1
+RETURNING written_count";
 const SELECT_FIXTURE_ROW_SQL: &str = "
 SELECT written_count
 FROM public.write_convergence_invariant
@@ -62,19 +66,14 @@ pub struct WriteConvergenceInvariantRunner {
     write_deadline: Duration,
     write_gate: Arc<WriteGate>,
     routing_targets: Vec<PostgresRoutingTarget>,
-    members: Mutex<Vec<MemberWorker>>,
+    stop_requested: Arc<AtomicBool>,
+    worker: Mutex<Option<ThreadJoinHandle<Result<(), String>>>>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum WriteConvergenceInvariantError {
     #[error("write-convergence invariant failed: {0}")]
     Failed(String),
-}
-
-struct MemberWorker {
-    routing_target: PostgresRoutingTarget,
-    stop_requested: Arc<AtomicBool>,
-    thread: Option<ThreadJoinHandle<Result<(), String>>>,
 }
 
 #[derive(Default)]
@@ -85,6 +84,8 @@ struct WriteGate {
 
 #[derive(Default)]
 struct WriteGateState {
+    accepted_count: Option<u64>,
+    last_error: Option<String>,
     closed: bool,
     in_flight: usize,
 }
@@ -110,20 +111,21 @@ impl WriteConvergenceInvariantRunner {
             })?;
 
         let write_gate = Arc::new(WriteGate::new());
-        let members = routing_targets
-            .iter()
-            .cloned()
-            .map(|routing_target| {
-                spawn_member_worker(routing_target, Arc::clone(&write_gate), poll_interval)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker = Some(spawn_authoritative_worker(
+            observer.clone(),
+            Arc::clone(&write_gate),
+            Arc::clone(&stop_requested),
+            poll_interval,
+        )?);
         Ok(Self::new(
             Some(observer),
             poll_interval,
             write_deadline,
             write_gate,
             routing_targets,
-            members,
+            stop_requested,
+            worker,
         ))
     }
 
@@ -139,12 +141,16 @@ impl WriteConvergenceInvariantRunner {
         let write_deadline = self.write_deadline;
         let poll_interval = self.poll_interval;
         let observer = self.observer.clone();
+        let expected_count = self.write_gate.accepted_count();
+        let last_write_error = self.write_gate.last_error();
         let future = async move {
             wait_for_convergence(
                 members.as_slice(),
                 observer.as_ref(),
                 poll_interval,
                 write_deadline,
+                expected_count,
+                last_write_error.as_deref(),
             )
             .await
         };
@@ -175,8 +181,40 @@ impl WriteConvergenceInvariantRunner {
 
     pub fn ensure_running(&self) -> Result<(), WriteConvergenceInvariantError> {
         self.write_gate.close_and_drain();
-        self.stop_members()
+        self.stop_worker()
     }
+}
+
+pub fn probe_routing_target_connectivity(
+    routing_target: &PostgresRoutingTarget,
+    connect_timeout: Duration,
+) -> Result<(), WriteConvergenceInvariantError> {
+    let routing_target = routing_target.clone();
+    let future = async move {
+        let (_client, connection_task) = connect_member(&routing_target, connect_timeout).await?;
+        connection_task.abort();
+        Ok(())
+    };
+
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| handle.block_on(future))
+        }
+        Ok(_) | Err(_) => thread::spawn(move || {
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| format!("build runtime for write convergence probe failed: {err}"))?
+                .block_on(future)
+        })
+        .join()
+        .map_err(|_| {
+            WriteConvergenceInvariantError::Failed(
+                "write convergence probe thread panicked".to_string(),
+            )
+        })?,
+    }
+    .map_err(|err: String| WriteConvergenceInvariantError::Failed(err))
 }
 
 impl std::fmt::Debug for WriteConvergenceInvariantRunner {
@@ -192,21 +230,12 @@ impl std::fmt::Debug for WriteConvergenceInvariantRunner {
 
 impl Drop for WriteConvergenceInvariantRunner {
     fn drop(&mut self) {
-        if let Err(err) = self.stop_members() {
+        if let Err(err) = self.stop_worker() {
             assert!(
                 thread::panicking(),
                 "write convergence invariant cleanup failed: {err}"
             );
         }
-    }
-}
-
-impl std::fmt::Debug for MemberWorker {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_struct("MemberWorker")
-            .field("member", &self.routing_target.member)
-            .finish()
     }
 }
 
@@ -217,7 +246,8 @@ impl WriteConvergenceInvariantRunner {
         write_deadline: Duration,
         write_gate: Arc<WriteGate>,
         routing_targets: Vec<PostgresRoutingTarget>,
-        members: Vec<MemberWorker>,
+        stop_requested: Arc<AtomicBool>,
+        worker: Option<ThreadJoinHandle<Result<(), String>>>,
     ) -> Self {
         Self {
             observer,
@@ -225,21 +255,31 @@ impl WriteConvergenceInvariantRunner {
             write_deadline,
             write_gate,
             routing_targets,
-            members: Mutex::new(members),
+            stop_requested,
+            worker: Mutex::new(worker),
         }
     }
 
-    fn stop_members(&self) -> Result<(), WriteConvergenceInvariantError> {
-        let members = {
-            let mut members = self.members.lock().map_err(|_| {
+    fn stop_worker(&self) -> Result<(), WriteConvergenceInvariantError> {
+        self.stop_requested.store(true, Ordering::SeqCst);
+        let worker = {
+            let mut worker = self.worker.lock().map_err(|_| {
                 WriteConvergenceInvariantError::Failed(
-                    "write convergence member-worker mutex was poisoned".to_string(),
+                    "write convergence worker mutex was poisoned".to_string(),
                 )
             })?;
-            members.drain(..).collect::<Vec<_>>()
+            worker.take()
         };
-        members.iter().for_each(MemberWorker::request_stop);
-        members.into_iter().try_for_each(MemberWorker::join)
+        worker.map_or(Ok(()), |worker| {
+            worker
+                .join()
+                .map_err(|_| {
+                    WriteConvergenceInvariantError::Failed(
+                        "write convergence worker thread panicked".to_string(),
+                    )
+                })?
+                .map_err(WriteConvergenceInvariantError::Failed)
+        })
     }
 
     fn selected_routing_targets(
@@ -297,6 +337,32 @@ impl WriteGate {
         }
     }
 
+    fn accepted_count(&self) -> Option<u64> {
+        self.lock_state().accepted_count
+    }
+
+    fn record_accepted_count(&self, count: u64) {
+        let mut state = self.lock_state();
+        state.accepted_count = Some(
+            state
+                .accepted_count
+                .map_or(count, |current| current.max(count)),
+        );
+        state.last_error = None;
+    }
+
+    fn record_last_error(&self, message: String) {
+        self.lock_state().last_error = Some(message);
+    }
+
+    fn clear_last_error(&self) {
+        self.lock_state().last_error = None;
+    }
+
+    fn last_error(&self) -> Option<String> {
+        self.lock_state().last_error.clone()
+    }
+
     fn lock_state(&self) -> MutexGuard<'_, WriteGateState> {
         match self.state.lock() {
             Ok(guard) => guard,
@@ -322,28 +388,6 @@ impl Drop for WritePermit {
         if state.in_flight == 0 {
             self.gate.drained.notify_all();
         }
-    }
-}
-
-impl MemberWorker {
-    fn request_stop(&self) {
-        self.stop_requested.store(true, Ordering::SeqCst);
-    }
-
-    fn join(mut self) -> Result<(), WriteConvergenceInvariantError> {
-        let thread = match self.thread.take() {
-            Some(thread) => thread,
-            None => return Ok(()),
-        };
-        thread
-            .join()
-            .map_err(|_| {
-                WriteConvergenceInvariantError::Failed(format!(
-                    "write worker thread for `{}` panicked",
-                    self.routing_target.member
-                ))
-            })?
-            .map_err(WriteConvergenceInvariantError::Failed)
     }
 }
 
@@ -432,55 +476,36 @@ async fn apply_fixture_row_setup(
         .map(|_| ())
 }
 
-fn write_attempt_requires_reconnect(err: &tokio_postgres::Error) -> bool {
-    err.as_db_error().is_none()
-}
-
-fn spawn_member_worker(
-    routing_target: PostgresRoutingTarget,
+fn spawn_authoritative_worker(
+    observer: PgtmObserver,
     write_gate: Arc<WriteGate>,
+    stop_requested: Arc<AtomicBool>,
     poll_interval: Duration,
-) -> Result<MemberWorker, WriteConvergenceInvariantError> {
-    let stop_requested = Arc::new(AtomicBool::new(false));
-    let thread_routing_target = routing_target.clone();
-    let thread_stop_requested = Arc::clone(&stop_requested);
+) -> Result<ThreadJoinHandle<Result<(), String>>, WriteConvergenceInvariantError> {
     let thread = thread::Builder::new()
-        .name(format!(
-            "write-convergence-{}",
-            thread_routing_target.member
-        ))
+        .name("write-convergence-authoritative".to_string())
         .spawn(move || {
             Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .map_err(|err| {
-                    format!(
-                        "build runtime for write worker `{}` failed: {err}",
-                        thread_routing_target.member
-                    )
-                })?
-                .block_on(run_member_worker(
-                    thread_routing_target,
+                .map_err(|err| format!("build runtime for write convergence worker failed: {err}"))?
+                .block_on(run_authoritative_worker(
+                    observer,
                     write_gate,
-                    thread_stop_requested,
+                    stop_requested,
                     poll_interval,
                 ))
         })
         .map_err(|err| {
             WriteConvergenceInvariantError::Failed(format!(
-                "spawn write worker thread for `{}` failed: {err}",
-                routing_target.member
+                "spawn authoritative write worker thread failed: {err}",
             ))
         })?;
-    Ok(MemberWorker {
-        routing_target,
-        stop_requested,
-        thread: Some(thread),
-    })
+    Ok(thread)
 }
 
-async fn run_member_worker(
-    routing_target: PostgresRoutingTarget,
+async fn run_authoritative_worker(
+    observer: PgtmObserver,
     write_gate: Arc<WriteGate>,
     stop_requested: Arc<AtomicBool>,
     poll_interval: Duration,
@@ -489,93 +514,119 @@ async fn run_member_worker(
         if stop_requested.load(Ordering::SeqCst) {
             return Ok(());
         }
-        match connect_member(&routing_target, poll_interval).await {
-            Ok((client, connection_task)) => {
-                maintain_connected_member(
-                    client,
-                    connection_task,
-                    Arc::clone(&write_gate),
-                    Arc::clone(&stop_requested),
-                    poll_interval,
-                    poll_interval,
-                )
+        let write_permit = match write_gate.try_start_write() {
+            Some(write_permit) => write_permit,
+            None => return Ok(()),
+        };
+        let write_result =
+            attempt_authoritative_write(observer.clone(), Arc::clone(&write_gate), poll_interval)
                 .await;
-            }
-            Err(err) => {
-                // THIS IS ONE OF THE ONLY VALID EXCEPTION TO THE "don't drop err via let _ = err rule"
-                // That is because we explicitly we want that a failed connection just get retried when scenarios progress
-                // DO NOT REMOVE THIS COMMENT DURING REFACTORS!
-                let _ = err;
-                if stop_requested.load(Ordering::SeqCst) {
-                    return Ok(());
-                }
-                tokio::time::sleep(poll_interval).await;
-            }
+        drop(write_permit);
+        match write_result {
+            Ok(()) => write_gate.clear_last_error(),
+            Err(err) => write_gate.record_last_error(err),
         }
+        if stop_requested.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        tokio::time::sleep(poll_interval).await;
     }
 }
 
-async fn maintain_connected_member(
-    client: Arc<Client>,
-    mut connection_task: ConnectionTask,
+async fn attempt_authoritative_write(
+    observer: PgtmObserver,
     write_gate: Arc<WriteGate>,
-    stop_requested: Arc<AtomicBool>,
-    poll_interval: Duration,
     query_timeout: Duration,
-) {
-    loop {
-        if stop_requested.load(Ordering::SeqCst) {
-            connection_task.abort();
-            return;
-        }
-        tokio::select! {
-            _ = tokio::time::sleep(poll_interval) => {
-                let write_permit = match write_gate.try_start_write() {
-                    Some(write_permit) => write_permit,
-                    None => {
-                        connection_task.abort();
-                        return;
-                    }
-                };
-                match tokio::time::timeout(query_timeout, apply_fixture_row_setup(client.as_ref())).await {
-                    Ok(Ok(())) => {}
-                    Ok(Err(err)) if write_attempt_requires_reconnect(&err) => {
-                        connection_task.abort();
-                        return;
-                    }
-                    Ok(Err(_)) => {
-                        continue;
-                    }
-                    Err(_) => {
-                        connection_task.abort();
-                        return;
-                    }
-                }
-                match tokio::time::timeout(
-                    query_timeout,
-                    client.execute(INCREMENT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
+) -> Result<(), String> {
+    let routing_target = match authoritative_primary_routing_target(&observer)? {
+        Some(routing_target) => routing_target,
+        None => return Ok(()),
+    };
+    let (client, connection_task) = connect_member(&routing_target, query_timeout).await?;
+    let write_result =
+        perform_authoritative_write(client.as_ref(), write_gate.as_ref(), query_timeout)
+            .await
+            .map_err(|err| {
+                format!(
+                    "authoritative write via `{}` failed: {err}",
+                    routing_target.member
                 )
-                .await
-                {
-                    Ok(Ok(1)) => {}
-                    Ok(Err(err)) if write_attempt_requires_reconnect(&err) => {
-                        connection_task.abort();
-                        return;
-                    }
-                    Ok(Ok(_)) | Ok(Err(_)) => {}
-                    Err(_) => {
-                        connection_task.abort();
-                        return;
-                    }
-                }
-                drop(write_permit);
-            }
-            connection_result = &mut connection_task => {
-                let _ = connection_result;
-                return;
-            }
-        }
+            });
+    connection_task.abort();
+    write_result
+}
+
+fn authoritative_primary_routing_target(
+    observer: &PgtmObserver,
+) -> Result<Option<PostgresRoutingTarget>, String> {
+    let authoritative_members = observer
+        .observe_states()
+        .map_err(|err| format!("observe authoritative primary failed: {err}"))?
+        .into_values()
+        .filter_map(|state| state.ok())
+        .filter_map(|state| {
+            authoritative_primary_member(&state)
+                .and_then(|member_id| ClusterMember::parse(member_id.as_str()).ok())
+        })
+        .collect::<BTreeSet<_>>();
+    if authoritative_members.len() != 1 {
+        return Ok(None);
     }
+    let member = authoritative_members
+        .iter()
+        .copied()
+        .next()
+        .ok_or_else(|| "authoritative primary disappeared unexpectedly".to_string())?;
+    observer
+        .postgres_routing_target(member)
+        .map(Some)
+        .map_err(|err| format!("resolve authoritative primary routing target failed: {err}"))
+}
+
+async fn perform_authoritative_write(
+    client: &Client,
+    write_gate: &WriteGate,
+    query_timeout: Duration,
+) -> Result<(), WriteConvergenceInvariantError> {
+    tokio::time::timeout(query_timeout, apply_fixture_row_setup(client))
+        .await
+        .map_err(|_| {
+            WriteConvergenceInvariantError::Failed(format!(
+                "prepare fixture row timed out after {:?}",
+                query_timeout
+            ))
+        })?
+        .map_err(|err| {
+            WriteConvergenceInvariantError::Failed(format!("prepare fixture row failed: {err}"))
+        })?;
+    if write_gate.accepted_count().is_none() {
+        write_gate.record_accepted_count(read_count(client, query_timeout).await?);
+    }
+    write_gate.record_accepted_count(increment_fixture_row(client, query_timeout).await?);
+    Ok(())
+}
+
+async fn increment_fixture_row(
+    client: &Client,
+    query_timeout: Duration,
+) -> Result<u64, WriteConvergenceInvariantError> {
+    let row = tokio::time::timeout(
+        query_timeout,
+        client.query_one(INCREMENT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
+    )
+    .await
+    .map_err(|_| {
+        WriteConvergenceInvariantError::Failed(format!(
+            "increment fixture row timed out after {:?}",
+            query_timeout
+        ))
+    })?
+    .map_err(|err| {
+        WriteConvergenceInvariantError::Failed(format!("increment fixture row failed: {err}"))
+    })?;
+    u64::try_from(row.get::<_, i64>(0)).map_err(|err| {
+        WriteConvergenceInvariantError::Failed(format!("fixture count was negative: {err}"))
+    })
 }
 
 async fn read_monitored_member_counts(
@@ -671,15 +722,22 @@ async fn wait_for_convergence(
     observer: Option<&PgtmObserver>,
     poll_interval: Duration,
     write_deadline: Duration,
+    expected_count: Option<u64>,
+    last_write_error: Option<&str>,
 ) -> Result<(), WriteConvergenceInvariantError> {
     let deadline = Instant::now() + write_deadline;
     loop {
         let observations = read_monitored_member_counts(members, observer, poll_interval).await;
-        if observations_are_converged(observations.as_slice()) {
+        if observations_are_converged(observations.as_slice(), expected_count) {
             return Ok(());
         }
         if Instant::now() >= deadline {
-            return Err(convergence_failure(observations.as_slice(), write_deadline));
+            return Err(convergence_failure(
+                observations.as_slice(),
+                write_deadline,
+                expected_count,
+                last_write_error,
+            ));
         }
         tokio::time::sleep(poll_interval).await;
     }
@@ -848,8 +906,11 @@ impl MemberCountObservation {
     }
 }
 
-fn observations_are_converged(observations: &[MemberCountObservation]) -> bool {
-    let mut shared_count = None;
+fn observations_are_converged(
+    observations: &[MemberCountObservation],
+    expected_count: Option<u64>,
+) -> bool {
+    let mut shared_count = expected_count;
     for observation in observations {
         let count = match observation.observed_count() {
             Some(count) => count,
@@ -877,20 +938,30 @@ fn render_observations(observations: &[MemberCountObservation]) -> String {
 fn convergence_failure(
     observations: &[MemberCountObservation],
     write_deadline: Duration,
+    expected_count: Option<u64>,
+    last_write_error: Option<&str>,
 ) -> WriteConvergenceInvariantError {
+    let expectation = expected_count.map_or_else(
+        || format!("`{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}`"),
+        |count| format!("accepted count `{count}` on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}`"),
+    );
+    let last_write_error = last_write_error.map_or_else(String::new, |error| {
+        format!("; last write attempt error: {error}")
+    });
     WriteConvergenceInvariantError::Failed(format!(
-        "expected selected members to converge on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}` before {:?}; observed: {}",
+        "expected selected members to converge on {expectation} before {:?}; observed: {}{}",
         write_deadline,
         render_observations(observations),
+        last_write_error,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        connectable_conninfo, convergence_failure, maintain_connected_member,
-        observations_are_converged, read_count, required_tls_path, ConnectionTask,
-        MemberCountObservation, MemberWorker, WriteConvergenceInvariantError,
+        connectable_conninfo, convergence_failure, observations_are_converged,
+        perform_authoritative_write, read_count, required_tls_path, ConnectionTask,
+        MemberCountObservation, ThreadJoinHandle, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner, WriteGate, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
     use crate::support::{observer::pgtm::PostgresRoutingTarget, topology::ClusterMember};
@@ -957,9 +1028,14 @@ mod tests {
             },
         ];
 
-        assert!(!observations_are_converged(observations.as_slice()));
+        assert!(!observations_are_converged(observations.as_slice(), None));
 
-        let err = convergence_failure(observations.as_slice(), Duration::from_millis(10));
+        let err = convergence_failure(
+            observations.as_slice(),
+            Duration::from_millis(10),
+            None,
+            None,
+        );
 
         match err {
             WriteConvergenceInvariantError::Failed(message) => {
@@ -1017,43 +1093,24 @@ mod tests {
             initialize_fixture_row_via_dsn(fixture.dsn.as_str(), 0).await?;
             let primary_probe = connect_session(fixture.dsn.as_str(), false).await?;
             let replica_probe = connect_session(fixture.dsn.as_str(), true).await?;
-            let members = vec![
-                build_member_writer(
-                    ClusterMember::NodeA,
-                    fixture.dsn.as_str(),
-                    false,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeB,
-                    fixture.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeC,
-                    fixture.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-            ];
-            let routing_targets = members
-                .iter()
-                .map(|member| member.routing_target.clone())
-                .collect::<Vec<_>>();
+            let stop_requested = Arc::new(AtomicBool::new(false));
+            let worker = Some(build_authoritative_write_worker(
+                fixture.dsn.as_str(),
+                Arc::clone(&write_gate),
+                Arc::clone(&stop_requested),
+                Duration::from_millis(10),
+            )?);
             let runner = WriteConvergenceInvariantRunner::new(
                 None,
                 Duration::from_millis(10),
                 Duration::from_millis(250),
                 Arc::clone(&write_gate),
-                routing_targets,
-                members,
+                ClusterMember::ALL
+                    .into_iter()
+                    .map(|member| routing_target_for_dsn(member, fixture.dsn.as_str()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                stop_requested,
+                worker,
             );
 
             wait_for_row_count_at_least(primary_probe.client.as_ref(), 3, Duration::from_secs(5))
@@ -1088,44 +1145,26 @@ mod tests {
             let write_gate = Arc::new(WriteGate::new());
             initialize_fixture_row_via_dsn(fixture_a.dsn.as_str(), 0).await?;
             initialize_fixture_row_via_dsn(fixture_b.dsn.as_str(), 0).await?;
-            let members = vec![
-                build_member_writer(
-                    ClusterMember::NodeA,
-                    fixture_a.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeB,
-                    fixture_b.dsn.as_str(),
-                    false,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeC,
-                    fixture_b.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-            ];
-            let routing_targets = members
-                .iter()
-                .map(|member| member.routing_target.clone())
-                .collect::<Vec<_>>();
             let writable_probe = connect_session(fixture_b.dsn.as_str(), false).await?;
+            let stop_requested = Arc::new(AtomicBool::new(false));
+            let worker = Some(build_authoritative_write_worker(
+                fixture_b.dsn.as_str(),
+                Arc::clone(&write_gate),
+                Arc::clone(&stop_requested),
+                Duration::from_millis(10),
+            )?);
             let runner = WriteConvergenceInvariantRunner::new(
                 None,
                 Duration::from_millis(10),
                 Duration::from_millis(150),
                 Arc::clone(&write_gate),
-                routing_targets,
-                members,
+                vec![
+                    routing_target_for_dsn(ClusterMember::NodeA, fixture_a.dsn.as_str())?,
+                    routing_target_for_dsn(ClusterMember::NodeB, fixture_b.dsn.as_str())?,
+                    routing_target_for_dsn(ClusterMember::NodeC, fixture_b.dsn.as_str())?,
+                ],
+                stop_requested,
+                worker,
             );
 
             wait_for_row_count_at_least(writable_probe.client.as_ref(), 1, Duration::from_secs(5))
@@ -1152,52 +1191,61 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_write_on_doomed_member_is_not_treated_as_global_baseline(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut doomed = RealPostgresFixture::spawn("write-convergence-doomed-member").await?;
+        let mut surviving =
+            RealPostgresFixture::spawn("write-convergence-surviving-majority").await?;
+        let run_result = async {
+            initialize_fixture_row_via_dsn(doomed.dsn.as_str(), 1).await?;
+            initialize_fixture_row_via_dsn(surviving.dsn.as_str(), 0).await?;
+            let write_gate = Arc::new(WriteGate::new());
+            write_gate.record_accepted_count(0);
+            let runner = WriteConvergenceInvariantRunner::new(
+                None,
+                Duration::from_millis(10),
+                Duration::from_millis(150),
+                Arc::clone(&write_gate),
+                vec![
+                    routing_target_for_dsn(ClusterMember::NodeA, doomed.dsn.as_str())?,
+                    routing_target_for_dsn(ClusterMember::NodeB, surviving.dsn.as_str())?,
+                    routing_target_for_dsn(ClusterMember::NodeC, surviving.dsn.as_str())?,
+                ],
+                Arc::new(AtomicBool::new(false)),
+                None,
+            );
+
+            runner.ensure_healthy(&[ClusterMember::NodeB, ClusterMember::NodeC])?;
+            Ok(())
+        }
+        .await;
+
+        doomed.handle.shutdown().await?;
+        surviving.handle.shutdown().await?;
+        run_result
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn three_read_only_members_with_zero_shared_writes_still_count_as_converged(
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut fixture = RealPostgresFixture::spawn("write-convergence-zero-writes").await?;
         let run_result = async {
             let write_gate = Arc::new(WriteGate::new());
             initialize_fixture_row_via_dsn(fixture.dsn.as_str(), 0).await?;
-            let members = vec![
-                build_member_writer(
-                    ClusterMember::NodeA,
-                    fixture.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeB,
-                    fixture.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-                build_member_writer(
-                    ClusterMember::NodeC,
-                    fixture.dsn.as_str(),
-                    true,
-                    Arc::clone(&write_gate),
-                    Duration::from_millis(10),
-                )
-                .await?,
-            ];
-            let routing_targets = members
-                .iter()
-                .map(|member| member.routing_target.clone())
-                .collect::<Vec<_>>();
+            write_gate.record_accepted_count(0);
             let runner = WriteConvergenceInvariantRunner::new(
                 None,
                 Duration::from_millis(10),
                 Duration::from_millis(150),
                 Arc::clone(&write_gate),
-                routing_targets,
-                members,
+                ClusterMember::ALL
+                    .into_iter()
+                    .map(|member| routing_target_for_dsn(member, fixture.dsn.as_str()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                Arc::new(AtomicBool::new(false)),
+                None,
             );
 
-            tokio::time::sleep(Duration::from_millis(50)).await;
             runner.ensure_healthy(ClusterMember::ALL.as_slice())?;
             drop(runner);
             Ok(())
@@ -1217,9 +1265,10 @@ mod tests {
         let (cleanup_done_tx, cleanup_done_rx) = sync_channel(1);
         let (release_write_tx, release_write_rx) = oneshot::channel();
         let committed_count = Arc::new(AtomicU64::new(0));
-        let worker = build_blocked_member_worker(
-            ClusterMember::NodeA,
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let worker = build_blocked_write_worker(
             Arc::clone(&write_gate),
+            Arc::clone(&stop_requested),
             Arc::clone(&committed_count),
             write_started_tx,
             release_write_rx,
@@ -1230,7 +1279,8 @@ mod tests {
             Duration::from_millis(10),
             Arc::clone(&write_gate),
             vec![sample_routing_target(ClusterMember::NodeA)?],
-            vec![worker],
+            stop_requested,
+            Some(worker),
         );
 
         write_started_rx
@@ -1275,6 +1325,34 @@ mod tests {
     }
 
     #[test]
+    fn ensure_running_does_not_probe_unreachable_members_during_cleanup(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let write_gate = Arc::new(WriteGate::new());
+        write_gate.record_accepted_count(2);
+        let runner = WriteConvergenceInvariantRunner::new(
+            None,
+            Duration::from_millis(10),
+            Duration::from_millis(10),
+            Arc::clone(&write_gate),
+            vec![
+                routing_target_for_dsn(
+                    ClusterMember::NodeA,
+                    "host=127.0.0.1 port=1 user=postgres dbname=postgres sslmode=disable",
+                )?,
+                routing_target_for_dsn(
+                    ClusterMember::NodeB,
+                    "host=127.0.0.1 port=1 user=postgres dbname=postgres sslmode=disable",
+                )?,
+            ],
+            Arc::new(AtomicBool::new(false)),
+            None,
+        );
+
+        assert!(runner.ensure_running().is_ok());
+        Ok(())
+    }
+
+    #[test]
     fn selected_routing_targets_follow_online_member_subset(
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
         let runner = WriteConvergenceInvariantRunner::new(
@@ -1286,7 +1364,8 @@ mod tests {
                 .into_iter()
                 .map(sample_routing_target)
                 .collect::<Result<Vec<_>, _>>()?,
-            Vec::new(),
+            Arc::new(AtomicBool::new(false)),
+            None,
         );
 
         let selected =
@@ -1300,6 +1379,16 @@ mod tests {
             vec![ClusterMember::NodeA, ClusterMember::NodeC],
         );
         Ok(())
+    }
+
+    fn routing_target_for_dsn(
+        member: ClusterMember,
+        dsn: &str,
+    ) -> Result<PostgresRoutingTarget, Box<dyn Error + Send + Sync>> {
+        Ok(PostgresRoutingTarget {
+            member,
+            conninfo: dsn.parse()?,
+        })
     }
 
     fn sample_routing_target(member: ClusterMember) -> Result<PostgresRoutingTarget, IoError> {
@@ -1390,74 +1479,72 @@ mod tests {
         })
     }
 
-    async fn build_member_writer(
-        member: ClusterMember,
+    fn build_authoritative_write_worker(
         dsn: &str,
-        read_only: bool,
         write_gate: Arc<WriteGate>,
+        stop_requested: Arc<AtomicBool>,
         poll_interval: Duration,
-    ) -> Result<MemberWorker, Box<dyn Error + Send + Sync>> {
-        let (client, connection_task) = connect_client(dsn).await?;
-        if read_only {
-            client
-                .simple_query("SET default_transaction_read_only = on")
-                .await?;
-        }
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let thread_stop_requested = Arc::clone(&stop_requested);
+    ) -> Result<ThreadJoinHandle<Result<(), String>>, Box<dyn Error + Send + Sync>> {
+        let dsn = dsn.to_string();
         let task = thread::Builder::new()
-            .name(format!("write-convergence-test-{member}"))
+            .name("write-convergence-test-authoritative".to_string())
             .spawn(move || {
                 Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|err| {
-                        format!("build test write runtime for `{member}` failed: {err}")
-                    })?
-                    .block_on(maintain_connected_member(
-                        Arc::clone(&client),
-                        connection_task,
-                        write_gate,
-                        thread_stop_requested,
-                        poll_interval,
-                        poll_interval,
-                    ));
-                Ok(())
+                    .map_err(|err| format!("build authoritative test write runtime failed: {err}"))?
+                    .block_on(async move {
+                        loop {
+                            if stop_requested.load(Ordering::SeqCst) {
+                                return Ok(());
+                            }
+                            let write_permit = match write_gate.try_start_write() {
+                                Some(write_permit) => write_permit,
+                                None => return Ok(()),
+                            };
+                            let write_result = match connect_session(dsn.as_str(), false).await {
+                                Ok(session) => {
+                                    let result = perform_authoritative_write(
+                                        session.client.as_ref(),
+                                        write_gate.as_ref(),
+                                        poll_interval,
+                                    )
+                                    .await
+                                    .map_err(|err| err.to_string());
+                                    drop(session);
+                                    result
+                                }
+                                Err(err) => Err(err.to_string()),
+                            };
+                            drop(write_permit);
+                            match write_result {
+                                Ok(()) => write_gate.clear_last_error(),
+                                Err(err) => write_gate.record_last_error(err),
+                            }
+                            if stop_requested.load(Ordering::SeqCst) {
+                                return Ok(());
+                            }
+                            tokio::time::sleep(poll_interval).await;
+                        }
+                    })
             })?;
-        Ok(MemberWorker {
-            routing_target: PostgresRoutingTarget {
-                member,
-                conninfo: dsn.parse()?,
-            },
-            stop_requested,
-            thread: Some(task),
-        })
+        Ok(task)
     }
 
-    fn build_blocked_member_worker(
-        member: ClusterMember,
+    fn build_blocked_write_worker(
         write_gate: Arc<WriteGate>,
+        stop_requested: Arc<AtomicBool>,
         committed_count: Arc<AtomicU64>,
         write_started_tx: SyncSender<()>,
         release_write_rx: oneshot::Receiver<()>,
-    ) -> Result<MemberWorker, Box<dyn Error + Send + Sync>> {
-        let routing_target = PostgresRoutingTarget {
-            member,
-            conninfo: "host=127.0.0.1 port=5432 user=postgres dbname=postgres sslmode=disable"
-                .parse()?,
-        };
-        let stop_requested = Arc::new(AtomicBool::new(false));
-        let thread_stop_requested = Arc::clone(&stop_requested);
-        let thread_member = member;
+    ) -> Result<ThreadJoinHandle<Result<(), String>>, Box<dyn Error + Send + Sync>> {
         let task = thread::Builder::new()
-            .name(format!("write-convergence-test-blocked-{member}"))
+            .name("write-convergence-test-blocked".to_string())
             .spawn(move || {
                 Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|err| {
-                        format!("build blocked test runtime for `{thread_member}` failed: {err}")
-                    })?
+                    .map_err(|err| format!("build blocked test runtime failed: {err}"))?
                     .block_on(async move {
                         let write_permit = write_gate.try_start_write().ok_or_else(|| {
                             "test worker gate was already closed before write start".to_string()
@@ -1471,18 +1558,14 @@ mod tests {
                         committed_count.fetch_add(1, Ordering::SeqCst);
                         drop(write_permit);
                         loop {
-                            if thread_stop_requested.load(Ordering::SeqCst) {
+                            if stop_requested.load(Ordering::SeqCst) {
                                 return Ok(());
                             }
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
                     })
             })?;
-        Ok(MemberWorker {
-            routing_target,
-            stop_requested,
-            thread: Some(task),
-        })
+        Ok(task)
     }
 
     async fn initialize_fixture_row(

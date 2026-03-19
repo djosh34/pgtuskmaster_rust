@@ -16,6 +16,7 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
+    invariants::probe_routing_target_connectivity,
     observer::{pgtm::ClusterStateObservation, sql},
     topology::ClusterMember,
     world::{HaWorld, HarnessShared},
@@ -988,8 +989,8 @@ fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
 
 fn probe_member_postgres(harness: &HarnessShared, member: ClusterMember) -> Result<()> {
     let target = harness.observer.postgres_routing_target(member)?;
-    let dsn = target.conninfo.to_string();
-    probe_postgres(harness, dsn.as_str(), "SELECT 1;")
+    probe_routing_target_connectivity(&target, harness.timeouts.poll_interval)
+        .map_err(HarnessError::from)
 }
 
 fn probe_postgres(harness: &HarnessShared, dsn: &str, probe_sql: &str) -> Result<()> {
