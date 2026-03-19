@@ -29,7 +29,7 @@ Before choosing from the standard smell list, inspect `found_smells/`.
 - Finish that smell completely before touching any other smell.
 - After the work is complete, delete the processed file from `found_smells/`.
 
-## Else, find new smells
+## How to find new smells
 
 - Read [how-to-create-found-smell.md](how-to-create-found-smell.md) on how to add smell
 - Explore codebase (using subagents) to find new smells
