@@ -116,36 +116,41 @@ fn build_connection_tls(tls: &CliTlsConfig, emit_tls: bool) -> Result<PgClientTl
         });
     }
 
+    let root_cert = match (tls.ca_cert_pem.as_ref(), tls.ca_cert_path.clone()) {
+        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
+        (Some(_), None) => {
+            return Err(CliError::Resolution(
+                "`--tls` cannot render pgtm postgres client CA certificate because the effective config is not path-backed"
+                    .to_string(),
+            ))
+        }
+        (None, None) => None,
+    };
+    let client_cert = match (tls.client_cert_pem.as_ref(), tls.client_cert_path.clone()) {
+        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
+        (Some(_), None) => {
+            return Err(CliError::Resolution(
+                "`--tls` cannot render pgtm postgres client certificate because the effective config is not path-backed"
+                    .to_string(),
+            ))
+        }
+        (None, None) => None,
+    };
+    let client_key = match (tls.client_key_pem.as_ref(), tls.client_key_path.clone()) {
+        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
+        (Some(_), None) => {
+            return Err(CliError::Resolution(
+                "`--tls` cannot render pgtm postgres client key because the effective config is not path-backed"
+                    .to_string(),
+            ))
+        }
+        (None, None) => None,
+    };
+
     Ok(PgClientTls {
         mode: PgSslMode::VerifyFull,
-        root_cert: require_path_backed_tls_field(
-            "pgtm postgres client CA certificate",
-            tls.ca_cert_pem.as_ref(),
-            tls.ca_cert_path.clone(),
-        )?,
-        client_cert: require_path_backed_tls_field(
-            "pgtm postgres client certificate",
-            tls.client_cert_pem.as_ref(),
-            tls.client_cert_path.clone(),
-        )?,
-        client_key: require_path_backed_tls_field(
-            "pgtm postgres client key",
-            tls.client_key_pem.as_ref(),
-            tls.client_key_path.clone(),
-        )?,
+        root_cert,
+        client_cert,
+        client_key,
     })
-}
-
-fn require_path_backed_tls_field(
-    field_label: &'static str,
-    pem: Option<&Vec<u8>>,
-    path: Option<std::path::PathBuf>,
-) -> Result<Option<std::path::PathBuf>, CliError> {
-    match (pem, path) {
-        (Some(_), Some(path)) | (None, Some(path)) => Ok(Some(path)),
-        (Some(_), None) => Err(CliError::Resolution(format!(
-            "`--tls` cannot render {field_label} because the effective config is not path-backed"
-        ))),
-        (None, None) => Ok(None),
-    }
 }
