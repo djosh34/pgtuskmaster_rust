@@ -60,13 +60,7 @@ pub(crate) enum ManagedPostgresStartIntent {
     Primary,
     DetachedStandby,
     Replica {
-        primary_conninfo: PgConnInfo,
-        standby_passfile_path: PathBuf,
-        primary_slot_name: Option<String>,
-    },
-    Recovery {
-        primary_conninfo: PgConnInfo,
-        standby_passfile_path: PathBuf,
+        primary_conninfo: Box<PgConnInfo>,
         primary_slot_name: Option<String>,
     },
 }
@@ -82,24 +76,10 @@ impl ManagedPostgresStartIntent {
 
     pub(crate) fn replica(
         primary_conninfo: PgConnInfo,
-        standby_passfile_path: PathBuf,
         primary_slot_name: Option<String>,
     ) -> Self {
         Self::Replica {
-            primary_conninfo,
-            standby_passfile_path,
-            primary_slot_name,
-        }
-    }
-
-    pub(crate) fn recovery(
-        primary_conninfo: PgConnInfo,
-        standby_passfile_path: PathBuf,
-        primary_slot_name: Option<String>,
-    ) -> Self {
-        Self::Recovery {
-            primary_conninfo,
-            standby_passfile_path,
+            primary_conninfo: Box::new(primary_conninfo),
             primary_slot_name,
         }
     }
@@ -108,7 +88,6 @@ impl ManagedPostgresStartIntent {
         match self {
             Self::Primary => ManagedRecoverySignal::None,
             Self::DetachedStandby | Self::Replica { .. } => ManagedRecoverySignal::Standby,
-            Self::Recovery { .. } => ManagedRecoverySignal::Recovery,
         }
     }
 }
@@ -147,6 +126,7 @@ pub(crate) enum ManagedPostgresConfError {
 
 pub(crate) fn render_managed_postgres_conf(
     conf: &ManagedPostgresConf,
+    managed_standby_passfile_path: &Path,
 ) -> Result<String, ManagedPostgresConfError> {
     let mut rendered = String::from(MANAGED_POSTGRESQL_CONF_HEADER);
 
@@ -193,19 +173,14 @@ pub(crate) fn render_managed_postgres_conf(
         }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
-            standby_passfile_path,
-            primary_slot_name,
-        }
-        | ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_passfile_path,
             primary_slot_name,
         } => {
             push_bool_setting(&mut rendered, "hot_standby", true);
             push_string_setting(
                 &mut rendered,
                 "primary_conninfo",
-                render_managed_primary_conninfo(primary_conninfo, standby_passfile_path).as_str(),
+                render_managed_primary_conninfo(primary_conninfo, managed_standby_passfile_path)
+                    .as_str(),
             );
             if let Some(slot) = primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
@@ -377,7 +352,6 @@ mod tests {
         managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
         ManagedPostgresConf, ManagedPostgresConfError, ManagedPostgresStartIntent,
         ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
-        MANAGED_STANDBY_PASSFILE_NAME,
     };
 
     fn sample_conf() -> Result<ManagedPostgresConf, String> {
@@ -408,7 +382,6 @@ mod tests {
                         client_key: None,
                     },
                 },
-                managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path()),
                 Some("slot_a".to_string()),
             ),
             extra_gucs: BTreeMap::from([
@@ -426,9 +399,17 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_is_deterministic() -> Result<(), String> {
-        let a = render_managed_postgres_conf(&sample_conf()?)
+        let a = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
-        let b = render_managed_postgres_conf(&sample_conf()?)
+        let b = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
         assert_eq!(a, b);
         Ok(())
@@ -436,7 +417,11 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_keeps_owned_settings_before_extra_gucs() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf()?)
+        let rendered = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
         let primary_slot_index = rendered
             .find("primary_slot_name =")
@@ -454,7 +439,11 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_sorts_extra_gucs() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf()?)
+        let rendered = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
         let first = rendered
             .find("log_line_prefix =")
@@ -472,7 +461,11 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_quotes_and_escapes_string_values() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf()?)
+        let rendered = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.contains("unix_socket_directories = '/tmp/pgtm socket'") {
             return Err(format!(
@@ -496,7 +489,11 @@ mod tests {
 
     #[test]
     fn render_managed_postgres_conf_renders_booleans_and_replica_fields() -> Result<(), String> {
-        let rendered = render_managed_postgres_conf(&sample_conf()?)
+        let rendered = render_managed_postgres_conf(
+            &sample_conf()?,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
             .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
             return Err(format!("missing managed header: {rendered}"));
@@ -525,8 +522,12 @@ mod tests {
         let mut conf = sample_conf()?;
         conf.tls = ManagedPostgresTlsConfig::Disabled;
         conf.start_intent = ManagedPostgresStartIntent::Primary;
-        let rendered =
-            render_managed_postgres_conf(&conf).map_err(|err| format!("render failed: {err}"))?;
+        let rendered = render_managed_postgres_conf(
+            &conf,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
+        .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.contains("ssl = off") {
             return Err(format!("missing ssl=off: {rendered}"));
         }
@@ -546,8 +547,12 @@ mod tests {
     ) -> Result<(), String> {
         let mut conf = sample_conf()?;
         conf.start_intent = ManagedPostgresStartIntent::detached_standby();
-        let rendered =
-            render_managed_postgres_conf(&conf).map_err(|err| format!("render failed: {err}"))?;
+        let rendered = render_managed_postgres_conf(
+            &conf,
+            managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
+                .as_path(),
+        )
+        .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.contains("hot_standby = on") {
             return Err(format!("missing hot_standby=on: {rendered}"));
         }
@@ -572,29 +577,6 @@ mod tests {
         assert_eq!(
             sample_conf()?.start_intent.recovery_signal(),
             ManagedRecoverySignal::Standby
-        );
-        assert_eq!(
-            ManagedPostgresStartIntent::recovery(
-                PgConnInfo {
-                    endpoint: PgEndpoint::tcp("leader.internal".to_string(), 5432)?,
-                    hostaddr: None,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    options: None,
-                    tls: PgClientTls {
-                        mode: PgSslMode::Prefer,
-                        root_cert: None,
-                        client_cert: None,
-                        client_key: None,
-                    },
-                },
-                PathBuf::from("/var/lib/postgresql/data").join(MANAGED_STANDBY_PASSFILE_NAME),
-                None,
-            )
-            .recovery_signal(),
-            ManagedRecoverySignal::Recovery
         );
         Ok(())
     }

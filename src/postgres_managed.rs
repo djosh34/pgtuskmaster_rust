@@ -100,33 +100,9 @@ pub(crate) fn materialize_managed_postgres_config(
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
 
     let tls_files = materialize_tls_files(cfg)?;
-    let normalized_start_intent = match start_intent {
-        ManagedPostgresStartIntent::Primary => ManagedPostgresStartIntent::primary(),
-        ManagedPostgresStartIntent::DetachedStandby => {
-            ManagedPostgresStartIntent::detached_standby()
-        }
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            primary_slot_name,
-            ..
-        } => ManagedPostgresStartIntent::replica(
-            primary_conninfo.clone(),
-            managed_standby_passfile.clone(),
-            primary_slot_name.clone(),
-        ),
-        ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            primary_slot_name,
-            ..
-        } => ManagedPostgresStartIntent::recovery(
-            primary_conninfo.clone(),
-            managed_standby_passfile.clone(),
-            primary_slot_name.clone(),
-        ),
-    };
     let standby_passfile_path = materialize_managed_standby_passfile(
         cfg,
-        &normalized_start_intent,
+        start_intent,
         managed_standby_passfile.as_path(),
     )?;
     let managed_conf = ManagedPostgresConf {
@@ -136,11 +112,12 @@ pub(crate) fn materialize_managed_postgres_config(
         hba_file: managed_hba.clone(),
         ident_file: managed_ident.clone(),
         tls: tls_files.managed_tls_config.clone(),
-        start_intent: normalized_start_intent.clone(),
+        start_intent: start_intent.clone(),
         extra_gucs: cfg.postgres.extra_gucs.clone(),
     };
     let rendered_conf =
-        render_managed_postgres_conf(&managed_conf).map_err(map_managed_conf_error)?;
+        render_managed_postgres_conf(&managed_conf, managed_standby_passfile.as_path())
+            .map_err(map_managed_conf_error)?;
     write_atomic(
         &managed_postgresql_conf,
         rendered_conf.as_bytes(),
@@ -149,7 +126,7 @@ pub(crate) fn materialize_managed_postgres_config(
 
     quarantine_postgresql_auto_conf(&postgresql_auto_conf, &quarantined_postgresql_auto_conf)?;
     materialize_recovery_signal_files(
-        normalized_start_intent.recovery_signal(),
+        start_intent.recovery_signal(),
         &standby_signal,
         &recovery_signal,
     )?;
@@ -247,23 +224,15 @@ fn materialize_managed_standby_passfile(
     start_intent: &ManagedPostgresStartIntent,
     managed_passfile_path: &Path,
 ) -> Result<Option<PathBuf>, ManagedPostgresError> {
-    let standby_details = match start_intent {
-        ManagedPostgresStartIntent::Primary | ManagedPostgresStartIntent::DetachedStandby => None,
+    let primary_conninfo = match start_intent {
+        ManagedPostgresStartIntent::Primary | ManagedPostgresStartIntent::DetachedStandby => {
+            remove_file_if_exists(managed_passfile_path)?;
+            return Ok(None);
+        }
         ManagedPostgresStartIntent::Replica {
             primary_conninfo,
-            standby_passfile_path,
             ..
-        }
-        | ManagedPostgresStartIntent::Recovery {
-            primary_conninfo,
-            standby_passfile_path,
-            ..
-        } => Some((primary_conninfo, standby_passfile_path)),
-    };
-
-    let Some((primary_conninfo, standby_passfile_path)) = standby_details else {
-        remove_file_if_exists(managed_passfile_path)?;
-        return Ok(None);
+        } => primary_conninfo,
     };
 
     let password = resolve_role_password(
@@ -271,8 +240,8 @@ fn materialize_managed_standby_passfile(
         &cfg.postgres.roles.mandatory.replicator.auth,
     )?;
     let rendered = render_libpq_passfile_entry(primary_conninfo, password.as_str())?;
-    write_atomic(standby_passfile_path, rendered.as_bytes(), Some(0o600))?;
-    Ok(Some(standby_passfile_path.clone()))
+    write_atomic(managed_passfile_path, rendered.as_bytes(), Some(0o600))?;
+    Ok(Some(managed_passfile_path.to_path_buf()))
 }
 
 fn resolve_role_password(key: &str, auth: &RoleAuthConfig) -> Result<String, ManagedPostgresError> {
@@ -721,7 +690,6 @@ mod tests {
                     client_key: None,
                 },
             },
-            sample_standby_passfile_path(&data_dir),
             None,
         );
 
@@ -762,74 +730,13 @@ mod tests {
     }
 
     #[test]
-    fn materialize_managed_postgres_config_creates_recovery_signal_and_cleans_standby_signal(
-    ) -> Result<(), String> {
-        let data_dir = unique_test_data_dir("recovery-signal");
-        let cfg = sample_runtime_config(data_dir.clone());
-        let standby_signal = data_dir.join("standby.signal");
-        fs::create_dir_all(&data_dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
-        fs::write(&standby_signal, b"").map_err(|err| {
-            format!(
-                "seed standby.signal {} failed: {err}",
-                standby_signal.display()
-            )
-        })?;
-
-        let managed = materialize_managed_postgres_config(
-            &cfg,
-            &ManagedPostgresStartIntent::recovery(
-                PgConnInfo {
-                    endpoint: tcp_connect_target("leader.internal", 5432)?,
-                    hostaddr: None,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: Some(5),
-                    options: None,
-                    tls: PgClientTls {
-                        mode: PgSslMode::Prefer,
-                        root_cert: None,
-                        client_cert: None,
-                        client_key: None,
-                    },
-                },
-                sample_standby_passfile_path(&data_dir),
-                None,
-            ),
-        )
-        .map_err(|err| format!("materialize recovery config failed: {err}"))?;
-
-        if !managed.recovery_signal_path.exists() {
-            return Err(format!(
-                "expected recovery.signal to exist at {}",
-                managed.recovery_signal_path.display()
-            ));
-        }
-        if managed.standby_signal_path.exists() {
-            return Err(format!(
-                "expected standby.signal to be removed at {}",
-                managed.standby_signal_path.display()
-            ));
-        }
-
-        fs::remove_dir_all(&data_dir)
-            .map_err(|err| format!("remove temp dir {} failed: {err}", data_dir.display()))?;
-        Ok(())
-    }
-
-    #[test]
     fn materialize_managed_postgres_config_writes_managed_standby_passfile() -> Result<(), String> {
         let data_dir = unique_test_data_dir("standby-passfile");
         let cfg = sample_runtime_config(data_dir.clone());
 
         let managed = materialize_managed_postgres_config(
             &cfg,
-            &ManagedPostgresStartIntent::replica(
-                sample_replica_conninfo()?,
-                sample_standby_passfile_path(&data_dir),
-                None,
-            ),
+            &ManagedPostgresStartIntent::replica(sample_replica_conninfo()?, None),
         )
         .map_err(|err| format!("materialize replica config failed: {err}"))?;
 
@@ -1154,7 +1061,6 @@ mod tests {
                             client_key: None,
                         },
                     },
-                    sample_standby_passfile_path(&replica_data),
                     None,
                 ),
             )
@@ -1312,7 +1218,6 @@ mod tests {
         let cfg = sample_runtime_config(data_dir.clone());
         let expected = ManagedPostgresStartIntent::replica(
             sample_replica_conninfo()?,
-            sample_standby_passfile_path(&data_dir),
             Some("slot_a".to_string()),
         );
 
@@ -1423,10 +1328,6 @@ mod tests {
                 client_key: None,
             },
         })
-    }
-
-    fn sample_standby_passfile_path(data_dir: &Path) -> PathBuf {
-        managed_standby_passfile_path(data_dir)
     }
 
     fn tcp_connect_target(host: &str, port: u16) -> Result<PgEndpoint, String> {
