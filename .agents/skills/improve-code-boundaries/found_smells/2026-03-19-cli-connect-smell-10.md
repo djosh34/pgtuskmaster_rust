@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/cli/connect.rs 53-208
 
-- I found smell 10
-since it looks like
+I found smell 10:
+
+
+I think this is smell 10 because the connection rendering path is fragmented into tiny private helpers that mostly forward to the next helper. `resolve_primary_view` and `resolve_replicas_view` own the workflow, but reading them still requires bouncing through `build_connection_view`, `build_connection_target`, `build_connection_conninfo`, and `build_connection_tls`.
+
+
+code:
 ```rust
 fn resolve_primary_view(
     state: &NodeState,

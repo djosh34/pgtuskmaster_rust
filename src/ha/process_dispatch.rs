@@ -1,7 +1,6 @@
 use thiserror::Error;
 
 use crate::{
-    config::RuntimeConfig,
     process::{jobs::ProcessIntent, state::ProcessIntentRequest},
     state::{JobId, MemberId},
 };
@@ -24,7 +23,6 @@ pub(crate) fn dispatch_process_action(
     ha_tick: u64,
     action_index: usize,
     action: &ProcessIntent,
-    _runtime_config: &RuntimeConfig,
 ) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
     let request = ProcessIntentRequest {
         id: process_job_id(

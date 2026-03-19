@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs 401-528
 
-- I found smell 1
-since it looks like
+I found smell 1:
+
+
+I think this is smell 1 because failover candidate selection is split across `classify_candidate`, `candidate_rank`, `compare_candidate_rank`, and `best_failover_candidate`, even though they all restate the same eligibility information. The code projects local state into more local helper state instead of matching directly on `ElectionEligibility` at the decision site.
+
+
+code:
 ```rust
 fn best_failover_candidate(
     peers: &std::collections::BTreeMap<MemberId, PeerKnowledge>,

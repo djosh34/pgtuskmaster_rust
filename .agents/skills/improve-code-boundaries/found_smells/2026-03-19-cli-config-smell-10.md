@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/cli/config.rs 31-377
 
-- I found smell 10
-since it looks like
+I found smell 10:
+
+
+I think this is smell 10 because `resolve_operator_context` owns one configuration-resolution workflow, but the file breaks that flow into a stack of private helpers that mostly have one real caller. The caller already has the needed data, and the helper names create fake boundaries instead of real reuse.
+
+
+code:
 ```rust
 pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, CliError> {
     let config_source = cli

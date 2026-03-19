@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/reconcile.rs 58-203
 
-- I found smell 7
-since it looks like
+I found smell 7:
+
+
+I think this is smell 7 because one observation-timing mini-model is gating many reconcile branches across leader, follower, and failsafe paths. The repeated `waiting_for_fresh_pg_after_*` checks increase branching everywhere, which is a strong sign of overengineering until proven necessary by tests.
+
+
+code:
 ```rust
 fn reconcile_role(world: &WorldView, target: &TargetRole) -> ReconcilePlan {
     match target {

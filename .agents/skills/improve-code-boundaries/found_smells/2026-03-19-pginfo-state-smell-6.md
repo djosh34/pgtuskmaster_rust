@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/pginfo/state.rs 273-304
 
-- I found smell 6
-since it looks like
+I found smell 6:
+
+
+I think this is smell 6 because `PgPollData` is still escaping with raw string-like fields that only get normalized later in `to_member_status`. The query boundary has not fully converted the raw DTO once, so `pginfo/state.rs` is still finishing ingestion work that belongs earlier.
+
+
+code:
 ```rust
 pub(crate) fn to_member_status(
     worker_status: WorkerStatus,

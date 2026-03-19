@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs 337-389
 
-- I found smell 1
-since it looks like
+I found smell 1:
+
+
+I think this is smell 1 because HA converts `PgInfoState` into `PostgresState`, then a second helper repairs missing detail by consulting DCS again. One helper throws information away, another helper adds some of it back, and the result is a duplicate local enum boundary with extra transitions.
+
+
+code:
 ```rust
 fn build_postgres_state(pg: &PgInfoState) -> PostgresState {
     match pg {

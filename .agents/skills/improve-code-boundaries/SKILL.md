@@ -28,10 +28,12 @@ Before choosing from the standard smell list, inspect `found_smells/`.
 - If there is a smell file in `found_smells/`, read it first and use that as the task for this run.
 - Finish that smell completely before touching any other smell.
 - After the work is complete, delete the processed file from `found_smells/`.
-- Ignore `.gitkeep`.
 
-## User/Agent Found new smell
+## Else, find new smells
+
 - Read [how-to-create-found-smell.md](how-to-create-found-smell.md) on how to add smell
+- Explore codebase (using subagents) to find new smells
+- QUIT IMMEDIATELY
 
 ## Chose a smell
 

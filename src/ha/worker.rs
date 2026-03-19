@@ -270,8 +270,7 @@ async fn execute_process_action(
     action_index: usize,
     action: &ProcessIntent,
 ) -> Result<(), WorkerError> {
-    let runtime_config = ctx.observed.config.latest();
-    dispatch_process_action(ctx, ha_tick, action_index, action, &runtime_config)
+    dispatch_process_action(ctx, ha_tick, action_index, action)
         .map(|_| ())
         .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
 }

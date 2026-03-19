@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs 82-145
 
-- I found smell 3
-since it looks like
+I found smell 3:
+
+
+I think this is smell 3 because `runtime/node.rs` is hand-assembling each worker's request bundle and therefore knows too much about worker-private bootstrap details. Runtime is not just wiring modules together here, it is acting as the courier for their internal field soup.
+
+
+code:
 ```rust
 let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
 let identity = NodeIdentity {

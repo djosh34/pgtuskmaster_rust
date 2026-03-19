@@ -1,7 +1,12 @@
 path: /home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/startup.rs 15-67
 
-- I found smell 1
-since it looks like
+I found smell 1:
+
+
+I think this is smell 1 because `HaRuntimeRequest` is only a staging wrapper for facts that are immediately repacked into `HaRuntimeCtx`, `HaObservedState`, and `HaControlPlane`. The wrapper chain adds names and nesting, but it does not add any invariant or simplify ownership.
+
+
+code:
 ```rust
 pub(crate) struct HaRuntimeRequest {
     pub(crate) identity: NodeIdentity,
