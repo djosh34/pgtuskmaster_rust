@@ -840,7 +840,7 @@ async fn connect_client(
 ) -> Result<Client, DcsError> {
     let endpoints = endpoints
         .iter()
-        .map(DcsEndpoint::to_client_string)
+        .map(ToString::to_string)
         .collect::<Vec<_>>();
     let options = build_connect_options(client)?;
     timeout_etcd("etcd connect", Client::connect(endpoints, options)).await

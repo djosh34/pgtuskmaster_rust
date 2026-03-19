@@ -99,18 +99,6 @@ impl DcsEndpoint {
         Ok(Self { scheme, host, port })
     }
 
-    pub fn to_client_string(&self) -> String {
-        let scheme = match self.scheme {
-            DcsEndpointScheme::Http => "http",
-            DcsEndpointScheme::Https => "https",
-        };
-        format!(
-            "{scheme}://{}:{}",
-            format_host(self.host.as_str()),
-            self.port
-        )
-    }
-
     pub fn socket_addr(&self) -> Result<SocketAddr, DcsEndpointError> {
         let socket = SocketAddr::from_str(&format!("{}:{}", self.host, self.port))
             .map_err(|_| DcsEndpointError::LoopbackSocketRequired)?;
@@ -123,7 +111,17 @@ impl DcsEndpoint {
 
 impl fmt::Display for DcsEndpoint {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_client_string())
+        let scheme = match self.scheme {
+            DcsEndpointScheme::Http => "http",
+            DcsEndpointScheme::Https => "https",
+        };
+        write!(f, "{scheme}://")?;
+        if self.host.contains(':') && !(self.host.starts_with('[') && self.host.ends_with(']')) {
+            write!(f, "[{}]", self.host)?;
+        } else {
+            f.write_str(self.host.as_str())?;
+        }
+        write!(f, ":{}", self.port)
     }
 }
 
@@ -132,7 +130,7 @@ impl Serialize for DcsEndpoint {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.to_client_string().as_str())
+        serializer.collect_str(self)
     }
 }
 
@@ -146,10 +144,42 @@ impl<'de> Deserialize<'de> for DcsEndpoint {
     }
 }
 
-fn format_host(host: &str) -> String {
-    if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
+#[cfg(test)]
+mod tests {
+    use super::DcsEndpoint;
+
+    #[test]
+    fn display_formats_ipv4_endpoint() -> Result<(), String> {
+        let endpoint =
+            DcsEndpoint::parse("http://127.0.0.1:2379").map_err(|err| err.to_string())?;
+
+        if endpoint.to_string() != "http://127.0.0.1:2379" {
+            return Err(format!("unexpected endpoint display: {}", endpoint));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn display_formats_ipv6_endpoint() -> Result<(), String> {
+        let endpoint = DcsEndpoint::parse("https://[::1]:2379").map_err(|err| err.to_string())?;
+
+        if endpoint.to_string() != "https://[::1]:2379" {
+            return Err(format!("unexpected endpoint display: {}", endpoint));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn serialize_reuses_display_boundary() -> Result<(), String> {
+        let endpoint = DcsEndpoint::parse("https://[::1]:2379").map_err(|err| err.to_string())?;
+        let rendered = serde_json::to_string(&endpoint).map_err(|err| err.to_string())?;
+
+        if rendered != "\"https://[::1]:2379\"" {
+            return Err(format!("unexpected serialized endpoint: {rendered}"));
+        }
+
+        Ok(())
     }
 }
