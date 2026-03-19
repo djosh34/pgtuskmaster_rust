@@ -1,20 +1,15 @@
 use std::time::Duration;
 
 use crate::{
+    config::RuntimeConfig,
     logging::LogSender,
+    process::state::ProcessRuntimePlan,
     state::{new_state_channel, NodeIdentity, WorkerError},
 };
 
 use super::state::{
     PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx, PgProbeTarget,
 };
-
-pub(crate) struct PgInfoRuntimeRequest {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) probe: PgProbeTarget,
-    pub(crate) poll_interval: Duration,
-    pub(crate) log: LogSender,
-}
 
 pub(crate) struct PgInfoRuntimeBundle {
     pub(crate) state: crate::state::StateSubscriber<PgInfoState>,
@@ -29,22 +24,27 @@ impl PgInfoWorker {
     }
 }
 
-pub(crate) fn bootstrap(request: PgInfoRuntimeRequest) -> PgInfoRuntimeBundle {
+pub(crate) fn bootstrap(
+    identity: NodeIdentity,
+    cfg: &RuntimeConfig,
+    process_plan: &ProcessRuntimePlan,
+    log: LogSender,
+) -> PgInfoRuntimeBundle {
     let (publisher, state) = new_state_channel(PgInfoState::starting());
 
     PgInfoRuntimeBundle {
         state,
         worker: PgInfoWorker(PgInfoWorkerCtx {
-            identity: request.identity,
-            probe: request.probe,
+            identity,
+            probe: PgProbeTarget::local_from_config(cfg, process_plan),
             cadence: PgInfoCadence {
-                poll_interval: request.poll_interval,
+                poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
             },
             state_channel: PgInfoStateChannel {
                 publisher,
                 last_emitted_sql_status: None,
             },
-            runtime: PgInfoRuntime { log: request.log },
+            runtime: PgInfoRuntime { log },
         }),
     }
 }

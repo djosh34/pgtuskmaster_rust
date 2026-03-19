@@ -3,33 +3,20 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
-    config::{ProcessConfig, RuntimeConfig},
-    dcs::DcsView,
+    config::RuntimeConfig,
     logging::LogSender,
-    state::{new_state_channel, NodeIdentity, StateSubscriber, WorkerError},
+    state::{new_state_channel, NodeIdentity, WorkerError},
 };
 
 use super::{
     state::{
-        ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
-        ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-        ProcessStateChannel, ProcessWorkerCtx,
+        ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
+        ProcessRuntime, ProcessRuntimePlan, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
     },
     worker::{system_now_unix_millis, TokioCommandRunner},
 };
 
 const PROCESS_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-#[derive(Clone, Debug)]
-pub(crate) struct ProcessRuntimeRequest {
-    pub(crate) identity: NodeIdentity,
-    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
-    pub(crate) dcs_subscriber: StateSubscriber<DcsView>,
-    pub(crate) plan: ProcessRuntimePlan,
-    pub(crate) config: ProcessConfig,
-    pub(crate) capture_subprocess_output: bool,
-    pub(crate) log: LogSender,
-}
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessControlHandle {
@@ -50,7 +37,13 @@ impl ProcessWorker {
     }
 }
 
-pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle {
+pub(crate) fn bootstrap(
+    identity: NodeIdentity,
+    cfg: &RuntimeConfig,
+    observed: ProcessObservedState,
+    plan: ProcessRuntimePlan,
+    log: LogSender,
+) -> ProcessRuntimeBundle {
     let initial_state = ProcessState::starting();
     let (publisher, state) = new_state_channel(initial_state.clone());
     let (intents, inbox) = mpsc::unbounded_channel();
@@ -63,17 +56,10 @@ pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle 
                 poll_interval: PROCESS_WORKER_POLL_INTERVAL,
                 now: Box::new(system_now_unix_millis),
             },
-            config: request.config,
-            identity: ProcessNodeIdentity {
-                cluster_name: request.identity.cluster_name,
-                scope: request.identity.scope,
-                member_id: request.identity.member_id,
-            },
-            observed: ProcessObservedState {
-                runtime_config: request.runtime_config,
-                dcs: request.dcs_subscriber,
-            },
-            plan: request.plan,
+            config: cfg.process.clone(),
+            identity,
+            observed,
+            plan,
             state_channel: ProcessStateChannel {
                 current: initial_state,
                 publisher,
@@ -85,8 +71,8 @@ pub(crate) fn bootstrap(request: ProcessRuntimeRequest) -> ProcessRuntimeBundle 
                 active_runtime: None,
             },
             runtime: ProcessRuntime {
-                log: request.log,
-                capture_subprocess_output: request.capture_subprocess_output,
+                log,
+                capture_subprocess_output: cfg.logging.capture_subprocess_output,
                 command_runner: Box::new(TokioCommandRunner),
             },
         }),
