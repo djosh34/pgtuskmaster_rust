@@ -1,8 +1,8 @@
 use crate::state::{UnixMillis, WorkerError, WorkerStatus};
 
 use super::log_event::PgInfoLogEvent;
-use super::query::poll_once;
-use super::state::{to_member_status, PgInfoState, PgInfoWorkerCtx, SqlStatus};
+use super::query::poll_state_once;
+use super::state::{PgInfoState, PgInfoWorkerCtx, SqlStatus};
 
 pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
     loop {
@@ -13,11 +13,15 @@ pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
 
 pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
     let now = now_unix_millis()?;
-    let poll = poll_once(&ctx.probe.to_conninfo()).await;
+    let poll = poll_state_once(
+        &ctx.probe.to_conninfo(),
+        WorkerStatus::Running,
+        SqlStatus::Healthy,
+        now,
+    )
+    .await;
     let next_state = match poll {
-        Ok(polled) => {
-            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
-        }
+        Ok(polled) => polled,
         Err(ref err) => {
             ctx.runtime
                 .log
@@ -27,7 +31,7 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
                 .map_err(|err| {
                     WorkerError::Message(format!("pginfo poll failure log emit failed: {err}"))
                 })?;
-            to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None)
+            PgInfoState::unknown(WorkerStatus::Running, SqlStatus::Unreachable, Some(now))
         }
     };
 

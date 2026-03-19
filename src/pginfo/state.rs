@@ -4,7 +4,6 @@ use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
 pub use super::conninfo::{PgConnInfo, PgSslMode};
-use super::query::PgPollData;
 use crate::state::StatePublisher;
 use crate::state::{
     MemberId, NodeIdentity, ObservedWalPosition, PgEndpoint, SystemIdentifier, TimelineId,
@@ -166,11 +165,19 @@ impl PgInfoState {
     }
 
     pub(crate) fn starting() -> Self {
+        Self::unknown(WorkerStatus::Starting, SqlStatus::Unknown, None)
+    }
+
+    pub(crate) fn unknown(
+        worker: WorkerStatus,
+        sql: SqlStatus,
+        last_refresh_at: Option<UnixMillis>,
+    ) -> Self {
         Self::Unknown {
             common: PgInfoCommon {
-                worker: WorkerStatus::Starting,
-                sql: SqlStatus::Unknown,
-                readiness: Readiness::Unknown,
+                worker,
+                sql,
+                readiness: derive_readiness(&sql, false),
                 timeline: None,
                 system_identifier: None,
                 pg_config: PgConfig {
@@ -180,7 +187,7 @@ impl PgInfoState {
                     primary_slot_name: None,
                     extra: std::collections::BTreeMap::new(),
                 },
-                last_refresh_at: None,
+                last_refresh_at,
             },
         }
     }
@@ -269,73 +276,11 @@ pub(crate) fn derive_readiness(sql: &SqlStatus, is_ready: bool) -> Readiness {
     }
 }
 
-pub(super) fn to_member_status(
-    worker_status: WorkerStatus,
-    sql_status: SqlStatus,
-    polled_at: UnixMillis,
-    poll: Option<PgPollData>,
-) -> PgInfoState {
-    let readiness_signal = poll.as_ref().map(|value| value.is_ready).unwrap_or(false);
-    let timeline = poll.as_ref().and_then(|value| value.timeline);
-    let system_identifier = poll.as_ref().and_then(|value| value.system_identifier);
-    let common = PgInfoCommon {
-        worker: worker_status,
-        sql: sql_status,
-        readiness: derive_readiness(&sql_status, readiness_signal),
-        timeline,
-        system_identifier,
-        pg_config: PgConfig {
-            port: None,
-            hot_standby: None,
-            primary_conninfo: poll
-                .as_ref()
-                .and_then(|value| value.primary_conninfo.clone()),
-            primary_slot_name: poll
-                .as_ref()
-                .and_then(|value| value.primary_slot_name.clone()),
-            extra: std::collections::BTreeMap::new(),
-        },
-        last_refresh_at: Some(polled_at),
-    };
-
-    let Some(polled) = poll else {
-        return PgInfoState::Unknown { common };
-    };
-
-    if polled.in_recovery {
-        return PgInfoState::Replica {
-            common,
-            replay_lsn: polled
-                .replay_lsn
-                .or(polled.receive_lsn)
-                .unwrap_or(WalLsn(0)),
-            follow_lsn: polled.receive_lsn,
-            upstream: None,
-        };
-    }
-
-    if let Some(wal_lsn) = polled.current_wal_lsn {
-        return PgInfoState::Primary {
-            common,
-            wal_lsn,
-            slots: polled
-                .slot_names
-                .into_iter()
-                .map(|name| ReplicationSlotInfo { name })
-                .collect(),
-        };
-    }
-
-    PgInfoState::Unknown { common }
-}
-
 #[cfg(test)]
 mod tests {
-    use crate::state::{SystemIdentifier, UnixMillis, WalLsn, WorkerStatus};
+    use crate::state::{UnixMillis, WorkerStatus};
 
-    use super::{derive_readiness, to_member_status, PgInfoState, Readiness, SqlStatus};
-    use crate::pginfo::query::PgPollData;
-    use crate::state::TimelineId;
+    use super::{derive_readiness, PgInfoState, Readiness, SqlStatus};
 
     #[test]
     fn derive_readiness_maps_sql_and_signal() {
@@ -358,111 +303,20 @@ mod tests {
     }
 
     #[test]
-    fn to_member_status_maps_primary_snapshot() {
-        let poll = PgPollData {
-            in_recovery: false,
-            is_ready: true,
-            timeline: Some(TimelineId(3)),
-            system_identifier: Some(SystemIdentifier(11)),
-            current_wal_lsn: Some(WalLsn(42)),
-            replay_lsn: None,
-            receive_lsn: None,
-            primary_conninfo: None,
-            primary_slot_name: None,
-            slot_names: vec!["slot_a".to_string(), "slot_b".to_string()],
-        };
-        let state = to_member_status(
+    fn unknown_state_tracks_sql_and_refresh_time() {
+        let state = PgInfoState::unknown(
             WorkerStatus::Running,
-            SqlStatus::Healthy,
-            UnixMillis(100),
-            Some(poll),
+            SqlStatus::Unreachable,
+            Some(UnixMillis(100)),
         );
-        let mut matched_primary = false;
-        if let PgInfoState::Primary {
-            wal_lsn,
-            slots,
-            common,
-            ..
-        } = state
-        {
-            matched_primary = true;
-            assert_eq!(wal_lsn, WalLsn(42));
-            assert_eq!(slots.len(), 2);
-            assert_eq!(common.readiness, Readiness::Ready);
-            assert_eq!(common.system_identifier, Some(SystemIdentifier(11)));
-        }
-        assert!(matched_primary, "expected primary state");
-    }
 
-    #[test]
-    fn to_member_status_maps_replica_snapshot() {
-        let poll = PgPollData {
-            in_recovery: true,
-            is_ready: true,
-            timeline: Some(TimelineId(8)),
-            system_identifier: Some(SystemIdentifier(17)),
-            current_wal_lsn: None,
-            replay_lsn: Some(WalLsn(11)),
-            receive_lsn: Some(WalLsn(12)),
-            primary_conninfo: None,
-            primary_slot_name: None,
-            slot_names: Vec::new(),
-        };
-        let state = to_member_status(
-            WorkerStatus::Running,
-            SqlStatus::Healthy,
-            UnixMillis(100),
-            Some(poll),
-        );
-        let mut matched_replica = false;
-        if let PgInfoState::Replica {
-            replay_lsn,
-            follow_lsn,
-            common,
-            ..
-        } = state
-        {
-            matched_replica = true;
-            assert_eq!(replay_lsn, WalLsn(11));
-            assert_eq!(follow_lsn, Some(WalLsn(12)));
-            assert_eq!(common.readiness, Readiness::Ready);
-            assert_eq!(common.system_identifier, Some(SystemIdentifier(17)));
-        }
-        assert!(matched_replica, "expected replica state");
-    }
-
-    #[test]
-    fn to_member_status_maps_replica_without_replay_lsn() {
-        let state = to_member_status(
-            WorkerStatus::Running,
-            SqlStatus::Healthy,
-            UnixMillis(100),
-            Some(PgPollData {
-                in_recovery: true,
-                is_ready: false,
-                timeline: Some(TimelineId(9)),
-                system_identifier: Some(SystemIdentifier(23)),
-                current_wal_lsn: None,
-                replay_lsn: None,
-                receive_lsn: None,
-                primary_conninfo: None,
-                primary_slot_name: None,
-                slot_names: Vec::new(),
-            }),
-        );
-        let mut matched_replica = false;
-        if let PgInfoState::Replica {
-            replay_lsn,
-            follow_lsn,
-            common,
-            ..
-        } = state
-        {
-            matched_replica = true;
-            assert_eq!(replay_lsn, WalLsn(0));
-            assert_eq!(follow_lsn, None);
+        let mut matched_unknown = false;
+        if let PgInfoState::Unknown { common } = state {
+            matched_unknown = true;
+            assert_eq!(common.sql, SqlStatus::Unreachable);
             assert_eq!(common.readiness, Readiness::NotReady);
+            assert_eq!(common.last_refresh_at, Some(UnixMillis(100)));
         }
-        assert!(matched_replica, "expected replica state");
+        assert!(matched_unknown, "expected unknown state");
     }
 }
