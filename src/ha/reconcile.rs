@@ -5,7 +5,7 @@ use super::types::{
     TargetRole, WorldView,
 };
 use crate::process::jobs::{
-    PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+    ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
 };
 
 pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> PlannedActions {
@@ -62,10 +62,16 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
             (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => {
                 PlannedActions::process(ProcessIntent::Bootstrap)
             }
-            (_, _) if world.local.observation.waiting_for_fresh_pg_after_start() => {
-                PlannedActions::default()
-            }
-            (_, _) if world.local.observation.waiting_for_fresh_pg_after_promote() => {
+            (_, _)
+                if world
+                    .local
+                    .observation
+                    .waiting_for_fresh_pg_after(ActiveJobKind::StartPrimary)
+                    || world
+                        .local
+                        .observation
+                        .waiting_for_fresh_pg_after(ActiveJobKind::Promote) =>
+            {
                 PlannedActions::default()
             }
             (DataDirState::Initialized(_), PostgresState::Offline) => {
@@ -89,7 +95,10 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
         TargetRole::FailSafe(goal) => reconcile_failsafe_role(world, goal),
         TargetRole::DemotingForSwitchover(_) => match &world.local.postgres {
             PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                if world.local.observation.waiting_for_fresh_pg_after_demote() =>
+                if world
+                    .local
+                    .observation
+                    .waiting_for_fresh_pg_after(ActiveJobKind::Demote) =>
             {
                 PlannedActions::default()
             }
@@ -110,43 +119,40 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
 }
 
 fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> PlannedActions {
+    let waiting_for_demote = world
+        .local
+        .observation
+        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
     match goal.recovery {
         RecoveryPlan::None => PlannedActions::default(),
-        RecoveryPlan::Basebackup => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-            {
+        RecoveryPlan::Basebackup | RecoveryPlan::Rewind => match &world.local.postgres {
+            PostgresState::Primary { .. } | PostgresState::Replica { .. } if waiting_for_demote => {
                 PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
                 PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
             }
-            PostgresState::Offline => PlannedActions::process(ProcessIntent::ProvisionReplica(
-                ReplicaProvisionIntent::BaseBackup {
-                    leader: goal.leader.clone(),
-                },
-            )),
-        },
-        RecoveryPlan::Rewind => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-            {
-                PlannedActions::default()
+            PostgresState::Offline => {
+                PlannedActions::process(ProcessIntent::ProvisionReplica(match goal.recovery {
+                    RecoveryPlan::Basebackup => ReplicaProvisionIntent::BaseBackup {
+                        leader: goal.leader.clone(),
+                    },
+                    RecoveryPlan::Rewind => ReplicaProvisionIntent::PgRewind {
+                        leader: goal.leader.clone(),
+                    },
+                    RecoveryPlan::None | RecoveryPlan::StartStreaming => unreachable!(),
+                }))
             }
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-            }
-            PostgresState::Offline => PlannedActions::process(ProcessIntent::ProvisionReplica(
-                ReplicaProvisionIntent::PgRewind {
-                    leader: goal.leader.clone(),
-                },
-            )),
         },
         RecoveryPlan::StartStreaming => {
-            if world.local.observation.waiting_for_fresh_pg_after_start() {
+            if world
+                .local
+                .observation
+                .waiting_for_fresh_pg_after(ActiveJobKind::StartReplica)
+            {
                 return PlannedActions::default();
             }
-            if world.local.observation.waiting_for_fresh_pg_after_demote() {
+            if waiting_for_demote {
                 return PlannedActions::default();
             }
 
@@ -175,11 +181,13 @@ fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> PlannedActions
 }
 
 fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> PlannedActions {
+    let waiting_for_demote = world
+        .local
+        .observation
+        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
     match goal {
         FailSafeGoal::PrimaryMustStop(_) => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-            {
+            PostgresState::Primary { .. } | PostgresState::Replica { .. } if waiting_for_demote => {
                 PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
@@ -189,11 +197,7 @@ fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> PlannedAct
         },
         FailSafeGoal::ReplicaKeepFollowing(_) => PlannedActions::default(),
         FailSafeGoal::WaitForQuorum => match &world.local.postgres {
-            PostgresState::Primary { .. }
-                if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-            {
-                PlannedActions::default()
-            }
+            PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
             PostgresState::Primary { .. } => {
                 PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
             }
@@ -204,6 +208,10 @@ fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> PlannedAct
 }
 
 fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActions {
+    let waiting_for_demote = world
+        .local
+        .observation
+        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
     match reason {
         FenceReason::StorageStalled if leadership_held_by_self(world) => {
             PlannedActions::coordination(CoordinationAction::ReleaseLease)
@@ -211,7 +219,7 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActi
         FenceReason::ForeignLeaderDetected | FenceReason::StorageStalled => {
             match &world.local.postgres {
                 PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                    if world.local.observation.waiting_for_fresh_pg_after_demote() =>
+                    if waiting_for_demote =>
                 {
                     PlannedActions::default()
                 }
@@ -231,12 +239,12 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActi
 }
 
 fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> PlannedActions {
+    let waiting_for_demote = world
+        .local
+        .observation
+        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
     match &world.local.postgres {
-        PostgresState::Primary { .. }
-            if world.local.observation.waiting_for_fresh_pg_after_demote() =>
-        {
-            PlannedActions::default()
-        }
+        PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
         PostgresState::Primary { .. } => {
             PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
         }

@@ -384,22 +384,16 @@ impl WorldView {
 }
 
 impl ObservationState {
-    pub(crate) fn waiting_for_fresh_pg_after_start(&self) -> bool {
-        self.last_start_success_at
-            .map(|finished_at| finished_at.0 >= self.pg_observed_at.0)
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn waiting_for_fresh_pg_after_promote(&self) -> bool {
-        self.last_promote_success_at
-            .map(|finished_at| finished_at.0 >= self.pg_observed_at.0)
-            .unwrap_or(false)
-    }
-
-    pub(crate) fn waiting_for_fresh_pg_after_demote(&self) -> bool {
-        self.last_demote_success_at
-            .map(|finished_at| finished_at.0 >= self.pg_observed_at.0)
-            .unwrap_or(false)
+    pub(crate) fn waiting_for_fresh_pg_after(&self, job: ActiveJobKind) -> bool {
+        match job {
+            ActiveJobKind::StartPrimary
+            | ActiveJobKind::StartDetachedStandby
+            | ActiveJobKind::StartReplica => self.last_start_success_at,
+            ActiveJobKind::Promote => self.last_promote_success_at,
+            ActiveJobKind::Demote => self.last_demote_success_at,
+            ActiveJobKind::Bootstrap | ActiveJobKind::BaseBackup | ActiveJobKind::PgRewind => None,
+        }
+        .is_some_and(|finished_at| finished_at.0 >= self.pg_observed_at.0)
     }
 
     pub(crate) fn basebackup_completed_awaiting_start(&self) -> bool {
