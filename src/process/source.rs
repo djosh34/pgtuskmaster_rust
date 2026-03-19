@@ -30,7 +30,24 @@ pub(crate) fn source_from_member(
     member: &DcsMemberState,
     role: MandatorySourceRole,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
-    validate_remote_primary_source(self_id, member_id, member)?;
+    if member_id == self_id {
+        return Err(SourceMaterializationError::SelfTarget {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    if member.postgres_target().host().trim().is_empty() {
+        return Err(SourceMaterializationError::EmptyHost {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    if !matches!(member.postgres(), PgInfoState::Primary { .. }) {
+        return Err(SourceMaterializationError::NotHealthyPrimary {
+            member_id: member_id.0.clone(),
+        });
+    }
+
     let credential = match &role {
         MandatorySourceRole::Replicator => &runtime.replica_access.roles.replicator,
         MandatorySourceRole::Rewinder => &runtime.replica_access.roles.rewinder,
@@ -54,32 +71,6 @@ pub(crate) fn source_from_member(
         },
         auth: credential.auth.clone(),
     })
-}
-
-fn validate_remote_primary_source(
-    self_id: &MemberId,
-    member_id: &MemberId,
-    member: &DcsMemberState,
-) -> Result<(), SourceMaterializationError> {
-    if member_id == self_id {
-        return Err(SourceMaterializationError::SelfTarget {
-            member_id: member_id.0.clone(),
-        });
-    }
-
-    if member.postgres_target().host().trim().is_empty() {
-        return Err(SourceMaterializationError::EmptyHost {
-            member_id: member_id.0.clone(),
-        });
-    }
-
-    if !matches!(member.postgres(), PgInfoState::Primary { .. }) {
-        return Err(SourceMaterializationError::NotHealthyPrimary {
-            member_id: member_id.0.clone(),
-        });
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
