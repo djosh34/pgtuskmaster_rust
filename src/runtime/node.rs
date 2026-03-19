@@ -29,16 +29,6 @@ pub enum RuntimeError {
     Time(String),
 }
 
-fn runtime_startup_event(
-    startup_run_id: &str,
-    logging_level: crate::config::LogLevel,
-) -> RuntimeLogEvent {
-    RuntimeLogEvent::StartupEntered {
-        startup_run_id: startup_run_id.to_string(),
-        logging_level,
-    }
-}
-
 pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> {
     let cfg = load_runtime_config(path)?;
     run_node_from_config(cfg).await
@@ -57,10 +47,10 @@ pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError
         cfg.cluster.member_id,
         crate::logging::system_now_unix_millis()
     );
-    log.send(runtime_startup_event(
-        startup_run_id.as_str(),
-        cfg.logging.level,
-    ))
+    log.send(RuntimeLogEvent::StartupEntered {
+        startup_run_id: startup_run_id.to_string(),
+        logging_level: cfg.logging.level,
+    })
     .map_err(|err| {
         RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
     })?;
