@@ -1,8 +1,7 @@
 use super::types::{
     CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
-    LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState,
-    ProcessAssessment, PublicationAction, PublicationGoal, PublicationState, RecoveryPlan, TargetRole,
-    WorldView,
+    LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState, ProcessAssessment,
+    PublicationAction, PublicationGoal, PublicationState, RecoveryPlan, TargetRole, WorldView,
 };
 use crate::process::jobs::{
     ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
@@ -125,11 +124,9 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
                     PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
                 }
                 PostgresState::Offline => match &world.local.data_dir {
-                    DataDirState::Initialized(_) => {
-                        PlannedActions::process(ProcessIntent::Start(
-                            PostgresStartIntent::DetachedStandby,
-                        ))
-                    }
+                    DataDirState::Initialized(_) => PlannedActions::process(ProcessIntent::Start(
+                        PostgresStartIntent::DetachedStandby,
+                    )),
                     DataDirState::Missing => PlannedActions::default(),
                 },
                 PostgresState::Replica { .. } => PlannedActions::default(),
@@ -280,10 +277,10 @@ mod tests {
 
     use super::*;
     use crate::ha::types::{
-        ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
-        IdleReason, LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
-        PeerKnowledge, PrimaryObservation, PublicationState, QuorumCoordinationState, StorageState,
-        SwitchoverState, WalPosition,
+        ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IdleReason,
+        IneligibleReason, LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection,
+        ObservationState, PeerKnowledge, PrimaryObservation, PublicationState,
+        QuorumCoordinationState, StorageState, SwitchoverState, WalPosition,
     };
 
     fn world(local: LocalKnowledge) -> WorldView {

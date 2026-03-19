@@ -2,7 +2,7 @@ use crate::{
     api::NodeState,
     cli::{
         args::ConnectionOptions, client::CliTlsConfig, config::OperatorContext, error::CliError,
-        output, status::fetch_seed_state,
+        status::fetch_seed_state,
     },
     command::{
         authoritative_primary_member, CommandOutputDto, StateDerivedConnectionCommandDto,
@@ -56,7 +56,7 @@ pub(crate) async fn run_primary(
             },
         }],
     };
-    output::render_command_output(&CommandOutputDto::Primary { output: view }, options.json)
+    CommandOutputDto::Primary { output: view }.render(options.json)
 }
 
 pub(crate) async fn run_replicas(
@@ -70,7 +70,7 @@ pub(crate) async fn run_replicas(
         &context.postgres_client_tls,
         options.tls,
     )?;
-    output::render_command_output(&CommandOutputDto::Replicas { output: view }, options.json)
+    CommandOutputDto::Replicas { output: view }.render(options.json)
 }
 
 fn resolve_replicas_view(

@@ -2,9 +2,7 @@ use std::{io::Write, time::Duration};
 
 use crate::{
     api::NodeState,
-    cli::{
-        args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
-    },
+    cli::{args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError},
     command::{CommandOutputDto, StateCommandOutputDto, StateQueryOriginDto},
 };
 
@@ -17,12 +15,10 @@ pub(crate) async fn run_status(
     }
 
     let output = fetch_state_command_output(context, options.verbose).await?;
-    output::render_command_output(
-        &CommandOutputDto::State {
-            output: Box::new(output),
-        },
-        options.json,
-    )
+    CommandOutputDto::State {
+        output: Box::new(output),
+    }
+    .render(options.json)
 }
 
 pub(crate) async fn fetch_seed_state(
@@ -57,12 +53,10 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
         let rendered = fetch_state_command_output(context, options.verbose)
             .await
             .and_then(|output| {
-                output::render_command_output(
-                    &CommandOutputDto::State {
-                        output: Box::new(output),
-                    },
-                    options.json,
-                )
+                CommandOutputDto::State {
+                    output: Box::new(output),
+                }
+                .render(options.json)
             })?;
         if options.json {
             writeln!(stdout, "{rendered}").map_err(CliError::OutputWrite)?;

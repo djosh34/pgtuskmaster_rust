@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
+    cli::error::CliError,
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::PgConnInfo,
     state::{MemberId, SwitchoverState},
@@ -146,6 +147,16 @@ impl fmt::Display for CommandOutputDto {
                 Ok(json) => formatter.write_str(json.as_str()),
                 Err(_) => formatter.write_str("failed to encode reload certificates response"),
             },
+        }
+    }
+}
+
+impl CommandOutputDto {
+    pub fn render(&self, json: bool) -> Result<String, CliError> {
+        if json {
+            Ok(serde_json::to_string_pretty(self)?)
+        } else {
+            Ok(self.to_string())
         }
     }
 }
@@ -341,7 +352,7 @@ mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
-        api::NodeState,
+        api::{AcceptedResponse, NodeState},
         dcs::{DcsMemberState, DcsSnapshot},
         ha::state::HaState,
         pginfo::{
@@ -356,8 +367,9 @@ mod tests {
     };
 
     use super::{
-        StateCommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
-        StateDerivedConnectionTargetDto, StateHealthDto, StateProjectionDto, StateQueryOriginDto,
+        CommandOutputDto, StateCommandOutputDto, StateDerivedConnectionCommandDto,
+        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateHealthDto,
+        StateProjectionDto, StateQueryOriginDto,
     };
 
     fn sample_projection() -> StateProjectionDto {
@@ -405,6 +417,53 @@ mod tests {
             output.to_string(),
             "host=db.internal port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert='/tmp/ca bundle.pem' sslcert='/tmp/client cert.pem' sslkey='/tmp/client key.pem'"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn command_output_render_uses_display_when_json_disabled() -> Result<(), String> {
+        let output = CommandOutputDto::Primary {
+            output: StateDerivedConnectionCommandDto {
+                projection: sample_projection(),
+                kind: StateDerivedConnectionCommandKind::Primary,
+                targets: vec![StateDerivedConnectionTargetDto {
+                    member_id: "node-a".to_string(),
+                    conninfo: PgConnInfo {
+                        endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
+                        hostaddr: None,
+                        user: "postgres".to_string(),
+                        dbname: "postgres".to_string(),
+                        application_name: None,
+                        connect_timeout_s: None,
+                        options: None,
+                        tls: PgClientTls {
+                            mode: PgSslMode::Disable,
+                            root_cert: None,
+                            client_cert: None,
+                            client_key: None,
+                        },
+                    },
+                }],
+            },
+        };
+
+        assert_eq!(
+            output.render(false).map_err(|err| err.to_string())?,
+            output.to_string()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn command_output_render_emits_pretty_json_when_requested() -> Result<(), String> {
+        let output = CommandOutputDto::Switchover {
+            output: AcceptedResponse { accepted: true },
+        };
+        let rendered = output.render(true).map_err(|err| err.to_string())?;
+
+        assert!(rendered.contains("\"command\": \"switchover\""));
+        assert!(rendered.contains("\"accepted\": true"));
+        assert!(rendered.contains('\n'));
         Ok(())
     }
 

@@ -324,8 +324,7 @@ mod tests {
             primary_slot_name: None,
             slot_names: vec!["slot_a".to_string(), "slot_b".to_string()],
         };
-        let state =
-            poll.into_state(WorkerStatus::Running, SqlStatus::Healthy, UnixMillis(100));
+        let state = poll.into_state(WorkerStatus::Running, SqlStatus::Healthy, UnixMillis(100));
 
         let mut matched_primary = false;
         if let PgInfoState::Primary {
@@ -358,8 +357,7 @@ mod tests {
             primary_slot_name: None,
             slot_names: Vec::new(),
         };
-        let state =
-            poll.into_state(WorkerStatus::Running, SqlStatus::Healthy, UnixMillis(100));
+        let state = poll.into_state(WorkerStatus::Running, SqlStatus::Healthy, UnixMillis(100));
 
         let mut matched_replica = false;
         if let PgInfoState::Replica {

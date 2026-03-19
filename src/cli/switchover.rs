@@ -1,8 +1,7 @@
 use crate::{
     api::NodeState,
     cli::{
-        client::CliApiClient, config::OperatorContext, error::CliError, output,
-        status::fetch_seed_state,
+        client::CliApiClient, config::OperatorContext, error::CliError, status::fetch_seed_state,
     },
     command::{authoritative_primary_member, CommandOutputDto},
     ha::types::{AuthorityProjection, PublicationState},
@@ -12,7 +11,7 @@ use crate::{
 pub(crate) async fn run_clear(context: &OperatorContext, json: bool) -> Result<String, CliError> {
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let response = client.delete_switchover().await?;
-    output::render_command_output(&CommandOutputDto::Switchover { output: response }, json)
+    CommandOutputDto::Switchover { output: response }.render(json)
 }
 
 pub(crate) async fn run_request(
@@ -25,7 +24,7 @@ pub(crate) async fn run_request(
 
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let response = client.post_switchover(switchover_to).await?;
-    output::render_command_output(&CommandOutputDto::Switchover { output: response }, json)
+    CommandOutputDto::Switchover { output: response }.render(json)
 }
 
 fn validate_switchover_request(

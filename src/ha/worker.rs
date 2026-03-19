@@ -550,12 +550,10 @@ fn classify_foreign_leader(member: &DcsMemberState, epoch: LeaseEpoch) -> Leader
                 state: PeerLeaderState::Unreachable,
             }
         }
-        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => {
-            LeadershipView::HeldByPeer {
-                epoch,
-                state: PeerLeaderState::Recovering,
-            }
-        }
+        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => LeadershipView::HeldByPeer {
+            epoch,
+            state: PeerLeaderState::Recovering,
+        },
     }
 }
 
@@ -609,8 +607,8 @@ mod tests {
 
     use crate::{
         config::RuntimeConfig,
-        dev_support::runtime_config::RuntimeConfigBuilder,
         dcs::{DcsMemberState, DcsSnapshot},
+        dev_support::runtime_config::RuntimeConfigBuilder,
         ha::state::{HaControlPlane, HaObservedState, HaStateChannel, HaWorkerCadence},
         pginfo::conninfo::PgClientTls,
         pginfo::state::PgConnInfo,
@@ -620,8 +618,8 @@ mod tests {
         ha::types::{FailureRecovery, JobFailure},
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
         state::{
-            new_state_channel, ClusterName, NodeIdentity, PgTcpTarget, ScopeName,
-            SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+            new_state_channel, ClusterName, NodeIdentity, PgTcpTarget, ScopeName, SwitchoverState,
+            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
 
@@ -723,22 +721,17 @@ mod tests {
 
     #[test]
     fn observe_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
-        let data_dir = std::env::temp_dir().join(format!(
-            "pgtm-ha-observe-test-{}",
-            std::process::id()
-        ));
+        let data_dir =
+            std::env::temp_dir().join(format!("pgtm-ha-observe-test-{}", std::process::id()));
         let runtime_config = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(&data_dir)
             .build();
         let pg = replica_pg_state_with_primary_conninfo("node-b", 5432)?;
         let dcs = dcs_view_for_member("node-b", "node-b", 5432)?;
-        let state = observe(
-            &ha_context(runtime_config, pg, dcs),
-            UnixMillis(123),
-        )
-        .map_err(|err| err.to_string())?
-        .local
-        .postgres;
+        let state = observe(&ha_context(runtime_config, pg, dcs), UnixMillis(123))
+            .map_err(|err| err.to_string())?
+            .local
+            .postgres;
 
         assert_eq!(
             state,
@@ -753,7 +746,11 @@ mod tests {
         Ok(())
     }
 
-    fn ha_context(runtime_config: RuntimeConfig, pg: PgInfoState, dcs: DcsSnapshot) -> HaRuntimeCtx {
+    fn ha_context(
+        runtime_config: RuntimeConfig,
+        pg: PgInfoState,
+        dcs: DcsSnapshot,
+    ) -> HaRuntimeCtx {
         let (config_publisher, config) = new_state_channel(runtime_config);
         let (pg_publisher, pg_subscriber) = new_state_channel(pg);
         let (dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
@@ -763,7 +760,8 @@ mod tests {
         });
         let initial_state = HaState::initial(WorkerStatus::Starting);
         let (publisher, _state) = new_state_channel(initial_state.clone());
-        let (process_intent_inbox, _process_intent_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let (process_intent_inbox, _process_intent_receiver) =
+            tokio::sync::mpsc::unbounded_channel();
 
         drop(config_publisher);
         drop(pg_publisher);
