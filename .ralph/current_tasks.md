@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 02:11:39 AM CET 2026
+Generated: Thu Mar 19 02:18:57 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -10,6 +10,17 @@ Generated: Thu Mar 19 02:11:39 AM CET 2026
 <description>
 `make test` currently passes but nextest reports leaky tests in `pgtuskmaster_rust::api::worker::tests`:
 `reload_certificates_returns_error_when_postmaster_pid_is_stale`,
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-cli-binary-tests-cannot-spawn-built-executables.md`
+
+```
+## Bug: cli_binary tests cannot spawn built executables <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` currently fails in `tests/cli_binary.rs` because multiple tests hit `No such file or directory (os error 2)` when spawning the expected CLI binaries after path resolution.
 ```
 
 ==============

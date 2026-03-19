@@ -7,7 +7,7 @@ use super::types::{
     FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView,
     LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
     PostgresState, ProcessAssessment, PublicationGoal, PublicationState, QuorumCoordinationState,
-    RecoveryPlan, StorageState, SwitchoverState, TargetRole, WalPosition, WorldView,
+    RecoveryPlan, StorageState, SwitchoverState, TargetRole, WorldView,
 };
 use crate::state::LeaseEpoch;
 
@@ -413,7 +413,12 @@ fn best_switchover_target(
         .filter(|(_, peer)| switchover_target_is_valid(peer))
         .map(|(member_id, peer)| (member_id.clone(), peer))
         .max_by(|(left_id, left_peer), (right_id, right_peer)| {
-            compare_switchover_candidates(left_id, left_peer, right_id, right_peer)
+            compare_candidate_eligibility(
+                left_id,
+                &left_peer.eligibility,
+                right_id,
+                &right_peer.eligibility,
+            )
         })
         .map(|(member_id, _)| member_id);
 
@@ -427,32 +432,32 @@ fn best_failover_candidate(
 ) -> Option<MemberId> {
     let peer_candidate = peers
         .iter()
-        .filter(|(_, peer)| classify_candidate(peer).is_some())
+        .filter(|(_, peer)| !matches!(peer.eligibility, ElectionEligibility::Ineligible(_)))
         .map(|(member_id, peer)| (member_id.clone(), peer))
         .max_by(|(left_id, left_peer), (right_id, right_peer)| {
-            compare_candidate_rank(
-                candidate_rank(&left_peer.eligibility),
+            compare_candidate_eligibility(
                 left_id,
-                candidate_rank(&right_peer.eligibility),
+                &left_peer.eligibility,
                 right_id,
+                &right_peer.eligibility,
             )
         })
         .map(|(member_id, _)| member_id);
 
-    if classify_candidate(self_peer).is_none() {
+    if matches!(self_peer.eligibility, ElectionEligibility::Ineligible(_)) {
         return peer_candidate;
     }
 
     match peer_candidate {
         Some(peer_id) => {
-            let peer_rank = peers
-                .get(&peer_id)
-                .map(|peer| candidate_rank(&peer.eligibility));
-            if compare_candidate_rank(
-                candidate_rank(&self_peer.eligibility),
+            let Some(peer) = peers.get(&peer_id) else {
+                return Some(self_id.clone());
+            };
+            if compare_candidate_eligibility(
                 self_id,
-                peer_rank.flatten(),
+                &self_peer.eligibility,
                 &peer_id,
+                &peer.eligibility,
             ) == Ordering::Greater
             {
                 Some(self_id.clone())
@@ -469,61 +474,38 @@ fn switchover_target_is_valid(peer: &PeerKnowledge) -> bool {
         && matches!(peer.eligibility, ElectionEligibility::PromoteEligible(_))
 }
 
-fn compare_switchover_candidates(
+fn compare_candidate_eligibility(
     left_id: &MemberId,
-    left_peer: &PeerKnowledge,
+    left: &ElectionEligibility,
     right_id: &MemberId,
-    right_peer: &PeerKnowledge,
-) -> Ordering {
-    compare_candidate_rank(
-        candidate_rank(&left_peer.eligibility),
-        left_id,
-        candidate_rank(&right_peer.eligibility),
-        right_id,
-    )
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CandidateRank {
-    Promote(WalPosition),
-    Bootstrap,
-}
-
-fn candidate_rank(value: &ElectionEligibility) -> Option<CandidateRank> {
-    match value {
-        ElectionEligibility::PromoteEligible(position) => {
-            Some(CandidateRank::Promote(position.clone()))
-        }
-        ElectionEligibility::BootstrapEligible => Some(CandidateRank::Bootstrap),
-        ElectionEligibility::Ineligible(_) => None,
-    }
-}
-
-fn compare_candidate_rank(
-    left: Option<CandidateRank>,
-    left_id: &MemberId,
-    right: Option<CandidateRank>,
-    right_id: &MemberId,
+    right: &ElectionEligibility,
 ) -> Ordering {
     match (left, right) {
-        (Some(CandidateRank::Promote(left_pos)), Some(CandidateRank::Promote(right_pos))) => {
-            left_pos.cmp(&right_pos).then_with(|| right_id.cmp(left_id))
-        }
-        (Some(CandidateRank::Promote(_)), Some(CandidateRank::Bootstrap)) => Ordering::Greater,
-        (Some(CandidateRank::Bootstrap), Some(CandidateRank::Promote(_))) => Ordering::Less,
-        (Some(CandidateRank::Bootstrap), Some(CandidateRank::Bootstrap)) => right_id.cmp(left_id),
-        (Some(_), None) => Ordering::Greater,
-        (None, Some(_)) => Ordering::Less,
-        (None, None) => Ordering::Equal,
-    }
-}
-
-fn classify_candidate(peer: &PeerKnowledge) -> Option<()> {
-    match &peer.eligibility {
-        ElectionEligibility::BootstrapEligible | ElectionEligibility::PromoteEligible(_) => {
-            Some(())
-        }
-        ElectionEligibility::Ineligible(_) => None,
+        (
+            ElectionEligibility::PromoteEligible(left_pos),
+            ElectionEligibility::PromoteEligible(right_pos),
+        ) => left_pos.cmp(right_pos).then_with(|| right_id.cmp(left_id)),
+        (
+            ElectionEligibility::PromoteEligible(_),
+            ElectionEligibility::BootstrapEligible,
+        ) => Ordering::Greater,
+        (
+            ElectionEligibility::BootstrapEligible,
+            ElectionEligibility::PromoteEligible(_),
+        ) => Ordering::Less,
+        (
+            ElectionEligibility::BootstrapEligible,
+            ElectionEligibility::BootstrapEligible,
+        ) => right_id.cmp(left_id),
+        (
+            ElectionEligibility::PromoteEligible(_) | ElectionEligibility::BootstrapEligible,
+            ElectionEligibility::Ineligible(_),
+        ) => Ordering::Greater,
+        (
+            ElectionEligibility::Ineligible(_),
+            ElectionEligibility::PromoteEligible(_) | ElectionEligibility::BootstrapEligible,
+        ) => Ordering::Less,
+        (ElectionEligibility::Ineligible(_), ElectionEligibility::Ineligible(_)) => Ordering::Equal,
     }
 }
 
@@ -550,6 +532,13 @@ mod tests {
     fn promote_peer(lsn: u64) -> PeerKnowledge {
         PeerKnowledge {
             eligibility: ElectionEligibility::PromoteEligible(WalPosition { timeline: 1, lsn }),
+            api: ApiVisibility::Reachable,
+        }
+    }
+
+    fn bootstrap_peer() -> PeerKnowledge {
+        PeerKnowledge {
+            eligibility: ElectionEligibility::BootstrapEligible,
             api: ApiVisibility::Reachable,
         }
     }
@@ -593,6 +582,25 @@ mod tests {
 
         assert_eq!(
             best_failover_candidate(&peers, &promote_peer(10), &self_id),
+            Some(peer_id)
+        );
+    }
+
+    #[test]
+    fn best_failover_candidate_prefers_bootstrap_peer_over_ineligible_self() {
+        let self_id = MemberId("node-a".to_string());
+        let peer_id = MemberId("node-b".to_string());
+        let peers = BTreeMap::from([(peer_id.clone(), bootstrap_peer())]);
+
+        assert_eq!(
+            best_failover_candidate(
+                &peers,
+                &PeerKnowledge {
+                    eligibility: ElectionEligibility::Ineligible(IneligibleReason::NotReady),
+                    api: ApiVisibility::Reachable,
+                },
+                &self_id,
+            ),
             Some(peer_id)
         );
     }
