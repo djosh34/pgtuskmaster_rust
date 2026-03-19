@@ -239,8 +239,6 @@ impl PgProbeTarget {
             dbname: "postgres".to_string(),
             application_name: None,
             connect_timeout_s: None,
-            ssl_mode: crate::config::defaults::default_pg_ssl_mode(),
-            ssl_root_cert: None,
             options: None,
             tls: super::conninfo::PgClientTls {
                 mode: crate::config::defaults::default_pg_ssl_mode(),

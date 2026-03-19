@@ -736,8 +736,6 @@ mod tests {
                 dbname: "postgres".to_string(),
                 application_name: None,
                 connect_timeout_s: Some(5),
-                ssl_mode: PgSslMode::Prefer,
-                ssl_root_cert: None,
                 options: None,
                 tls: PgClientTls {
                     mode: PgSslMode::Prefer,
@@ -811,8 +809,6 @@ mod tests {
                     dbname: "postgres".to_string(),
                     application_name: None,
                     connect_timeout_s: Some(5),
-                    ssl_mode: PgSslMode::Prefer,
-                    ssl_root_cert: None,
                     options: None,
                     tls: PgClientTls {
                         mode: PgSslMode::Prefer,
@@ -1173,8 +1169,6 @@ mod tests {
                         dbname: "postgres".to_string(),
                         application_name: None,
                         connect_timeout_s: Some(5),
-                        ssl_mode: PgSslMode::Prefer,
-                        ssl_root_cert: None,
                         options: None,
                         tls: PgClientTls {
                             mode: PgSslMode::Prefer,
@@ -1444,8 +1438,6 @@ mod tests {
             dbname: "postgres".to_string(),
             application_name: None,
             connect_timeout_s: Some(5),
-            ssl_mode: PgSslMode::Prefer,
-            ssl_root_cert: None,
             options: None,
             tls: PgClientTls {
                 mode: PgSslMode::Prefer,

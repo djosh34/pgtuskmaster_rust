@@ -119,11 +119,11 @@ impl fmt::Display for CommandOutputDto {
 impl fmt::Display for StateDerivedConnectionCommandDto {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let rendered = self
-        .targets
-        .iter()
-        .map(|target| target.conninfo.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
+            .targets
+            .iter()
+            .map(|target| target.conninfo.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
         formatter.write_str(rendered.as_str())
     }
 }
@@ -357,8 +357,6 @@ mod tests {
                     dbname: "postgres".to_string(),
                     application_name: None,
                     connect_timeout_s: None,
-                    ssl_mode: PgSslMode::VerifyFull,
-                    ssl_root_cert: Some(PathBuf::from("/tmp/ca bundle.pem")),
                     options: None,
                     tls: PgClientTls {
                         mode: PgSslMode::VerifyFull,

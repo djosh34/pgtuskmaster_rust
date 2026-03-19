@@ -439,8 +439,6 @@ mod tests {
                     dbname: "postgres".to_string(),
                     application_name: Some("node-b".to_string()),
                     connect_timeout_s: Some(5),
-                    ssl_mode: PgSslMode::Require,
-                    ssl_root_cert: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
                     tls: PgClientTls {
                         mode: PgSslMode::Require,
@@ -627,8 +625,6 @@ mod tests {
                     dbname: "postgres".to_string(),
                     application_name: None,
                     connect_timeout_s: None,
-                    ssl_mode: PgSslMode::Prefer,
-                    ssl_root_cert: None,
                     options: None,
                     tls: PgClientTls {
                         mode: PgSslMode::Prefer,

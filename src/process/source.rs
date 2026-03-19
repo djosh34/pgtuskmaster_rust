@@ -87,8 +87,6 @@ fn remote_conninfo(
         dbname: runtime.replica_access.dbname.clone(),
         application_name: None,
         connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
-        ssl_mode: runtime.replica_access.ssl_mode,
-        ssl_root_cert: runtime.replica_access.ssl_root_cert.clone(),
         options: None,
         tls: PgClientTls {
             mode: runtime.replica_access.ssl_mode,

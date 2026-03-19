@@ -282,8 +282,6 @@ fn host_postgres_conninfo(
         dbname: "postgres".to_string(),
         application_name: None,
         connect_timeout_s: None,
-        ssl_mode: PgSslMode::VerifyFull,
-        ssl_root_cert: Some(ca_cert_path.to_path_buf()),
         options: None,
         tls: PgClientTls {
             mode: PgSslMode::VerifyFull,

@@ -67,8 +67,6 @@ pub struct PgConnInfo {
     pub dbname: String,
     pub application_name: Option<String>,
     pub connect_timeout_s: Option<u32>,
-    pub ssl_mode: PgSslMode,
-    pub ssl_root_cert: Option<PathBuf>,
     pub options: Option<String>,
     pub tls: PgClientTls,
 }
@@ -140,8 +138,6 @@ impl FromStr for PgConnInfo {
                         .map_err(|err| format!("invalid conninfo connect_timeout: {err}"))
                 })
                 .transpose()?,
-            ssl_mode: mode,
-            ssl_root_cert: entries.get("sslrootcert").map(PathBuf::from),
             options: entries.get("options").cloned(),
             tls: PgClientTls {
                 mode,
@@ -170,9 +166,7 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
         PgEndpoint::Tcp { host, port } => (host.clone(), *port),
         PgEndpoint::UnixSocket { socket_dir, port } => (socket_dir.display().to_string(), *port),
     };
-    let mut pairs = vec![
-        ("host".to_string(), host),
-    ];
+    let mut pairs = vec![("host".to_string(), host)];
     if let Some(value) = info.hostaddr {
         pairs.push(("hostaddr".to_string(), value.to_string()));
     }
@@ -188,8 +182,8 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     if let Some(value) = info.connect_timeout_s {
         pairs.push(("connect_timeout".to_string(), value.to_string()));
     }
-    pairs.push(("sslmode".to_string(), info.ssl_mode.as_str().to_string()));
-    if let Some(value) = &info.ssl_root_cert {
+    pairs.push(("sslmode".to_string(), info.tls.mode.as_str().to_string()));
+    if let Some(value) = &info.tls.root_cert {
         pairs.push(("sslrootcert".to_string(), value.display().to_string()));
     }
     if let Some(value) = &info.tls.client_cert {
@@ -323,8 +317,6 @@ mod tests {
             dbname: "postgres".to_string(),
             application_name: Some("ha worker".to_string()),
             connect_timeout_s: Some(5),
-            ssl_mode: PgSslMode::Require,
-            ssl_root_cert: Some(PathBuf::from("/etc/pgtm/ca bundle.pem")),
             options: Some("-c search_path=public".to_string()),
             tls: PgClientTls {
                 mode: PgSslMode::Require,

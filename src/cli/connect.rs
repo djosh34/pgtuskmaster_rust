@@ -74,7 +74,12 @@ fn resolve_primary_view(
         state,
         queried_via,
         StateDerivedConnectionCommandKind::Primary,
-        vec![build_connection_target(primary_id.as_str(), member, tls, emit_tls)?],
+        vec![build_connection_target(
+            primary_id.as_str(),
+            member,
+            tls,
+            emit_tls,
+        )?],
     ))
 }
 
@@ -88,7 +93,9 @@ fn resolve_replicas_view(
         .dcs
         .members()
         .filter(|(_member_id, member)| member_is_ready_replica(member))
-        .map(|(member_id, member)| build_connection_target(member_id.0.as_str(), member, tls, emit_tls))
+        .map(|(member_id, member)| {
+            build_connection_target(member_id.0.as_str(), member, tls, emit_tls)
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     if targets.is_empty() {
@@ -151,8 +158,6 @@ fn build_connection_conninfo(
         dbname: "postgres".to_string(),
         application_name: None,
         connect_timeout_s: None,
-        ssl_mode: tls.mode,
-        ssl_root_cert: tls.root_cert.clone(),
         options: None,
         tls,
     })

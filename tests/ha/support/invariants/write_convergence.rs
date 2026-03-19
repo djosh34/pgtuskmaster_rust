@@ -542,18 +542,11 @@ async fn read_count(
 fn build_tls_connector(
     conninfo: &PgConnInfo,
 ) -> Result<MakeRustlsConnect, WriteConvergenceInvariantError> {
-    let root_cert_path = required_tls_path(
-        conninfo.tls.root_cert.as_ref(),
-        "sslrootcert",
-        conninfo,
-    )?;
-    let client_cert_path = required_tls_path(
-        conninfo.tls.client_cert.as_ref(),
-        "sslcert",
-        conninfo,
-    )?;
-    let client_key_path =
-        required_tls_path(conninfo.tls.client_key.as_ref(), "sslkey", conninfo)?;
+    let root_cert_path =
+        required_tls_path(conninfo.tls.root_cert.as_ref(), "sslrootcert", conninfo)?;
+    let client_cert_path =
+        required_tls_path(conninfo.tls.client_cert.as_ref(), "sslcert", conninfo)?;
+    let client_key_path = required_tls_path(conninfo.tls.client_key.as_ref(), "sslkey", conninfo)?;
 
     let mut roots = RootCertStore::empty();
     for cert in load_cert_chain(root_cert_path.as_str())? {
@@ -591,11 +584,12 @@ fn required_tls_path(
     key: &str,
     conninfo: &PgConnInfo,
 ) -> Result<String, WriteConvergenceInvariantError> {
-    path.map(|value| value.display().to_string()).ok_or_else(|| {
-        WriteConvergenceInvariantError::Failed(format!(
-            "conninfo did not contain `{key}`: {conninfo}"
-        ))
-    })
+    path.map(|value| value.display().to_string())
+        .ok_or_else(|| {
+            WriteConvergenceInvariantError::Failed(format!(
+                "conninfo did not contain `{key}`: {conninfo}"
+            ))
+        })
 }
 
 fn conninfo_uses_tls_files(conninfo: &PgConnInfo) -> bool {
@@ -605,16 +599,14 @@ fn conninfo_uses_tls_files(conninfo: &PgConnInfo) -> bool {
 }
 
 fn connectable_conninfo(conninfo: &PgConnInfo) -> PgConnInfo {
-    let ssl_mode = match conninfo.ssl_mode {
+    let tls_mode = match conninfo.tls.mode {
         PgSslMode::VerifyCa | PgSslMode::VerifyFull => PgSslMode::Require,
         mode => mode,
     };
 
     PgConnInfo {
-        ssl_mode,
-        ssl_root_cert: None,
         tls: PgClientTls {
-            mode: ssl_mode,
+            mode: tls_mode,
             root_cert: None,
             client_cert: None,
             client_key: None,
@@ -754,8 +746,6 @@ mod tests {
             dbname: "postgres db".to_string(),
             application_name: None,
             connect_timeout_s: None,
-            ssl_mode: PgSslMode::VerifyFull,
-            ssl_root_cert: Some("/tmp/ca bundle.pem".into()),
             options: None,
             tls: PgClientTls {
                 mode: PgSslMode::VerifyFull,
@@ -798,8 +788,7 @@ mod tests {
     }
 
     #[test]
-    fn required_tls_path_accepts_all_tls_fields(
-    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+    fn required_tls_path_accepts_all_tls_fields() -> Result<(), Box<dyn Error + Send + Sync>> {
         let conninfo = sample_routing_conninfo()?;
 
         assert_eq!(
@@ -1061,9 +1050,8 @@ mod tests {
             })
             .await?;
 
-            let dsn = format!(
-                "host=127.0.0.1 port={port} user=postgres dbname=postgres sslmode=disable"
-            );
+            let dsn =
+                format!("host=127.0.0.1 port={port} user=postgres dbname=postgres sslmode=disable");
             wait_for_postgres_ready(dsn.as_str(), Duration::from_secs(20)).await?;
 
             Ok(Self {

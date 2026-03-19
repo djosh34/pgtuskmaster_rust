@@ -687,8 +687,6 @@ mod tests {
                 dbname: "postgres".to_string(),
                 application_name: Some("node-a".to_string()),
                 connect_timeout_s: Some(5),
-                ssl_mode: crate::pginfo::state::PgSslMode::Require,
-                ssl_root_cert: None,
                 options: None,
                 tls: PgClientTls {
                     mode: crate::pginfo::state::PgSslMode::Require,

@@ -123,8 +123,6 @@ mod tests {
                 dbname: "postgres".to_string(),
                 application_name: None,
                 connect_timeout_s: Some(5),
-                ssl_mode: crate::pginfo::state::PgSslMode::Prefer,
-                ssl_root_cert: None,
                 options: None,
                 tls: crate::pginfo::conninfo::PgClientTls {
                     mode: crate::pginfo::state::PgSslMode::Prefer,

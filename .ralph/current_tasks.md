@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 01:15:56 AM CET 2026
+Generated: Thu Mar 19 01:25:10 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -49,6 +49,17 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 ==============
 
+# Task `.ralph/tasks/bugs/bug-make-test-nextest-build-fails-missing-rlib-archive.md`
+
+```
+## Bug: make test nextest build fails with missing rlib archive <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` currently fails during the `cargo nextest run --workspace --all-targets --profile default --no-tests fail` build step before any tests execute.
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/bug-nextest-incremental-linking-can-miss-ha-test-object-files.md`
 
 ```
@@ -67,29 +78,6 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 <description>
 `make test` currently fails in `process::postmaster::tests::reload_managed_postmaster_sends_sighup`.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/bug-task-switch-missing-current-task-file.md`
-
-```
-## Bug: Task switch emits missing current_task.txt removal error <status>not_started</status> <passes>false</passes>
-
-<description>
-`bash .ralph/task_switch.sh` completed its task-file updates, but it also emitted:
-`rm: cannot remove '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/current_task.txt': No such file or directory`
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/bug-test-long-takes-far-too-long-with-zero-tests-passing-for-minutes.md`
-
-```
-## Bug: test-long takes far too long with zero tests passing for minutes <status>not_started</status> <passes>false</passes>
-
-<description>
-`make test-long` is taking far too long to show any passing HA tests.
 ```
 
 ==============
