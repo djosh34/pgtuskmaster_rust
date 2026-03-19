@@ -4,14 +4,7 @@ use crate::{
     state::{NodeIdentity, StateSubscriber, WorkerError},
 };
 
-use super::worker::{
-    build_router, ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
-};
-
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn into_router(ctx: ApiRuntimeCtx) -> Result<axum::Router, WorkerError> {
-    build_router(ctx)
-}
+use super::worker::{ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx};
 
 pub(crate) async fn run(ctx: ApiRuntimeCtx) -> Result<(), WorkerError> {
     super::worker::run(ctx).await

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axum::Router;
 
 use crate::{
-    api::{startup::into_router, worker::ApiObservedState},
+    api::worker::{build_router, ApiObservedState},
     config::RuntimeConfig,
     ha::state::HaState,
     logging::LogSender,
@@ -52,7 +52,7 @@ fn build_test_router_with_state(
         LogSender::disabled(),
     )
     .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
-    into_router(runtime).map_err(|err| HarnessError::InvalidInput(err.to_string()))
+    build_router(runtime).map_err(|err| HarnessError::InvalidInput(err.to_string()))
 }
 
 fn sample_pg_state() -> PgInfoState {
