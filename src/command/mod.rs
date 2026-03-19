@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
-    dcs::{ClusterMemberView, MemberPostgresView, SwitchoverView},
+    dcs::{MemberPostgresView, SwitchoverView},
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::{PgConnInfo, Readiness},
     state::{MemberId, SwitchoverState},
@@ -203,7 +203,43 @@ impl fmt::Display for StateCommandOutputDto {
         } else {
             &["NODE", "SELF", "ROLE", "TRUST", "READINESS", "API"]
         };
-        let rows = sorted_state_rows(&self.state, projection.verbose);
+        let mut rows = self
+            .state
+            .dcs
+            .members()
+            .map(|(member_id, member)| {
+                let is_self = member_id == &self.state.identity.member_id;
+                if projection.verbose {
+                    vec![
+                        member_id.0.clone(),
+                        yes_no(is_self).to_string(),
+                        member_role_label(member.postgres()).to_string(),
+                        dcs_mode_label(&self.state.dcs).to_string(),
+                        authoritative_primary_member(&self.state)
+                            .map(MemberId::as_str)
+                            .unwrap_or("-")
+                            .to_string(),
+                        readiness_label(&member.postgres().readiness()).to_string(),
+                        if is_self {
+                            format!("{:?}", self.state.process).to_lowercase()
+                        } else {
+                            "-".to_string()
+                        },
+                        "-".to_string(),
+                    ]
+                } else {
+                    vec![
+                        member_id.0.clone(),
+                        yes_no(is_self).to_string(),
+                        member_role_label(member.postgres()).to_string(),
+                        dcs_mode_label(&self.state.dcs).to_string(),
+                        readiness_label(&member.postgres().readiness()).to_string(),
+                        "-".to_string(),
+                    ]
+                }
+            })
+            .collect::<Vec<Vec<String>>>();
+        rows.sort_by(|left, right| right[1].cmp(&left[1]).then_with(|| left[0].cmp(&right[0])));
         let widths = rows.iter().fold(
             headers.iter().map(|value| value.len()).collect::<Vec<_>>(),
             |widths, row| {
@@ -221,53 +257,6 @@ impl fmt::Display for StateCommandOutputDto {
             fmt_table_line(formatter, row.as_slice(), widths.as_slice())?;
         }
         Ok(())
-    }
-}
-
-fn sorted_state_rows(state: &NodeState, verbose: bool) -> Vec<Vec<String>> {
-    let mut rows = state
-        .dcs
-        .members()
-        .map(|(member_id, member)| state_row(state, member_id, member, verbose))
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| right[1].cmp(&left[1]).then_with(|| left[0].cmp(&right[0])));
-    rows
-}
-
-fn state_row(
-    state: &NodeState,
-    member_id: &MemberId,
-    member: &ClusterMemberView,
-    verbose: bool,
-) -> Vec<String> {
-    let is_self = member_id == &state.identity.member_id;
-    if verbose {
-        vec![
-            member_id.0.clone(),
-            yes_no(is_self).to_string(),
-            member_role_label(member.postgres()).to_string(),
-            dcs_mode_label(&state.dcs).to_string(),
-            authoritative_primary_member(state)
-                .map(MemberId::as_str)
-                .unwrap_or("-")
-                .to_string(),
-            readiness_label(&member.postgres().readiness()).to_string(),
-            if is_self {
-                format!("{:?}", state.process).to_lowercase()
-            } else {
-                "-".to_string()
-            },
-            "-".to_string(),
-        ]
-    } else {
-        vec![
-            member_id.0.clone(),
-            yes_no(is_self).to_string(),
-            member_role_label(member.postgres()).to_string(),
-            dcs_mode_label(&state.dcs).to_string(),
-            readiness_label(&member.postgres().readiness()).to_string(),
-            "-".to_string(),
-        ]
     }
 }
 
