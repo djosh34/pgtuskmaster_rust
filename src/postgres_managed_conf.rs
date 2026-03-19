@@ -6,7 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::config::RoleAuthConfig;
-use crate::pginfo::state::{render_pg_conninfo, PgConnInfo};
+use crate::pginfo::{conninfo::render_conninfo_value, state::PgConnInfo};
 
 pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
 pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
@@ -257,7 +257,7 @@ fn render_managed_primary_conninfo(
     standby_auth: &ManagedStandbyAuth,
 ) -> String {
     let ManagedStandbyAuth::PasswordPassfile { path } = standby_auth;
-    let mut rendered = render_pg_conninfo(conninfo);
+    let mut rendered = conninfo.to_string();
     rendered.push(' ');
     rendered.push_str("passfile=");
     rendered.push_str(render_conninfo_value(path.display().to_string().as_str()).as_str());
@@ -378,26 +378,6 @@ fn escape_postgres_conf_string(value: &str) -> String {
         }
     }
     escaped
-}
-
-fn render_conninfo_value(value: &str) -> String {
-    if value.is_empty()
-        || value
-            .chars()
-            .any(|ch| ch.is_whitespace() || ch == '\'' || ch == '\\')
-    {
-        let escaped = value
-            .chars()
-            .map(|ch| match ch {
-                '\'' => "\\'".to_string(),
-                '\\' => "\\\\".to_string(),
-                other => other.to_string(),
-            })
-            .collect::<String>();
-        format!("'{escaped}'")
-    } else {
-        value.to_string()
-    }
 }
 
 #[cfg(test)]

@@ -3,7 +3,6 @@ use std::time::Duration;
 use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
-pub(crate) use super::conninfo::render_pg_conninfo;
 pub use super::conninfo::{PgConnInfo, PgSslMode};
 use super::query::PgPollData;
 use crate::state::StatePublisher;

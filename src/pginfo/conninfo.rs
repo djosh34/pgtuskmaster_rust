@@ -81,7 +81,60 @@ pub struct PgClientTls {
 
 impl fmt::Display for PgConnInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(render_pg_conninfo(self).as_str())
+        let (host, port) = match &self.endpoint {
+            PgEndpoint::Tcp { host, port } => (host.clone(), *port),
+            PgEndpoint::UnixSocket { socket_dir, port } => {
+                (socket_dir.display().to_string(), *port)
+            }
+        };
+
+        write!(f, "host={}", render_conninfo_value(host.as_str()))?;
+        if let Some(value) = self.hostaddr {
+            write!(f, " hostaddr={value}")?;
+        }
+        write!(
+            f,
+            " port={port} user={} dbname={}",
+            render_conninfo_value(self.user.as_str()),
+            render_conninfo_value(self.dbname.as_str()),
+        )?;
+        if let Some(value) = &self.application_name {
+            write!(
+                f,
+                " application_name={}",
+                render_conninfo_value(value.as_str())
+            )?;
+        }
+        if let Some(value) = self.connect_timeout_s {
+            write!(f, " connect_timeout={value}")?;
+        }
+        write!(f, " sslmode={}", self.tls.mode.as_str())?;
+        if let Some(value) = &self.tls.root_cert {
+            write!(
+                f,
+                " sslrootcert={}",
+                render_conninfo_value(value.display().to_string().as_str())
+            )?;
+        }
+        if let Some(value) = &self.tls.client_cert {
+            write!(
+                f,
+                " sslcert={}",
+                render_conninfo_value(value.display().to_string().as_str())
+            )?;
+        }
+        if let Some(value) = &self.tls.client_key {
+            write!(
+                f,
+                " sslkey={}",
+                render_conninfo_value(value.display().to_string().as_str())
+            )?;
+        }
+        if let Some(value) = &self.options {
+            write!(f, " options={}", render_conninfo_value(value.as_str()))?;
+        }
+
+        Ok(())
     }
 }
 
@@ -159,48 +212,6 @@ pub fn conninfo_entries(input: &str) -> Result<std::collections::BTreeMap<String
 
 pub fn conninfo_value(input: &str, key: &str) -> Result<Option<String>, String> {
     parse_conninfo_entries(input).map(|entries| entries.get(key).cloned())
-}
-
-pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
-    let (host, port) = match &info.endpoint {
-        PgEndpoint::Tcp { host, port } => (host.clone(), *port),
-        PgEndpoint::UnixSocket { socket_dir, port } => (socket_dir.display().to_string(), *port),
-    };
-    let mut pairs = vec![("host".to_string(), host)];
-    if let Some(value) = info.hostaddr {
-        pairs.push(("hostaddr".to_string(), value.to_string()));
-    }
-    pairs.extend([
-        ("port".to_string(), port.to_string()),
-        ("user".to_string(), info.user.clone()),
-        ("dbname".to_string(), info.dbname.clone()),
-    ]);
-
-    if let Some(value) = &info.application_name {
-        pairs.push(("application_name".to_string(), value.clone()));
-    }
-    if let Some(value) = info.connect_timeout_s {
-        pairs.push(("connect_timeout".to_string(), value.to_string()));
-    }
-    pairs.push(("sslmode".to_string(), info.tls.mode.as_str().to_string()));
-    if let Some(value) = &info.tls.root_cert {
-        pairs.push(("sslrootcert".to_string(), value.display().to_string()));
-    }
-    if let Some(value) = &info.tls.client_cert {
-        pairs.push(("sslcert".to_string(), value.display().to_string()));
-    }
-    if let Some(value) = &info.tls.client_key {
-        pairs.push(("sslkey".to_string(), value.display().to_string()));
-    }
-    if let Some(value) = &info.options {
-        pairs.push(("options".to_string(), value.clone()));
-    }
-
-    pairs
-        .into_iter()
-        .map(|(key, value)| format!("{key}={}", render_conninfo_value(&value)))
-        .collect::<Vec<String>>()
-        .join(" ")
 }
 
 pub fn render_conninfo_value(value: &str) -> String {
@@ -304,8 +315,8 @@ mod tests {
     };
 
     use super::{
-        conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value,
-        render_pg_conninfo, PgClientTls, PgConnInfo, PgSslMode,
+        conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value, PgClientTls,
+        PgConnInfo, PgSslMode,
     };
     use crate::state::PgTcpTarget;
 
@@ -329,7 +340,7 @@ mod tests {
 
     #[test]
     fn render_emits_canonical_key_order() -> Result<(), String> {
-        let rendered = render_pg_conninfo(&sample_conninfo()?);
+        let rendered = sample_conninfo()?.to_string();
         assert_eq!(
             rendered,
             "host=127.0.0.1 port=5432 user=postgres dbname='postgres' application_name='ha worker' connect_timeout=5 sslmode=require sslrootcert='/etc/pgtm/ca bundle.pem' sslcert='/etc/pgtm/client cert.pem' sslkey='/etc/pgtm/client key.pem' options='-c search_path=public'"
@@ -342,7 +353,7 @@ mod tests {
     fn parse_accepts_rendered_conninfo_with_extra_keys() -> Result<(), String> {
         let rendered = format!(
             "{} passfile='/var/lib/postgresql/data/pgtm.standby.passfile'",
-            render_pg_conninfo(&sample_conninfo()?)
+            sample_conninfo()?
         );
 
         assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()?));
@@ -356,7 +367,7 @@ mod tests {
             ..sample_conninfo()?
         };
 
-        let rendered = render_pg_conninfo(&conninfo);
+        let rendered = conninfo.to_string();
 
         assert!(rendered.contains("hostaddr=127.0.0.1"));
         assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(conninfo));

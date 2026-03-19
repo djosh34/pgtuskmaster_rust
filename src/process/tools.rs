@@ -2,7 +2,6 @@ use std::{fs, path::Path};
 
 use crate::{
     config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig},
-    pginfo::state::render_pg_conninfo,
     process::{
         jobs::{
             ActiveJobKind, PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
@@ -119,7 +118,7 @@ impl ExternalToolLowerer {
                     program: program.clone(),
                     args: vec![
                         "--dbname".to_string(),
-                        render_pg_conninfo(&spec.source.conninfo),
+                        spec.source.conninfo.to_string(),
                         "-D".to_string(),
                         spec.data_dir.display().to_string(),
                         "-Fp".to_string(),
@@ -153,7 +152,7 @@ impl ExternalToolLowerer {
                         "--target-pgdata".to_string(),
                         spec.target_data_dir.display().to_string(),
                         "--source-server".to_string(),
-                        render_pg_conninfo(&spec.source.conninfo),
+                        spec.source.conninfo.to_string(),
                     ],
                     env: role_auth_env(&spec.source.auth),
                     capture_output,

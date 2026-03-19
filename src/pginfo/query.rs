@@ -1,8 +1,5 @@
 use crate::{
-    pginfo::{
-        conninfo::parse_pg_conninfo,
-        state::{render_pg_conninfo, PgConnInfo},
-    },
+    pginfo::{conninfo::parse_pg_conninfo, state::PgConnInfo},
     state::{SystemIdentifier, TimelineId, WalLsn, WorkerError},
 };
 
@@ -57,7 +54,7 @@ pub(super) struct PgPollData {
 }
 
 pub(super) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollData, WorkerError> {
-    let postgres_dsn = render_pg_conninfo(postgres_conninfo);
+    let postgres_dsn = postgres_conninfo.to_string();
     let (client, connection) = tokio_postgres::connect(&postgres_dsn, tokio_postgres::NoTls)
         .await
         .map_err(|err| WorkerError::Message(format!("postgres connect failed: {err}")))?;
