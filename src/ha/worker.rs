@@ -106,7 +106,7 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
             &process_assessment,
             &observed_primary,
         ),
-        postgres: build_local_postgres_state(&pg, &dcs),
+        postgres: build_postgres_state(&pg, &dcs),
         process: process_assessment,
         storage: build_storage_state(
             &dcs,
@@ -333,41 +333,30 @@ fn build_data_dir_state(
     DataDirState::Initialized(local_state)
 }
 
-fn build_postgres_state(pg: &PgInfoState) -> PostgresState {
+fn build_postgres_state(pg: &PgInfoState, dcs: &DcsView) -> PostgresState {
     match pg {
-        PgInfoState::Unknown { common } if common.sql != SqlStatus::Healthy => {
-            PostgresState::Offline
-        }
-        PgInfoState::Unknown { .. } => PostgresState::Offline,
         PgInfoState::Primary {
             common, wal_lsn, ..
         } if common.sql == SqlStatus::Healthy => PostgresState::Primary {
             committed_lsn: wal_lsn.0,
         },
-        PgInfoState::Primary { .. } => PostgresState::Offline,
         PgInfoState::Replica {
             common,
             replay_lsn,
             follow_lsn,
             upstream,
         } if common.sql == SqlStatus::Healthy => PostgresState::Replica {
-            upstream: upstream.as_ref().map(|value| value.member_id.clone()),
+            upstream: upstream
+                .as_ref()
+                .map(|value| value.member_id.clone())
+                .or_else(|| {
+                    resolve_replica_upstream(common.pg_config.primary_conninfo.as_ref(), dcs)
+                }),
             replication: build_replication_state(common.timeline, *replay_lsn, *follow_lsn),
         },
-        PgInfoState::Replica { .. } => PostgresState::Offline,
-    }
-}
-
-fn build_local_postgres_state(pg: &PgInfoState, dcs: &DcsView) -> PostgresState {
-    match build_postgres_state(pg) {
-        PostgresState::Replica {
-            upstream,
-            replication,
-        } => PostgresState::Replica {
-            upstream: upstream.or_else(|| resolve_replica_upstream(pg, dcs)),
-            replication,
-        },
-        state => state,
+        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
+            PostgresState::Offline
+        }
     }
 }
 
@@ -489,23 +478,28 @@ fn build_peer_knowledge_from_member(member: &ClusterMemberView) -> PeerKnowledge
 }
 
 fn build_self_peer(pg: &PgInfoState, local_data_dir: &DataDirState) -> PeerKnowledge {
-    let eligibility = match (local_data_dir, build_postgres_state(pg)) {
+    let eligibility = match (local_data_dir, pg) {
         (DataDirState::Missing, _)
         | (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => {
             ElectionEligibility::BootstrapEligible
         }
-        (_, PostgresState::Primary { committed_lsn }) => wal_position(
-            pg_timeline_id(pg),
-            Some(crate::state::WalLsn(committed_lsn)),
-        )
-        .map(ElectionEligibility::PromoteEligible)
-        .unwrap_or(ElectionEligibility::BootstrapEligible),
-        (_, PostgresState::Replica { .. }) => self_replica_position(pg)
+        (
+            _,
+            PgInfoState::Primary {
+                common, wal_lsn, ..
+            },
+        ) if common.sql == SqlStatus::Healthy => wal_position(common.timeline, Some(*wal_lsn))
             .map(ElectionEligibility::PromoteEligible)
-            .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging)),
-        (_, PostgresState::Offline) => {
-            ElectionEligibility::Ineligible(IneligibleReason::StartingUp)
+            .unwrap_or(ElectionEligibility::BootstrapEligible),
+        (_, PgInfoState::Replica { common, .. }) if common.sql == SqlStatus::Healthy => {
+            self_replica_position(pg)
+                .map(ElectionEligibility::PromoteEligible)
+                .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
         }
+        (
+            _,
+            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. },
+        ) => ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
     };
     PeerKnowledge {
         eligibility,
@@ -526,12 +520,11 @@ fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
     }
 }
 
-fn resolve_replica_upstream(pg: &PgInfoState, dcs: &DcsView) -> Option<MemberId> {
-    let primary_conninfo = match pg {
-        PgInfoState::Replica { common, .. } => common.pg_config.primary_conninfo.as_ref(),
-        _ => None,
-    }?;
-    let PgEndpoint::Tcp { host, port } = &primary_conninfo.endpoint else {
+fn resolve_replica_upstream(
+    primary_conninfo: Option<&crate::pginfo::state::PgConnInfo>,
+    dcs: &DcsView,
+) -> Option<MemberId> {
+    let PgEndpoint::Tcp { host, port } = &primary_conninfo?.endpoint else {
         return None;
     };
 
@@ -745,9 +738,8 @@ mod tests {
     }
 
     #[test]
-    fn local_postgres_state_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String>
-    {
-        let state = build_local_postgres_state(
+    fn postgres_state_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
+        let state = build_postgres_state(
             &replica_pg_state_with_primary_conninfo("node-b", 5432)?,
             &dcs_view_for_member("node-b", "node-b", 5432)?,
         );
