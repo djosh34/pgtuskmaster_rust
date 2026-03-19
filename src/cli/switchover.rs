@@ -1,13 +1,10 @@
 use crate::{
     api::NodeState,
     cli::{
-        client::CliApiClient,
-        config::OperatorContext,
-        error::CliError,
-        output,
-        status::{authority_primary_member, fetch_seed_state, member_is_ready_replica},
+        client::CliApiClient, config::OperatorContext, error::CliError, output,
+        status::fetch_seed_state,
     },
-    command::CommandOutputDto,
+    command::{authoritative_primary_member, CommandOutputDto},
     ha::types::{AuthorityProjection, PublicationState},
     state::MemberId,
 };
@@ -57,7 +54,9 @@ fn validate_switchover_request(
         return Ok(());
     };
 
-    if authority_primary_member(state).as_deref() == Some(target_member_id) {
+    if authoritative_primary_member(state).map(crate::state::MemberId::as_str)
+        == Some(target_member_id)
+    {
         return Err(CliError::Resolution(format!(
             "cannot target member `{target_member_id}` for switchover: it is already the leader"
         )));
@@ -72,7 +71,7 @@ fn validate_switchover_request(
             ))
         })?;
 
-    if !member_is_ready_replica(target_member) {
+    if !target_member.postgres().is_ready_replica() {
         return Err(CliError::Resolution(format!(
             "cannot target member `{target_member_id}` for switchover: it is not a ready replica in the seed node DCS view"
         )));

@@ -5,12 +5,7 @@ use crate::{
     cli::{
         args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError, output,
     },
-    command::{
-        switchover_projection, CommandOutputDto, StateCommandOutputDto, StateHealthDto,
-        StateProjectionDto, StateQueryOriginDto, StateWarningDto,
-    },
-    dcs::ClusterMemberView,
-    ha::types::{AuthorityProjection, PublicationState},
+    command::{CommandOutputDto, StateCommandOutputDto, StateQueryOriginDto},
 };
 
 pub(crate) async fn run_status(
@@ -47,39 +42,11 @@ pub(crate) async fn fetch_state_command_output(
     verbose: bool,
 ) -> Result<StateCommandOutputDto, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    Ok(build_state_command_output(state, queried_via, verbose))
-}
-
-pub(crate) fn build_state_command_output(
-    state: NodeState,
-    queried_via: StateQueryOriginDto,
-    verbose: bool,
-) -> StateCommandOutputDto {
-    let projection = build_state_projection(&state, queried_via, verbose);
-    StateCommandOutputDto { projection, state }
-}
-
-pub(crate) fn build_state_projection(
-    state: &NodeState,
-    queried_via: StateQueryOriginDto,
-    verbose: bool,
-) -> StateProjectionDto {
-    let warnings = collect_warnings(state);
-    let health = if warnings.is_empty() {
-        StateHealthDto::Healthy
-    } else {
-        StateHealthDto::Degraded
-    };
-    StateProjectionDto {
-        cluster_name: state.identity.cluster_name.0.clone(),
-        scope: state.identity.scope.0.clone(),
+    Ok(StateCommandOutputDto::from_seed_state(
+        state,
         queried_via,
-        health,
         verbose,
-        discovered_member_count: state.dcs.member_count(),
-        warnings,
-        switchover: switchover_projection(&state.dcs),
-    }
+    ))
 }
 
 async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<String, CliError> {
@@ -113,48 +80,4 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
             _ = tokio::time::sleep(interval) => {}
         }
     }
-}
-
-pub(crate) fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
-    let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
-        code: "degraded_dcs_mode".to_string(),
-        message: format!("seed node reports {} DCS mode", dcs_mode_label(&state.dcs)),
-    });
-    let no_primary_warning = authority_primary_member(state)
-        .is_none()
-        .then(|| StateWarningDto {
-            code: "no_primary".to_string(),
-            message: "seed node does not currently project an authoritative primary".to_string(),
-        });
-    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
-        code: "no_members".to_string(),
-        message: "seed node does not currently expose any DCS member slots".to_string(),
-    });
-
-    [
-        degraded_mode_warning,
-        no_primary_warning,
-        no_members_warning,
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-}
-
-pub(crate) fn authority_primary_member(state: &NodeState) -> Option<String> {
-    match &state.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.0.clone())
-        }
-        PublicationState::Unknown
-        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
-    }
-}
-
-pub(crate) fn member_is_ready_replica(member: &ClusterMemberView) -> bool {
-    member.postgres().is_ready_replica()
-}
-
-fn dcs_mode_label(snapshot: &crate::dcs::DcsView) -> &'static str {
-    snapshot.mode_label()
 }

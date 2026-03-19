@@ -1,19 +1,13 @@
 use crate::{
     api::NodeState,
     cli::{
-        args::ConnectionOptions,
-        client::CliTlsConfig,
-        config::OperatorContext,
-        error::CliError,
-        output,
-        status::{
-            authority_primary_member, build_state_projection, fetch_seed_state,
-            member_is_ready_replica,
-        },
+        args::ConnectionOptions, client::CliTlsConfig, config::OperatorContext, error::CliError,
+        output, status::fetch_seed_state,
     },
     command::{
-        CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
-        StateDerivedConnectionTargetDto, StateQueryOriginDto,
+        authoritative_primary_member, CommandOutputDto, StateDerivedConnectionCommandDto,
+        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateProjectionDto,
+        StateQueryOriginDto,
     },
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
@@ -55,19 +49,17 @@ fn resolve_primary_view(
     tls: &CliTlsConfig,
     emit_tls: bool,
 ) -> Result<StateDerivedConnectionCommandDto, CliError> {
-    let primary_id = authority_primary_member(state).ok_or_else(|| {
+    let primary_id = authoritative_primary_member(state).ok_or_else(|| {
         CliError::Resolution(
             "seed state does not currently expose an authoritative primary".to_string(),
         )
     })?;
-    let member = state
-        .dcs
-        .member(&crate::state::MemberId(primary_id.clone()))
-        .ok_or_else(|| {
-            CliError::Resolution(format!(
-                "authoritative primary `{primary_id}` is not present in the DCS member slots"
-            ))
-        })?;
+    let member = state.dcs.member(primary_id).ok_or_else(|| {
+        CliError::Resolution(format!(
+            "authoritative primary `{}` is not present in the DCS member slots",
+            primary_id.as_str()
+        ))
+    })?;
     let postgres_target = member.postgres_target();
     let postgres_host = postgres_target.host().trim();
     let postgres_port = postgres_target.port();
@@ -78,10 +70,10 @@ fn resolve_primary_view(
     }
 
     Ok(StateDerivedConnectionCommandDto {
-        projection: build_state_projection(state, queried_via, false),
+        projection: StateProjectionDto::from_seed_state(state, queried_via, false),
         kind: StateDerivedConnectionCommandKind::Primary,
         targets: vec![StateDerivedConnectionTargetDto {
-            member_id: primary_id,
+            member_id: primary_id.0.clone(),
             conninfo: PgConnInfo {
                 endpoint: postgres_target.clone(),
                 hostaddr: None,
@@ -106,7 +98,7 @@ fn resolve_replicas_view(
     let targets = state
         .dcs
         .members()
-        .filter(|(_member_id, member)| member_is_ready_replica(member))
+        .filter(|(_member_id, member)| member.postgres().is_ready_replica())
         .map(|(member_id, member)| {
             let postgres_target = member.postgres_target();
             let postgres_host = postgres_target.host().trim();
@@ -140,7 +132,7 @@ fn resolve_replicas_view(
     }
 
     Ok(StateDerivedConnectionCommandDto {
-        projection: build_state_projection(state, queried_via, false),
+        projection: StateProjectionDto::from_seed_state(state, queried_via, false),
         kind: StateDerivedConnectionCommandKind::Replicas,
         targets,
     })

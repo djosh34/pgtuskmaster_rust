@@ -37,6 +37,17 @@ pub struct StateCommandOutputDto {
     pub state: NodeState,
 }
 
+impl StateCommandOutputDto {
+    pub(crate) fn from_seed_state(
+        state: NodeState,
+        queried_via: StateQueryOriginDto,
+        verbose: bool,
+    ) -> Self {
+        let projection = StateProjectionDto::from_seed_state(&state, queried_via, verbose);
+        Self { projection, state }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateProjectionDto {
@@ -49,6 +60,31 @@ pub struct StateProjectionDto {
     pub warnings: Vec<StateWarningDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub switchover: Option<StateSwitchoverDto>,
+}
+
+impl StateProjectionDto {
+    pub(crate) fn from_seed_state(
+        state: &NodeState,
+        queried_via: StateQueryOriginDto,
+        verbose: bool,
+    ) -> Self {
+        let warnings = collect_warnings(state);
+        let health = if warnings.is_empty() {
+            StateHealthDto::Healthy
+        } else {
+            StateHealthDto::Degraded
+        };
+        Self {
+            cluster_name: state.identity.cluster_name.0.clone(),
+            scope: state.identity.scope.0.clone(),
+            queried_via,
+            health,
+            verbose,
+            discovered_member_count: state.dcs.member_count(),
+            warnings,
+            switchover: switchover_projection(&state.dcs),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -211,7 +247,9 @@ fn state_row(
             yes_no(is_self).to_string(),
             member_role_label(member.postgres()).to_string(),
             dcs_mode_label(&state.dcs).to_string(),
-            authority_primary_member(state).unwrap_or("-").to_string(),
+            authority_primary_member_label(state)
+                .unwrap_or("-")
+                .to_string(),
             readiness_label(&member.postgres().readiness()).to_string(),
             if is_self {
                 format!("{:?}", state.process).to_lowercase()
@@ -263,14 +301,44 @@ fn yes_no(value: bool) -> &'static str {
     }
 }
 
-fn authority_primary_member(state: &NodeState) -> Option<&str> {
+pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberId> {
     match &state.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.as_str())
-        }
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => Some(&epoch.holder),
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
+}
+
+fn authority_primary_member_label(state: &NodeState) -> Option<&str> {
+    authoritative_primary_member(state).map(MemberId::as_str)
+}
+
+fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
+    let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
+        code: "degraded_dcs_mode".to_string(),
+        message: format!("seed node reports {} DCS mode", dcs_mode_label(&state.dcs)),
+    });
+    let no_primary_warning =
+        authoritative_primary_member(state)
+            .is_none()
+            .then(|| StateWarningDto {
+                code: "no_primary".to_string(),
+                message: "seed node does not currently project an authoritative primary"
+                    .to_string(),
+            });
+    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
+        code: "no_members".to_string(),
+        message: "seed node does not currently expose any DCS member slots".to_string(),
+    });
+
+    [
+        degraded_mode_warning,
+        no_primary_warning,
+        no_members_warning,
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
 }
 
 fn member_role_label(member: &MemberPostgresView) -> &'static str {
