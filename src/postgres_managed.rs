@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     config::{
         resolve_inline_or_path_bytes, resolve_inline_or_path_string, resolve_secret_string,
-        RoleAuthConfig, RuntimeConfig, SecretSource, TlsServerConfig,
+        ConfigMaterializeError, RoleAuthConfig, RuntimeConfig, TlsServerConfig,
     },
     postgres_managed_conf::{
         managed_standby_passfile_path, render_managed_postgres_conf, ManagedPostgresConf,
@@ -47,6 +47,14 @@ pub(crate) enum ManagedPostgresError {
     InvalidConfig { message: String },
     #[error("invalid managed postgres state: {message}")]
     InvalidManagedState { message: String },
+}
+
+impl From<ConfigMaterializeError> for ManagedPostgresError {
+    fn from(err: ConfigMaterializeError) -> Self {
+        Self::Io {
+            message: err.to_string(),
+        }
+    }
 }
 
 pub(crate) fn materialize_managed_postgres_config(
@@ -92,9 +100,10 @@ pub(crate) fn materialize_managed_postgres_config(
             .join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME),
     )?;
 
-    let hba_contents = load_inline_or_path_string("postgres.access.hba", &cfg.postgres.access.hba)?;
+    let hba_contents =
+        resolve_inline_or_path_string("postgres.access.hba", &cfg.postgres.access.hba)?;
     let ident_contents =
-        load_inline_or_path_string("postgres.access.ident", &cfg.postgres.access.ident)?;
+        resolve_inline_or_path_string("postgres.access.ident", &cfg.postgres.access.ident)?;
 
     write_atomic(&managed_hba, hba_contents.as_bytes(), Some(0o644))?;
     write_atomic(&managed_ident, ident_contents.as_bytes(), Some(0o644))?;
@@ -174,11 +183,11 @@ fn materialize_tls_files(
             identity,
             client_auth,
         } => {
-            let cert_pem = load_inline_or_path_bytes(
+            let cert_pem = resolve_inline_or_path_bytes(
                 "postgres.tls.identity.cert_chain",
                 &identity.cert_chain,
             )?;
-            let key_pem = load_inline_or_path_bytes(
+            let key_pem = resolve_inline_or_path_bytes(
                 "postgres.tls.identity.private_key",
                 &identity.private_key,
             )?;
@@ -194,7 +203,7 @@ fn materialize_tls_files(
             write_atomic(&managed_key, key_pem.as_slice(), Some(0o600))?;
 
             let client_ca_path = if let Some(client_auth) = client_auth.as_ref() {
-                let ca_pem = load_inline_or_path_bytes(
+                let ca_pem = resolve_inline_or_path_bytes(
                     "postgres.tls.client_auth.client_ca",
                     &client_auth.client_ca,
                 )?;
@@ -230,8 +239,7 @@ fn materialize_managed_standby_passfile(
             return Ok(None);
         }
         ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            ..
+            primary_conninfo, ..
         } => primary_conninfo,
     };
 
@@ -246,17 +254,8 @@ fn materialize_managed_standby_passfile(
 
 fn resolve_role_password(key: &str, auth: &RoleAuthConfig) -> Result<String, ManagedPostgresError> {
     match auth {
-        RoleAuthConfig::Password { password } => resolve_secret_source_string(key, password),
+        RoleAuthConfig::Password { password } => Ok(resolve_secret_string(key, password)?),
     }
-}
-
-fn resolve_secret_source_string(
-    key: &str,
-    secret: &SecretSource,
-) -> Result<String, ManagedPostgresError> {
-    resolve_secret_string(key, secret).map_err(|err| ManagedPostgresError::Io {
-        message: err.to_string(),
-    })
 }
 
 fn render_libpq_passfile_entry(
@@ -351,24 +350,6 @@ fn existing_recovery_signal(
             ),
         }),
     }
-}
-
-fn load_inline_or_path_string(
-    field: &str,
-    source: &crate::config::InlineOrPath,
-) -> Result<String, ManagedPostgresError> {
-    resolve_inline_or_path_string(field, source).map_err(|err| ManagedPostgresError::Io {
-        message: err.to_string(),
-    })
-}
-
-fn load_inline_or_path_bytes(
-    field: &str,
-    source: &crate::config::InlineOrPath,
-) -> Result<Vec<u8>, ManagedPostgresError> {
-    resolve_inline_or_path_bytes(field, source).map_err(|err| ManagedPostgresError::Io {
-        message: err.to_string(),
-    })
 }
 
 fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPostgresError> {

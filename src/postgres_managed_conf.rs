@@ -74,10 +74,7 @@ impl ManagedPostgresStartIntent {
         Self::DetachedStandby
     }
 
-    pub(crate) fn replica(
-        primary_conninfo: PgConnInfo,
-        primary_slot_name: Option<String>,
-    ) -> Self {
+    pub(crate) fn replica(primary_conninfo: PgConnInfo, primary_slot_name: Option<String>) -> Self {
         Self::Replica {
             primary_conninfo: Box::new(primary_conninfo),
             primary_slot_name,
@@ -404,13 +401,13 @@ mod tests {
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         let b = render_managed_postgres_conf(
             &sample_conf()?,
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         assert_eq!(a, b);
         Ok(())
     }
@@ -422,7 +419,7 @@ mod tests {
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         let primary_slot_index = rendered
             .find("primary_slot_name =")
             .ok_or_else(|| "missing primary_slot_name line".to_string())?;
@@ -444,7 +441,7 @@ mod tests {
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         let first = rendered
             .find("log_line_prefix =")
             .ok_or_else(|| "missing log_line_prefix".to_string())?;
@@ -466,7 +463,7 @@ mod tests {
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.contains("unix_socket_directories = '/tmp/pgtm socket'") {
             return Err(format!(
                 "missing quoted socket dir in rendered conf: {rendered}"
@@ -494,7 +491,7 @@ mod tests {
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
                 .as_path(),
         )
-            .map_err(|err| format!("render failed: {err}"))?;
+        .map_err(|err| format!("render failed: {err}"))?;
         if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
             return Err(format!("missing managed header: {rendered}"));
         }

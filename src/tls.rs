@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fs, io::Cursor, sync::Arc};
+use std::{collections::BTreeSet, io::Cursor, sync::Arc};
 
 use axum_server::tls_rustls::RustlsConfig;
 use rustls::{
@@ -16,8 +16,9 @@ use crate::config::TlsServerConfig;
 use crate::{
     api::worker::{ApiServerTransport, ApiTlsRuntime},
     config::{
-        ApiClientAuthConfig, ApiTlsConfig, ApiTransportConfig, ClientCertificateMode,
-        ClientCommonName, InlineOrPath, TlsClientAuthConfig,
+        resolve_inline_or_path_bytes, ApiClientAuthConfig, ApiTlsConfig, ApiTransportConfig,
+        ClientCertificateMode, ClientCommonName, ConfigMaterializeError, InlineOrPath,
+        TlsClientAuthConfig,
     },
 };
 
@@ -29,6 +30,14 @@ pub(crate) enum TlsConfigError {
     PemParse { message: String },
     #[error("rustls error: {message}")]
     Rustls { message: String },
+}
+
+impl From<ConfigMaterializeError> for TlsConfigError {
+    fn from(err: ConfigMaterializeError) -> Self {
+        Self::Io {
+            message: err.to_string(),
+        }
+    }
 }
 
 pub(crate) fn build_api_server_transport(
@@ -88,11 +97,11 @@ fn build_server_config(
     private_key: &InlineOrPath,
     verifier: Arc<dyn ClientCertVerifier>,
 ) -> Result<rustls::ServerConfig, TlsConfigError> {
-    let cert_pem = load_inline_or_path_bytes(
+    let cert_pem = resolve_inline_or_path_bytes(
         format!("{identity_field_prefix}.cert_chain").as_str(),
         cert_chain,
     )?;
-    let key_pem = load_inline_or_path_bytes(
+    let key_pem = resolve_inline_or_path_bytes(
         format!("{identity_field_prefix}.private_key").as_str(),
         private_key,
     )?;
@@ -159,7 +168,7 @@ fn build_client_verifier(
     common_name_policy: CommonNamePolicy,
     field: &'static str,
 ) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
-    let ca_pem = load_inline_or_path_bytes(field, &client_auth.client_ca)?;
+    let ca_pem = resolve_inline_or_path_bytes(field, &client_auth.client_ca)?;
     let ca_certs = parse_pem_cert_chain(ca_pem.as_slice())?;
 
     let mut roots = rustls::RootCertStore::empty();
@@ -338,20 +347,6 @@ fn parse_pem_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsConfig
         .ok_or_else(|| TlsConfigError::PemParse {
             message: "no private key found in PEM input".to_string(),
         })
-}
-
-fn load_inline_or_path_bytes(
-    field: &str,
-    source: &InlineOrPath,
-) -> Result<Vec<u8>, TlsConfigError> {
-    match source {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => {
-            fs::read(path).map_err(|err| TlsConfigError::Io {
-                message: format!("failed to read `{field}` from {}: {err}", path.display()),
-            })
-        }
-        InlineOrPath::Inline { content } => Ok(content.as_bytes().to_vec()),
-    }
 }
 
 #[cfg(test)]
