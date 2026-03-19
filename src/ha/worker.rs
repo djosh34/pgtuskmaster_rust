@@ -124,7 +124,16 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
                     .or_else(|| {
                         resolve_replica_upstream(common.pg_config.primary_conninfo.as_ref(), &dcs)
                     }),
-                replication: build_replication_state(common.timeline, *replay_lsn, *follow_lsn),
+                replication: if let Some(position) = wal_position(common.timeline, *follow_lsn) {
+                    ReplicationState::Streaming(position)
+                } else if replay_lsn.0 > 0 {
+                    ReplicationState::CatchingUp(WalPosition {
+                        timeline: common.timeline.map_or(0, |value| u64::from(value.0)),
+                        lsn: replay_lsn.0,
+                    })
+                } else {
+                    ReplicationState::Stalled
+                },
             },
             PgInfoState::Unknown { .. }
             | PgInfoState::Primary { .. }
@@ -353,23 +362,6 @@ fn build_data_dir_state(
     };
 
     DataDirState::Initialized(local_state)
-}
-
-fn build_replication_state(
-    timeline: Option<crate::state::TimelineId>,
-    replay_lsn: crate::state::WalLsn,
-    follow_lsn: Option<crate::state::WalLsn>,
-) -> ReplicationState {
-    if let Some(position) = wal_position(timeline, follow_lsn) {
-        return ReplicationState::Streaming(position);
-    }
-    if replay_lsn.0 > 0 {
-        return ReplicationState::CatchingUp(WalPosition {
-            timeline: timeline.map_or(0, |value| u64::from(value.0)),
-            lsn: replay_lsn.0,
-        });
-    }
-    ReplicationState::Stalled
 }
 
 fn build_storage_state(
