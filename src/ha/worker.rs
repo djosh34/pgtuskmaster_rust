@@ -121,8 +121,16 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
                 upstream: upstream
                     .as_ref()
                     .map(|value| value.member_id.clone())
-                    .or_else(|| {
-                        resolve_replica_upstream(common.pg_config.primary_conninfo.as_ref(), &dcs)
+                    .or_else(|| match common.pg_config.primary_conninfo.as_ref() {
+                        Some(crate::pginfo::state::PgConnInfo {
+                            endpoint: PgEndpoint::Tcp { host, port },
+                            ..
+                        }) => dcs.members().find_map(|(member_id, member)| {
+                            (member.postgres_target().host() == host.as_str()
+                                && member.postgres_target().port() == *port)
+                                .then_some(member_id.clone())
+                        }),
+                        _ => None,
                     }),
                 replication: if let Some(position) = wal_position(common.timeline, *follow_lsn) {
                     ReplicationState::Streaming(position)
@@ -505,21 +513,6 @@ fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
             .or_else(|| follow_lsn.and_then(|lsn| wal_position(common.timeline, Some(lsn)))),
         _ => None,
     }
-}
-
-fn resolve_replica_upstream(
-    primary_conninfo: Option<&crate::pginfo::state::PgConnInfo>,
-    dcs: &DcsSnapshot,
-) -> Option<MemberId> {
-    let PgEndpoint::Tcp { host, port } = &primary_conninfo?.endpoint else {
-        return None;
-    };
-
-    dcs.members().find_map(|(member_id, member)| {
-        (member.postgres_target().host() == host.as_str()
-            && member.postgres_target().port() == *port)
-            .then_some(member_id.clone())
-    })
 }
 
 fn build_leadership_view(dcs: &DcsQuorumState, self_id: &MemberId) -> LeadershipView {
