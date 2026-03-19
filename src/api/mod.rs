@@ -5,8 +5,14 @@ pub(crate) mod startup;
 pub mod worker;
 
 use crate::{
-    dcs::DcsSnapshot, ha::state::HaState, pginfo::state::PgInfoState, process::state::ProcessState,
-    state::NodeIdentity,
+    dcs::DcsSnapshot,
+    ha::{
+        state::HaState,
+        types::{AuthorityProjection, PublicationState},
+    },
+    pginfo::state::PgInfoState,
+    process::state::ProcessState,
+    state::{MemberId, NodeIdentity},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
@@ -70,3 +76,11 @@ pub struct NodeSnapshot {
 }
 
 pub type NodeState = NodeSnapshot;
+
+pub fn authoritative_primary_member(state: &NodeState) -> Option<&MemberId> {
+    match &state.ha.publication {
+        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => Some(&epoch.holder),
+        PublicationState::Unknown
+        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
+    }
+}

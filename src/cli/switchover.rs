@@ -1,10 +1,9 @@
 use crate::{
-    api::NodeState,
+    api::{authoritative_primary_member, NodeState},
     cli::{
         client::CliApiClient, config::OperatorContext, error::CliError, status::fetch_seed_state,
     },
-    command::{authoritative_primary_member, CommandOutputDto},
-    ha::types::{AuthorityProjection, PublicationState},
+    command::CommandOutputDto,
     state::MemberId,
 };
 
@@ -38,15 +37,11 @@ fn validate_switchover_request(
         )));
     }
 
-    match &state.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch))
-            if epoch.holder == state.identity.member_id => {}
-        _ => {
-            return Err(CliError::Resolution(format!(
-                "cannot request switchover via `{}`: seed node is not the authoritative primary",
-                state.identity.member_id.0
-            )));
-        }
+    if authoritative_primary_member(state) != Some(&state.identity.member_id) {
+        return Err(CliError::Resolution(format!(
+            "cannot request switchover via `{}`: seed node is not the authoritative primary",
+            state.identity.member_id.0
+        )));
     }
 
     let Some(target_member_id) = switchover_to else {

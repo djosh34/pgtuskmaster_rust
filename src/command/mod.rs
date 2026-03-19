@@ -3,11 +3,10 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
+    api::{authoritative_primary_member, AcceptedResponse, NodeState, ReloadCertificatesResponse},
     cli::error::CliError,
-    ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::PgConnInfo,
-    state::{MemberId, SwitchoverState},
+    state::SwitchoverState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,7 +250,7 @@ impl fmt::Display for StateCommandOutputDto {
                 if projection.verbose {
                     row.push(
                         authoritative_primary_member(&self.state)
-                            .map(MemberId::as_str)
+                            .map(|member_id| member_id.as_str())
                             .unwrap_or("-")
                             .to_string(),
                     );
@@ -309,14 +308,6 @@ impl fmt::Display for StateHealthDto {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
         })
-    }
-}
-
-pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberId> {
-    match &state.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => Some(&epoch.holder),
-        PublicationState::Unknown
-        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
 }
 

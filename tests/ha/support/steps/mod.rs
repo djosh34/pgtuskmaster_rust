@@ -5,7 +5,7 @@ use std::{
 
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
-    api::NodeState,
+    api::{authoritative_primary_member, NodeState},
     dcs::DcsMemberState,
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::{PgInfoState, Readiness},
@@ -906,10 +906,7 @@ fn format_warnings(status: &NodeState) -> String {
     if !status.dcs.is_quorum() {
         warnings.push("dcs_mode=not_trusted".to_string());
     }
-    if !matches!(
-        status.ha.publication,
-        PublicationState::Projected(AuthorityProjection::Primary(_))
-    ) {
+    if authoritative_primary_member(status).is_none() {
         warnings.push(format!("authority={}", format_authority(status)));
     }
     if status.dcs.member_count() == 0 {
@@ -935,13 +932,8 @@ fn format_authority(status: &NodeState) -> String {
 }
 
 fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
-    match &status.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            ClusterMember::parse(epoch.holder.0.as_str()).ok()
-        }
-        PublicationState::Unknown
-        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
-    }
+    authoritative_primary_member(status)
+        .and_then(|member_id| ClusterMember::parse(member_id.as_str()).ok())
 }
 
 fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {

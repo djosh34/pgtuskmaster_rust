@@ -9,10 +9,7 @@ use std::{
 };
 
 use cucumber::World;
-use pgtuskmaster_rust::{
-    api::NodeState,
-    ha::types::{AuthorityProjection, PublicationState},
-};
+use pgtuskmaster_rust::api::{authoritative_primary_member, NodeState};
 use tokio::{
     runtime::{Builder, Handle, RuntimeFlavor},
     task::JoinHandle,
@@ -1430,7 +1427,7 @@ fn validate_seed_primary(status: &NodeState) -> Result<()> {
 
 fn format_bootstrap_warnings(status: &NodeState) -> String {
     let mut warnings = Vec::new();
-    if operator_visible_primary(status).is_none() {
+    if authoritative_primary_member(status).is_none() {
         warnings.push("no_primary".to_string());
     }
     if status.dcs.member_count() == 0 {
@@ -1444,13 +1441,7 @@ fn format_bootstrap_warnings(status: &NodeState) -> String {
 }
 
 fn operator_visible_primary(status: &NodeState) -> Option<String> {
-    match &status.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.0.clone())
-        }
-        PublicationState::Unknown
-        | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
-    }
+    authoritative_primary_member(status).map(|member_id| member_id.0.clone())
 }
 
 #[cfg(test)]

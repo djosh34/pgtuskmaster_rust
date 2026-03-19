@@ -1,11 +1,12 @@
 use crate::{
+    api::authoritative_primary_member,
     cli::{
         args::ConnectionOptions, client::CliTlsConfig, config::OperatorContext, error::CliError,
         status::fetch_seed_state,
     },
     command::{
-        authoritative_primary_member, CommandOutputDto, StateDerivedConnectionCommandDto,
-        StateDerivedConnectionTargetDto, StateProjectionDto,
+        CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionTargetDto,
+        StateProjectionDto,
     },
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},

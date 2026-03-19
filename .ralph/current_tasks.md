@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 07:12:51 AM CET 2026
+Generated: Thu Mar 19 07:26:52 AM CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-are-leaky.md`
 
@@ -124,6 +124,18 @@ Explore and research the codebase first, identify which child process or resourc
 <description>
 `bash .ralph/task_switch.sh` completed its main flow but still emitted `rm: cannot remove '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/current_task.txt': No such file or directory`.
 Explore and research the Ralph task-switch flow first, then fix the script so task switching does not emit this avoidable file-removal error when the current-task marker is already missing.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-write-convergence-healthy-invariant-counter-stalls.md`
+
+```
+## Bug: Write convergence healthy invariant can stall with zero shared writes <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` failed in `tests/ha/support/invariants/write_convergence.rs` for `one_primary_and_two_replicas_are_determined_healthy`.
+The test timed out waiting for the shared counter to reach `3`, but observed `0`, which means the writer loop never recorded any successful shared writes during the healthy primary-plus-replicas scenario.
 ```
 
 ==============
