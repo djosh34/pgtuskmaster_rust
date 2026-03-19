@@ -5,7 +5,7 @@ use crate::{
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
-    state::{LeaseEpoch, MemberId, PgEndpoint, WorkerError, WorkerStatus},
+    state::{MemberId, PgEndpoint, WorkerError, WorkerStatus},
 };
 
 use super::{
@@ -394,7 +394,44 @@ fn build_global_knowledge(
     let coordination = dcs
         .quorum_state()
         .map(|quorum| {
-            let leadership = build_leadership_view(quorum, self_id);
+            let leadership = match quorum.leadership.clone() {
+                None => LeadershipView::Open,
+                Some(epoch) if epoch.holder == *self_id => LeadershipView::HeldBySelf(epoch),
+                Some(epoch) => match quorum.member(&epoch.holder) {
+                    None => LeadershipView::HeldByPeer {
+                        epoch,
+                        state: PeerLeaderState::Unreachable,
+                    },
+                    Some(member) => match member.postgres() {
+                        PgInfoState::Primary { .. }
+                            if member.postgres().readiness() == Readiness::Ready =>
+                        {
+                            LeadershipView::HeldByPeer {
+                                epoch,
+                                state: PeerLeaderState::PrimaryReady,
+                            }
+                        }
+                        PgInfoState::Primary { .. } => LeadershipView::HeldByPeer {
+                            epoch,
+                            state: PeerLeaderState::Recovering,
+                        },
+                        PgInfoState::Unknown { .. }
+                            if member.postgres().readiness() == Readiness::Ready =>
+                        {
+                            LeadershipView::HeldByPeer {
+                                epoch,
+                                state: PeerLeaderState::Unreachable,
+                            }
+                        }
+                        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => {
+                            LeadershipView::HeldByPeer {
+                                epoch,
+                                state: PeerLeaderState::Recovering,
+                            }
+                        }
+                    },
+                },
+            };
             let peers = quorum
                 .members()
                 .filter(|(member_id, _)| *member_id != self_id)
@@ -503,48 +540,6 @@ fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
         } => wal_position(common.timeline, Some(*replay_lsn))
             .or_else(|| follow_lsn.and_then(|lsn| wal_position(common.timeline, Some(lsn)))),
         _ => None,
-    }
-}
-
-fn build_leadership_view(dcs: &DcsQuorumState, self_id: &MemberId) -> LeadershipView {
-    let Some(epoch) = dcs.leadership.clone() else {
-        return LeadershipView::Open;
-    };
-    if epoch.holder == *self_id {
-        return LeadershipView::HeldBySelf(epoch);
-    }
-
-    match dcs.member(&epoch.holder) {
-        None => LeadershipView::HeldByPeer {
-            epoch,
-            state: PeerLeaderState::Unreachable,
-        },
-        Some(member) => classify_foreign_leader(member, epoch),
-    }
-}
-
-fn classify_foreign_leader(member: &DcsMemberState, epoch: LeaseEpoch) -> LeadershipView {
-    match member.postgres() {
-        PgInfoState::Primary { .. } if member.postgres().readiness() == Readiness::Ready => {
-            LeadershipView::HeldByPeer {
-                epoch,
-                state: PeerLeaderState::PrimaryReady,
-            }
-        }
-        PgInfoState::Primary { .. } => LeadershipView::HeldByPeer {
-            epoch,
-            state: PeerLeaderState::Recovering,
-        },
-        PgInfoState::Unknown { .. } if member.postgres().readiness() == Readiness::Ready => {
-            LeadershipView::HeldByPeer {
-                epoch,
-                state: PeerLeaderState::Unreachable,
-            }
-        }
-        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => LeadershipView::HeldByPeer {
-            epoch,
-            state: PeerLeaderState::Recovering,
-        },
     }
 }
 
