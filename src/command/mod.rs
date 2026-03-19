@@ -68,7 +68,30 @@ impl StateProjectionDto {
         queried_via: StateQueryOriginDto,
         verbose: bool,
     ) -> Self {
-        let warnings = collect_warnings(state);
+        let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
+            code: "degraded_dcs_mode".to_string(),
+            message: format!("seed node reports {} DCS mode", state.dcs.authority()),
+        });
+        let no_primary_warning =
+            authoritative_primary_member(state)
+                .is_none()
+                .then(|| StateWarningDto {
+                    code: "no_primary".to_string(),
+                    message: "seed node does not currently project an authoritative primary"
+                        .to_string(),
+                });
+        let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
+            code: "no_members".to_string(),
+            message: "seed node does not currently expose any DCS member slots".to_string(),
+        });
+        let warnings: Vec<_> = [
+            degraded_mode_warning,
+            no_primary_warning,
+            no_members_warning,
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         let health = if warnings.is_empty() {
             StateHealthDto::Healthy
         } else {
@@ -303,34 +326,6 @@ pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberI
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
-}
-
-fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
-    let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
-        code: "degraded_dcs_mode".to_string(),
-        message: format!("seed node reports {} DCS mode", state.dcs.authority()),
-    });
-    let no_primary_warning =
-        authoritative_primary_member(state)
-            .is_none()
-            .then(|| StateWarningDto {
-                code: "no_primary".to_string(),
-                message: "seed node does not currently project an authoritative primary"
-                    .to_string(),
-            });
-    let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
-        code: "no_members".to_string(),
-        message: "seed node does not currently expose any DCS member slots".to_string(),
-    });
-
-    [
-        degraded_mode_warning,
-        no_primary_warning,
-        no_members_warning,
-    ]
-    .into_iter()
-    .flatten()
-    .collect()
 }
 
 pub fn switchover_projection(snapshot: &crate::dcs::DcsSnapshot) -> Option<StateSwitchoverDto> {
