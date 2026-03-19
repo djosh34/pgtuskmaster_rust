@@ -1,18 +1,18 @@
 use super::types::{
     CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
-    IdleReason, LeadershipView, LocalAction, LocalDataState, PostgresState, ProcessAssessment,
-    PublicationAction, PublicationGoal, PublicationState, ReconcilePlan, RecoveryPlan, TargetRole,
-    WorldView,
+    IdleReason, LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState,
+    ProcessAssessment, PublicationAction, PublicationGoal, PublicationState, RecoveryPlan,
+    TargetRole, WorldView,
 };
 use crate::process::jobs::{
     PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
 };
 
-pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> ReconcilePlan {
+pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> PlannedActions {
     let publication_plan = reconcile_publication(&world.local.publication, desired);
     let switchover_plan = reconcile_switchover(world, desired);
     let role_plan = match &world.local.process {
-        ProcessAssessment::Running(_) => ReconcilePlan::default(),
+        ProcessAssessment::Running(_) => PlannedActions::default(),
         ProcessAssessment::Idle | ProcessAssessment::Failed(_) => {
             reconcile_role(world, &desired.role)
         }
@@ -21,19 +21,19 @@ pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> ReconcileP
     publication_plan.merge(switchover_plan).merge(role_plan)
 }
 
-fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> ReconcilePlan {
+fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> PlannedActions {
     match &desired.publication {
-        PublicationGoal::KeepCurrent => ReconcilePlan::default(),
+        PublicationGoal::KeepCurrent => PlannedActions::default(),
         PublicationGoal::Publish(projection)
             if current == &PublicationState::Projected(projection.clone()) =>
         {
-            ReconcilePlan::default()
+            PlannedActions::default()
         }
-        publication => ReconcilePlan::publication(PublicationAction::Publish(publication.clone())),
+        publication => PlannedActions::publication(PublicationAction::Publish(publication.clone())),
     }
 }
 
-fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> ReconcilePlan {
+fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> PlannedActions {
     match (
         world
             .global
@@ -48,42 +48,42 @@ fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> ReconcileP
                 | super::types::SwitchoverState::Specific(_),
             ),
             true,
-        ) => ReconcilePlan::coordination(CoordinationAction::ClearSwitchover),
+        ) => PlannedActions::coordination(CoordinationAction::ClearSwitchover),
         (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
-            ReconcilePlan::default()
+            PlannedActions::default()
         }
     }
 }
 
-fn reconcile_role(world: &WorldView, target: &TargetRole) -> ReconcilePlan {
+fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
     match target {
         TargetRole::Leader(_) => match (&world.local.data_dir, &world.local.postgres) {
-            (DataDirState::Missing, _) => ReconcilePlan::process(ProcessIntent::Bootstrap),
+            (DataDirState::Missing, _) => PlannedActions::process(ProcessIntent::Bootstrap),
             (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => {
-                ReconcilePlan::process(ProcessIntent::Bootstrap)
+                PlannedActions::process(ProcessIntent::Bootstrap)
             }
             (_, _) if world.local.observation.waiting_for_fresh_pg_after_start() => {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             (_, _) if world.local.observation.waiting_for_fresh_pg_after_promote() => {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             (DataDirState::Initialized(_), PostgresState::Offline) => {
-                ReconcilePlan::process(ProcessIntent::Start(PostgresStartIntent::Primary))
+                PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::Primary))
             }
             (DataDirState::Initialized(_), PostgresState::Replica { .. }) => {
-                ReconcilePlan::process(ProcessIntent::Promote)
+                PlannedActions::process(ProcessIntent::Promote)
             }
             (DataDirState::Initialized(_), PostgresState::Primary { .. }) => {
                 if world.local.managed_roles_reconciled {
-                    ReconcilePlan::default()
+                    PlannedActions::default()
                 } else {
-                    ReconcilePlan::local(LocalAction::ReconcileManagedRoles)
+                    PlannedActions::local(LocalAction::ReconcileManagedRoles)
                 }
             }
         },
         TargetRole::Candidate(kind) => {
-            ReconcilePlan::coordination(CoordinationAction::AcquireLease(kind.clone()))
+            PlannedActions::coordination(CoordinationAction::AcquireLease(kind.clone()))
         }
         TargetRole::Follower(goal) => reconcile_follow_role(world, goal),
         TargetRole::FailSafe(goal) => reconcile_failsafe_role(world, goal),
@@ -91,16 +91,16 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> ReconcilePlan {
             PostgresState::Primary { .. } | PostgresState::Replica { .. }
                 if world.local.observation.waiting_for_fresh_pg_after_demote() =>
             {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
             }
             PostgresState::Offline => {
                 if leadership_held_by_self(world) {
-                    ReconcilePlan::coordination(CoordinationAction::ReleaseLease)
+                    PlannedActions::coordination(CoordinationAction::ReleaseLease)
                 } else {
-                    ReconcilePlan::default()
+                    PlannedActions::default()
                 }
             }
         },
@@ -109,19 +109,19 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> ReconcilePlan {
     }
 }
 
-fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> ReconcilePlan {
+fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> PlannedActions {
     match goal.recovery {
-        RecoveryPlan::None => ReconcilePlan::default(),
+        RecoveryPlan::None => PlannedActions::default(),
         RecoveryPlan::Basebackup => match &world.local.postgres {
             PostgresState::Primary { .. } | PostgresState::Replica { .. }
                 if world.local.observation.waiting_for_fresh_pg_after_demote() =>
             {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
             }
-            PostgresState::Offline => ReconcilePlan::process(ProcessIntent::ProvisionReplica(
+            PostgresState::Offline => PlannedActions::process(ProcessIntent::ProvisionReplica(
                 ReplicaProvisionIntent::BaseBackup {
                     leader: goal.leader.clone(),
                 },
@@ -131,12 +131,12 @@ fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> ReconcilePlan 
             PostgresState::Primary { .. } | PostgresState::Replica { .. }
                 if world.local.observation.waiting_for_fresh_pg_after_demote() =>
             {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
             }
-            PostgresState::Offline => ReconcilePlan::process(ProcessIntent::ProvisionReplica(
+            PostgresState::Offline => PlannedActions::process(ProcessIntent::ProvisionReplica(
                 ReplicaProvisionIntent::PgRewind {
                     leader: goal.leader.clone(),
                 },
@@ -144,85 +144,85 @@ fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> ReconcilePlan 
         },
         RecoveryPlan::StartStreaming => {
             if world.local.observation.waiting_for_fresh_pg_after_start() {
-                return ReconcilePlan::default();
+                return PlannedActions::default();
             }
             if world.local.observation.waiting_for_fresh_pg_after_demote() {
-                return ReconcilePlan::default();
+                return PlannedActions::default();
             }
 
             match &world.local.postgres {
                 PostgresState::Offline => {
-                    ReconcilePlan::process(ProcessIntent::Start(PostgresStartIntent::Replica {
+                    PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::Replica {
                         leader: goal.leader.clone(),
                     }))
                 }
                 PostgresState::Primary { .. } => {
-                    ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
                 }
                 PostgresState::Replica {
                     upstream,
                     replication: _,
                 } => match upstream {
                     Some(current_upstream) if current_upstream == &goal.leader => {
-                        ReconcilePlan::default()
+                        PlannedActions::default()
                     }
-                    Some(_) => ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast)),
-                    None => ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast)),
+                    Some(_) => PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast)),
+                    None => PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast)),
                 },
             }
         }
     }
 }
 
-fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> ReconcilePlan {
+fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> PlannedActions {
     match goal {
         FailSafeGoal::PrimaryMustStop(_) => match &world.local.postgres {
             PostgresState::Primary { .. } | PostgresState::Replica { .. }
                 if world.local.observation.waiting_for_fresh_pg_after_demote() =>
             {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Immediate))
+                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
             }
-            PostgresState::Offline => ReconcilePlan::default(),
+            PostgresState::Offline => PlannedActions::default(),
         },
-        FailSafeGoal::ReplicaKeepFollowing(_) => ReconcilePlan::default(),
+        FailSafeGoal::ReplicaKeepFollowing(_) => PlannedActions::default(),
         FailSafeGoal::WaitForQuorum => match &world.local.postgres {
             PostgresState::Primary { .. }
                 if world.local.observation.waiting_for_fresh_pg_after_demote() =>
             {
-                ReconcilePlan::default()
+                PlannedActions::default()
             }
             PostgresState::Primary { .. } => {
-                ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Immediate))
+                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
             }
-            PostgresState::Replica { .. } => ReconcilePlan::default(),
-            PostgresState::Offline => ReconcilePlan::default(),
+            PostgresState::Replica { .. } => PlannedActions::default(),
+            PostgresState::Offline => PlannedActions::default(),
         },
     }
 }
 
-fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> ReconcilePlan {
+fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActions {
     match reason {
         FenceReason::StorageStalled if leadership_held_by_self(world) => {
-            ReconcilePlan::coordination(CoordinationAction::ReleaseLease)
+            PlannedActions::coordination(CoordinationAction::ReleaseLease)
         }
         FenceReason::ForeignLeaderDetected | FenceReason::StorageStalled => {
             match &world.local.postgres {
                 PostgresState::Primary { .. } | PostgresState::Replica { .. }
                     if world.local.observation.waiting_for_fresh_pg_after_demote() =>
                 {
-                    ReconcilePlan::default()
+                    PlannedActions::default()
                 }
                 PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                    ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Immediate))
+                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
                 }
                 PostgresState::Offline => {
                     if leadership_held_by_self(world) {
-                        ReconcilePlan::coordination(CoordinationAction::ReleaseLease)
+                        PlannedActions::coordination(CoordinationAction::ReleaseLease)
                     } else {
-                        ReconcilePlan::default()
+                        PlannedActions::default()
                     }
                 }
             }
@@ -230,23 +230,23 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> ReconcilePl
     }
 }
 
-fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> ReconcilePlan {
+fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> PlannedActions {
     match &world.local.postgres {
         PostgresState::Primary { .. }
             if world.local.observation.waiting_for_fresh_pg_after_demote() =>
         {
-            ReconcilePlan::default()
+            PlannedActions::default()
         }
         PostgresState::Primary { .. } => {
-            ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
         }
         PostgresState::Offline => match &world.local.data_dir {
             DataDirState::Initialized(_) => {
-                ReconcilePlan::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
+                PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
             }
-            DataDirState::Missing => ReconcilePlan::default(),
+            DataDirState::Missing => PlannedActions::default(),
         },
-        PostgresState::Replica { .. } => ReconcilePlan::default(),
+        PostgresState::Replica { .. } => PlannedActions::default(),
     }
 }
 
@@ -335,7 +335,7 @@ mod tests {
 
         assert_eq!(
             reconcile(&world, &desired),
-            ReconcilePlan::publication(PublicationAction::Publish(publication))
+            PlannedActions::publication(PublicationAction::Publish(publication))
         );
     }
 
@@ -391,7 +391,7 @@ mod tests {
 
         assert_eq!(
             reconcile(&world, &desired),
-            ReconcilePlan::coordination(CoordinationAction::ReleaseLease)
+            PlannedActions::coordination(CoordinationAction::ReleaseLease)
         );
     }
 
@@ -426,7 +426,7 @@ mod tests {
 
         assert_eq!(
             reconcile(&world, &desired),
-            ReconcilePlan::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
+            PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
         );
     }
 
@@ -494,7 +494,7 @@ mod tests {
 
         assert_eq!(
             reconcile(&world, &desired),
-            ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
         );
     }
 
@@ -534,7 +534,7 @@ mod tests {
 
         assert_eq!(
             reconcile(&world, &desired),
-            ReconcilePlan::process(ProcessIntent::Demote(ShutdownMode::Fast))
+            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
         );
     }
 }

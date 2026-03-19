@@ -18,8 +18,8 @@ use super::{
         CoordinationState, DataDirState, DesiredState, DivergenceState, ElectionEligibility,
         GlobalKnowledge, IneligibleReason, LeadershipView, LocalAction, LocalDataState,
         LocalKnowledge, ObservationState, ObservedPrimary, PeerKnowledge, PeerLeaderState,
-        PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal, PublicationState,
-        QuorumCoordinationState, ReconcilePlan, ReplicationState, StorageState, WalPosition,
+        PlannedActions, PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal,
+        PublicationState, QuorumCoordinationState, ReplicationState, StorageState, WalPosition,
         WorldView,
     },
 };
@@ -155,7 +155,7 @@ fn build_next_state(
     current: &HaState,
     world: &WorldView,
     desired: &DesiredState,
-    plan: &ReconcilePlan,
+    plan: &PlannedActions,
 ) -> HaState {
     HaState {
         worker: WorkerStatus::Running,
@@ -165,11 +165,11 @@ fn build_next_state(
         role: desired.role.clone(),
         world: world.clone(),
         clear_switchover: desired.clear_switchover,
-        planned_actions: super::types::PlannedActions::from_plan(plan),
+        planned_actions: plan.clone(),
     }
 }
 
-fn next_managed_roles_reconciled(current: &HaState, plan: &ReconcilePlan) -> bool {
+fn next_managed_roles_reconciled(current: &HaState, plan: &PlannedActions) -> bool {
     if matches!(
         plan.process,
         Some(ProcessIntent::Bootstrap)
@@ -193,7 +193,7 @@ fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) ->
 async fn execute_plan(
     ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
-    plan: &ReconcilePlan,
+    plan: &PlannedActions,
 ) -> Result<(), WorkerError> {
     if let Some(action) = &plan.coordination {
         execute_coordination_action(ctx, ha_tick, 0, action).await?;

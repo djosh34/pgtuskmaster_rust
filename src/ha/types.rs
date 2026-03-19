@@ -312,14 +312,6 @@ pub struct PlannedActions {
     pub process: Option<ProcessIntent>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct ReconcilePlan {
-    pub(crate) publication: Option<PublicationAction>,
-    pub(crate) coordination: Option<CoordinationAction>,
-    pub(crate) local: Option<LocalAction>,
-    pub(crate) process: Option<ProcessIntent>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CoordinationAction {
     AcquireLease(Candidacy),
@@ -342,8 +334,6 @@ pub struct WalPosition {
     pub timeline: u64,
     pub lsn: u64,
 }
-
-pub type AuthorityProjectionState = PublicationState;
 
 impl CoordinationState {
     pub(crate) fn as_quorum(&self) -> Option<&QuorumCoordinationState> {
@@ -430,17 +420,6 @@ impl PublicationState {
 }
 
 impl PlannedActions {
-    pub(crate) fn from_plan(value: &ReconcilePlan) -> Self {
-        Self {
-            publication: value.publication.clone(),
-            coordination: value.coordination.clone(),
-            local: value.local.clone(),
-            process: value.process.clone(),
-        }
-    }
-}
-
-impl ReconcilePlan {
     pub(crate) fn process(intent: ProcessIntent) -> Self {
         Self {
             process: Some(intent),

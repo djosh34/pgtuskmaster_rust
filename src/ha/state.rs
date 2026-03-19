@@ -11,14 +11,14 @@ use crate::{
     state::{NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::types::{AuthorityProjectionState, IdleReason, PlannedActions, TargetRole, WorldView};
+use super::types::{IdleReason, PlannedActions, PublicationState, TargetRole, WorldView};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HaState {
     pub worker: WorkerStatus,
     pub tick: u64,
     pub managed_roles_reconciled: bool,
-    pub publication: AuthorityProjectionState,
+    pub publication: PublicationState,
     pub role: TargetRole,
     pub world: WorldView,
     pub clear_switchover: bool,
@@ -61,7 +61,7 @@ impl HaState {
             worker,
             tick: 0,
             managed_roles_reconciled: false,
-            publication: AuthorityProjectionState::unknown(),
+            publication: PublicationState::unknown(),
             role: TargetRole::Idle(IdleReason::AwaitingLeader),
             world: WorldView::initial(),
             clear_switchover: false,
