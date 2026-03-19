@@ -16,7 +16,7 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
     let poll = poll_once(&ctx.probe.to_conninfo()).await;
     let next_state = match poll {
         Ok(polled) => {
-            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))?
+            to_member_status(WorkerStatus::Running, SqlStatus::Healthy, now, Some(polled))
         }
         Err(ref err) => {
             ctx.runtime
@@ -27,7 +27,7 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerErr
                 .map_err(|err| {
                     WorkerError::Message(format!("pginfo poll failure log emit failed: {err}"))
                 })?;
-            to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None)?
+            to_member_status(WorkerStatus::Running, SqlStatus::Unreachable, now, None)
         }
     };
 

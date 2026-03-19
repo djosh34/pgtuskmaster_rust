@@ -9,7 +9,7 @@ use super::query::PgPollData;
 use crate::state::StatePublisher;
 use crate::state::{
     MemberId, NodeIdentity, ObservedWalPosition, PgEndpoint, SystemIdentifier, TimelineId,
-    UnixMillis, WalLsn, WorkerError, WorkerStatus,
+    UnixMillis, WalLsn, WorkerStatus,
 };
 use crate::{config::RuntimeConfig, logging::LogSender, process::state::ProcessRuntimePlan};
 
@@ -270,21 +270,15 @@ pub(crate) fn derive_readiness(sql: &SqlStatus, is_ready: bool) -> Readiness {
     }
 }
 
-pub(crate) fn to_member_status(
+pub(super) fn to_member_status(
     worker_status: WorkerStatus,
     sql_status: SqlStatus,
     polled_at: UnixMillis,
     poll: Option<PgPollData>,
-) -> Result<PgInfoState, WorkerError> {
+) -> PgInfoState {
     let readiness_signal = poll.as_ref().map(|value| value.is_ready).unwrap_or(false);
     let timeline = poll.as_ref().and_then(|value| value.timeline);
     let system_identifier = poll.as_ref().and_then(|value| value.system_identifier);
-    let primary_conninfo = poll
-        .as_ref()
-        .and_then(|value| value.primary_conninfo.as_deref())
-        .map(super::conninfo::parse_pg_conninfo)
-        .transpose()
-        .map_err(|err| WorkerError::Message(format!("primary_conninfo parse failed: {err}")))?;
     let common = PgInfoCommon {
         worker: worker_status,
         sql: sql_status,
@@ -294,7 +288,9 @@ pub(crate) fn to_member_status(
         pg_config: PgConfig {
             port: None,
             hot_standby: None,
-            primary_conninfo,
+            primary_conninfo: poll
+                .as_ref()
+                .and_then(|value| value.primary_conninfo.clone()),
             primary_slot_name: poll
                 .as_ref()
                 .and_then(|value| value.primary_slot_name.clone()),
@@ -304,11 +300,11 @@ pub(crate) fn to_member_status(
     };
 
     let Some(polled) = poll else {
-        return Ok(PgInfoState::Unknown { common });
+        return PgInfoState::Unknown { common };
     };
 
     if polled.in_recovery {
-        return Ok(PgInfoState::Replica {
+        return PgInfoState::Replica {
             common,
             replay_lsn: polled
                 .replay_lsn
@@ -316,11 +312,11 @@ pub(crate) fn to_member_status(
                 .unwrap_or(WalLsn(0)),
             follow_lsn: polled.receive_lsn,
             upstream: None,
-        });
+        };
     }
 
     if let Some(wal_lsn) = polled.current_wal_lsn {
-        return Ok(PgInfoState::Primary {
+        return PgInfoState::Primary {
             common,
             wal_lsn,
             slots: polled
@@ -328,10 +324,10 @@ pub(crate) fn to_member_status(
                 .into_iter()
                 .map(|name| ReplicationSlotInfo { name })
                 .collect(),
-        });
+        };
     }
 
-    Ok(PgInfoState::Unknown { common })
+    PgInfoState::Unknown { common }
 }
 
 #[cfg(test)]
@@ -382,14 +378,13 @@ mod tests {
             UnixMillis(100),
             Some(poll),
         );
-        assert!(state.is_ok(), "unexpected error: {state:?}");
         let mut matched_primary = false;
-        if let Ok(PgInfoState::Primary {
+        if let PgInfoState::Primary {
             wal_lsn,
             slots,
             common,
             ..
-        }) = state
+        } = state
         {
             matched_primary = true;
             assert_eq!(wal_lsn, WalLsn(42));
@@ -420,14 +415,13 @@ mod tests {
             UnixMillis(100),
             Some(poll),
         );
-        assert!(state.is_ok(), "unexpected error: {state:?}");
         let mut matched_replica = false;
-        if let Ok(PgInfoState::Replica {
+        if let PgInfoState::Replica {
             replay_lsn,
             follow_lsn,
             common,
             ..
-        }) = state
+        } = state
         {
             matched_replica = true;
             assert_eq!(replay_lsn, WalLsn(11));
@@ -457,14 +451,13 @@ mod tests {
                 slot_names: Vec::new(),
             }),
         );
-        assert!(state.is_ok(), "unexpected error: {state:?}");
         let mut matched_replica = false;
-        if let Ok(PgInfoState::Replica {
+        if let PgInfoState::Replica {
             replay_lsn,
             follow_lsn,
             common,
             ..
-        }) = state
+        } = state
         {
             matched_replica = true;
             assert_eq!(replay_lsn, WalLsn(0));

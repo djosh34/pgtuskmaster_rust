@@ -1,5 +1,8 @@
 use crate::{
-    pginfo::state::{render_pg_conninfo, PgConnInfo},
+    pginfo::{
+        conninfo::parse_pg_conninfo,
+        state::{render_pg_conninfo, PgConnInfo},
+    },
     state::{SystemIdentifier, TimelineId, WalLsn, WorkerError},
 };
 
@@ -40,7 +43,7 @@ CROSS JOIN (
 "#;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgPollData {
+pub(super) struct PgPollData {
     pub(crate) in_recovery: bool,
     pub(crate) is_ready: bool,
     pub(crate) timeline: Option<TimelineId>,
@@ -48,12 +51,12 @@ pub(crate) struct PgPollData {
     pub(crate) current_wal_lsn: Option<WalLsn>,
     pub(crate) replay_lsn: Option<WalLsn>,
     pub(crate) receive_lsn: Option<WalLsn>,
-    pub(crate) primary_conninfo: Option<String>,
+    pub(crate) primary_conninfo: Option<PgConnInfo>,
     pub(crate) primary_slot_name: Option<String>,
     pub(crate) slot_names: Vec<String>,
 }
 
-pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollData, WorkerError> {
+pub(super) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollData, WorkerError> {
     let postgres_dsn = render_pg_conninfo(postgres_conninfo);
     let (client, connection) = tokio_postgres::connect(&postgres_dsn, tokio_postgres::NoTls)
         .await
@@ -102,9 +105,14 @@ pub(crate) async fn poll_once(postgres_conninfo: &PgConnInfo) -> Result<PgPollDa
     let slot_names: Vec<String> = row
         .try_get("slot_names")
         .map_err(|err| WorkerError::Message(format!("slot_names decode failed: {err}")))?;
-    let primary_conninfo: Option<String> = row
+    let primary_conninfo_raw: Option<String> = row
         .try_get("primary_conninfo")
         .map_err(|err| WorkerError::Message(format!("primary_conninfo decode failed: {err}")))?;
+    let primary_conninfo = primary_conninfo_raw
+        .as_deref()
+        .map(parse_pg_conninfo)
+        .transpose()
+        .map_err(|err| WorkerError::Message(format!("primary_conninfo parse failed: {err}")))?;
     let primary_slot_name: Option<String> = row
         .try_get("primary_slot_name")
         .map_err(|err| WorkerError::Message(format!("primary_slot_name decode failed: {err}")))?;
