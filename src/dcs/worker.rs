@@ -11,7 +11,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use crate::{
     config::{
         resolve_inline_or_path_bytes, resolve_secret_string, DcsAuthConfig, DcsClientConfig,
-        DcsEndpoint, DcsTlsConfig,
+        DcsTlsConfig,
     },
     state::{LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, SwitchoverState, WorkerError},
 };
@@ -239,7 +239,13 @@ pub(super) async fn run(mut ctx: DcsRuntimeCtx) -> Result<(), WorkerError> {
 
 async fn connect_session(ctx: &mut DcsRuntimeCtx) -> Result<ConnectedSession, DcsError> {
     let scope_prefix = scope_prefix(ctx.identity.scope.as_str());
-    let mut client = connect_client(&ctx.endpoints, &ctx.client).await?;
+    let endpoints = ctx
+        .endpoints
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let options = build_connect_options(&ctx.client)?;
+    let mut client = timeout_etcd("etcd connect", Client::connect(endpoints, options)).await?;
     let revision = load_snapshot(
         ctx.identity.scope.as_str(),
         &mut client,
@@ -832,18 +838,6 @@ fn leader_keepalive_interval(ttl_seconds: i64) -> Duration {
         return Duration::from_millis(500);
     }
     Duration::from_secs(std::cmp::max(1, ttl_seconds as u64 / 3))
-}
-
-async fn connect_client(
-    endpoints: &[DcsEndpoint],
-    client: &DcsClientConfig,
-) -> Result<Client, DcsError> {
-    let endpoints = endpoints
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>();
-    let options = build_connect_options(client)?;
-    timeout_etcd("etcd connect", Client::connect(endpoints, options)).await
 }
 
 fn build_connect_options(client: &DcsClientConfig) -> Result<Option<ConnectOptions>, DcsError> {
