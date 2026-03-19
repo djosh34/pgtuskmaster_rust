@@ -246,7 +246,7 @@ where
         });
     }
 
-    serde_json::from_str(&body).map_err(|err| CliError::Decode(err.to_string()))
+    serde_json::from_str(&body).map_err(CliError::Decode)
 }
 
 fn normalize_token(raw: &SecretSource) -> Option<String> {

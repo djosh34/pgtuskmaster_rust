@@ -11,7 +11,7 @@ pub enum CliError {
     #[error("api request failed with status {status}: {body}")]
     ApiStatus { status: u16, body: String },
     #[error("response decode failed: {0}")]
-    Decode(String),
+    Decode(#[source] serde_json::Error),
     #[error("request build failed: {0}")]
     RequestBuild(String),
     #[error("resolution error: {0}")]
@@ -40,7 +40,7 @@ impl CliError {
 
 #[cfg(test)]
 mod tests {
-    use std::{error::Error as _, io, process::ExitCode};
+    use std::{error::Error, io, process::ExitCode};
 
     use super::CliError;
 
@@ -57,5 +57,26 @@ mod tests {
             err.source().map(ToString::to_string).as_deref(),
             Some("json sink failed")
         );
+    }
+
+    #[test]
+    fn decode_errors_keep_source_and_exit_code() -> Result<(), Box<dyn Error>> {
+        let source = match serde_json::from_str::<serde_json::Value>("{") {
+            Ok(value) => {
+                return Err(
+                    io::Error::other(format!("expected decode failure, got {value}")).into(),
+                );
+            }
+            Err(source) => source,
+        };
+        let err = CliError::Decode(source);
+
+        assert_eq!(err.exit_code(), ExitCode::from(5));
+        assert!(err.to_string().starts_with("response decode failed: "));
+        assert_eq!(
+            err.source().map(ToString::to_string).as_deref(),
+            Some("EOF while parsing an object at line 1 column 1")
+        );
+        Ok(())
     }
 }
