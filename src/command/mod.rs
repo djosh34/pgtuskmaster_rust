@@ -247,7 +247,8 @@ fn state_row(
             yes_no(is_self).to_string(),
             member_role_label(member.postgres()).to_string(),
             dcs_mode_label(&state.dcs).to_string(),
-            authority_primary_member_label(state)
+            authoritative_primary_member(state)
+                .map(MemberId::as_str)
                 .unwrap_or("-")
                 .to_string(),
             readiness_label(&member.postgres().readiness()).to_string(),
@@ -307,10 +308,6 @@ pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberI
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
     }
-}
-
-fn authority_primary_member_label(state: &NodeState) -> Option<&str> {
-    authoritative_primary_member(state).map(MemberId::as_str)
 }
 
 fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
