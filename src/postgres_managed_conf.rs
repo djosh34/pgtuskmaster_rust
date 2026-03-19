@@ -205,7 +205,12 @@ pub(crate) fn validate_extra_guc_entry(
     value: &str,
 ) -> Result<(), ManagedPostgresConfError> {
     validate_extra_guc_name(key)?;
-    validate_extra_guc_value(key, value)?;
+    if value.chars().any(char::is_control) {
+        return Err(ManagedPostgresConfError::InvalidExtraGuc {
+            key: key.to_string(),
+            message: "value must not contain control characters".to_string(),
+        });
+    }
     Ok(())
 }
 
@@ -259,16 +264,6 @@ fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
         }
     }
 
-    Ok(())
-}
-
-fn validate_extra_guc_value(key: &str, value: &str) -> Result<(), ManagedPostgresConfError> {
-    if value.chars().any(char::is_control) {
-        return Err(ManagedPostgresConfError::InvalidExtraGuc {
-            key: key.to_string(),
-            message: "value must not contain control characters".to_string(),
-        });
-    }
     Ok(())
 }
 

@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 06:33:40 AM CET 2026
+Generated: Thu Mar 19 06:39:30 AM CET 2026
+
+# Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-are-leaky.md`
+
+```
+## Bug: API worker reload-certificates tests are leaky <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` passed on 2026-03-19, but nextest reported 5 leaky tests in `api::worker::tests`:
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
