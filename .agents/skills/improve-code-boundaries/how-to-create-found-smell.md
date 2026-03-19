@@ -5,7 +5,13 @@ It must look like:
 ```text
 path: <path to file> <linenumber-range>
 
-- I found smell xxx
-since it looks like
+I found smell x, [optionally y, z, etc]:
+
+
+I think this is smell x because of ...
+.. [explain why x, y, z applies to this code and it is bad]
+
+
+code:
 [insert code snippet]
 ```
