@@ -70,7 +70,10 @@ fn binary_path(env_var: &str, binary_name: &str) -> Result<std::path::PathBuf, S
     if candidate.exists() {
         Ok(candidate)
     } else {
-        Err(format!("{binary_name} binary not found at {}", candidate.display()))
+        Err(format!(
+            "{binary_name} binary not found at {}",
+            candidate.display()
+        ))
     }
 }
 

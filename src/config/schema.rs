@@ -584,7 +584,10 @@ impl BinaryResolutionConfig {
 
 fn conventional_postgres_bin_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    directories.extend(child_bin_dirs_matching(Path::new("/usr/lib/postgresql"), |_| true));
+    directories.extend(child_bin_dirs_matching(
+        Path::new("/usr/lib/postgresql"),
+        |_| true,
+    ));
     directories.extend(child_bin_dirs_matching(Path::new("/usr"), |name| {
         name.starts_with("pgsql-")
     }));
