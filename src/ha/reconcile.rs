@@ -1,264 +1,187 @@
+use crate::{
+    pginfo::state::{PgInfoState, SqlStatus},
+    process::jobs::{
+        ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+    },
+};
+
 use super::types::{
-    CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
-    LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState, ProcessAssessment,
-    PublicationAction, PublicationGoal, PublicationState, RecoveryPlan, TargetRole, WorldView,
-};
-use crate::process::jobs::{
-    ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+    FollowRecovery, HaDecision, HaMode, HaObservation, HaPlan, HaStep, LocalDataState,
+    PublicationState, SwitchoverState,
 };
 
-pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> PlannedActions {
-    let publication_plan = reconcile_publication(&world.local.publication, desired);
-    let switchover_plan = match (
-        world
-            .global
-            .coordination
-            .as_quorum()
-            .map(|coordination| &coordination.switchover),
-        desired.clear_switchover,
-    ) {
-        (
-            Some(
-                super::types::SwitchoverState::AnyHealthyReplica
-                | super::types::SwitchoverState::Specific(_),
-            ),
-            true,
-        ) => PlannedActions::coordination(CoordinationAction::ClearSwitchover),
-        (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
-            PlannedActions::default()
-        }
-    };
-    let role_plan = match &world.local.process {
-        ProcessAssessment::Running(_) => PlannedActions::default(),
-        ProcessAssessment::Idle | ProcessAssessment::Failed(_) => {
-            reconcile_role(world, &desired.role)
-        }
-    };
+pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> HaPlan {
+    let mut steps = Vec::new();
 
-    publication_plan.merge(switchover_plan).merge(role_plan)
-}
-
-fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> PlannedActions {
-    match &desired.publication {
-        PublicationGoal::KeepCurrent => PlannedActions::default(),
-        PublicationGoal::Publish(projection)
-            if current == &PublicationState::Projected(projection.clone()) =>
-        {
-            PlannedActions::default()
-        }
-        publication => PlannedActions::publication(PublicationAction::Publish(publication.clone())),
-    }
-}
-
-fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
-    match target {
-        TargetRole::Leader(_) => match (&world.local.data_dir, &world.local.postgres) {
-            (DataDirState::Missing, _) => PlannedActions::process(ProcessIntent::Bootstrap),
-            (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => {
-                PlannedActions::process(ProcessIntent::Bootstrap)
-            }
-            (_, _)
-                if world
-                    .local
-                    .observation
-                    .waiting_for_fresh_pg_after(ActiveJobKind::StartPrimary)
-                    || world
-                        .local
-                        .observation
-                        .waiting_for_fresh_pg_after(ActiveJobKind::Promote) =>
-            {
-                PlannedActions::default()
-            }
-            (DataDirState::Initialized(_), PostgresState::Offline) => {
-                PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::Primary))
-            }
-            (DataDirState::Initialized(_), PostgresState::Replica { .. }) => {
-                PlannedActions::process(ProcessIntent::Promote)
-            }
-            (DataDirState::Initialized(_), PostgresState::Primary { .. }) => {
-                if world.local.managed_roles_reconciled {
-                    PlannedActions::default()
-                } else {
-                    PlannedActions::local(LocalAction::ReconcileManagedRoles)
-                }
-            }
-        },
-        TargetRole::Candidate(kind) => {
-            PlannedActions::coordination(CoordinationAction::AcquireLease(kind.clone()))
-        }
-        TargetRole::Follower(goal) => reconcile_follow_role(world, goal),
-        TargetRole::FailSafe(goal) => reconcile_failsafe_role(world, goal),
-        TargetRole::DemotingForSwitchover(_) => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                if world
-                    .local
-                    .observation
-                    .waiting_for_fresh_pg_after(ActiveJobKind::Demote) =>
-            {
-                PlannedActions::default()
-            }
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-            }
-            PostgresState::Offline => {
-                if leadership_held_by_self(world) {
-                    PlannedActions::coordination(CoordinationAction::ReleaseLease)
-                } else {
-                    PlannedActions::default()
-                }
-            }
-        },
-        TargetRole::Fenced(reason) => reconcile_fenced_role(world, reason),
-        TargetRole::Idle(_) => {
-            let waiting_for_demote = world
-                .local
-                .observation
-                .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
-            match &world.local.postgres {
-                PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
-                PostgresState::Primary { .. } => {
-                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-                }
-                PostgresState::Offline => match &world.local.data_dir {
-                    DataDirState::Initialized(_) => PlannedActions::process(ProcessIntent::Start(
-                        PostgresStartIntent::DetachedStandby,
-                    )),
-                    DataDirState::Missing => PlannedActions::default(),
-                },
-                PostgresState::Replica { .. } => PlannedActions::default(),
-            }
+    if let Some(projection) = &decision.publication {
+        if observation.publication != PublicationState::Projected(projection.clone()) {
+            steps.push(HaStep::Publish(projection.clone()));
         }
     }
-}
 
-fn reconcile_follow_role(world: &WorldView, goal: &FollowGoal) -> PlannedActions {
-    let waiting_for_demote = world
-        .local
-        .observation
-        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
-    match goal.recovery {
-        RecoveryPlan::None => PlannedActions::default(),
-        RecoveryPlan::Basebackup | RecoveryPlan::Rewind => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } if waiting_for_demote => {
-                PlannedActions::default()
-            }
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-            }
-            PostgresState::Offline => {
-                PlannedActions::process(ProcessIntent::ProvisionReplica(match goal.recovery {
-                    RecoveryPlan::Basebackup => ReplicaProvisionIntent::BaseBackup {
-                        leader: goal.leader.clone(),
-                    },
-                    RecoveryPlan::Rewind => ReplicaProvisionIntent::PgRewind {
-                        leader: goal.leader.clone(),
-                    },
-                    RecoveryPlan::None | RecoveryPlan::StartStreaming => unreachable!(),
-                }))
-            }
-        },
-        RecoveryPlan::StartStreaming => {
-            if world
-                .local
-                .observation
-                .waiting_for_fresh_pg_after(ActiveJobKind::StartReplica)
-            {
-                return PlannedActions::default();
-            }
-            if waiting_for_demote {
-                return PlannedActions::default();
-            }
+    if decision.clear_switchover
+        && observation
+            .dcs
+            .switchover()
+            .is_some_and(|switchover| !matches!(switchover, SwitchoverState::None))
+    {
+        steps.push(HaStep::ClearSwitchover);
+    }
 
-            match &world.local.postgres {
-                PostgresState::Offline => {
-                    PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::Replica {
-                        leader: goal.leader.clone(),
-                    }))
-                }
-                PostgresState::Primary { .. } => {
-                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-                }
-                PostgresState::Replica {
-                    upstream,
-                    replication: _,
-                } => match upstream {
-                    Some(current_upstream) if current_upstream == &goal.leader => {
-                        PlannedActions::default()
+    if observation.process.active_job().is_some() {
+        return steps;
+    }
+
+    let waiting_for_demote = observation
+        .process
+        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::Demote);
+    let waiting_for_start_primary = observation
+        .process
+        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::StartPrimary);
+    let waiting_for_promote = observation
+        .process
+        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::Promote);
+    let waiting_for_start_replica = observation
+        .process
+        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::StartReplica);
+
+    match &decision.mode {
+        HaMode::Lead(_) => match observation.local_data {
+            LocalDataState::Missing | LocalDataState::BootstrapEmpty => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Bootstrap));
+            }
+            LocalDataState::ConsistentReplica
+            | LocalDataState::DivergedRewind
+            | LocalDataState::DivergedBasebackup
+                if waiting_for_start_primary || waiting_for_promote => {}
+            LocalDataState::ConsistentReplica
+            | LocalDataState::DivergedRewind
+            | LocalDataState::DivergedBasebackup => match pg_role(&observation.pg) {
+                PgRole::Offline => steps.push(HaStep::RunProcess(ProcessIntent::Start(
+                    PostgresStartIntent::Primary,
+                ))),
+                PgRole::Replica => steps.push(HaStep::RunProcess(ProcessIntent::Promote)),
+                PgRole::Primary => {
+                    if !observation.managed_roles_reconciled {
+                        steps.push(HaStep::ReconcileManagedRoles);
                     }
-                    Some(_) => PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast)),
-                    None => PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast)),
-                },
-            }
-        }
-    }
-}
-
-fn reconcile_failsafe_role(world: &WorldView, goal: &FailSafeGoal) -> PlannedActions {
-    let waiting_for_demote = world
-        .local
-        .observation
-        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
-    match goal {
-        FailSafeGoal::PrimaryMustStop(_) => match &world.local.postgres {
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } if waiting_for_demote => {
-                PlannedActions::default()
-            }
-            PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
-            }
-            PostgresState::Offline => PlannedActions::default(),
-        },
-        FailSafeGoal::ReplicaKeepFollowing(_) => PlannedActions::default(),
-        FailSafeGoal::WaitForQuorum => match &world.local.postgres {
-            PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
-            PostgresState::Primary { .. } => {
-                PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
-            }
-            PostgresState::Replica { .. } => PlannedActions::default(),
-            PostgresState::Offline => PlannedActions::default(),
-        },
-    }
-}
-
-fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActions {
-    let waiting_for_demote = world
-        .local
-        .observation
-        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
-    match reason {
-        FenceReason::StorageStalled if leadership_held_by_self(world) => {
-            PlannedActions::coordination(CoordinationAction::ReleaseLease)
-        }
-        FenceReason::ForeignLeaderDetected | FenceReason::StorageStalled => {
-            match &world.local.postgres {
-                PostgresState::Primary { .. } | PostgresState::Replica { .. }
-                    if waiting_for_demote =>
-                {
-                    PlannedActions::default()
                 }
-                PostgresState::Primary { .. } | PostgresState::Replica { .. } => {
-                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Immediate))
+            },
+        },
+        HaMode::AcquireLease(kind) => steps.push(HaStep::AcquireLease(kind.clone())),
+        HaMode::Follow { leader, recovery } => match recovery {
+            FollowRecovery::None => {}
+            FollowRecovery::Basebackup | FollowRecovery::Rewind => match pg_role(&observation.pg) {
+                PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
+                PgRole::Primary | PgRole::Replica => {
+                    steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
                 }
-                PostgresState::Offline => {
-                    if leadership_held_by_self(world) {
-                        PlannedActions::coordination(CoordinationAction::ReleaseLease)
-                    } else {
-                        PlannedActions::default()
+                PgRole::Offline => {
+                    steps.push(HaStep::RunProcess(ProcessIntent::ProvisionReplica(
+                        match recovery {
+                            FollowRecovery::Basebackup => ReplicaProvisionIntent::BaseBackup {
+                                leader: leader.clone(),
+                            },
+                            FollowRecovery::Rewind => ReplicaProvisionIntent::PgRewind {
+                                leader: leader.clone(),
+                            },
+                            FollowRecovery::None | FollowRecovery::StartStreaming => unreachable!(),
+                        },
+                    )));
+                }
+            },
+            FollowRecovery::StartStreaming => {
+                if waiting_for_start_replica || waiting_for_demote {
+                    return steps;
+                }
+
+                match pg_role(&observation.pg) {
+                    PgRole::Offline => steps.push(HaStep::RunProcess(ProcessIntent::Start(
+                        PostgresStartIntent::Replica {
+                            leader: leader.clone(),
+                        },
+                    ))),
+                    PgRole::Primary => {
+                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                    }
+                    PgRole::Replica
+                        if observation.resolved_upstream.as_ref() == Some(leader) => {}
+                    PgRole::Replica => {
+                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
                     }
                 }
             }
+        },
+        HaMode::FailsafeStop { shutdown, .. } => match pg_role(&observation.pg) {
+            PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
+            PgRole::Primary | PgRole::Replica => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(shutdown.clone())));
+            }
+            PgRole::Offline => {}
+        },
+        HaMode::FailsafeKeepFollowing { .. } => {}
+        HaMode::WaitForQuorum => match pg_role(&observation.pg) {
+            PgRole::Primary if waiting_for_demote => {}
+            PgRole::Primary => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Immediate)));
+            }
+            PgRole::Offline | PgRole::Replica => {}
+        },
+        HaMode::WaitForLeader | HaMode::WaitForTarget(_) => match pg_role(&observation.pg) {
+            PgRole::Primary if waiting_for_demote => {}
+            PgRole::Primary => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+            }
+            PgRole::Offline if !matches!(observation.local_data, LocalDataState::Missing) => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Start(
+                    PostgresStartIntent::DetachedStandby,
+                )));
+            }
+            PgRole::Offline | PgRole::Replica => {}
+        },
+        HaMode::DemoteForSwitchover(_) => match pg_role(&observation.pg) {
+            PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
+            PgRole::Primary | PgRole::Replica => {
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+            }
+            PgRole::Offline => steps.push(HaStep::ReleaseLease),
+        },
+        HaMode::Fence {
+            release_lease,
+            shutdown,
+        } => {
+            if *release_lease {
+                steps.push(HaStep::ReleaseLease);
+            } else if let Some(mode) = shutdown {
+                match pg_role(&observation.pg) {
+                    PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
+                    PgRole::Primary | PgRole::Replica => {
+                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(mode.clone())));
+                    }
+                    PgRole::Offline => {}
+                }
+            }
         }
     }
+
+    steps
 }
 
-fn leadership_held_by_self(world: &WorldView) -> bool {
-    world
-        .global
-        .coordination
-        .as_quorum()
-        .is_some_and(|coordination| {
-            matches!(coordination.leadership, LeadershipView::HeldBySelf(_))
-        })
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PgRole {
+    Offline,
+    Primary,
+    Replica,
+}
+
+fn pg_role(pg: &PgInfoState) -> PgRole {
+    match pg {
+        PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy => PgRole::Primary,
+        PgInfoState::Replica { common, .. } if common.sql == SqlStatus::Healthy => PgRole::Replica,
+        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
+            PgRole::Offline
+        }
+    }
 }
 
 #[cfg(test)]
@@ -266,276 +189,185 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        dcs::DcsQuorumState,
-        process::jobs::ShutdownMode,
-        state::{LeaseEpoch, MemberId, UnixMillis},
+        dcs::DcsSnapshot,
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::state::ProcessState,
+        state::{LeaseEpoch, MemberId, SwitchoverState, TimelineId, WalLsn, WorkerStatus},
     };
 
     use super::*;
-    use crate::ha::types::{
-        ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IdleReason,
-        IneligibleReason, LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection,
-        ObservationState, PeerKnowledge, PrimaryObservation, PublicationState,
-        QuorumCoordinationState, StorageState, SwitchoverState, WalPosition,
-    };
+    use crate::ha::types::{AuthorityProjection, NoPrimaryProjection};
 
-    fn world(local: LocalKnowledge) -> WorldView {
-        WorldView {
-            local,
-            global: GlobalKnowledge {
-                coordination: CoordinationState::Quorum(Box::new(QuorumCoordinationState {
-                    dcs: DcsQuorumState {
-                        leadership: None,
-                        switchover: SwitchoverState::None,
-                        members: BTreeMap::new(),
-                    },
-                    leadership: LeadershipView::Open,
-                    primary: PrimaryObservation::Absent,
-                    switchover: SwitchoverState::None,
-                    peers: BTreeMap::new(),
-                })),
-                self_peer: PeerKnowledge {
-                    eligibility: super::super::types::ElectionEligibility::Ineligible(
-                        IneligibleReason::StartingUp,
-                    ),
-                    api: ApiVisibility::Unreachable,
-                },
+    fn common() -> PgInfoCommon {
+        PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql: SqlStatus::Healthy,
+            readiness: Readiness::Ready,
+            timeline: Some(TimelineId(1)),
+            system_identifier: None,
+            pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
             },
+            last_refresh_at: None,
+        }
+    }
+
+    fn primary() -> PgInfoState {
+        PgInfoState::Primary {
+            common: common(),
+            wal_lsn: WalLsn(42),
+            slots: Vec::new(),
+        }
+    }
+
+    fn replica() -> PgInfoState {
+        PgInfoState::Replica {
+            common: common(),
+            replay_lsn: WalLsn(42),
+            follow_lsn: Some(WalLsn(42)),
+            upstream: None,
+        }
+    }
+
+    fn observation(pg: PgInfoState) -> HaObservation {
+        HaObservation {
+            pg,
+            process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            dcs: DcsSnapshot::quorum(None, SwitchoverState::None, BTreeMap::new()),
+            publication: PublicationState::unknown(),
+            managed_roles_reconciled: false,
+            local_data: LocalDataState::ConsistentReplica,
+            resolved_upstream: None,
+            self_candidate: crate::ha::types::CandidateState::Ineligible,
+            storage_stalled: false,
+            ready_primary: None,
         }
     }
 
     #[test]
-    fn no_quorum_failsafe_republishes_projection() {
-        let publication = PublicationGoal::Publish(AuthorityProjection::NoPrimary(
-            NoPrimaryProjection::NoQuorum {
-                fence: NoPrimaryFence::None,
+    fn publication_change_is_emitted_as_first_step() {
+        let steps = reconcile(
+            &observation(PgInfoState::unknown(
+                WorkerStatus::Running,
+                SqlStatus::Unknown,
+                None,
+            )),
+            &HaDecision {
+                mode: HaMode::WaitForLeader,
+                publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen)),
+                clear_switchover: false,
             },
+        );
+
+        assert_eq!(
+            steps,
+            vec![
+                HaStep::Publish(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen)),
+                HaStep::RunProcess(ProcessIntent::Start(
+                    PostgresStartIntent::DetachedStandby,
+                )),
+            ]
+        );
+    }
+
+    #[test]
+    fn demoting_for_switchover_releases_lease_once_offline() {
+        let steps = reconcile(
+            &observation(PgInfoState::unknown(
+                WorkerStatus::Running,
+                SqlStatus::Unknown,
+                None,
+            )),
+            &HaDecision {
+                mode: HaMode::DemoteForSwitchover(MemberId("node-b".to_string())),
+                publication: None,
+                clear_switchover: false,
+            },
+        );
+
+        assert_eq!(steps, vec![HaStep::ReleaseLease]);
+    }
+
+    #[test]
+    fn matching_projection_does_not_republish() {
+        let mut observation = observation(PgInfoState::unknown(
+            WorkerStatus::Running,
+            SqlStatus::Unknown,
+            None,
         ));
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Offline,
-            process: ProcessAssessment::Idle,
-            storage: StorageState::Healthy,
-            managed_roles_reconciled: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_basebackup_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-                last_local_timeline: None,
-                last_local_system_identifier: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
-            publication: publication.clone(),
-            clear_switchover: false,
-        };
+        observation.publication =
+            PublicationState::Projected(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen));
 
         assert_eq!(
-            reconcile(&world, &desired),
-            PlannedActions::publication(PublicationAction::Publish(publication))
+            reconcile(
+                &observation,
+                &HaDecision {
+                    mode: HaMode::WaitForLeader,
+                    publication: Some(AuthorityProjection::NoPrimary(
+                        NoPrimaryProjection::LeaseOpen,
+                    )),
+                    clear_switchover: false,
+                },
+            ),
+            vec![HaStep::RunProcess(ProcessIntent::Start(
+                PostgresStartIntent::DetachedStandby,
+            ))]
         );
     }
 
     #[test]
-    fn demoting_for_switchover_releases_lease_once_postgres_is_offline() {
-        let world = WorldView {
-            local: LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Offline,
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(100),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            global: GlobalKnowledge {
-                coordination: CoordinationState::Quorum(Box::new(QuorumCoordinationState {
-                    dcs: DcsQuorumState {
-                        leadership: None,
-                        switchover: SwitchoverState::None,
-                        members: BTreeMap::new(),
+    fn follower_replica_without_matching_upstream_is_restarted() {
+        let observation = observation(replica());
+
+        assert_eq!(
+            reconcile(
+                &observation,
+                &HaDecision {
+                    mode: HaMode::Follow {
+                        leader: MemberId("node-b".to_string()),
+                        recovery: FollowRecovery::StartStreaming,
                     },
-                    leadership: LeadershipView::HeldBySelf(LeaseEpoch {
-                        holder: MemberId("node-a".to_string()),
-                        generation: 5,
-                    }),
-                    primary: PrimaryObservation::Absent,
-                    switchover: SwitchoverState::None,
-                    peers: BTreeMap::new(),
-                })),
-                self_peer: PeerKnowledge {
-                    eligibility: super::super::types::ElectionEligibility::Ineligible(
-                        IneligibleReason::StartingUp,
-                    ),
-                    api: ApiVisibility::Unreachable,
+                    publication: None,
+                    clear_switchover: false,
                 },
-            },
-        };
-
-        let desired = DesiredState {
-            role: TargetRole::DemotingForSwitchover(MemberId("node-b".to_string())),
-            publication: PublicationGoal::KeepCurrent,
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            PlannedActions::coordination(CoordinationAction::ReleaseLease)
+            ),
+            vec![HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast))]
         );
     }
 
     #[test]
-    fn matching_no_primary_projection_does_not_republish() {
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Offline,
-            process: ProcessAssessment::Idle,
-            storage: StorageState::Healthy,
-            managed_roles_reconciled: false,
-            publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
-                NoPrimaryProjection::LeaseOpen,
-            )),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_basebackup_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-                last_local_timeline: None,
-                last_local_system_identifier: None,
+    fn active_process_blocks_new_process_steps() {
+        let mut observation = observation(primary());
+        observation.process = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: crate::process::jobs::ActiveJob {
+                id: crate::state::JobId("job-1".to_string()),
+                kind: ActiveJobKind::Promote,
+                started_at: crate::state::UnixMillis(10),
+                deadline_at: crate::state::UnixMillis(20),
             },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
-                NoPrimaryProjection::LeaseOpen,
-            )),
-            clear_switchover: false,
         };
 
         assert_eq!(
-            reconcile(&world, &desired),
-            PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
-        );
-    }
-
-    #[test]
-    fn idle_missing_data_dir_does_not_start_detached_standby() {
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Missing,
-            postgres: PostgresState::Offline,
-            process: ProcessAssessment::Idle,
-            storage: StorageState::Healthy,
-            managed_roles_reconciled: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_basebackup_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-                last_local_timeline: None,
-                last_local_system_identifier: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: PublicationGoal::KeepCurrent,
-            clear_switchover: false,
-        };
-
-        assert!(reconcile(&world, &desired).is_empty());
-    }
-
-    #[test]
-    fn follower_replica_without_upstream_is_restarted_to_follow_authoritative_leader() {
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Replica {
-                upstream: None,
-                replication: super::super::types::ReplicationState::CatchingUp(WalPosition {
-                    timeline: 1,
-                    lsn: 42,
-                }),
-            },
-            process: ProcessAssessment::Idle,
-            storage: StorageState::Healthy,
-            managed_roles_reconciled: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_basebackup_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-                last_local_timeline: None,
-                last_local_system_identifier: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-b".to_string()),
-                recovery: RecoveryPlan::StartStreaming,
-            }),
-            publication: PublicationGoal::KeepCurrent,
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-        );
-    }
-
-    #[test]
-    fn follower_replica_without_upstream_is_restarted_even_when_receiver_is_healthy() {
-        let world = world(LocalKnowledge {
-            data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-            postgres: PostgresState::Replica {
-                upstream: None,
-                replication: super::super::types::ReplicationState::Streaming(WalPosition {
-                    timeline: 1,
-                    lsn: 84,
-                }),
-            },
-            process: ProcessAssessment::Idle,
-            storage: StorageState::Healthy,
-            managed_roles_reconciled: false,
-            publication: PublicationState::unknown(),
-            observation: ObservationState {
-                pg_observed_at: UnixMillis(100),
-                last_start_success_at: None,
-                last_basebackup_success_at: None,
-                last_promote_success_at: None,
-                last_demote_success_at: None,
-                last_local_timeline: None,
-                last_local_system_identifier: None,
-            },
-        });
-        let desired = DesiredState {
-            role: TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-b".to_string()),
-                recovery: RecoveryPlan::StartStreaming,
-            }),
-            publication: PublicationGoal::KeepCurrent,
-            clear_switchover: false,
-        };
-
-        assert_eq!(
-            reconcile(&world, &desired),
-            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
+            reconcile(
+                &observation,
+                &HaDecision {
+                    mode: HaMode::Lead(LeaseEpoch {
+                        holder: MemberId("node-a".to_string()),
+                        generation: 1,
+                    }),
+                    publication: None,
+                    clear_switchover: false,
+                },
+            ),
+            Vec::<HaStep>::new()
         );
     }
 }

@@ -1,26 +1,18 @@
-use std::path::Path;
-
 use crate::{
-    dcs::{DcsMemberState, DcsQuorumState, DcsSnapshot},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
-    process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
-    state::{MemberId, PgEndpoint, WorkerError, WorkerStatus},
+    process::jobs::{PostgresStartIntent, ProcessIntent},
+    state::{PgEndpoint, WorkerError},
 };
 
 use super::{
     decide::decide,
-    process_dispatch::{dispatch_process_action, ProcessDispatchError},
+    process_dispatch::dispatch_process_action,
     reconcile::reconcile,
     state::{HaRuntimeCtx, HaState},
     types::{
-        last_start_success_at, last_success_at, wal_position, ApiVisibility, CoordinationAction,
-        CoordinationState, DataDirState, DesiredState, DivergenceState, ElectionEligibility,
-        GlobalKnowledge, IneligibleReason, LeadershipView, LocalAction, LocalDataState,
-        LocalKnowledge, ObservationState, ObservedPrimary, PeerKnowledge, PeerLeaderState,
-        PlannedActions, PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal,
-        PublicationState, QuorumCoordinationState, ReplicationState, StorageState, WalPosition,
-        WorldView,
+        AuthorityProjection, CandidateState, HaObservation, HaStep, LocalDataState,
+        PublicationState, ReadyPrimary,
     },
 };
 
@@ -48,10 +40,36 @@ pub(crate) async fn run(mut ctx: HaRuntimeCtx) -> Result<(), WorkerError> {
 
 pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError> {
     let now = (ctx.cadence.now)()?;
-    let world = observe(ctx, now)?;
-    let desired = decide(&world, &ctx.identity.member_id);
-    let plan = reconcile(&world, &desired);
-    let next_state = build_next_state(&ctx.state_channel.current, &world, &desired, &plan);
+    let observation = observe(ctx, now)?;
+    let decision = decide(&observation, &ctx.identity.member_id);
+    let steps = reconcile(&observation, &decision);
+    let next_publication = match decision.publication.as_ref() {
+        Some(projection) => PublicationState::Projected(projection.clone()),
+        None => ctx.state_channel.current.publication.clone(),
+    };
+    let next_managed_roles_reconciled = if steps.iter().any(|step| {
+        matches!(
+            step,
+            HaStep::RunProcess(ProcessIntent::Bootstrap)
+                | HaStep::RunProcess(ProcessIntent::ProvisionReplica(_))
+                | HaStep::RunProcess(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
+                | HaStep::RunProcess(ProcessIntent::Start(PostgresStartIntent::Replica { .. }))
+        )
+    }) {
+        false
+    } else {
+        ctx.state_channel.current.managed_roles_reconciled
+    };
+    let next_state = HaState {
+        worker: ctx.state_channel.current.worker.clone(),
+        tick: ctx.state_channel.current.tick.saturating_add(1),
+        managed_roles_reconciled: next_managed_roles_reconciled,
+        publication: next_publication,
+        decision: decision.clone(),
+        observation: observation.clone(),
+        clear_switchover: decision.clear_switchover,
+        steps: steps.clone(),
+    };
 
     ctx.state_channel
         .publisher
@@ -59,224 +77,175 @@ pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError>
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
     ctx.state_channel.current = next_state;
 
-    if let Some(action) = &plan.coordination {
-        execute_coordination_action(ctx, ctx.state_channel.current.tick, 0, action).await?;
-    }
-    if let Some(action) = &plan.local {
-        execute_local_action(ctx, ctx.state_channel.current.tick, 1, action).await?;
-    }
-    if let Some(action) = &plan.process {
-        execute_process_action(ctx, ctx.state_channel.current.tick, 2, action).await?;
+    for (action_index, step) in steps.iter().enumerate() {
+        execute_step(ctx, ctx.state_channel.current.tick, action_index, step).await?;
     }
 
     Ok(())
 }
 
-fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldView, WorkerError> {
+fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObservation, WorkerError> {
     let config = ctx.observed.config.latest();
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
-    let previous_observation = &ctx.state_channel.current.world.local.observation;
     let data_dir_path = config.postgres.paths.data_dir.clone();
-    let observed_primary = dcs
-        .quorum_state()
-        .and_then(|quorum| observed_primary_member(quorum, &ctx.identity.member_id));
-    let current_local_timeline = pg_timeline(&pg);
-    let current_local_system_identifier = pg_system_identifier(&pg);
-    let observation = ObservationState {
-        pg_observed_at: pg.last_refresh_at().unwrap_or(now),
-        last_start_success_at: last_start_success_at(&process),
-        last_basebackup_success_at: last_success_at(&process, ActiveJobKind::BaseBackup),
-        last_promote_success_at: last_success_at(&process, ActiveJobKind::Promote),
-        last_demote_success_at: last_success_at(&process, ActiveJobKind::Demote),
-        last_local_timeline: current_local_timeline.or(previous_observation.last_local_timeline),
-        last_local_system_identifier: current_local_system_identifier
-            .or(previous_observation.last_local_system_identifier),
-    };
-    let process_assessment = ProcessAssessment::from(&process);
-    let (dcs_local_timeline, dcs_local_system_identifier) =
-        local_member_identity_fallback(&dcs, &ctx.identity.member_id, &observation);
-    let (retained_local_timeline, retained_local_system_identifier) =
-        retained_local_identity_fallback(&observation);
-    let local_data_timeline = current_local_timeline
-        .or(dcs_local_timeline)
-        .or(retained_local_timeline);
-    let local_system_identifier = current_local_system_identifier
-        .or(dcs_local_system_identifier)
-        .or(retained_local_system_identifier);
+    let self_id = &ctx.identity.member_id;
 
-    let local = LocalKnowledge {
-        data_dir: build_data_dir_state(
-            data_dir_path.as_path(),
-            local_data_timeline,
-            local_system_identifier,
-            &process_assessment,
-            &observed_primary,
-        ),
-        postgres: match &pg {
-            PgInfoState::Primary {
-                common, wal_lsn, ..
-            } if common.sql == SqlStatus::Healthy => PostgresState::Primary {
-                committed_lsn: wal_lsn.0,
-            },
-            PgInfoState::Replica {
-                common,
-                replay_lsn,
-                follow_lsn,
-                upstream,
-            } if common.sql == SqlStatus::Healthy => PostgresState::Replica {
-                upstream: upstream
-                    .as_ref()
-                    .map(|value| value.member_id.clone())
-                    .or_else(|| match common.pg_config.primary_conninfo.as_ref() {
-                        Some(crate::pginfo::state::PgConnInfo {
-                            endpoint: PgEndpoint::Tcp { host, port },
-                            ..
-                        }) => dcs.members().find_map(|(member_id, member)| {
-                            (member.postgres_target().host() == host.as_str()
-                                && member.postgres_target().port() == *port)
-                                .then_some(member_id.clone())
-                        }),
-                        _ => None,
-                    }),
-                replication: if let Some(position) = wal_position(common.timeline, *follow_lsn) {
-                    ReplicationState::Streaming(position)
-                } else if replay_lsn.0 > 0 {
-                    ReplicationState::CatchingUp(WalPosition {
-                        timeline: common.timeline.map_or(0, |value| u64::from(value.0)),
-                        lsn: replay_lsn.0,
-                    })
-                } else {
-                    ReplicationState::Stalled
-                },
-            },
-            PgInfoState::Unknown { .. }
-            | PgInfoState::Primary { .. }
-            | PgInfoState::Replica { .. } => PostgresState::Offline,
+    let ready_primary = dcs.quorum_state().and_then(|quorum| {
+        quorum.members().find_map(|(member_id, member)| {
+            ((*member_id != *self_id)
+                && matches!(member.postgres(), PgInfoState::Primary { .. })
+                && member.postgres().readiness() == Readiness::Ready)
+                .then(|| ReadyPrimary {
+                    member: member_id.clone(),
+                    timeline: member.postgres().timeline().map(|value| u64::from(value.0)),
+                    system_identifier: member.postgres().system_identifier().map(|value| value.0),
+                })
+        })
+    });
+
+    let dcs_self_member = if process.basebackup_completed_awaiting_pg_start(&pg) {
+        None
+    } else {
+        dcs.member(self_id)
+    };
+    let local_timeline = pg
+        .timeline()
+        .map(|value| u64::from(value.0))
+        .or_else(|| {
+            dcs_self_member.and_then(|member| member.postgres().timeline().map(|value| u64::from(value.0)))
+        });
+    let local_system_identifier = pg
+        .system_identifier()
+        .map(|value| value.0)
+        .or_else(|| dcs_self_member.and_then(|member| member.postgres().system_identifier().map(|value| value.0)));
+
+    let local_data = if !data_dir_path.exists() {
+        LocalDataState::Missing
+    } else if !data_dir_path.join("PG_VERSION").exists() {
+        LocalDataState::BootstrapEmpty
+    } else {
+        match ready_primary.as_ref() {
+            Some(primary)
+                if primary.system_identifier.is_some()
+                    && local_system_identifier.is_some()
+                    && local_system_identifier != primary.system_identifier =>
+            {
+                LocalDataState::DivergedBasebackup
+            }
+            Some(primary) if primary.timeline == local_timeline => LocalDataState::ConsistentReplica,
+            Some(primary) if primary.timeline.is_some() && local_timeline.is_some() => {
+                LocalDataState::DivergedRewind
+            }
+            Some(_) if process.rewind_failed_requires_basebackup() => {
+                LocalDataState::DivergedBasebackup
+            }
+            Some(_) | None => LocalDataState::ConsistentReplica,
+        }
+    };
+
+    let resolved_upstream = match &pg {
+        PgInfoState::Replica {
+            upstream: Some(upstream),
+            ..
+        } => Some(upstream.member_id.clone()),
+        PgInfoState::Replica { common, .. } => match common.pg_config.primary_conninfo.as_ref() {
+            Some(crate::pginfo::state::PgConnInfo {
+                endpoint: PgEndpoint::Tcp { host, port },
+                ..
+            }) => dcs.members().find_map(|(member_id, member)| {
+                (member.postgres_target().host() == host.as_str()
+                    && member.postgres_target().port() == *port)
+                    .then_some(member_id.clone())
+            }),
+            Some(crate::pginfo::state::PgConnInfo {
+                endpoint: PgEndpoint::UnixSocket { .. },
+                ..
+            })
+            | None => None,
         },
-        process: process_assessment,
-        storage: build_storage_state(
-            &dcs,
-            &pg,
-            config.ha.lease_ttl_ms,
-            &ctx.identity.member_id,
-            now,
-        ),
-        managed_roles_reconciled: ctx.state_channel.current.managed_roles_reconciled,
-        publication: ctx.state_channel.current.publication.clone(),
-        observation,
+        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } => None,
     };
-    let global = build_global_knowledge(&dcs, &pg, &local.data_dir, &ctx.identity.member_id);
 
-    Ok(WorldView { local, global })
+    let self_candidate = match (&local_data, &pg) {
+        (LocalDataState::Missing | LocalDataState::BootstrapEmpty, _) => CandidateState::Bootstrap,
+        (
+            _,
+            PgInfoState::Primary {
+                common, ..
+            },
+        ) if common.sql == SqlStatus::Healthy => pg
+            .committed_wal()
+            .filter(|position| position.timeline.is_some())
+            .map(CandidateState::Promote)
+            .unwrap_or(CandidateState::Bootstrap),
+        (_, PgInfoState::Replica { common, .. }) if common.sql == SqlStatus::Healthy => pg
+            .replay_wal()
+            .or_else(|| pg.follow_wal())
+            .filter(|position| position.timeline.is_some())
+            .map(CandidateState::Promote)
+            .unwrap_or(CandidateState::Ineligible),
+        (
+            _,
+            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. },
+        ) => CandidateState::Ineligible,
+    };
+
+    let storage_stalled = matches!(
+        &pg,
+        PgInfoState::Primary {
+            common:
+                crate::pginfo::state::PgInfoCommon {
+                    sql: SqlStatus::Healthy,
+                    ..
+                },
+            ..
+        }
+    ) && (dcs.member(self_id).is_none()
+        || pg.last_refresh_at().is_none_or(|last_refresh_at| {
+            now.0.saturating_sub(last_refresh_at.0) > config.ha.lease_ttl_ms
+        }));
+
+    Ok(HaObservation {
+        pg,
+        process,
+        dcs,
+        publication: ctx.state_channel.current.publication.clone(),
+        managed_roles_reconciled: ctx.state_channel.current.managed_roles_reconciled,
+        local_data,
+        resolved_upstream,
+        self_candidate,
+        storage_stalled,
+        ready_primary,
+    })
 }
 
-fn local_member_identity_fallback(
-    dcs: &DcsSnapshot,
-    self_id: &MemberId,
-    observation: &ObservationState,
-) -> (Option<u64>, Option<u64>) {
-    if observation.basebackup_completed_awaiting_start() {
-        return (None, None);
-    }
-
-    let member = dcs.member(self_id);
-    (
-        member.and_then(member_timeline),
-        member.and_then(member_system_identifier),
-    )
-}
-
-fn retained_local_identity_fallback(observation: &ObservationState) -> (Option<u64>, Option<u64>) {
-    if observation.basebackup_completed_awaiting_start() {
-        return (None, None);
-    }
-
-    (
-        observation.last_local_timeline,
-        observation.last_local_system_identifier,
-    )
-}
-
-fn build_next_state(
-    current: &HaState,
-    world: &WorldView,
-    desired: &DesiredState,
-    plan: &PlannedActions,
-) -> HaState {
-    HaState {
-        worker: WorkerStatus::Running,
-        tick: current.tick.saturating_add(1),
-        managed_roles_reconciled: next_managed_roles_reconciled(current, plan),
-        publication: apply_publication_goal(&current.publication, &desired.publication),
-        role: desired.role.clone(),
-        world: world.clone(),
-        clear_switchover: desired.clear_switchover,
-        planned_actions: plan.clone(),
-    }
-}
-
-fn next_managed_roles_reconciled(current: &HaState, plan: &PlannedActions) -> bool {
-    if matches!(
-        plan.process,
-        Some(ProcessIntent::Bootstrap)
-            | Some(ProcessIntent::ProvisionReplica(_))
-            | Some(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
-            | Some(ProcessIntent::Start(PostgresStartIntent::Replica { .. }))
-    ) {
-        return false;
-    }
-
-    current.managed_roles_reconciled
-}
-
-fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) -> PublicationState {
-    match goal {
-        PublicationGoal::KeepCurrent => current.clone(),
-        PublicationGoal::Publish(projection) => PublicationState::Projected(projection.clone()),
-    }
-}
-
-async fn execute_coordination_action(
+async fn execute_step(
     ctx: &mut HaRuntimeCtx,
     ha_tick: u64,
     action_index: usize,
-    action: &CoordinationAction,
+    step: &HaStep,
 ) -> Result<(), WorkerError> {
-    match action {
-        CoordinationAction::AcquireLease(_kind) => {
-            ctx.control.dcs_handle.acquire_leadership().map_err(|err| {
-                WorkerError::Message(format!(
-                    "ha acquire lease failed at tick {ha_tick} index {action_index}: {err}"
-                ))
-            })
-        }
-        CoordinationAction::ReleaseLease => {
-            ctx.control.dcs_handle.release_leadership().map_err(|err| {
-                WorkerError::Message(format!(
-                    "ha release lease failed at tick {ha_tick} index {action_index}: {err}"
-                ))
-            })
-        }
-        CoordinationAction::ClearSwitchover => {
-            ctx.control.dcs_handle.clear_switchover().map_err(|err| {
-                WorkerError::Message(format!(
-                    "ha clear switchover failed at tick {ha_tick} index {action_index}: {err}"
-                ))
-            })
-        }
-    }
-}
-
-async fn execute_local_action(
-    ctx: &mut HaRuntimeCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &LocalAction,
-) -> Result<(), WorkerError> {
-    match action {
-        LocalAction::ReconcileManagedRoles => {
+    match step {
+        HaStep::Publish(AuthorityProjection::Primary(_))
+        | HaStep::Publish(AuthorityProjection::NoPrimary(_)) => Ok(()),
+        HaStep::AcquireLease(_) => ctx.control.dcs_handle.acquire_leadership().map_err(|err| {
+            WorkerError::Message(format!(
+                "ha acquire lease failed at tick {ha_tick} index {action_index}: {err}"
+            ))
+        }),
+        HaStep::ReleaseLease => ctx.control.dcs_handle.release_leadership().map_err(|err| {
+            WorkerError::Message(format!(
+                "ha release lease failed at tick {ha_tick} index {action_index}: {err}"
+            ))
+        }),
+        HaStep::ClearSwitchover => ctx.control.dcs_handle.clear_switchover().map_err(|err| {
+            WorkerError::Message(format!(
+                "ha clear switchover failed at tick {ha_tick} index {action_index}: {err}"
+            ))
+        }),
+        HaStep::ReconcileManagedRoles => {
             let runtime_config = ctx.observed.config.latest();
             postgres_roles::reconcile_managed_roles(
                 &runtime_config,
@@ -292,298 +261,13 @@ async fn execute_local_action(
             ctx.state_channel.current.managed_roles_reconciled = true;
             Ok(())
         }
-    }
-}
-
-async fn execute_process_action(
-    ctx: &mut HaRuntimeCtx,
-    ha_tick: u64,
-    action_index: usize,
-    action: &ProcessIntent,
-) -> Result<(), WorkerError> {
-    dispatch_process_action(ctx, ha_tick, action_index, action)
-        .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
-}
-
-fn map_process_dispatch_error(
-    ha_tick: u64,
-    action_index: usize,
-    err: ProcessDispatchError,
-) -> WorkerError {
-    WorkerError::Message(format!(
-        "ha process dispatch failed at tick {ha_tick} index {action_index}: {err}"
-    ))
-}
-
-fn build_data_dir_state(
-    data_dir: &Path,
-    local_timeline: Option<u64>,
-    local_system_identifier: Option<u64>,
-    process: &ProcessAssessment,
-    observed_primary: &Option<ObservedPrimary>,
-) -> DataDirState {
-    let pg_version_path = data_dir.join("PG_VERSION");
-    if !data_dir.exists() {
-        return DataDirState::Missing;
-    }
-    if !pg_version_path.exists() {
-        return DataDirState::Initialized(LocalDataState::BootstrapEmpty);
-    }
-
-    let local_state = match observed_primary {
-        Some(ObservedPrimary {
-            system_identifier: Some(primary_system_identifier),
-            ..
-        }) if local_system_identifier.is_some()
-            && local_system_identifier != Some(*primary_system_identifier) =>
-        {
-            LocalDataState::Diverged(DivergenceState::BasebackupRequired)
-        }
-        Some(ObservedPrimary {
-            timeline: leader_timeline,
-            ..
-        }) if leader_timeline == &local_timeline => LocalDataState::ConsistentReplica,
-        Some(ObservedPrimary {
-            timeline: Some(_), ..
-        }) if local_timeline.is_some() => LocalDataState::Diverged(DivergenceState::RewindPossible),
-        Some(ObservedPrimary { .. })
-            if matches!(
-                process,
-                ProcessAssessment::Failed(super::types::JobFailure {
-                    job: ActiveJobKind::PgRewind,
-                    recovery: super::types::FailureRecovery::FallbackToBasebackup,
-                })
-            ) =>
-        {
-            LocalDataState::Diverged(DivergenceState::BasebackupRequired)
-        }
-        _ => LocalDataState::ConsistentReplica,
-    };
-
-    DataDirState::Initialized(local_state)
-}
-
-fn build_storage_state(
-    dcs: &DcsSnapshot,
-    pg: &PgInfoState,
-    lease_ttl_ms: u64,
-    self_id: &MemberId,
-    now: crate::state::UnixMillis,
-) -> StorageState {
-    let self_member = dcs.member(self_id);
-    let pg_observation_stale = pg
-        .last_refresh_at()
-        .is_none_or(|last_refresh_at| now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms);
-    if matches!(
-        pg,
-        PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy
-    ) && (self_member.is_none() || pg_observation_stale)
-    {
-        StorageState::Stalled
-    } else {
-        StorageState::Healthy
-    }
-}
-
-fn build_global_knowledge(
-    dcs: &DcsSnapshot,
-    pg: &PgInfoState,
-    local_data_dir: &DataDirState,
-    self_id: &MemberId,
-) -> GlobalKnowledge {
-    let coordination = dcs
-        .quorum_state()
-        .map(|quorum| {
-            let leadership = match quorum.leadership.clone() {
-                None => LeadershipView::Open,
-                Some(epoch) if epoch.holder == *self_id => LeadershipView::HeldBySelf(epoch),
-                Some(epoch) => match quorum.member(&epoch.holder) {
-                    None => LeadershipView::HeldByPeer {
-                        epoch,
-                        state: PeerLeaderState::Unreachable,
-                    },
-                    Some(member) => match member.postgres() {
-                        PgInfoState::Primary { .. }
-                            if member.postgres().readiness() == Readiness::Ready =>
-                        {
-                            LeadershipView::HeldByPeer {
-                                epoch,
-                                state: PeerLeaderState::PrimaryReady,
-                            }
-                        }
-                        PgInfoState::Primary { .. } => LeadershipView::HeldByPeer {
-                            epoch,
-                            state: PeerLeaderState::Recovering,
-                        },
-                        PgInfoState::Unknown { .. }
-                            if member.postgres().readiness() == Readiness::Ready =>
-                        {
-                            LeadershipView::HeldByPeer {
-                                epoch,
-                                state: PeerLeaderState::Unreachable,
-                            }
-                        }
-                        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => {
-                            LeadershipView::HeldByPeer {
-                                epoch,
-                                state: PeerLeaderState::Recovering,
-                            }
-                        }
-                    },
-                },
-            };
-            let peers = quorum
-                .members()
-                .filter(|(member_id, _)| *member_id != self_id)
-                .map(|(member_id, member)| {
-                    (member_id.clone(), build_peer_knowledge_from_member(member))
-                })
-                .collect();
-            let primary = observed_primary_member(quorum, self_id)
-                .map(PrimaryObservation::Observed)
-                .unwrap_or(PrimaryObservation::Absent);
-
-            CoordinationState::Quorum(Box::new(QuorumCoordinationState {
-                dcs: quorum.clone(),
-                leadership,
-                primary,
-                switchover: quorum.switchover.clone(),
-                peers,
-            }))
-        })
-        .unwrap_or(CoordinationState::NoQuorum);
-
-    GlobalKnowledge {
-        coordination,
-        self_peer: build_self_peer(pg, local_data_dir),
-    }
-}
-
-fn build_peer_knowledge_from_member(member: &DcsMemberState) -> PeerKnowledge {
-    let api = ApiVisibility::Reachable;
-    let readiness = member.postgres().readiness();
-    let eligibility = match member.postgres() {
-        PgInfoState::Unknown { .. } => {
-            if readiness == Readiness::Ready {
-                ElectionEligibility::BootstrapEligible
-            } else {
-                ElectionEligibility::Ineligible(IneligibleReason::NotReady)
-            }
-        }
-        PgInfoState::Primary { .. } => {
-            if readiness != Readiness::Ready {
-                ElectionEligibility::Ineligible(IneligibleReason::NotReady)
-            } else {
-                member
-                    .postgres()
-                    .committed_wal()
-                    .and_then(|value| wal_position(value.timeline, Some(value.lsn)))
-                    .map(ElectionEligibility::PromoteEligible)
-                    .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
-            }
-        }
-        PgInfoState::Replica { .. } => {
-            if readiness != Readiness::Ready {
-                ElectionEligibility::Ineligible(IneligibleReason::NotReady)
-            } else {
-                member
-                    .postgres()
-                    .replay_wal()
-                    .or_else(|| member.postgres().follow_wal())
-                    .and_then(|value| wal_position(value.timeline, Some(value.lsn)))
-                    .map(ElectionEligibility::PromoteEligible)
-                    .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
-            }
-        }
-    };
-
-    PeerKnowledge { eligibility, api }
-}
-
-fn build_self_peer(pg: &PgInfoState, local_data_dir: &DataDirState) -> PeerKnowledge {
-    let eligibility = match (local_data_dir, pg) {
-        (DataDirState::Missing, _)
-        | (DataDirState::Initialized(LocalDataState::BootstrapEmpty), _) => {
-            ElectionEligibility::BootstrapEligible
-        }
-        (
-            _,
-            PgInfoState::Primary {
-                common, wal_lsn, ..
-            },
-        ) if common.sql == SqlStatus::Healthy => wal_position(common.timeline, Some(*wal_lsn))
-            .map(ElectionEligibility::PromoteEligible)
-            .unwrap_or(ElectionEligibility::BootstrapEligible),
-        (_, PgInfoState::Replica { common, .. }) if common.sql == SqlStatus::Healthy => {
-            self_replica_position(pg)
-                .map(ElectionEligibility::PromoteEligible)
-                .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
-        }
-        (
-            _,
-            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. },
-        ) => ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
-    };
-    PeerKnowledge {
-        eligibility,
-        api: ApiVisibility::Reachable,
-    }
-}
-
-fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
-    match pg {
-        PgInfoState::Replica {
-            common,
-            replay_lsn,
-            follow_lsn,
-            ..
-        } => wal_position(common.timeline, Some(*replay_lsn))
-            .or_else(|| follow_lsn.and_then(|lsn| wal_position(common.timeline, Some(lsn)))),
-        _ => None,
-    }
-}
-
-fn observed_primary_member(dcs: &DcsQuorumState, self_id: &MemberId) -> Option<ObservedPrimary> {
-    dcs.members().find_map(|(member_id, member)| {
-        ((*member_id != *self_id)
-            && matches!(member.postgres(), PgInfoState::Primary { .. })
-            && member.postgres().readiness() == Readiness::Ready)
-            .then(|| ObservedPrimary {
-                member: member_id.clone(),
-                timeline: member_timeline(member),
-                system_identifier: member_system_identifier(member),
+        HaStep::RunProcess(intent) => {
+            dispatch_process_action(ctx, ha_tick, action_index, intent).map_err(|err| {
+                WorkerError::Message(format!(
+                    "ha process dispatch failed at tick {ha_tick} index {action_index}: {err}"
+                ))
             })
-    })
-}
-
-fn member_timeline(member: &DcsMemberState) -> Option<u64> {
-    member
-        .postgres()
-        .timeline()
-        .map(|timeline| u64::from(timeline.0))
-}
-
-fn member_system_identifier(member: &DcsMemberState) -> Option<u64> {
-    member.postgres().system_identifier().map(|value| value.0)
-}
-
-fn pg_timeline(pg: &PgInfoState) -> Option<u64> {
-    pg_timeline_id(pg).map(|timeline| u64::from(timeline.0))
-}
-
-fn pg_system_identifier(pg: &PgInfoState) -> Option<u64> {
-    match pg {
-        PgInfoState::Unknown { common }
-        | PgInfoState::Primary { common, .. }
-        | PgInfoState::Replica { common, .. } => common.system_identifier.map(|value| value.0),
-    }
-}
-
-fn pg_timeline_id(pg: &PgInfoState) -> Option<crate::state::TimelineId> {
-    match pg {
-        PgInfoState::Unknown { common }
-        | PgInfoState::Primary { common, .. }
-        | PgInfoState::Replica { common, .. } => common.timeline,
+        }
     }
 }
 
@@ -593,19 +277,18 @@ mod tests {
 
     use crate::{
         config::RuntimeConfig,
-        dcs::{DcsMemberState, DcsSnapshot},
+        dcs::{DcsHandle, DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::RuntimeConfigBuilder,
         ha::state::{HaControlPlane, HaObservedState, HaStateChannel, HaWorkerCadence},
         pginfo::conninfo::PgClientTls,
-        pginfo::state::PgConnInfo,
+        pginfo::state::{PgConfig, PgConnInfo, PgInfoCommon, Readiness},
         process::state::ProcessState,
     };
     use crate::{
-        ha::types::{FailureRecovery, JobFailure},
-        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        pginfo::state::SqlStatus,
         state::{
-            new_state_channel, ClusterName, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState,
-            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+            new_state_channel, ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName,
+            SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
 
@@ -690,45 +373,63 @@ mod tests {
     }
 
     #[test]
-    fn self_peer_replica_eligibility_prefers_replay_lsn_over_follow_lsn() {
-        let peer = build_self_peer(
-            &replica_pg_state(67_272_104, Some(67_108_864)),
-            &DataDirState::Initialized(LocalDataState::ConsistentReplica),
-        );
-
-        assert_eq!(
-            peer.eligibility,
-            ElectionEligibility::PromoteEligible(WalPosition {
-                timeline: 7,
-                lsn: 67_272_104,
-            })
-        );
-    }
-
-    #[test]
     fn observe_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
         let data_dir =
             std::env::temp_dir().join(format!("pgtm-ha-observe-test-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+        std::fs::write(data_dir.join("PG_VERSION"), "16").map_err(|err| err.to_string())?;
         let runtime_config = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(&data_dir)
             .build();
         let pg = replica_pg_state_with_primary_conninfo("node-b", 5432)?;
         let dcs = dcs_view_for_member("node-b", "node-b", 5432)?;
-        let state = observe(&ha_context(runtime_config, pg, dcs), UnixMillis(123))
-            .map_err(|err| err.to_string())?
-            .local
-            .postgres;
+        let observation = observe(&ha_context(runtime_config, pg, dcs), UnixMillis(123))
+            .map_err(|err| err.to_string())?;
 
         assert_eq!(
-            state,
-            PostgresState::Replica {
-                upstream: Some(MemberId("node-b".to_string())),
-                replication: ReplicationState::Streaming(WalPosition {
-                    timeline: 7,
-                    lsn: 67_272_104,
-                }),
-            }
+            observation.resolved_upstream,
+            Some(MemberId("node-b".to_string()))
         );
+        assert_eq!(
+            observation.self_candidate,
+            CandidateState::Promote(crate::state::ObservedWalPosition {
+                timeline: Some(TimelineId(7)),
+                lsn: WalLsn(67_272_104),
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn observe_does_not_reuse_dcs_identity_after_basebackup_until_pg_refresh() -> Result<(), String> {
+        let data_dir =
+            std::env::temp_dir().join(format!("pgtm-ha-observe-reset-{}", std::process::id()));
+        std::fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+        std::fs::write(data_dir.join("PG_VERSION"), "16").map_err(|err| err.to_string())?;
+        let runtime_config = RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
+            .build();
+        let pg = PgInfoState::unknown(WorkerStatus::Running, SqlStatus::Unknown, None);
+        let dcs = dcs_view_for_member("node-a", "node-a", 5432)?;
+        let mut ctx = ha_context(runtime_config, pg, dcs);
+        ctx.state_channel.current.managed_roles_reconciled = true;
+        ctx.state_channel.current.publication = PublicationState::Projected(
+            AuthorityProjection::NoPrimary(crate::ha::types::NoPrimaryProjection::LeaseOpen),
+        );
+        ctx.observed.process = new_state_channel(ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(crate::process::state::JobOutcome::Success {
+                id: crate::state::JobId("job-1".to_string()),
+                job_kind: crate::process::jobs::ActiveJobKind::BaseBackup,
+                finished_at: UnixMillis(10),
+            }),
+        })
+        .1;
+
+        let observation = observe(&ctx, UnixMillis(123)).map_err(|err| err.to_string())?;
+
+        assert_eq!(observation.local_data, LocalDataState::ConsistentReplica);
+        assert!(observation.managed_roles_reconciled);
         Ok(())
     }
 
@@ -771,188 +472,13 @@ mod tests {
             },
             control: HaControlPlane {
                 process_intent_inbox,
-                dcs_handle: crate::dcs::DcsHandle::closed(),
+                dcs_handle: DcsHandle::closed(),
             },
             identity: NodeIdentity {
-                cluster_name: ClusterName("cluster-a".to_string()),
-                scope: ScopeName("scope-a".to_string()),
+                cluster_name: ClusterName("cluster".to_string()),
+                scope: ScopeName("scope".to_string()),
                 member_id: MemberId("node-a".to_string()),
             },
         }
-    }
-
-    #[test]
-    fn data_dir_state_requires_basebackup_for_mismatched_system_identifier() {
-        let data_dir =
-            std::env::temp_dir().join(format!("pgtm-ha-worker-test-{}", std::process::id()));
-        let pg_version_path = data_dir.join("PG_VERSION");
-        if data_dir.exists() {
-            assert!(
-                std::fs::remove_dir_all(&data_dir).is_ok(),
-                "failed to clean test data dir"
-            );
-        }
-        assert!(
-            std::fs::create_dir_all(&data_dir).is_ok(),
-            "failed to create test data dir"
-        );
-        assert!(
-            std::fs::write(&pg_version_path, "16\n").is_ok(),
-            "failed to create PG_VERSION"
-        );
-        let state = build_data_dir_state(
-            &data_dir,
-            Some(7),
-            Some(41),
-            &ProcessAssessment::Idle,
-            &Some(ObservedPrimary {
-                member: MemberId("node-c".to_string()),
-                timeline: Some(8),
-                system_identifier: Some(99),
-            }),
-        );
-        assert!(
-            std::fs::remove_dir_all(&data_dir).is_ok(),
-            "failed to remove test data dir"
-        );
-
-        assert_eq!(
-            state,
-            DataDirState::Initialized(LocalDataState::Diverged(
-                DivergenceState::BasebackupRequired
-            ))
-        );
-    }
-
-    #[test]
-    fn basebackup_awaiting_restart_ignores_stale_dcs_local_identity() -> Result<(), String> {
-        let data_dir =
-            std::env::temp_dir().join(format!("pgtm-ha-worker-test-{}", std::process::id()));
-        let pg_version_path = data_dir.join("PG_VERSION");
-        if data_dir.exists() {
-            std::fs::remove_dir_all(&data_dir)
-                .map_err(|err| format!("failed to clean test data dir: {err}"))?;
-        }
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|err| format!("failed to create test data dir: {err}"))?;
-        std::fs::write(&pg_version_path, "16\n")
-            .map_err(|err| format!("failed to create PG_VERSION: {err}"))?;
-
-        let observation = ObservationState {
-            pg_observed_at: UnixMillis(100),
-            last_start_success_at: Some(UnixMillis(10)),
-            last_basebackup_success_at: Some(UnixMillis(20)),
-            last_promote_success_at: None,
-            last_demote_success_at: None,
-            last_local_timeline: None,
-            last_local_system_identifier: None,
-        };
-        let (local_timeline, local_system_identifier) = local_member_identity_fallback(
-            &dcs_view_for_member("node-b", "node-b", 5432)?,
-            &MemberId("node-b".to_string()),
-            &observation,
-        );
-        let state = build_data_dir_state(
-            &data_dir,
-            local_timeline,
-            local_system_identifier,
-            &ProcessAssessment::Idle,
-            &Some(ObservedPrimary {
-                member: MemberId("node-a".to_string()),
-                timeline: Some(8),
-                system_identifier: Some(99),
-            }),
-        );
-
-        std::fs::remove_dir_all(&data_dir)
-            .map_err(|err| format!("failed to remove test data dir: {err}"))?;
-
-        if state != DataDirState::Initialized(LocalDataState::ConsistentReplica) {
-            return Err(format!(
-                "expected fresh basebackup to stop stale DCS identity from forcing another basebackup, got {state:?}"
-            ));
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn retained_local_identity_keeps_last_seen_values_until_basebackup_restart_window() {
-        let observation = ObservationState {
-            pg_observed_at: UnixMillis(100),
-            last_start_success_at: Some(UnixMillis(10)),
-            last_basebackup_success_at: None,
-            last_promote_success_at: None,
-            last_demote_success_at: None,
-            last_local_timeline: Some(1),
-            last_local_system_identifier: Some(41),
-        };
-
-        assert_eq!(
-            retained_local_identity_fallback(&observation),
-            (Some(1), Some(41))
-        );
-    }
-
-    #[test]
-    fn retained_local_identity_ignores_stale_values_after_basebackup_until_pg_refresh() {
-        let observation = ObservationState {
-            pg_observed_at: UnixMillis(100),
-            last_start_success_at: Some(UnixMillis(10)),
-            last_basebackup_success_at: Some(UnixMillis(20)),
-            last_promote_success_at: None,
-            last_demote_success_at: None,
-            last_local_timeline: Some(1),
-            last_local_system_identifier: Some(41),
-        };
-
-        assert_eq!(retained_local_identity_fallback(&observation), (None, None));
-    }
-
-    #[test]
-    fn rewind_failure_without_local_identity_requires_basebackup() -> Result<(), String> {
-        let data_dir = std::env::temp_dir().join(format!(
-            "pgtm-ha-worker-test-missing-identity-{}",
-            std::process::id()
-        ));
-        let pg_version_path = data_dir.join("PG_VERSION");
-        if data_dir.exists() {
-            std::fs::remove_dir_all(&data_dir)
-                .map_err(|err| format!("failed to clean test data dir: {err}"))?;
-        }
-        std::fs::create_dir_all(&data_dir)
-            .map_err(|err| format!("failed to create test data dir: {err}"))?;
-        std::fs::write(&pg_version_path, "16\n")
-            .map_err(|err| format!("failed to create PG_VERSION: {err}"))?;
-
-        let state = build_data_dir_state(
-            &data_dir,
-            None,
-            None,
-            &ProcessAssessment::Failed(JobFailure {
-                job: ActiveJobKind::PgRewind,
-                recovery: FailureRecovery::FallbackToBasebackup,
-            }),
-            &Some(ObservedPrimary {
-                member: MemberId("node-a".to_string()),
-                timeline: Some(8),
-                system_identifier: Some(99),
-            }),
-        );
-
-        std::fs::remove_dir_all(&data_dir)
-            .map_err(|err| format!("failed to remove test data dir: {err}"))?;
-
-        if state
-            != DataDirState::Initialized(LocalDataState::Diverged(
-                DivergenceState::BasebackupRequired,
-            ))
-        {
-            return Err(format!(
-                "expected missing local identity to require basebackup, observed {state:?}"
-            ));
-        }
-
-        Ok(())
     }
 }

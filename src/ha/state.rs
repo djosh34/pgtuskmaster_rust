@@ -11,7 +11,7 @@ use crate::{
     state::{NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::types::{IdleReason, PlannedActions, PublicationState, TargetRole, WorldView};
+use super::types::{HaDecision, HaObservation, HaPlan, PublicationState};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HaState {
@@ -19,10 +19,10 @@ pub struct HaState {
     pub tick: u64,
     pub managed_roles_reconciled: bool,
     pub publication: PublicationState,
-    pub role: TargetRole,
-    pub world: WorldView,
+    pub decision: HaDecision,
+    pub observation: HaObservation,
     pub clear_switchover: bool,
-    pub planned_actions: PlannedActions,
+    pub steps: HaPlan,
 }
 
 pub(crate) struct HaRuntimeCtx {
@@ -62,10 +62,10 @@ impl HaState {
             tick: 0,
             managed_roles_reconciled: false,
             publication: PublicationState::unknown(),
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            world: WorldView::initial(),
+            decision: HaDecision::initial(),
+            observation: HaObservation::initial(),
             clear_switchover: false,
-            planned_actions: PlannedActions::default(),
+            steps: Vec::new(),
         }
     }
 }

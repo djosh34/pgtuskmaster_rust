@@ -1,328 +1,377 @@
 use std::cmp::Ordering;
 
-use crate::state::MemberId;
+use crate::{
+    dcs::{DcsMemberState, DcsQuorumState},
+    pginfo::state::{PgInfoState, Readiness, SqlStatus},
+    process::jobs::ShutdownMode,
+    state::{LeaseEpoch, MemberId, ObservedWalPosition, SwitchoverState},
+};
 
 use super::types::{
-    ApiVisibility, AuthorityProjection, Candidacy, DesiredState, ElectionEligibility, FailSafeGoal,
-    FailureRecovery, FenceCutoff, FenceReason, FollowGoal, IdleReason, LeadershipView,
-    LocalDataState, NoPrimaryFence, NoPrimaryProjection, PeerKnowledge, PeerLeaderState,
-    PostgresState, ProcessAssessment, PublicationGoal, PublicationState, QuorumCoordinationState,
-    RecoveryPlan, StorageState, SwitchoverState, TargetRole, WorldView,
+    AuthorityProjection, CandidateState, FenceCutoff, FollowRecovery, HaDecision, HaMode,
+    HaObservation, LeaseClaim, LocalDataState, NoPrimaryFence, NoPrimaryProjection,
+    PublicationState,
 };
-use crate::state::LeaseEpoch;
 
-pub(crate) fn decide(world: &WorldView, self_id: &MemberId) -> DesiredState {
-    let Some(coordination) = world.global.coordination.as_quorum() else {
-        return decide_no_quorum(world);
-    };
-
-    if world.local.storage == StorageState::Stalled {
-        if let PostgresState::Primary { committed_lsn } = &world.local.postgres {
-            let fence = active_epoch(coordination).map(|epoch| FenceCutoff {
-                epoch,
-                committed_lsn: *committed_lsn,
-            });
-            return DesiredState {
-                role: TargetRole::Fenced(FenceReason::StorageStalled),
-                publication: no_primary_publication(NoPrimaryProjection::Recovering {
-                    epoch: active_epoch(coordination),
-                    fence: fence
-                        .map(NoPrimaryFence::Cutoff)
-                        .unwrap_or(NoPrimaryFence::None),
-                }),
-                clear_switchover: false,
-            };
+pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecision {
+    let healthy_primary = matches!(
+        observation.pg,
+        PgInfoState::Primary {
+            common:
+                crate::pginfo::state::PgInfoCommon {
+                    sql: SqlStatus::Healthy,
+                    ..
+                },
+            ..
         }
-    }
-
-    match &coordination.leadership {
-        LeadershipView::HeldBySelf(epoch) => decide_as_lease_holder(world, self_id, epoch.clone()),
-        LeadershipView::HeldByPeer { epoch, state } => {
-            decide_under_foreign_leadership(world, epoch.clone(), state)
+    );
+    let healthy_replica = matches!(
+        observation.pg,
+        PgInfoState::Replica {
+            common:
+                crate::pginfo::state::PgInfoCommon {
+                    sql: SqlStatus::Healthy,
+                    ..
+                },
+            ..
         }
-        LeadershipView::Open => decide_without_lease(world, coordination, self_id),
-    }
-}
+    );
 
-fn decide_no_quorum(world: &WorldView) -> DesiredState {
-    let no_quorum_projection = || {
-        no_primary_publication(NoPrimaryProjection::NoQuorum {
-            fence: no_quorum_fence(world),
-        })
-    };
+    if !observation.dcs.is_quorum() {
+        let publication = Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::NoQuorum {
+            fence: match (
+                publication_epoch(&observation.publication),
+                committed_lsn(&observation.pg),
+            ) {
+                (Some(epoch), Some(committed_lsn)) => {
+                    NoPrimaryFence::Cutoff(FenceCutoff { epoch, committed_lsn })
+                }
+                (None, _) | (_, None) => NoPrimaryFence::None,
+            },
+        }));
 
-    match &world.local.postgres {
-        PostgresState::Primary { committed_lsn } => {
-            if let Some(epoch) = publication_epoch(&world.local.publication) {
-                let cutoff = FenceCutoff {
-                    epoch,
-                    committed_lsn: *committed_lsn,
-                };
-                return DesiredState {
-                    role: TargetRole::FailSafe(FailSafeGoal::PrimaryMustStop(cutoff.clone())),
-                    publication: no_primary_publication(NoPrimaryProjection::NoQuorum {
-                        fence: NoPrimaryFence::Cutoff(cutoff),
-                    }),
+        return match &observation.pg {
+            PgInfoState::Primary { .. }
+                if publication_epoch(&observation.publication).is_some() && healthy_primary =>
+            {
+                HaDecision {
+                    mode: HaMode::FailsafeStop {
+                        shutdown: ShutdownMode::Immediate,
+                        cutoff: match (
+                            publication_epoch(&observation.publication),
+                            committed_lsn(&observation.pg),
+                        ) {
+                            (Some(epoch), Some(committed_lsn)) => {
+                                Some(FenceCutoff { epoch, committed_lsn })
+                            }
+                            (None, _) | (_, None) => None,
+                        },
+                    },
+                    publication,
                     clear_switchover: false,
-                };
+                }
             }
-
-            DesiredState {
-                role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
-                publication: no_quorum_projection(),
-                clear_switchover: false,
-            }
-        }
-        PostgresState::Replica { upstream, .. } => DesiredState {
-            role: TargetRole::FailSafe(FailSafeGoal::ReplicaKeepFollowing(upstream.clone())),
-            publication: no_quorum_projection(),
-            clear_switchover: false,
-        },
-        PostgresState::Offline => DesiredState {
-            role: TargetRole::FailSafe(FailSafeGoal::WaitForQuorum),
-            publication: no_quorum_projection(),
-            clear_switchover: false,
-        },
-    }
-}
-
-fn decide_under_foreign_leadership(
-    world: &WorldView,
-    epoch: LeaseEpoch,
-    state: &PeerLeaderState,
-) -> DesiredState {
-    let publication = match state {
-        PeerLeaderState::PrimaryReady => primary_publication(epoch.clone()),
-        PeerLeaderState::Recovering | PeerLeaderState::Unreachable => {
-            no_primary_publication(NoPrimaryProjection::Recovering {
-                epoch: Some(epoch.clone()),
-                fence: NoPrimaryFence::None,
-            })
-        }
-    };
-
-    match (&world.local.postgres, state) {
-        (PostgresState::Primary { .. }, _) => DesiredState {
-            role: TargetRole::Fenced(FenceReason::ForeignLeaderDetected),
-            publication,
-            clear_switchover: false,
-        },
-        (PostgresState::Offline | PostgresState::Replica { .. }, PeerLeaderState::PrimaryReady) => {
-            DesiredState {
-                role: TargetRole::Follower(follow_goal(world, epoch.holder)),
+            PgInfoState::Replica { .. } if healthy_replica => HaDecision {
+                mode: HaMode::FailsafeKeepFollowing {
+                    leader: observation.resolved_upstream.clone(),
+                },
                 publication,
                 clear_switchover: false,
+            },
+            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
+                HaDecision {
+                    mode: HaMode::WaitForQuorum,
+                    publication,
+                    clear_switchover: false,
+                }
             }
-        }
-        (PostgresState::Offline | PostgresState::Replica { .. }, _) => DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication,
-            clear_switchover: false,
-        },
+        };
     }
-}
 
-fn decide_as_lease_holder(
-    world: &WorldView,
-    self_id: &MemberId,
-    epoch: LeaseEpoch,
-) -> DesiredState {
-    let publication = leader_publication(world, self_id, &epoch);
-    let allow_self_switchover_target = false;
-    let Some(coordination) = world.global.coordination.as_quorum() else {
-        return decide_no_quorum(world);
+    let Some(quorum) = observation.dcs.quorum_state() else {
+        unreachable!("quorum checked above");
     };
 
-    match resolve_switchover(
-        coordination,
-        &world.global.self_peer,
-        self_id,
-        allow_self_switchover_target,
-    ) {
-        ResolvedSwitchover::NotRequested => DesiredState {
-            role: TargetRole::Leader(epoch.clone()),
-            publication,
+    if observation.storage_stalled && healthy_primary {
+        let active_epoch = quorum.leadership.clone();
+        return HaDecision {
+            mode: HaMode::Fence {
+                release_lease: quorum
+                    .leadership
+                    .as_ref()
+                    .is_some_and(|epoch| epoch.holder == *self_id),
+                shutdown: Some(ShutdownMode::Immediate),
+            },
+            publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::Recovering {
+                epoch: active_epoch.clone(),
+                fence: match (active_epoch, committed_lsn(&observation.pg)) {
+                    (Some(epoch), Some(committed_lsn)) => {
+                        NoPrimaryFence::Cutoff(FenceCutoff { epoch, committed_lsn })
+                    }
+                    (None, _) | (_, None) => NoPrimaryFence::None,
+                },
+            })),
             clear_switchover: false,
-        },
-        ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
-            role: TargetRole::Leader(epoch.clone()),
-            publication,
-            clear_switchover: true,
-        },
-        ResolvedSwitchover::Proceed(target) => DesiredState {
-            role: TargetRole::DemotingForSwitchover(target),
-            publication: PublicationGoal::KeepCurrent,
-            clear_switchover: false,
-        },
-        ResolvedSwitchover::Pending => DesiredState {
-            role: TargetRole::Leader(epoch),
-            publication,
-            clear_switchover: false,
-        },
-        ResolvedSwitchover::Abandon => DesiredState {
-            role: TargetRole::Leader(epoch),
-            publication,
-            clear_switchover: true,
-        },
+        };
     }
-}
 
-fn decide_without_lease(
-    world: &WorldView,
-    coordination: &QuorumCoordinationState,
-    self_id: &MemberId,
-) -> DesiredState {
-    match resolve_switchover(coordination, &world.global.self_peer, self_id, true) {
-        ResolvedSwitchover::Proceed(target) if target == *self_id => DesiredState {
-            role: TargetRole::Candidate(Candidacy::TargetedSwitchover(target)),
-            publication: lease_open_publication(),
-            clear_switchover: false,
-        },
-        ResolvedSwitchover::Proceed(target) => DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingTarget(target)),
-            publication: lease_open_publication(),
-            clear_switchover: false,
-        },
-        ResolvedSwitchover::Pending => DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: lease_open_publication(),
-            clear_switchover: false,
-        },
-        ResolvedSwitchover::Abandon => DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: lease_open_publication(),
-            clear_switchover: true,
-        },
-        ResolvedSwitchover::NotRequested
-            if best_failover_candidate(&coordination.peers, &world.global.self_peer, self_id)
-                == Some(self_id.clone()) =>
-        {
-            DesiredState {
-                role: TargetRole::Candidate(candidacy_kind(world)),
-                publication: lease_open_publication(),
-                clear_switchover: false,
-            }
-        }
-        ResolvedSwitchover::NotRequested => DesiredState {
-            role: TargetRole::Idle(IdleReason::AwaitingLeader),
-            publication: lease_open_publication(),
-            clear_switchover: false,
-        },
-    }
-}
-
-fn leader_publication(
-    world: &WorldView,
-    self_id: &MemberId,
-    epoch: &LeaseEpoch,
-) -> PublicationGoal {
-    match &world.local.postgres {
-        PostgresState::Primary { .. } => primary_publication(epoch.clone()),
-        PostgresState::Offline | PostgresState::Replica { .. } => {
-            no_primary_publication(NoPrimaryProjection::Recovering {
-                epoch: Some(LeaseEpoch {
-                    holder: self_id.clone(),
-                    generation: epoch.generation,
-                }),
-                fence: NoPrimaryFence::None,
-            })
-        }
-    }
-}
-
-fn follow_goal(world: &WorldView, leader: MemberId) -> FollowGoal {
-    let recovery = match &world.local.data_dir {
-        super::types::DataDirState::Missing => RecoveryPlan::Basebackup,
-        super::types::DataDirState::Initialized(LocalDataState::BootstrapEmpty) => {
-            RecoveryPlan::Basebackup
-        }
-        super::types::DataDirState::Initialized(LocalDataState::ConsistentReplica) => {
-            match &world.local.postgres {
-                PostgresState::Replica { upstream, .. } if upstream.as_ref() == Some(&leader) => {
-                    RecoveryPlan::None
+    match quorum.leadership.as_ref() {
+        Some(epoch) if epoch.holder == *self_id => {
+            let publication = match &observation.pg {
+                PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy => {
+                    Some(AuthorityProjection::Primary(epoch.clone()))
                 }
-                PostgresState::Replica { .. }
-                | PostgresState::Offline
-                | PostgresState::Primary { .. } => {
-                    if rewind_failed_and_requires_basebackup(&world.local.process) {
-                        RecoveryPlan::Basebackup
-                    } else {
-                        RecoveryPlan::StartStreaming
+                PgInfoState::Unknown { .. }
+                | PgInfoState::Primary { .. }
+                | PgInfoState::Replica { .. } => {
+                    Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::Recovering {
+                        epoch: Some(epoch.clone()),
+                        fence: NoPrimaryFence::None,
+                    }))
+                }
+            };
+
+            match &quorum.switchover {
+                SwitchoverState::None => HaDecision {
+                    mode: HaMode::Lead(epoch.clone()),
+                    publication,
+                    clear_switchover: false,
+                },
+                SwitchoverState::Specific(target) if target == self_id => HaDecision {
+                    mode: HaMode::Lead(epoch.clone()),
+                    publication,
+                    clear_switchover: false,
+                },
+                SwitchoverState::Specific(target)
+                    if quorum
+                        .member(target)
+                        .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
+                {
+                    HaDecision {
+                        mode: HaMode::DemoteForSwitchover(target.clone()),
+                        publication: None,
+                        clear_switchover: false,
+                    }
+                }
+                SwitchoverState::Specific(_) => HaDecision {
+                    mode: HaMode::Lead(epoch.clone()),
+                    publication,
+                    clear_switchover: true,
+                },
+                SwitchoverState::AnyHealthyReplica => {
+                    let best_target = quorum
+                        .members()
+                        .filter(|(member_id, _)| *member_id != self_id)
+                        .filter_map(|(member_id, member)| {
+                            let candidate = candidate_for_member(member);
+                            candidate
+                                .is_eligible()
+                                .then_some((member_id.clone(), candidate))
+                        })
+                        .max_by(|(left_id, left), (right_id, right)| {
+                            compare_candidates(left_id, left, right_id, right)
+                        })
+                        .map(|(member_id, _)| member_id);
+
+                    match best_target {
+                        Some(target) => HaDecision {
+                            mode: HaMode::DemoteForSwitchover(target),
+                            publication: None,
+                            clear_switchover: false,
+                        },
+                        None => HaDecision {
+                            mode: HaMode::Lead(epoch.clone()),
+                            publication,
+                            clear_switchover: false,
+                        },
                     }
                 }
             }
         }
-        super::types::DataDirState::Initialized(LocalDataState::Diverged(state)) => match state {
-            super::types::DivergenceState::RewindPossible => {
-                if rewind_failed_and_requires_basebackup(&world.local.process) {
-                    RecoveryPlan::Basebackup
-                } else if world
-                    .local
-                    .observation
-                    .basebackup_completed_awaiting_start()
+        Some(epoch) => {
+            let leader_ready = quorum.member(&epoch.holder).is_some_and(|member| {
+                matches!(member.postgres(), PgInfoState::Primary { .. })
+                    && member.postgres().readiness() == Readiness::Ready
+            });
+            let publication = Some(if leader_ready {
+                AuthorityProjection::Primary(epoch.clone())
+            } else {
+                AuthorityProjection::NoPrimary(NoPrimaryProjection::Recovering {
+                    epoch: Some(epoch.clone()),
+                    fence: NoPrimaryFence::None,
+                })
+            });
+
+            match &observation.pg {
+                PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy => HaDecision {
+                    mode: HaMode::Fence {
+                        release_lease: false,
+                        shutdown: Some(ShutdownMode::Immediate),
+                    },
+                    publication,
+                    clear_switchover: false,
+                },
+                PgInfoState::Unknown { .. }
+                | PgInfoState::Primary { .. }
+                | PgInfoState::Replica { .. } if leader_ready => HaDecision {
+                    mode: HaMode::Follow {
+                        leader: epoch.holder.clone(),
+                        recovery: follow_recovery(observation, &epoch.holder),
+                    },
+                    publication,
+                    clear_switchover: false,
+                },
+                PgInfoState::Unknown { .. }
+                | PgInfoState::Primary { .. }
+                | PgInfoState::Replica { .. } => HaDecision {
+                    mode: HaMode::WaitForLeader,
+                    publication,
+                    clear_switchover: false,
+                },
+            }
+        }
+        None => {
+            let publication = Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen));
+            match &quorum.switchover {
+                SwitchoverState::Specific(target)
+                    if target == self_id && observation.self_candidate.is_eligible() =>
                 {
-                    RecoveryPlan::StartStreaming
-                } else {
-                    RecoveryPlan::Rewind
+                    HaDecision {
+                        mode: HaMode::AcquireLease(LeaseClaim::TargetedSwitchover(
+                            target.clone(),
+                        )),
+                        publication,
+                        clear_switchover: false,
+                    }
+                }
+                SwitchoverState::Specific(target)
+                    if quorum
+                        .member(target)
+                        .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
+                {
+                    HaDecision {
+                        mode: HaMode::WaitForTarget(target.clone()),
+                        publication,
+                        clear_switchover: false,
+                    }
+                }
+                SwitchoverState::Specific(_) => HaDecision {
+                    mode: HaMode::WaitForLeader,
+                    publication,
+                    clear_switchover: true,
+                },
+                SwitchoverState::AnyHealthyReplica => {
+                    let best = best_failover_candidate(quorum, &observation.self_candidate, self_id);
+                    match best {
+                        Some(candidate) if candidate == *self_id => HaDecision {
+                            mode: HaMode::AcquireLease(lease_claim(observation, self_id)),
+                            publication,
+                            clear_switchover: false,
+                        },
+                        Some(candidate) => HaDecision {
+                            mode: HaMode::WaitForTarget(candidate),
+                            publication,
+                            clear_switchover: false,
+                        },
+                        None => HaDecision {
+                            mode: HaMode::WaitForLeader,
+                            publication,
+                            clear_switchover: false,
+                        },
+                    }
+                }
+                SwitchoverState::None => {
+                    match best_failover_candidate(quorum, &observation.self_candidate, self_id) {
+                        Some(candidate) if candidate == *self_id => HaDecision {
+                            mode: HaMode::AcquireLease(lease_claim(observation, self_id)),
+                            publication,
+                            clear_switchover: false,
+                        },
+                        Some(_) | None => HaDecision {
+                            mode: HaMode::WaitForLeader,
+                            publication,
+                            clear_switchover: false,
+                        },
+                    }
                 }
             }
-            super::types::DivergenceState::BasebackupRequired => RecoveryPlan::Basebackup,
-        },
-    };
-
-    FollowGoal { leader, recovery }
-}
-
-fn rewind_failed_and_requires_basebackup(process: &ProcessAssessment) -> bool {
-    matches!(
-        process,
-        ProcessAssessment::Failed(super::types::JobFailure {
-            job: crate::process::jobs::ActiveJobKind::PgRewind,
-            recovery: FailureRecovery::FallbackToBasebackup,
-        })
-    )
-}
-
-fn candidacy_kind(world: &WorldView) -> Candidacy {
-    match &world.local.data_dir {
-        super::types::DataDirState::Missing
-        | super::types::DataDirState::Initialized(LocalDataState::BootstrapEmpty) => {
-            Candidacy::Bootstrap
         }
-        _ => {
-            if matches!(
-                world.local.publication,
-                PublicationState::Projected(AuthorityProjection::NoPrimary(
-                    NoPrimaryProjection::NoQuorum { .. }
-                ))
-            ) {
-                Candidacy::ResumeAfterOutage
+    }
+}
+
+fn committed_lsn(pg: &PgInfoState) -> Option<u64> {
+    match pg {
+        PgInfoState::Primary {
+            common, wal_lsn, ..
+        } if common.sql == SqlStatus::Healthy => Some(wal_lsn.0),
+        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
+            None
+        }
+    }
+}
+
+fn follow_recovery(observation: &HaObservation, leader: &MemberId) -> FollowRecovery {
+    match observation.local_data {
+        LocalDataState::Missing | LocalDataState::BootstrapEmpty => FollowRecovery::Basebackup,
+        LocalDataState::ConsistentReplica => match &observation.pg {
+            PgInfoState::Replica { common, .. }
+                if common.sql == SqlStatus::Healthy
+                    && observation.resolved_upstream.as_ref() == Some(leader) =>
+            {
+                FollowRecovery::None
+            }
+            PgInfoState::Unknown { .. }
+            | PgInfoState::Primary { .. }
+            | PgInfoState::Replica { .. } => {
+                if observation.process.rewind_failed_requires_basebackup() {
+                    FollowRecovery::Basebackup
+                } else {
+                    FollowRecovery::StartStreaming
+                }
+            }
+        },
+        LocalDataState::DivergedRewind => {
+            if observation.process.rewind_failed_requires_basebackup() {
+                FollowRecovery::Basebackup
+            } else if observation
+                .process
+                .basebackup_completed_awaiting_pg_start(&observation.pg)
+            {
+                FollowRecovery::StartStreaming
             } else {
-                Candidacy::Failover
+                FollowRecovery::Rewind
             }
         }
+        LocalDataState::DivergedBasebackup => FollowRecovery::Basebackup,
     }
 }
 
-fn active_epoch(coordination: &QuorumCoordinationState) -> Option<LeaseEpoch> {
-    match &coordination.leadership {
-        LeadershipView::Open => None,
-        LeadershipView::HeldBySelf(epoch) | LeadershipView::HeldByPeer { epoch, .. } => {
-            Some(epoch.clone())
-        }
+fn lease_claim(observation: &HaObservation, self_id: &MemberId) -> LeaseClaim {
+    if matches!(
+        observation.local_data,
+        LocalDataState::Missing | LocalDataState::BootstrapEmpty
+    ) {
+        return LeaseClaim::Bootstrap;
     }
-}
 
-fn primary_publication(epoch: LeaseEpoch) -> PublicationGoal {
-    PublicationGoal::Publish(AuthorityProjection::Primary(epoch))
-}
+    if matches!(
+        observation.publication,
+        PublicationState::Projected(AuthorityProjection::NoPrimary(
+            NoPrimaryProjection::NoQuorum { .. }
+        ))
+    ) {
+        return LeaseClaim::ResumeAfterOutage;
+    }
 
-fn no_primary_publication(projection: NoPrimaryProjection) -> PublicationGoal {
-    PublicationGoal::Publish(AuthorityProjection::NoPrimary(projection))
-}
+    if observation
+        .dcs
+        .switchover()
+        .is_some_and(|switchover| matches!(switchover, SwitchoverState::Specific(target) if target == self_id))
+    {
+        return LeaseClaim::TargetedSwitchover(self_id.clone());
+    }
 
-fn lease_open_publication() -> PublicationGoal {
-    no_primary_publication(NoPrimaryProjection::LeaseOpen)
+    LeaseClaim::Failover
 }
 
 fn publication_epoch(publication: &PublicationState) -> Option<LeaseEpoch> {
@@ -337,172 +386,94 @@ fn publication_epoch(publication: &PublicationState) -> Option<LeaseEpoch> {
         | PublicationState::Projected(AuthorityProjection::NoPrimary(
             NoPrimaryProjection::NoQuorum { .. }
             | NoPrimaryProjection::LeaseOpen
-            | NoPrimaryProjection::Recovering { epoch: None, .. }
-            | NoPrimaryProjection::SwitchoverRejected(_),
+            | NoPrimaryProjection::Recovering { epoch: None, .. },
         )) => None,
     }
 }
 
-fn no_quorum_fence(world: &WorldView) -> NoPrimaryFence {
-    match (
-        &world.local.postgres,
-        publication_epoch(&world.local.publication),
-    ) {
-        (PostgresState::Primary { committed_lsn }, Some(epoch)) => {
-            NoPrimaryFence::Cutoff(FenceCutoff {
-                epoch,
-                committed_lsn: *committed_lsn,
-            })
-        }
-        _ => NoPrimaryFence::None,
+fn candidate_for_member(member: &DcsMemberState) -> CandidateState {
+    if member.postgres().readiness() != Readiness::Ready {
+        return CandidateState::Ineligible;
+    }
+
+    match member.postgres() {
+        PgInfoState::Unknown { .. } => CandidateState::Bootstrap,
+        PgInfoState::Primary { .. } => member
+            .postgres()
+            .committed_wal()
+            .map(CandidateState::Promote)
+            .unwrap_or(CandidateState::Ineligible),
+        PgInfoState::Replica { .. } => member
+            .postgres()
+            .replay_wal()
+            .or_else(|| member.postgres().follow_wal())
+            .map(CandidateState::Promote)
+            .unwrap_or(CandidateState::Ineligible),
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ResolvedSwitchover {
-    NotRequested,
-    Proceed(MemberId),
-    Pending,
-    Abandon,
-}
-
-fn resolve_switchover(
-    coordination: &QuorumCoordinationState,
-    self_peer: &PeerKnowledge,
-    self_id: &MemberId,
-    allow_self_target: bool,
-) -> ResolvedSwitchover {
-    match &coordination.switchover {
-        SwitchoverState::None => ResolvedSwitchover::NotRequested,
-        SwitchoverState::AnyHealthyReplica => {
-            best_switchover_target(&coordination.peers, self_peer, self_id, allow_self_target)
-                .map_or(ResolvedSwitchover::Pending, ResolvedSwitchover::Proceed)
+fn compare_candidates(
+    left_id: &MemberId,
+    left: &CandidateState,
+    right_id: &MemberId,
+    right: &CandidateState,
+) -> Ordering {
+    match (left, right) {
+        (CandidateState::Promote(left_pos), CandidateState::Promote(right_pos)) => {
+            compare_positions(left_pos, right_pos).then_with(|| right_id.cmp(left_id))
         }
-        SwitchoverState::Specific(member_id) => {
-            if member_id == self_id {
-                if allow_self_target && switchover_target_is_valid(self_peer) {
-                    ResolvedSwitchover::Proceed(member_id.clone())
-                } else {
-                    ResolvedSwitchover::Abandon
-                }
-            } else if coordination
-                .peers
-                .get(member_id)
-                .is_some_and(switchover_target_is_valid)
-            {
-                ResolvedSwitchover::Proceed(member_id.clone())
-            } else {
-                ResolvedSwitchover::Abandon
-            }
+        (CandidateState::Promote(_), CandidateState::Bootstrap) => Ordering::Greater,
+        (CandidateState::Bootstrap, CandidateState::Promote(_)) => Ordering::Less,
+        (CandidateState::Bootstrap, CandidateState::Bootstrap) => right_id.cmp(left_id),
+        (CandidateState::Ineligible, CandidateState::Ineligible) => Ordering::Equal,
+        (CandidateState::Ineligible, CandidateState::Bootstrap | CandidateState::Promote(_)) => {
+            Ordering::Less
+        }
+        (CandidateState::Bootstrap | CandidateState::Promote(_), CandidateState::Ineligible) => {
+            Ordering::Greater
         }
     }
 }
 
-fn best_switchover_target(
-    peers: &std::collections::BTreeMap<MemberId, PeerKnowledge>,
-    self_peer: &PeerKnowledge,
-    self_id: &MemberId,
-    allow_self_target: bool,
-) -> Option<MemberId> {
-    if allow_self_target && switchover_target_is_valid(self_peer) {
-        return Some(self_id.clone());
-    }
-
-    let peer_candidate = peers
-        .iter()
-        .filter(|(_, peer)| switchover_target_is_valid(peer))
-        .map(|(member_id, peer)| (member_id.clone(), peer))
-        .max_by(|(left_id, left_peer), (right_id, right_peer)| {
-            compare_candidate_eligibility(
-                left_id,
-                &left_peer.eligibility,
-                right_id,
-                &right_peer.eligibility,
-            )
-        })
-        .map(|(member_id, _)| member_id);
-
-    peer_candidate
+fn compare_positions(left: &ObservedWalPosition, right: &ObservedWalPosition) -> Ordering {
+    left.timeline
+        .map(|value| value.0)
+        .unwrap_or_default()
+        .cmp(&right.timeline.map(|value| value.0).unwrap_or_default())
+        .then_with(|| left.lsn.0.cmp(&right.lsn.0))
 }
 
 fn best_failover_candidate(
-    peers: &std::collections::BTreeMap<MemberId, PeerKnowledge>,
-    self_peer: &PeerKnowledge,
+    quorum: &DcsQuorumState,
+    self_candidate: &CandidateState,
     self_id: &MemberId,
 ) -> Option<MemberId> {
-    let peer_candidate = peers
-        .iter()
-        .filter(|(_, peer)| !matches!(peer.eligibility, ElectionEligibility::Ineligible(_)))
-        .map(|(member_id, peer)| (member_id.clone(), peer))
-        .max_by(|(left_id, left_peer), (right_id, right_peer)| {
-            compare_candidate_eligibility(
-                left_id,
-                &left_peer.eligibility,
-                right_id,
-                &right_peer.eligibility,
-            )
+    let best_peer = quorum
+        .members()
+        .filter(|(member_id, _)| *member_id != self_id)
+        .filter_map(|(member_id, member)| {
+            let candidate = candidate_for_member(member);
+            candidate
+                .is_eligible()
+                .then_some((member_id.clone(), candidate))
         })
-        .map(|(member_id, _)| member_id);
+        .max_by(|(left_id, left), (right_id, right)| {
+            compare_candidates(left_id, left, right_id, right)
+        });
 
-    if matches!(self_peer.eligibility, ElectionEligibility::Ineligible(_)) {
-        return peer_candidate;
+    if !self_candidate.is_eligible() {
+        return best_peer.map(|(member_id, _)| member_id);
     }
 
-    match peer_candidate {
-        Some(peer_id) => {
-            let Some(peer) = peers.get(&peer_id) else {
-                return Some(self_id.clone());
-            };
-            if compare_candidate_eligibility(
-                self_id,
-                &self_peer.eligibility,
-                &peer_id,
-                &peer.eligibility,
-            ) == Ordering::Greater
-            {
-                Some(self_id.clone())
-            } else {
-                Some(peer_id)
-            }
+    match best_peer {
+        Some((member_id, candidate))
+            if compare_candidates(self_id, self_candidate, &member_id, &candidate)
+                == Ordering::Greater =>
+        {
+            Some(self_id.clone())
         }
+        Some((member_id, _)) => Some(member_id),
         None => Some(self_id.clone()),
-    }
-}
-
-fn switchover_target_is_valid(peer: &PeerKnowledge) -> bool {
-    matches!(peer.api, ApiVisibility::Reachable)
-        && matches!(peer.eligibility, ElectionEligibility::PromoteEligible(_))
-}
-
-fn compare_candidate_eligibility(
-    left_id: &MemberId,
-    left: &ElectionEligibility,
-    right_id: &MemberId,
-    right: &ElectionEligibility,
-) -> Ordering {
-    match (left, right) {
-        (
-            ElectionEligibility::PromoteEligible(left_pos),
-            ElectionEligibility::PromoteEligible(right_pos),
-        ) => left_pos.cmp(right_pos).then_with(|| right_id.cmp(left_id)),
-        (ElectionEligibility::PromoteEligible(_), ElectionEligibility::BootstrapEligible) => {
-            Ordering::Greater
-        }
-        (ElectionEligibility::BootstrapEligible, ElectionEligibility::PromoteEligible(_)) => {
-            Ordering::Less
-        }
-        (ElectionEligibility::BootstrapEligible, ElectionEligibility::BootstrapEligible) => {
-            right_id.cmp(left_id)
-        }
-        (
-            ElectionEligibility::PromoteEligible(_) | ElectionEligibility::BootstrapEligible,
-            ElectionEligibility::Ineligible(_),
-        ) => Ordering::Greater,
-        (
-            ElectionEligibility::Ineligible(_),
-            ElectionEligibility::PromoteEligible(_) | ElectionEligibility::BootstrapEligible,
-        ) => Ordering::Less,
-        (ElectionEligibility::Ineligible(_), ElectionEligibility::Ineligible(_)) => Ordering::Equal,
     }
 }
 
@@ -510,362 +481,212 @@ fn compare_candidate_eligibility(
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{best_failover_candidate, decide};
     use crate::{
-        dcs::DcsQuorumState,
-        state::{LeaseEpoch, MemberId, UnixMillis},
+        dcs::{DcsMemberState, DcsSnapshot},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::state::ProcessState,
+        state::{LeaseEpoch, MemberId, ObservedWalPosition, PgEndpoint, SwitchoverState, TimelineId, WalLsn, WorkerStatus},
     };
 
-    use super::super::types::{
-        ApiVisibility, AuthorityProjection, Candidacy, CoordinationState, DataDirState,
-        DesiredState, DivergenceState, ElectionEligibility, FailSafeGoal, FollowGoal,
-        GlobalKnowledge, IdleReason, IneligibleReason, LeadershipView, LocalDataState,
-        LocalKnowledge, NoPrimaryProjection, ObservationState, ObservedPrimary, PeerKnowledge,
-        PeerLeaderState, PostgresState, PrimaryObservation, ProcessAssessment, PublicationGoal,
-        PublicationState, QuorumCoordinationState, RecoveryPlan, ReplicationState, StorageState,
-        SwitchoverState, TargetRole, WalPosition, WorldView,
-    };
+    use super::*;
 
-    fn promote_peer(lsn: u64) -> PeerKnowledge {
-        PeerKnowledge {
-            eligibility: ElectionEligibility::PromoteEligible(WalPosition { timeline: 1, lsn }),
-            api: ApiVisibility::Reachable,
-        }
-    }
-
-    fn bootstrap_peer() -> PeerKnowledge {
-        PeerKnowledge {
-            eligibility: ElectionEligibility::BootstrapEligible,
-            api: ApiVisibility::Reachable,
-        }
-    }
-
-    fn world(local: LocalKnowledge, self_peer: PeerKnowledge) -> WorldView {
-        WorldView {
-            local,
-            global: GlobalKnowledge {
-                coordination: CoordinationState::Quorum(Box::new(QuorumCoordinationState {
-                    dcs: DcsQuorumState {
-                        leadership: None,
-                        switchover: SwitchoverState::None,
-                        members: BTreeMap::new(),
-                    },
-                    leadership: LeadershipView::Open,
-                    primary: PrimaryObservation::Absent,
-                    switchover: SwitchoverState::None,
-                    peers: BTreeMap::new(),
-                })),
-                self_peer,
+    fn common(readiness: Readiness) -> PgInfoCommon {
+        PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql: SqlStatus::Healthy,
+            readiness,
+            timeline: Some(TimelineId(1)),
+            system_identifier: None,
+            pg_config: PgConfig {
+                port: None,
+                hot_standby: None,
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
             },
+            last_refresh_at: None,
+        }
+    }
+
+    fn primary(lsn: u64) -> PgInfoState {
+        PgInfoState::Primary {
+            common: common(Readiness::Ready),
+            wal_lsn: WalLsn(lsn),
+            slots: Vec::new(),
+        }
+    }
+
+    fn replica(lsn: u64) -> PgInfoState {
+        PgInfoState::Replica {
+            common: common(Readiness::Ready),
+            replay_lsn: WalLsn(lsn),
+            follow_lsn: Some(WalLsn(lsn)),
+            upstream: None,
+        }
+    }
+
+    fn peer(member_id: &str, pg: PgInfoState) -> DcsMemberState {
+        DcsMemberState {
+            postgres_endpoint: PgEndpoint::Tcp {
+                host: member_id.to_string(),
+                port: 5432,
+            },
+            postgres: pg,
+        }
+    }
+
+    fn observation(pg: PgInfoState) -> HaObservation {
+        HaObservation {
+            pg,
+            process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            dcs: DcsSnapshot::quorum(None, SwitchoverState::None, BTreeMap::new()),
+            publication: PublicationState::unknown(),
+            managed_roles_reconciled: false,
+            local_data: LocalDataState::ConsistentReplica,
+            resolved_upstream: None,
+            self_candidate: CandidateState::Promote(ObservedWalPosition {
+                timeline: Some(TimelineId(1)),
+                lsn: WalLsn(10),
+            }),
+            storage_stalled: false,
+            ready_primary: None,
         }
     }
 
     #[test]
     fn best_failover_candidate_includes_self_in_ranking() {
         let self_id = MemberId("node-a".to_string());
-        let peers = BTreeMap::from([(MemberId("node-b".to_string()), promote_peer(10))]);
-
-        assert_eq!(
-            best_failover_candidate(&peers, &promote_peer(20), &self_id),
-            Some(self_id)
-        );
-    }
-
-    #[test]
-    fn best_failover_candidate_prefers_higher_ranked_peer() {
-        let self_id = MemberId("node-a".to_string());
-        let peer_id = MemberId("node-b".to_string());
-        let peers = BTreeMap::from([(peer_id.clone(), promote_peer(20))]);
-
-        assert_eq!(
-            best_failover_candidate(&peers, &promote_peer(10), &self_id),
-            Some(peer_id)
-        );
-    }
-
-    #[test]
-    fn best_failover_candidate_prefers_bootstrap_peer_over_ineligible_self() {
-        let self_id = MemberId("node-a".to_string());
-        let peer_id = MemberId("node-b".to_string());
-        let peers = BTreeMap::from([(peer_id.clone(), bootstrap_peer())]);
+        let quorum = crate::dcs::DcsQuorumState {
+            leadership: None,
+            switchover: SwitchoverState::None,
+            members: BTreeMap::from([(
+                MemberId("node-b".to_string()),
+                peer("node-b", replica(20)),
+            )]),
+        };
 
         assert_eq!(
             best_failover_candidate(
-                &peers,
-                &PeerKnowledge {
-                    eligibility: ElectionEligibility::Ineligible(IneligibleReason::NotReady),
-                    api: ApiVisibility::Reachable,
-                },
+                &quorum,
+                &CandidateState::Promote(ObservedWalPosition {
+                    timeline: Some(TimelineId(1)),
+                    lsn: WalLsn(30),
+                }),
                 &self_id,
             ),
-            Some(peer_id)
+            Some(self_id)
         );
     }
 
     #[test]
     fn no_quorum_keeps_replica_in_failsafe() {
         let self_id = MemberId("node-a".to_string());
-        let mut world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Replica {
-                    upstream: Some(MemberId("node-b".to_string())),
-                    replication: ReplicationState::Streaming(WalPosition {
-                        timeline: 1,
-                        lsn: 42,
-                    }),
-                },
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::Projected(AuthorityProjection::NoPrimary(
-                    NoPrimaryProjection::LeaseOpen,
-                )),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(0),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            promote_peer(42),
-        );
-        world.global.coordination = CoordinationState::NoQuorum;
+        let mut observation = observation(replica(42));
+        observation.resolved_upstream = Some(MemberId("node-b".to_string()));
+        observation.dcs = DcsSnapshot::NoQuorum;
 
         assert_eq!(
-            decide(&world, &self_id),
-            DesiredState {
-                role: TargetRole::FailSafe(FailSafeGoal::ReplicaKeepFollowing(Some(MemberId(
-                    "node-b".to_string(),
-                )))),
-                publication: PublicationGoal::Publish(AuthorityProjection::NoPrimary(
-                    NoPrimaryProjection::NoQuorum {
-                        fence: super::super::types::NoPrimaryFence::None,
-                    },
-                )),
+            decide(&observation, &self_id),
+            HaDecision {
+                mode: HaMode::FailsafeKeepFollowing {
+                    leader: Some(MemberId("node-b".to_string())),
+                },
+                publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::NoQuorum {
+                    fence: NoPrimaryFence::None,
+                })),
                 clear_switchover: false,
             }
         );
     }
 
     #[test]
-    fn sampled_primary_without_lease_promotes_best_candidate() {
-        let self_id = MemberId("node-a".to_string());
-        let mut world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Offline,
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(0),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            promote_peer(42),
-        );
-        if let Some(coordination) = world.global.coordination.as_quorum_mut() {
-            coordination.primary = PrimaryObservation::Observed(ObservedPrimary {
-                member: MemberId("node-b".to_string()),
-                timeline: None,
-                system_identifier: None,
-            });
-        }
-
-        assert_eq!(
-            decide(&world, &self_id).role,
-            TargetRole::Candidate(Candidacy::Failover)
-        );
-    }
-
-    #[test]
-    fn basebackup_success_on_diverged_data_transitions_to_start_streaming() {
+    fn basebackup_completion_on_diverged_data_transitions_to_start_streaming() {
         let self_id = MemberId("node-b".to_string());
-        let mut world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::Diverged(
-                    DivergenceState::RewindPossible,
-                )),
-                postgres: PostgresState::Offline,
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(100),
-                    last_start_success_at: Some(UnixMillis(10)),
-                    last_basebackup_success_at: Some(UnixMillis(20)),
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            promote_peer(42),
-        );
-        if let Some(coordination) = world.global.coordination.as_quorum_mut() {
-            coordination.leadership = LeadershipView::HeldByPeer {
-                epoch: LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 7,
-                },
-                state: PeerLeaderState::PrimaryReady,
-            };
-        }
-
-        assert_eq!(
-            decide(&world, &self_id).role,
-            TargetRole::Follower(FollowGoal {
-                leader: MemberId("node-a".to_string()),
-                recovery: RecoveryPlan::StartStreaming,
-            })
-        );
-    }
-
-    #[test]
-    fn idle_when_no_leader_no_candidate_and_no_switchover() {
-        let self_id = MemberId("node-a".to_string());
-        let world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Offline,
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(0),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            PeerKnowledge {
-                eligibility: ElectionEligibility::Ineligible(IneligibleReason::StartingUp),
-                api: ApiVisibility::Unreachable,
-            },
-        );
-
-        assert_eq!(
-            decide(&world, &self_id).role,
-            TargetRole::Idle(IdleReason::AwaitingLeader)
-        );
-    }
-
-    #[test]
-    fn generic_switchover_request_waits_for_future_eligible_target() {
-        let self_id = MemberId("node-a".to_string());
-        let mut world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Primary { committed_lsn: 42 },
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(0),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            promote_peer(42),
-        );
-        if let Some(coordination) = world.global.coordination.as_quorum_mut() {
-            coordination.leadership = LeadershipView::HeldBySelf(LeaseEpoch {
-                holder: self_id.clone(),
-                generation: 7,
-            });
-            coordination.switchover = SwitchoverState::AnyHealthyReplica;
-            coordination.peers = BTreeMap::from([(
-                MemberId("node-b".to_string()),
-                PeerKnowledge {
-                    eligibility: ElectionEligibility::Ineligible(IneligibleReason::NotReady),
-                    api: ApiVisibility::Reachable,
-                },
-            )]);
-        }
-
-        assert_eq!(
-            decide(&world, &self_id),
-            DesiredState {
-                role: TargetRole::Leader(LeaseEpoch {
-                    holder: self_id.clone(),
-                    generation: 7,
-                }),
-                publication: PublicationGoal::Publish(AuthorityProjection::Primary(LeaseEpoch {
-                    holder: MemberId("node-a".to_string()),
-                    generation: 7,
-                },)),
-                clear_switchover: false,
-            }
-        );
-    }
-
-    #[test]
-    fn lease_holder_replica_keeps_handoff_target_for_generic_switchover_after_winning_lease() {
-        let self_id = MemberId("node-c".to_string());
         let epoch = LeaseEpoch {
-            holder: self_id.clone(),
+            holder: MemberId("node-a".to_string()),
             generation: 7,
         };
-        let mut world = world(
-            LocalKnowledge {
-                data_dir: DataDirState::Initialized(LocalDataState::ConsistentReplica),
-                postgres: PostgresState::Replica {
-                    upstream: None,
-                    replication: ReplicationState::Streaming(WalPosition {
-                        timeline: 1,
-                        lsn: 50,
-                    }),
-                },
-                process: ProcessAssessment::Idle,
-                storage: StorageState::Healthy,
-                managed_roles_reconciled: false,
-                publication: PublicationState::unknown(),
-                observation: ObservationState {
-                    pg_observed_at: UnixMillis(0),
-                    last_start_success_at: None,
-                    last_basebackup_success_at: None,
-                    last_promote_success_at: None,
-                    last_demote_success_at: None,
-                    last_local_timeline: None,
-                    last_local_system_identifier: None,
-                },
-            },
-            promote_peer(50),
+        let mut observation = observation(PgInfoState::unknown(
+            WorkerStatus::Running,
+            SqlStatus::Unknown,
+            None,
+        ));
+        observation.local_data = LocalDataState::DivergedRewind;
+        observation.process = ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: Some(crate::process::state::JobOutcome::Success {
+                id: crate::state::JobId("job-1".to_string()),
+                job_kind: crate::process::jobs::ActiveJobKind::BaseBackup,
+                finished_at: crate::state::UnixMillis(20),
+            }),
+        };
+        observation.dcs = DcsSnapshot::quorum(
+            Some(epoch.clone()),
+            SwitchoverState::None,
+            BTreeMap::from([(
+                epoch.holder.clone(),
+                peer("node-a", primary(50)),
+            )]),
         );
-        if let Some(coordination) = world.global.coordination.as_quorum_mut() {
-            coordination.leadership = LeadershipView::HeldBySelf(epoch.clone());
-            coordination.switchover = SwitchoverState::AnyHealthyReplica;
-            coordination.peers =
-                BTreeMap::from([(MemberId("node-a".to_string()), promote_peer(40))]);
-        }
 
         assert_eq!(
-            decide(&world, &self_id),
-            DesiredState {
-                role: TargetRole::DemotingForSwitchover(MemberId("node-a".to_string())),
-                publication: PublicationGoal::KeepCurrent,
-                clear_switchover: false,
+            decide(&observation, &self_id).mode,
+            HaMode::Follow {
+                leader: MemberId("node-a".to_string()),
+                recovery: FollowRecovery::StartStreaming,
             }
+        );
+    }
+
+    #[test]
+    fn generic_switchover_waits_for_future_target() {
+        let self_id = MemberId("node-a".to_string());
+        let mut observation = observation(primary(42));
+        observation.dcs = DcsSnapshot::quorum(
+            Some(LeaseEpoch {
+                holder: self_id.clone(),
+                generation: 7,
+            }),
+            SwitchoverState::AnyHealthyReplica,
+            BTreeMap::from([(
+                MemberId("node-b".to_string()),
+                peer(
+                    "node-b",
+                    PgInfoState::Unknown {
+                        common: common(Readiness::NotReady),
+                    },
+                ),
+            )]),
+        );
+
+        assert_eq!(decide(&observation, &self_id).mode, HaMode::Lead(LeaseEpoch {
+            holder: self_id,
+            generation: 7,
+        }));
+    }
+
+    #[test]
+    fn lease_holder_demotes_for_best_switchover_target() {
+        let self_id = MemberId("node-c".to_string());
+        let mut observation = observation(replica(50));
+        observation.dcs = DcsSnapshot::quorum(
+            Some(LeaseEpoch {
+                holder: self_id.clone(),
+                generation: 7,
+            }),
+            SwitchoverState::AnyHealthyReplica,
+            BTreeMap::from([(
+                MemberId("node-a".to_string()),
+                peer("node-a", replica(40)),
+            )]),
+        );
+
+        assert_eq!(
+            decide(&observation, &self_id).mode,
+            HaMode::DemoteForSwitchover(MemberId("node-a".to_string()))
         );
     }
 }

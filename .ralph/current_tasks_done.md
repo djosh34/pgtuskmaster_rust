@@ -1,11 +1,23 @@
 # Done Tasks Summary
 
-Generated: Thu Mar 19 09:49:25 AM CET 2026
+Generated: Thu Mar 19 10:16:22 AM CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
 ```
 ## Smell Set: dcs-bootstrap-removal-and-worker-collapse <status>completed</status> <passes>true</passes>
+
+Please refer to skill `improve-code-boundaries` to see what smells there are.
+
+Inside dirs:
+```
+
+==============
+
+# Task `.ralph/tasks/smells/ha-flat-observation-and-decision-collapse.md`
+
+```
+## Smell Set: ha-flat-observation-and-decision-collapse <status>completed</status> <passes>true</passes>
 
 Please refer to skill `improve-code-boundaries` to see what smells there are.
 

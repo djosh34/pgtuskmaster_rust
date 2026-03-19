@@ -1,4 +1,4 @@
-## Smell Set: ha-flat-observation-and-decision-collapse <status>not_started</status> <passes>false</passes>
+## Smell Set: ha-flat-observation-and-decision-collapse <status>completed</status> <passes>true</passes>
 
 Please refer to skill `improve-code-boundaries` to see what smells there are.
 
@@ -8,7 +8,7 @@ Inside dirs:
 Solve each smell:
 
 ---
-- [ ] Smell 6, raw DTO data not converted once into one shared flat type
+- [x] Smell 6, raw DTO data not converted once into one shared flat type
 HA currently reads `PgInfoState`, `DcsSnapshot`, `ProcessState`, and retained HA state, then projects them into a second HA-only universe before `decide.rs` and `reconcile.rs` immediately unpack that universe again. This is the main boundary failure in HA.
 
 The projection starts in `src/ha/worker.rs::observe(...)` and fans out through:
@@ -128,7 +128,7 @@ pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> PlannedAct
 ```
 
 ---
-- [ ] Smell 3, wrong place-ism: HA owns process timings and retained identity history that belong to process/pginfo
+- [x] Smell 3, wrong place-ism: HA owns process timings and retained identity history that belong to process/pginfo
 HA currently owns `pg_observed_at`, `last_start_success_at`, `last_basebackup_success_at`, `last_promote_success_at`, `last_demote_success_at`, `last_local_timeline`, and `last_local_system_identifier`. That means HA is not just consuming process/pginfo state; it is reconstructing and remembering process freshness rules and identity fallback rules on its own.
 
 This violates the user constraint directly: process timings must live in `process`, and HA must trust that process-owned state instead of rebuilding it.
@@ -202,7 +202,7 @@ world.local.observation.waiting_for_fresh_pg_after(ActiveJobKind::StartReplica)
 ```
 
 ---
-- [ ] Smell 1, useless overabstraction and overnesting across decide/reconcile transit types
+- [x] Smell 1, useless overabstraction and overnesting across decide/reconcile transit types
 After the observation mirror tree is removed, keep collapsing. HA still has a second type corridor for decision output and reconciliation input:
 - `DesiredState`
 - `TargetRole`
@@ -280,7 +280,7 @@ pub struct PlannedActions {
 ```
 
 ---
-- [ ] Smell 10, remove the damn helpers in `src/ha/worker.rs` and `src/ha/decide.rs`
+- [x] Smell 10, remove the damn helpers in `src/ha/worker.rs` and `src/ha/decide.rs`
 `src/ha/decide.rs` and `src/ha/worker.rs` are dominated by private one-file helper chains. Most of these helpers only exist to move small matches away from the owning workflow.
 
 Helper groups in `src/ha/decide.rs` that should be collapsed into one readable decision pipeline:
@@ -361,3 +361,20 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
     Ok(WorldView { local, global })
 }
 ```
+
+<plan>
+- [x] Replace the current `WorldView` mirror tree in [`src/ha/types.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/types.rs) with one flat HA-owned observation shape that embeds owning-domain state directly. The new observation should hold `PgInfoState`, `ProcessState`, `DcsSnapshot`, the current `PublicationState`, `managed_roles_reconciled`, and only the irreducible HA-derived facts that are not already modeled elsewhere: local data-dir classification, self candidate status, observed ready primary identity, and storage stall status. Delete or merge the current HA-local mirror shapes rather than translating them forward.
+- [x] Remove HA-owned timing and retained identity history from the observation boundary. `ObservationState`, `last_success_at`, `last_start_success_at`, `local_member_identity_fallback`, `retained_local_identity_fallback`, and the `last_local_*` fallback state must disappear from HA. Before repairing all compile fallout, add the missing process-owned readiness/progress API in [`src/process/state.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/process/state.rs) and consume `PgInfoState` identity fields directly so HA stops rebuilding freshness and timeline/system-identifier history on its own.
+- [x] Flatten the observation pipeline inside [`src/ha/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs) around one owning `observe(...)` flow. Inline or merge the helper chain so the worker computes the flat observation in one readable pass from `config`, `pg`, `dcs`, and `process`, reusing `DcsSnapshot`/`DcsQuorumState`/`DcsMemberState` and `ObservedWalPosition` directly instead of building `GlobalKnowledge`, `PeerKnowledge`, `LeadershipView`, `PrimaryObservation`, `ObservedPrimary`, or `WalPosition`.
+- [x] Collapse the decision boundary in [`src/ha/decide.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs) from nested transit ADTs into one flatter intent shape. Replace `DesiredState`, `TargetRole`, `Candidacy`, `FollowGoal`, `RecoveryPlan`, `FailSafeGoal`, `IdleReason`, `FenceReason`, and the publication projection nesting with one direct HA intent enum or similarly flat match-driven output that carries only the data reconcile actually needs. While doing this, inline the current one-caller helper chain so only real ranking or ordering logic survives.
+- [x] Collapse reconciliation in [`src/ha/reconcile.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/reconcile.rs) to consume the flatter intent directly and emit one ordered action list or one direct step flow instead of `PlannedActions` plus separate `CoordinationAction`/`LocalAction`/`PublicationAction` corridors. The final `step_once` path in [`src/ha/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs) should read as observe -> decide -> reconcile -> execute without rewrapping the same facts into another nested enum tree.
+- [x] Rewrite HA tests after the type collapse so fixtures stop constructing the deleted mirror types and timestamp-history fields. Tests in [`src/ha/decide.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/decide.rs), [`src/ha/reconcile.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/reconcile.rs), and [`src/ha/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/ha/worker.rs) should assert against the new flat observation and intent/action boundaries, not rebuild deleted helper-only state.
+- [x] After the type collapse compiles, run the required validation gates in repo order: `make check`, `make lint`, `make test`, and `make test-long`. If execution shows the flat observation or intent boundary is still wrong, switch this task back to `TO BE VERIFIED`, explain the exact type leak that remains in this file, and stop immediately.
+NOW EXECUTE
+</plan>
+
+### Execution notes
+1. Start by changing types, not by editing helper bodies in place. The current HA problem is the duplicated ADT corridor, so the observation and intent shapes must be replaced before compile-fallout cleanup.
+2. Reuse existing domain facts before creating any new HA enum or struct. `PgInfoState`, `ProcessState`, `DcsSnapshot`, `DcsQuorumState`, `DcsMemberState`, `LeaseEpoch`, `ObservedWalPosition`, and `SwitchoverState` are the preferred source of truth.
+3. Keep HA-local additions minimal and flat. If one HA-only fact is still needed, add it once to the flat observation or flat intent instead of introducing another nested subtree.
+4. The helper-reduction thresholds in this smell file are real completion criteria. If a helper still exists after the rewrite, it should have a clear multi-caller invariant, not just a convenience wrapper.

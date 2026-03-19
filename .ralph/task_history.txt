@@ -334,3 +334,4 @@ NONE
 NONE
 NONE
 .ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md
+.ralph/tasks/smells/ha-flat-observation-and-decision-collapse.md

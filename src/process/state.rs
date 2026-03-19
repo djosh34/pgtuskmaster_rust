@@ -7,7 +7,7 @@ use crate::{
     config::{PostgresRoleName, PostgresRoleSlots, ProcessConfig, RoleAuthConfig, RuntimeConfig},
     dcs::DcsSnapshot,
     logging::LogSender,
-    pginfo::state::PgSslMode,
+    pginfo::state::{PgInfoState, PgSslMode},
     postgres_managed_conf::ManagedRecoverySignal,
     state::{
         JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
@@ -269,6 +269,80 @@ impl ProcessState {
         Self::Idle {
             worker: WorkerStatus::Starting,
             last_outcome: None,
+        }
+    }
+
+    pub(crate) fn active_job(&self) -> Option<&ActiveJobKind> {
+        match self {
+            Self::Running { active, .. } => Some(&active.kind),
+            Self::Idle { .. } => None,
+        }
+    }
+
+    pub(crate) fn waiting_for_pg_observation(
+        &self,
+        pg: &PgInfoState,
+        expected: ActiveJobKind,
+    ) -> bool {
+        let Some(last_refresh_at) = pg.last_refresh_at() else {
+            return false;
+        };
+
+        self.last_success(expected)
+            .is_some_and(|finished_at| finished_at.0 >= last_refresh_at.0)
+    }
+
+    pub(crate) fn basebackup_completed_awaiting_pg_start(&self, pg: &PgInfoState) -> bool {
+        let Some(basebackup_finished_at) = self.last_success(ActiveJobKind::BaseBackup) else {
+            return false;
+        };
+
+        let last_start = [
+            ActiveJobKind::StartPrimary,
+            ActiveJobKind::StartDetachedStandby,
+            ActiveJobKind::StartReplica,
+        ]
+        .into_iter()
+        .filter_map(|job| self.last_success(job))
+        .max_by_key(|finished_at| finished_at.0);
+
+        if last_start.is_some_and(|started_at| started_at.0 >= basebackup_finished_at.0) {
+            return false;
+        }
+
+        !self.waiting_for_pg_observation(pg, ActiveJobKind::BaseBackup)
+    }
+
+    pub(crate) fn rewind_failed_requires_basebackup(&self) -> bool {
+        matches!(
+            self,
+            Self::Idle {
+                last_outcome:
+                    Some(JobOutcome::Failure {
+                        job_kind: ActiveJobKind::PgRewind,
+                        ..
+                    }
+                    | JobOutcome::Timeout {
+                        job_kind: ActiveJobKind::PgRewind,
+                        ..
+                    }),
+                ..
+            }
+        )
+    }
+
+    fn last_success(&self, expected: ActiveJobKind) -> Option<UnixMillis> {
+        match self {
+            Self::Idle {
+                last_outcome:
+                    Some(JobOutcome::Success {
+                        job_kind,
+                        finished_at,
+                        ..
+                    }),
+                ..
+            } if *job_kind == expected => Some(*finished_at),
+            Self::Idle { .. } | Self::Running { .. } => None,
         }
     }
 }
