@@ -2,15 +2,10 @@ use thiserror::Error;
 
 use crate::{
     process::{jobs::ProcessIntent, state::ProcessIntentRequest},
-    state::{JobId, MemberId},
+    state::JobId,
 };
 
 use super::state::HaRuntimeCtx;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessDispatchOutcome {
-    Applied,
-}
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum ProcessDispatchError {
@@ -23,48 +18,23 @@ pub(crate) fn dispatch_process_action(
     ha_tick: u64,
     action_index: usize,
     action: &ProcessIntent,
-) -> Result<ProcessDispatchOutcome, ProcessDispatchError> {
+) -> Result<(), ProcessDispatchError> {
     let request = ProcessIntentRequest {
-        id: process_job_id(
-            ctx.identity.scope.as_str(),
-            &ctx.identity.member_id,
-            action,
-            action_index,
+        id: JobId(format!(
+            "ha-{}-{}-{}-{}-{}",
+            ctx.identity.scope.as_str().trim_matches('/'),
+            ctx.identity.member_id.0,
             ha_tick,
-        ),
+            action_index,
+            action.label(),
+        )),
         intent: action.clone(),
     };
-    send_process_request(ctx, action.label(), request)?;
-    Ok(ProcessDispatchOutcome::Applied)
-}
-
-fn send_process_request(
-    ctx: &mut HaRuntimeCtx,
-    action: &str,
-    request: ProcessIntentRequest,
-) -> Result<(), ProcessDispatchError> {
     ctx.control
         .process_intent_inbox
         .send(request)
         .map_err(|err| ProcessDispatchError::ProcessSend {
-            action: action.to_string(),
+            action: action.label().to_string(),
             message: err.to_string(),
         })
-}
-
-fn process_job_id(
-    scope: &str,
-    self_id: &MemberId,
-    action: &ProcessIntent,
-    index: usize,
-    tick: u64,
-) -> JobId {
-    JobId(format!(
-        "ha-{}-{}-{}-{}-{}",
-        scope.trim_matches('/'),
-        self_id.0,
-        tick,
-        index,
-        action.label(),
-    ))
 }

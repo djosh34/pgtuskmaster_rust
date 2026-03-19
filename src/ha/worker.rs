@@ -271,7 +271,6 @@ async fn execute_process_action(
     action: &ProcessIntent,
 ) -> Result<(), WorkerError> {
     dispatch_process_action(ctx, ha_tick, action_index, action)
-        .map(|_| ())
         .map_err(|err| map_process_dispatch_error(ha_tick, action_index, err))
 }
 
