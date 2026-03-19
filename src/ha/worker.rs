@@ -84,7 +84,10 @@ pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError>
     Ok(())
 }
 
-fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObservation, WorkerError> {
+fn observe(
+    ctx: &HaRuntimeCtx,
+    now: crate::state::UnixMillis,
+) -> Result<HaObservation, WorkerError> {
     let config = ctx.observed.config.latest();
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
@@ -110,16 +113,14 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObserv
     } else {
         dcs.member(self_id)
     };
-    let local_timeline = pg
-        .timeline()
-        .map(|value| u64::from(value.0))
-        .or_else(|| {
-            dcs_self_member.and_then(|member| member.postgres().timeline().map(|value| u64::from(value.0)))
-        });
-    let local_system_identifier = pg
-        .system_identifier()
-        .map(|value| value.0)
-        .or_else(|| dcs_self_member.and_then(|member| member.postgres().system_identifier().map(|value| value.0)));
+    let local_timeline = pg.timeline().map(|value| u64::from(value.0)).or_else(|| {
+        dcs_self_member
+            .and_then(|member| member.postgres().timeline().map(|value| u64::from(value.0)))
+    });
+    let local_system_identifier = pg.system_identifier().map(|value| value.0).or_else(|| {
+        dcs_self_member
+            .and_then(|member| member.postgres().system_identifier().map(|value| value.0))
+    });
 
     let local_data = if !data_dir_path.exists() {
         LocalDataState::Missing
@@ -134,7 +135,9 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObserv
             {
                 LocalDataState::DivergedBasebackup
             }
-            Some(primary) if primary.timeline == local_timeline => LocalDataState::ConsistentReplica,
+            Some(primary) if primary.timeline == local_timeline => {
+                LocalDataState::ConsistentReplica
+            }
             Some(primary) if primary.timeline.is_some() && local_timeline.is_some() => {
                 LocalDataState::DivergedRewind
             }
@@ -170,12 +173,7 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObserv
 
     let self_candidate = match (&local_data, &pg) {
         (LocalDataState::Missing | LocalDataState::BootstrapEmpty, _) => CandidateState::Bootstrap,
-        (
-            _,
-            PgInfoState::Primary {
-                common, ..
-            },
-        ) if common.sql == SqlStatus::Healthy => pg
+        (_, PgInfoState::Primary { common, .. }) if common.sql == SqlStatus::Healthy => pg
             .committed_wal()
             .filter(|position| position.timeline.is_some())
             .map(CandidateState::Promote)
@@ -195,11 +193,10 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<HaObserv
     let storage_stalled = matches!(
         &pg,
         PgInfoState::Primary {
-            common:
-                crate::pginfo::state::PgInfoCommon {
-                    sql: SqlStatus::Healthy,
-                    ..
-                },
+            common: crate::pginfo::state::PgInfoCommon {
+                sql: SqlStatus::Healthy,
+                ..
+            },
             ..
         }
     ) && (dcs.member(self_id).is_none()
@@ -261,13 +258,12 @@ async fn execute_step(
             ctx.state_channel.current.managed_roles_reconciled = true;
             Ok(())
         }
-        HaStep::RunProcess(intent) => {
-            dispatch_process_action(ctx, ha_tick, action_index, intent).map_err(|err| {
+        HaStep::RunProcess(intent) => dispatch_process_action(ctx, ha_tick, action_index, intent)
+            .map_err(|err| {
                 WorkerError::Message(format!(
                     "ha process dispatch failed at tick {ha_tick} index {action_index}: {err}"
                 ))
-            })
-        }
+            }),
     }
 }
 
@@ -401,7 +397,8 @@ mod tests {
     }
 
     #[test]
-    fn observe_does_not_reuse_dcs_identity_after_basebackup_until_pg_refresh() -> Result<(), String> {
+    fn observe_does_not_reuse_dcs_identity_after_basebackup_until_pg_refresh() -> Result<(), String>
+    {
         let data_dir =
             std::env::temp_dir().join(format!("pgtm-ha-observe-reset-{}", std::process::id()));
         std::fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;

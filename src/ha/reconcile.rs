@@ -74,7 +74,9 @@ pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> H
             FollowRecovery::Basebackup | FollowRecovery::Rewind => match pg_role(&observation.pg) {
                 PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
                 PgRole::Primary | PgRole::Replica => {
-                    steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                    steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                        ShutdownMode::Fast,
+                    )));
                 }
                 PgRole::Offline => {
                     steps.push(HaStep::RunProcess(ProcessIntent::ProvisionReplica(
@@ -102,12 +104,15 @@ pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> H
                         },
                     ))),
                     PgRole::Primary => {
-                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                            ShutdownMode::Fast,
+                        )));
                     }
-                    PgRole::Replica
-                        if observation.resolved_upstream.as_ref() == Some(leader) => {}
+                    PgRole::Replica if observation.resolved_upstream.as_ref() == Some(leader) => {}
                     PgRole::Replica => {
-                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                        steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                            ShutdownMode::Fast,
+                        )));
                     }
                 }
             }
@@ -123,14 +128,18 @@ pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> H
         HaMode::WaitForQuorum => match pg_role(&observation.pg) {
             PgRole::Primary if waiting_for_demote => {}
             PgRole::Primary => {
-                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Immediate)));
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                    ShutdownMode::Immediate,
+                )));
             }
             PgRole::Offline | PgRole::Replica => {}
         },
         HaMode::WaitForLeader | HaMode::WaitForTarget(_) => match pg_role(&observation.pg) {
             PgRole::Primary if waiting_for_demote => {}
             PgRole::Primary => {
-                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                    ShutdownMode::Fast,
+                )));
             }
             PgRole::Offline if !matches!(observation.local_data, LocalDataState::Missing) => {
                 steps.push(HaStep::RunProcess(ProcessIntent::Start(
@@ -142,7 +151,9 @@ pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> H
         HaMode::DemoteForSwitchover(_) => match pg_role(&observation.pg) {
             PgRole::Primary | PgRole::Replica if waiting_for_demote => {}
             PgRole::Primary | PgRole::Replica => {
-                steps.push(HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast)));
+                steps.push(HaStep::RunProcess(ProcessIntent::Demote(
+                    ShutdownMode::Fast,
+                )));
             }
             PgRole::Offline => steps.push(HaStep::ReleaseLease),
         },
@@ -261,7 +272,9 @@ mod tests {
             )),
             &HaDecision {
                 mode: HaMode::WaitForLeader,
-                publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen)),
+                publication: Some(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::LeaseOpen,
+                )),
                 clear_switchover: false,
             },
         );
@@ -269,10 +282,10 @@ mod tests {
         assert_eq!(
             steps,
             vec![
-                HaStep::Publish(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen)),
-                HaStep::RunProcess(ProcessIntent::Start(
-                    PostgresStartIntent::DetachedStandby,
+                HaStep::Publish(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::LeaseOpen
                 )),
+                HaStep::RunProcess(ProcessIntent::Start(PostgresStartIntent::DetachedStandby,)),
             ]
         );
     }
@@ -302,8 +315,9 @@ mod tests {
             SqlStatus::Unknown,
             None,
         ));
-        observation.publication =
-            PublicationState::Projected(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen));
+        observation.publication = PublicationState::Projected(AuthorityProjection::NoPrimary(
+            NoPrimaryProjection::LeaseOpen,
+        ));
 
         assert_eq!(
             reconcile(
@@ -338,7 +352,9 @@ mod tests {
                     clear_switchover: false,
                 },
             ),
-            vec![HaStep::RunProcess(ProcessIntent::Demote(ShutdownMode::Fast))]
+            vec![HaStep::RunProcess(ProcessIntent::Demote(
+                ShutdownMode::Fast
+            ))]
         );
     }
 

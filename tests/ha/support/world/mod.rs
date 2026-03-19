@@ -115,6 +115,20 @@ impl HaWorld {
         self.observer_unreachable_members.clear();
     }
 
+    pub fn online_expected_count(&self) -> usize {
+        self.online_member_ids().len()
+    }
+
+    pub fn online_member_ids(&self) -> Vec<ClusterMember> {
+        ClusterMember::ALL
+            .into_iter()
+            .filter(|member| {
+                !self.stopped_members.contains(member)
+                    && !self.observer_unreachable_members.contains(member)
+            })
+            .collect()
+    }
+
     pub fn cleanup(&mut self) -> Result<()> {
         let cleanup_result = match self.harness.as_mut() {
             Some(harness) => harness.cleanup(),
@@ -291,7 +305,24 @@ impl HarnessShared {
         self.primary_count_invariant.ensure_healthy()
     }
 
-    pub fn ensure_accepted_writes_healthy(&self) -> Result<()> {
+    pub fn ensure_accepted_writes_healthy(&self, online_members: &[ClusterMember]) -> Result<()> {
+        self.with_write_convergence_runner(|runner| {
+            runner
+                .ensure_healthy(online_members)
+                .map_err(HarnessError::from)
+        })
+    }
+
+    pub fn ensure_accepted_writes_running(&self) -> Result<()> {
+        self.with_write_convergence_runner(|runner| {
+            runner.ensure_running().map_err(HarnessError::from)
+        })
+    }
+
+    fn with_write_convergence_runner<T>(
+        &self,
+        check: impl Fn(&WriteConvergenceInvariantRunner) -> Result<T>,
+    ) -> Result<T> {
         let (pending_started_at, pending_task) = {
             let mut state = self
                 .write_convergence_state
@@ -301,9 +332,7 @@ impl HarnessShared {
                 WriteConvergenceState::Running(runner) => {
                     *state = WriteConvergenceState::Running(runner);
                     return match &*state {
-                        WriteConvergenceState::Running(runner) => {
-                            runner.ensure_healthy().map_err(HarnessError::from)
-                        }
+                        WriteConvergenceState::Running(runner) => check(runner),
                         _ => unreachable!("write-convergence state must remain running"),
                     };
                 }
@@ -344,9 +373,7 @@ impl HarnessShared {
         *state = settled_state;
 
         match &*state {
-            WriteConvergenceState::Running(runner) => {
-                runner.ensure_healthy().map_err(HarnessError::from)
-            }
+            WriteConvergenceState::Running(runner) => check(runner),
             WriteConvergenceState::Failed(message) => Err(HarnessError::message(message.clone())),
             WriteConvergenceState::NotStarted | WriteConvergenceState::Starting { .. } => {
                 Err(HarnessError::message(
@@ -807,7 +834,7 @@ impl HarnessShared {
 
         let mut failures = Vec::new();
         let compose_network = format!("{}_ha", self.compose_project);
-        let invariant_result = self.ensure_accepted_writes_healthy();
+        let invariant_result = self.ensure_accepted_writes_running();
         if let Err(err) = &invariant_result {
             failures.push(format!("background invariant check failed: {err}"));
         }
@@ -1740,9 +1767,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cleanup_check_waits_for_write_convergence_attachment_failure() -> Result<()> {
+    async fn cleanup_liveness_check_waits_for_write_convergence_attachment_failure() -> Result<()> {
         let harness = test_harness_with_write_convergence(delayed_failed_attachment("boom"))?;
-        let err = match harness.ensure_accepted_writes_healthy() {
+        let err = match harness.ensure_accepted_writes_running() {
             Ok(()) => {
                 return Err(HarnessError::message(
                     "required invariant readiness unexpectedly succeeded",

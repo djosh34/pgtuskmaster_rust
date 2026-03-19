@@ -1,13 +1,24 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 10:16:22 AM CET 2026
+Generated: Thu Mar 19 11:59:01 CET 2026
 
-# Task `.ralph/tasks/bugs/write-convergence-health-check-race.md`
+# Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
 
 ```
-## Bug: Write convergence health check can observe one extra committed write after stopping workers <status>not_started</status> <passes>false</passes>
+## Bug: Healthy write convergence over-selects recovering members <status>not_started</status> <passes>false</passes>
 
 <description>
-`make test` exposed a failure in `tests/ha/support/invariants/write_convergence.rs::one_primary_and_two_replicas_are_determined_healthy` where `ensure_healthy()` expected all members to converge to count `3` but observed `4` on every member instead.
+`make test-long` exposed two remaining failures after moving strong write-convergence checks out of cleanup and into `cluster becomes healthy`:
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md`
+
+```
+## Bug: Write convergence overcounts isolated-primary writes during failover and cleanup <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test-long` exposed a second write-convergence failure mode while executing the health-check race refactor.
 ```
 

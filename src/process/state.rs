@@ -317,15 +317,15 @@ impl ProcessState {
         matches!(
             self,
             Self::Idle {
-                last_outcome:
-                    Some(JobOutcome::Failure {
+                last_outcome: Some(
+                    JobOutcome::Failure {
+                        job_kind: ActiveJobKind::PgRewind,
+                        ..
+                    } | JobOutcome::Timeout {
                         job_kind: ActiveJobKind::PgRewind,
                         ..
                     }
-                    | JobOutcome::Timeout {
-                        job_kind: ActiveJobKind::PgRewind,
-                        ..
-                    }),
+                ),
                 ..
             }
         )

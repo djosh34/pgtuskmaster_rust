@@ -36,12 +36,12 @@ async fn i_wait_for_exactly_one_stable_primary_as(
     world: &mut HaWorld,
     alias: String,
 ) -> Result<()> {
-    let expected_replicas = online_expected_count(world).saturating_sub(1);
-    let primary = wait_for_authoritative_single_primary(
+    let expected_replicas = world.online_expected_count().saturating_sub(1);
+    let (primary, _) = wait_for_authoritative_single_primary(
         world,
         format!("wait.stable_primary.{alias}").as_str(),
         PollKind::Startup,
-        online_expected_count(world),
+        world.online_expected_count(),
         None,
         None,
     )
@@ -61,16 +61,19 @@ async fn i_wait_for_exactly_one_stable_primary_as(
 
 #[then("cluster becomes healthy")]
 async fn cluster_becomes_healthy(world: &mut HaWorld) -> Result<()> {
-    let primary = wait_for_authoritative_single_primary(
+    let (primary, healthy_members) = wait_for_authoritative_single_primary(
         world,
         "outcome.cluster_healthy",
         PollKind::Recovery,
-        online_expected_count(world),
+        world.online_expected_count(),
         None,
         None,
     )
     .await?;
     world.remember_member_alias("current_primary", primary);
+    world
+        .harness()?
+        .ensure_accepted_writes_healthy(healthy_members.as_slice())?;
     Ok(())
 }
 
@@ -233,11 +236,11 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
 #[then(regex = r#"^"([^"]+)" becomes primary$"#)]
 async fn quoted_member_becomes_primary(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let observed = wait_for_authoritative_single_primary(
+    let (observed, _) = wait_for_authoritative_single_primary(
         world,
         format!("outcome.primary.{member_id}").as_str(),
         PollKind::Recovery,
-        online_expected_count(world),
+        world.online_expected_count(),
         Some(member_id),
         None,
     )
@@ -381,7 +384,7 @@ async fn wait_for_replicas(
     phase: &str,
     expected_replicas: usize,
 ) -> Result<Vec<ClusterMember>> {
-    let expected_members = online_member_ids(world);
+    let expected_members = world.online_member_ids();
     poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
         let primary = compatible_primary_from_observation(
             observation,
@@ -408,7 +411,7 @@ async fn wait_for_minimum_replicas(
     phase: &str,
     minimum_replicas: usize,
 ) -> Result<Vec<ClusterMember>> {
-    let expected_members = online_member_ids(world);
+    let expected_members = world.online_member_ids();
     poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
         let primary = compatible_primary_from_observation(
             observation,
@@ -437,8 +440,8 @@ async fn wait_for_authoritative_single_primary(
     expected_online: usize,
     exact_primary: Option<ClusterMember>,
     _different_from: Option<ClusterMember>,
-) -> Result<ClusterMember> {
-    let relevant_members = online_member_ids(world);
+) -> Result<(ClusterMember, Vec<ClusterMember>)> {
+    let relevant_members = world.online_member_ids();
     let deadline = {
         let harness = world.harness()?;
         Instant::now() + kind.deadline(harness)
@@ -450,7 +453,7 @@ async fn wait_for_authoritative_single_primary(
     let mut last_error = None;
 
     while Instant::now() < deadline {
-        let attempt: Result<ClusterMember> = (|| {
+        let attempt: Result<(ClusterMember, Vec<ClusterMember>)> = (|| {
             let observation = {
                 let harness = world.harness()?;
                 let observation = harness.observer.observe_states()?;
@@ -467,7 +470,10 @@ async fn wait_for_authoritative_single_primary(
             let primary_target = harness.observer.postgres_routing_target(primary)?;
             let primary_dsn = primary_target.conninfo.to_string();
             probe_writable_primary(harness, primary_dsn.as_str())?;
-            Ok(primary)
+            let primary_state = require_observed_member_state(&observation, primary)?;
+            let healthy_members =
+                observed_healthy_members_from_poll(harness, primary, primary_state)?;
+            Ok((primary, healthy_members))
         })();
         match attempt {
             Ok(primary) => {
@@ -496,7 +502,7 @@ async fn wait_for_authoritative_single_primary(
 }
 
 async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
-    let relevant_members = online_member_ids(world);
+    let relevant_members = world.online_member_ids();
     let expected_online = relevant_members.len();
     let deadline = {
         let harness = world.harness()?;
@@ -889,6 +895,44 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .collect::<Vec<_>>()
 }
 
+fn observed_healthy_members_from_poll(
+    harness: &HarnessShared,
+    primary: ClusterMember,
+    primary_state: &NodeState,
+) -> Result<Vec<ClusterMember>> {
+    observed_healthy_members(primary, primary_state, |member| {
+        if member == primary {
+            return Ok(true);
+        }
+
+        match probe_member_postgres(harness, member) {
+            Ok(()) => Ok(true),
+            Err(err) => {
+                harness.record_note(
+                    "outcome.cluster_healthy.member_skipped",
+                    format!("member={member} reason={err}"),
+                )?;
+                Ok(false)
+            }
+        }
+    })
+}
+
+fn observed_healthy_members(
+    primary: ClusterMember,
+    primary_state: &NodeState,
+    mut is_probeable: impl FnMut(ClusterMember) -> Result<bool>,
+) -> Result<Vec<ClusterMember>> {
+    std::iter::once(primary)
+        .chain(replica_members(primary_state))
+        .try_fold(Vec::new(), |mut members, member| {
+            if is_probeable(member)? {
+                members.push(member);
+            }
+            Ok(members)
+        })
+}
+
 fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
     let visible = status.dcs.member_count();
     if visible >= expected {
@@ -939,6 +983,16 @@ fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
 fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
     let probe_sql =
         "CREATE TEMP TABLE pgtm_writable_primary_probe ON COMMIT DROP AS SELECT 'probe'::text AS token;";
+    probe_postgres(harness, dsn, probe_sql)
+}
+
+fn probe_member_postgres(harness: &HarnessShared, member: ClusterMember) -> Result<()> {
+    let target = harness.observer.postgres_routing_target(member)?;
+    let dsn = target.conninfo.to_string();
+    probe_postgres(harness, dsn.as_str(), "SELECT 1;")
+}
+
+fn probe_postgres(harness: &HarnessShared, dsn: &str, probe_sql: &str) -> Result<()> {
     let _ = sql::execute(
         harness.materialized_dir.as_path(),
         dsn,
@@ -985,21 +1039,6 @@ fn terminal_container_failure(
     }
 }
 
-fn online_expected_count(world: &HaWorld) -> usize {
-    online_member_ids(world).len()
-}
-
-fn online_member_ids(world: &HaWorld) -> Vec<ClusterMember> {
-    all_cluster_members()
-        .iter()
-        .filter(|member| {
-            !world.stopped_members.contains(*member)
-                && !world.observer_unreachable_members.contains(*member)
-        })
-        .copied()
-        .collect::<Vec<_>>()
-}
-
 fn all_cluster_members() -> [ClusterMember; 3] {
     ClusterMember::ALL
 }
@@ -1034,5 +1073,169 @@ fn parse_blocker_kind(raw_value: &str) -> Result<BlockerKind> {
         _ => Err(HarnessError::message(format!(
             "unsupported blocker `{raw_value}`"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use pgtuskmaster_rust::{
+        dcs::{DcsMemberState, DcsSnapshot},
+        ha::{
+            state::HaState,
+            types::{
+                AuthorityProjection, CandidateState, HaDecision, HaMode, HaObservation,
+                LocalDataState, PublicationState,
+            },
+        },
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus, UpstreamInfo},
+        process::state::ProcessState,
+        state::{
+            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, ScopeName,
+            SwitchoverState, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+        },
+    };
+
+    use super::{observed_healthy_members, ClusterMember};
+
+    #[test]
+    fn observed_healthy_members_skip_ready_replicas_without_fresh_probe() -> Result<(), String> {
+        let primary_state = sample_primary_state(
+            ClusterMember::NodeA,
+            &[
+                (ClusterMember::NodeB, Readiness::Ready),
+                (ClusterMember::NodeC, Readiness::Ready),
+            ],
+        )?;
+        let probeable_members = BTreeSet::from([ClusterMember::NodeA, ClusterMember::NodeB]);
+
+        let selected = observed_healthy_members(ClusterMember::NodeA, &primary_state, |member| {
+            Ok(probeable_members.contains(&member))
+        })
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(selected, vec![ClusterMember::NodeA, ClusterMember::NodeB],);
+        Ok(())
+    }
+
+    fn sample_primary_state(
+        primary: ClusterMember,
+        replicas: &[(ClusterMember, Readiness)],
+    ) -> Result<pgtuskmaster_rust::api::NodeState, String> {
+        let primary_member_id = member_id(primary);
+        let replica_members = replicas
+            .iter()
+            .map(|(member, readiness)| {
+                Ok((
+                    member_id(*member),
+                    DcsMemberState {
+                        postgres_endpoint: endpoint_for(*member)?,
+                        postgres: replica_pg_info(readiness.clone()),
+                    },
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let members = std::iter::once((
+            primary_member_id.clone(),
+            DcsMemberState {
+                postgres_endpoint: endpoint_for(primary)?,
+                postgres: primary_pg_info(),
+            },
+        ))
+        .chain(replica_members)
+        .collect::<BTreeMap<_, _>>();
+
+        Ok(pgtuskmaster_rust::api::NodeState {
+            identity: NodeIdentity {
+                cluster_name: ClusterName("cluster-a".to_string()),
+                scope: ScopeName("scope-a".to_string()),
+                member_id: primary_member_id.clone(),
+            },
+            pg: primary_pg_info(),
+            process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            dcs: DcsSnapshot::quorum(None, SwitchoverState::None, members),
+            ha: HaState {
+                worker: WorkerStatus::Running,
+                tick: 0,
+                managed_roles_reconciled: false,
+                publication: PublicationState::Projected(AuthorityProjection::Primary(
+                    LeaseEpoch {
+                        holder: primary_member_id,
+                        generation: 1,
+                    },
+                )),
+                decision: HaDecision {
+                    mode: HaMode::WaitForLeader,
+                    publication: None,
+                    clear_switchover: false,
+                },
+                observation: HaObservation {
+                    pg: primary_pg_info(),
+                    process: ProcessState::Idle {
+                        worker: WorkerStatus::Running,
+                        last_outcome: None,
+                    },
+                    dcs: DcsSnapshot::starting(),
+                    publication: PublicationState::Unknown,
+                    managed_roles_reconciled: false,
+                    local_data: LocalDataState::Missing,
+                    resolved_upstream: None,
+                    self_candidate: CandidateState::Ineligible,
+                    storage_stalled: false,
+                    ready_primary: None,
+                },
+                clear_switchover: false,
+                steps: Vec::new(),
+            },
+        })
+    }
+
+    fn endpoint_for(member: ClusterMember) -> Result<PgEndpoint, String> {
+        PgEndpoint::tcp(member.service_name().to_string(), 5432)
+    }
+
+    fn member_id(member: ClusterMember) -> MemberId {
+        MemberId(member.service_name().to_string())
+    }
+
+    fn primary_pg_info() -> PgInfoState {
+        PgInfoState::Primary {
+            common: common(Readiness::Ready),
+            wal_lsn: WalLsn(42),
+            slots: Vec::new(),
+        }
+    }
+
+    fn replica_pg_info(readiness: Readiness) -> PgInfoState {
+        PgInfoState::Replica {
+            common: common(readiness),
+            replay_lsn: WalLsn(41),
+            follow_lsn: Some(WalLsn(42)),
+            upstream: Some(UpstreamInfo {
+                member_id: MemberId("node-a".to_string()),
+            }),
+        }
+    }
+
+    fn common(readiness: Readiness) -> PgInfoCommon {
+        PgInfoCommon {
+            worker: WorkerStatus::Running,
+            sql: SqlStatus::Healthy,
+            readiness,
+            timeline: Some(TimelineId(1)),
+            system_identifier: None,
+            pg_config: PgConfig {
+                port: Some(5432),
+                hot_standby: Some(true),
+                primary_conninfo: None,
+                primary_slot_name: None,
+                extra: BTreeMap::new(),
+            },
+            last_refresh_at: Some(UnixMillis(1)),
+        }
     }
 }

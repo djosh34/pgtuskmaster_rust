@@ -1,27 +1,13 @@
 [cluster]
 name = "local-docker"
-scope = "local-docker"
 member_id = "node-c"
-
 [postgres]
-local_database = "postgres"
-tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/certs/node-c/tls.crt" }, private_key = { path = "/etc/pgtuskmaster/certs/node-c/tls.key" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/certs/ca.crt" }, client_certificate = "optional" } }
-
-[postgres.paths]
 data_dir = "/var/lib/postgresql/data"
 socket_dir = "/var/lib/pgtuskmaster/socket"
 log_file = "/var/log/pgtuskmaster/postgres.log"
-
-[postgres.network]
 listen_host = "node-c"
 listen_port = 5432
-
-[postgres.rewind]
-database = "postgres"
-
-[postgres.rewind.transport]
-ssl_mode = "verify-full"
-ca_cert = { path = "/etc/pgtuskmaster/certs/ca.crt" }
+tls = { mode = "required", identity = { cert_chain = { path = "/etc/pgtuskmaster/certs/node-c/tls.crt" }, private_key = { path = "/etc/pgtuskmaster/certs/node-c/tls.key" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/certs/ca.crt" }, require_client_cert = false } }
 
 [postgres.extra_gucs]
 wal_keep_size = "128MB"

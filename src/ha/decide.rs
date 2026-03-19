@@ -17,38 +17,39 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
     let healthy_primary = matches!(
         observation.pg,
         PgInfoState::Primary {
-            common:
-                crate::pginfo::state::PgInfoCommon {
-                    sql: SqlStatus::Healthy,
-                    ..
-                },
+            common: crate::pginfo::state::PgInfoCommon {
+                sql: SqlStatus::Healthy,
+                ..
+            },
             ..
         }
     );
     let healthy_replica = matches!(
         observation.pg,
         PgInfoState::Replica {
-            common:
-                crate::pginfo::state::PgInfoCommon {
-                    sql: SqlStatus::Healthy,
-                    ..
-                },
+            common: crate::pginfo::state::PgInfoCommon {
+                sql: SqlStatus::Healthy,
+                ..
+            },
             ..
         }
     );
 
     if !observation.dcs.is_quorum() {
-        let publication = Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::NoQuorum {
-            fence: match (
-                publication_epoch(&observation.publication),
-                committed_lsn(&observation.pg),
-            ) {
-                (Some(epoch), Some(committed_lsn)) => {
-                    NoPrimaryFence::Cutoff(FenceCutoff { epoch, committed_lsn })
-                }
-                (None, _) | (_, None) => NoPrimaryFence::None,
+        let publication = Some(AuthorityProjection::NoPrimary(
+            NoPrimaryProjection::NoQuorum {
+                fence: match (
+                    publication_epoch(&observation.publication),
+                    committed_lsn(&observation.pg),
+                ) {
+                    (Some(epoch), Some(committed_lsn)) => NoPrimaryFence::Cutoff(FenceCutoff {
+                        epoch,
+                        committed_lsn,
+                    }),
+                    (None, _) | (_, None) => NoPrimaryFence::None,
+                },
             },
-        }));
+        ));
 
         return match &observation.pg {
             PgInfoState::Primary { .. }
@@ -61,9 +62,10 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                             publication_epoch(&observation.publication),
                             committed_lsn(&observation.pg),
                         ) {
-                            (Some(epoch), Some(committed_lsn)) => {
-                                Some(FenceCutoff { epoch, committed_lsn })
-                            }
+                            (Some(epoch), Some(committed_lsn)) => Some(FenceCutoff {
+                                epoch,
+                                committed_lsn,
+                            }),
                             (None, _) | (_, None) => None,
                         },
                     },
@@ -78,13 +80,13 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                 publication,
                 clear_switchover: false,
             },
-            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
-                HaDecision {
-                    mode: HaMode::WaitForQuorum,
-                    publication,
-                    clear_switchover: false,
-                }
-            }
+            PgInfoState::Unknown { .. }
+            | PgInfoState::Primary { .. }
+            | PgInfoState::Replica { .. } => HaDecision {
+                mode: HaMode::WaitForQuorum,
+                publication,
+                clear_switchover: false,
+            },
         };
     }
 
@@ -102,15 +104,18 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                     .is_some_and(|epoch| epoch.holder == *self_id),
                 shutdown: Some(ShutdownMode::Immediate),
             },
-            publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::Recovering {
-                epoch: active_epoch.clone(),
-                fence: match (active_epoch, committed_lsn(&observation.pg)) {
-                    (Some(epoch), Some(committed_lsn)) => {
-                        NoPrimaryFence::Cutoff(FenceCutoff { epoch, committed_lsn })
-                    }
-                    (None, _) | (_, None) => NoPrimaryFence::None,
+            publication: Some(AuthorityProjection::NoPrimary(
+                NoPrimaryProjection::Recovering {
+                    epoch: active_epoch.clone(),
+                    fence: match (active_epoch, committed_lsn(&observation.pg)) {
+                        (Some(epoch), Some(committed_lsn)) => NoPrimaryFence::Cutoff(FenceCutoff {
+                            epoch,
+                            committed_lsn,
+                        }),
+                        (None, _) | (_, None) => NoPrimaryFence::None,
+                    },
                 },
-            })),
+            )),
             clear_switchover: false,
         };
     }
@@ -123,12 +128,12 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                 }
                 PgInfoState::Unknown { .. }
                 | PgInfoState::Primary { .. }
-                | PgInfoState::Replica { .. } => {
-                    Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::Recovering {
+                | PgInfoState::Replica { .. } => Some(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::Recovering {
                         epoch: Some(epoch.clone()),
                         fence: NoPrimaryFence::None,
-                    }))
-                }
+                    },
+                )),
             };
 
             match &quorum.switchover {
@@ -203,24 +208,30 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
             });
 
             match &observation.pg {
-                PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy => HaDecision {
-                    mode: HaMode::Fence {
-                        release_lease: false,
-                        shutdown: Some(ShutdownMode::Immediate),
-                    },
-                    publication,
-                    clear_switchover: false,
-                },
+                PgInfoState::Primary { common, .. } if common.sql == SqlStatus::Healthy => {
+                    HaDecision {
+                        mode: HaMode::Fence {
+                            release_lease: false,
+                            shutdown: Some(ShutdownMode::Immediate),
+                        },
+                        publication,
+                        clear_switchover: false,
+                    }
+                }
                 PgInfoState::Unknown { .. }
                 | PgInfoState::Primary { .. }
-                | PgInfoState::Replica { .. } if leader_ready => HaDecision {
-                    mode: HaMode::Follow {
-                        leader: epoch.holder.clone(),
-                        recovery: follow_recovery(observation, &epoch.holder),
-                    },
-                    publication,
-                    clear_switchover: false,
-                },
+                | PgInfoState::Replica { .. }
+                    if leader_ready =>
+                {
+                    HaDecision {
+                        mode: HaMode::Follow {
+                            leader: epoch.holder.clone(),
+                            recovery: follow_recovery(observation, &epoch.holder),
+                        },
+                        publication,
+                        clear_switchover: false,
+                    }
+                }
                 PgInfoState::Unknown { .. }
                 | PgInfoState::Primary { .. }
                 | PgInfoState::Replica { .. } => HaDecision {
@@ -231,15 +242,15 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
             }
         }
         None => {
-            let publication = Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::LeaseOpen));
+            let publication = Some(AuthorityProjection::NoPrimary(
+                NoPrimaryProjection::LeaseOpen,
+            ));
             match &quorum.switchover {
                 SwitchoverState::Specific(target)
                     if target == self_id && observation.self_candidate.is_eligible() =>
                 {
                     HaDecision {
-                        mode: HaMode::AcquireLease(LeaseClaim::TargetedSwitchover(
-                            target.clone(),
-                        )),
+                        mode: HaMode::AcquireLease(LeaseClaim::TargetedSwitchover(target.clone())),
                         publication,
                         clear_switchover: false,
                     }
@@ -261,7 +272,8 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                     clear_switchover: true,
                 },
                 SwitchoverState::AnyHealthyReplica => {
-                    let best = best_failover_candidate(quorum, &observation.self_candidate, self_id);
+                    let best =
+                        best_failover_candidate(quorum, &observation.self_candidate, self_id);
                     match best {
                         Some(candidate) if candidate == *self_id => HaDecision {
                             mode: HaMode::AcquireLease(lease_claim(observation, self_id)),
@@ -363,11 +375,9 @@ fn lease_claim(observation: &HaObservation, self_id: &MemberId) -> LeaseClaim {
         return LeaseClaim::ResumeAfterOutage;
     }
 
-    if observation
-        .dcs
-        .switchover()
-        .is_some_and(|switchover| matches!(switchover, SwitchoverState::Specific(target) if target == self_id))
-    {
+    if observation.dcs.switchover().is_some_and(
+        |switchover| matches!(switchover, SwitchoverState::Specific(target) if target == self_id),
+    ) {
         return LeaseClaim::TargetedSwitchover(self_id.clone());
     }
 
@@ -485,7 +495,10 @@ mod tests {
         dcs::{DcsMemberState, DcsSnapshot},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
-        state::{LeaseEpoch, MemberId, ObservedWalPosition, PgEndpoint, SwitchoverState, TimelineId, WalLsn, WorkerStatus},
+        state::{
+            LeaseEpoch, MemberId, ObservedWalPosition, PgEndpoint, SwitchoverState, TimelineId,
+            WalLsn, WorkerStatus,
+        },
     };
 
     use super::*;
@@ -594,9 +607,11 @@ mod tests {
                 mode: HaMode::FailsafeKeepFollowing {
                     leader: Some(MemberId("node-b".to_string())),
                 },
-                publication: Some(AuthorityProjection::NoPrimary(NoPrimaryProjection::NoQuorum {
-                    fence: NoPrimaryFence::None,
-                })),
+                publication: Some(AuthorityProjection::NoPrimary(
+                    NoPrimaryProjection::NoQuorum {
+                        fence: NoPrimaryFence::None,
+                    }
+                )),
                 clear_switchover: false,
             }
         );
@@ -626,10 +641,7 @@ mod tests {
         observation.dcs = DcsSnapshot::quorum(
             Some(epoch.clone()),
             SwitchoverState::None,
-            BTreeMap::from([(
-                epoch.holder.clone(),
-                peer("node-a", primary(50)),
-            )]),
+            BTreeMap::from([(epoch.holder.clone(), peer("node-a", primary(50)))]),
         );
 
         assert_eq!(
@@ -662,10 +674,13 @@ mod tests {
             )]),
         );
 
-        assert_eq!(decide(&observation, &self_id).mode, HaMode::Lead(LeaseEpoch {
-            holder: self_id,
-            generation: 7,
-        }));
+        assert_eq!(
+            decide(&observation, &self_id).mode,
+            HaMode::Lead(LeaseEpoch {
+                holder: self_id,
+                generation: 7,
+            })
+        );
     }
 
     #[test]
@@ -678,10 +693,7 @@ mod tests {
                 generation: 7,
             }),
             SwitchoverState::AnyHealthyReplica,
-            BTreeMap::from([(
-                MemberId("node-a".to_string()),
-                peer("node-a", replica(40)),
-            )]),
+            BTreeMap::from([(MemberId("node-a".to_string()), peer("node-a", replica(40)))]),
         );
 
         assert_eq!(
