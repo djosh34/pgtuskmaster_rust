@@ -302,32 +302,38 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
 }
 
 pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
-    match ctx.control.inbox.try_recv() {
-        Ok(request) => {
-            ctx.runtime
-                .log
-                .send(ProcessLogEvent::RequestReceived {
-                    job_kind: process_job_kind_from_intent(&request.intent),
-                })
-                .map_err(|err| {
-                    WorkerError::Message(format!("process request log send failed: {err}"))
-                })?;
-            start_job(ctx, request).await?;
-        }
-        Err(TryRecvError::Empty) => {}
-        Err(TryRecvError::Disconnected) => {
-            if !ctx.control.inbox_disconnected_logged {
-                ctx.control.inbox_disconnected_logged = true;
-                ctx.runtime
-                    .log
-                    .send(ProcessLogEvent::InboxDisconnected)
-                    .map_err(|err| {
-                        WorkerError::Message(format!(
-                            "process inbox disconnected log send failed: {err}"
-                        ))
-                    })?;
+    let mut request = None;
+    let mut inbox_disconnected = false;
+    loop {
+        match ctx.control.inbox.try_recv() {
+            Ok(next_request) => request = Some(next_request),
+            Err(TryRecvError::Empty) => break,
+            Err(TryRecvError::Disconnected) => {
+                inbox_disconnected = true;
+                break;
             }
         }
+    }
+    if inbox_disconnected && !ctx.control.inbox_disconnected_logged {
+        ctx.control.inbox_disconnected_logged = true;
+        ctx.runtime
+            .log
+            .send(ProcessLogEvent::InboxDisconnected)
+            .map_err(|err| {
+                WorkerError::Message(format!("process inbox disconnected log send failed: {err}"))
+            })?;
+    }
+
+    if let Some(request) = request {
+        ctx.runtime
+            .log
+            .send(ProcessLogEvent::RequestReceived {
+                job_kind: process_job_kind_from_intent(&request.intent),
+            })
+            .map_err(|err| {
+                WorkerError::Message(format!("process request log send failed: {err}"))
+            })?;
+        start_job(ctx, request).await?;
     }
 
     tick_active_job(ctx).await
@@ -1078,7 +1084,7 @@ mod tests {
         time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
-    use tokio::sync::mpsc::unbounded_channel;
+    use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
     use crate::{
         config::{HaConfig, ProcessTimeoutsConfig},
@@ -1087,17 +1093,20 @@ mod tests {
         logging::LogSender,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
-            jobs::{PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec, ProcessIntent},
+            jobs::{
+                ActiveJob, ActiveJobKind, PostgresStartIntent, ProcessCommandRunner,
+                ProcessCommandSpec, ProcessIntent, ReplicaProvisionIntent,
+            },
             state::{
                 ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
                 ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
                 ProcessStateChannel, ProcessWorkerCtx,
             },
         },
-        state::{new_state_channel, JobId, MemberId, StateSubscriber},
+        state::{new_state_channel, JobId, MemberId, StateSubscriber, UnixMillis, WorkerStatus},
     };
 
-    use super::start_job;
+    use super::{start_job, step_once};
     use crate::process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget};
 
     struct UnexpectedSpawnRunner;
@@ -1220,7 +1229,14 @@ mod tests {
         data_dir: PathBuf,
         socket_dir: PathBuf,
         log_file: PathBuf,
-    ) -> Result<(ProcessWorkerCtx, StateSubscriber<ProcessState>), String> {
+    ) -> Result<
+        (
+            ProcessWorkerCtx,
+            StateSubscriber<ProcessState>,
+            UnboundedSender<ProcessIntentRequest>,
+        ),
+        String,
+    > {
         let cfg = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir.clone())
             .transform_postgres(move |postgres| crate::config::PostgresConfig {
@@ -1286,6 +1302,7 @@ mod tests {
                 },
             },
             subscriber,
+            _tx,
         ))
     }
 
@@ -1322,7 +1339,8 @@ mod tests {
         wait_for_fake_postgres_readiness(&data_dir)?;
 
         let _fake_postgres = fake_postgres;
-        let (mut ctx, _state_subscriber) = build_test_ctx(data_dir.clone(), socket_dir, log_file)?;
+        let (mut ctx, _state_subscriber, _tx) =
+            build_test_ctx(data_dir.clone(), socket_dir, log_file)?;
         let request = ProcessIntentRequest {
             id: JobId("job-start-detached-standby-noop".to_string()),
             intent: ProcessIntent::Start(PostgresStartIntent::DetachedStandby),
@@ -1377,6 +1395,59 @@ mod tests {
             ));
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn step_once_rejects_only_latest_queued_request_when_busy() -> Result<(), String> {
+        let root = unique_test_dir("busy-drain-latest")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let log_file = root.join("logs/postgres.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
+
+        let (mut ctx, _state_subscriber, tx) = build_test_ctx(data_dir, socket_dir, log_file)?;
+        ctx.state_channel.current = ProcessState::Running {
+            worker: WorkerStatus::Running,
+            active: ActiveJob {
+                id: JobId("active-job".to_string()),
+                kind: ActiveJobKind::Bootstrap,
+                started_at: UnixMillis(10),
+                deadline_at: UnixMillis(20),
+            },
+        };
+
+        let first = ProcessIntentRequest {
+            id: JobId("job-first".to_string()),
+            intent: ProcessIntent::Start(PostgresStartIntent::Primary),
+        };
+        let second = ProcessIntentRequest {
+            id: JobId("job-second".to_string()),
+            intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
+                leader: MemberId("node-a".to_string()),
+            }),
+        };
+
+        assert!(tx.send(first).is_ok(), "failed to send first request");
+        assert!(
+            tx.send(second.clone()).is_ok(),
+            "failed to send second request"
+        );
+
+        step_once(&mut ctx)
+            .await
+            .map_err(|err| format!("step_once failed: {err}"))?;
+
+        assert_eq!(
+            ctx.state_channel
+                .last_rejection
+                .as_ref()
+                .map(|rejection| &rejection.id),
+            Some(&second.id)
+        );
         Ok(())
     }
 }
