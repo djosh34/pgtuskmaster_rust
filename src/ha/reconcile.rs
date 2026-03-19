@@ -9,7 +9,25 @@ use crate::process::jobs::{
 
 pub(crate) fn reconcile(world: &WorldView, desired: &DesiredState) -> PlannedActions {
     let publication_plan = reconcile_publication(&world.local.publication, desired);
-    let switchover_plan = reconcile_switchover(world, desired);
+    let switchover_plan = match (
+        world
+            .global
+            .coordination
+            .as_quorum()
+            .map(|coordination| &coordination.switchover),
+        desired.clear_switchover,
+    ) {
+        (
+            Some(
+                super::types::SwitchoverState::AnyHealthyReplica
+                | super::types::SwitchoverState::Specific(_),
+            ),
+            true,
+        ) => PlannedActions::coordination(CoordinationAction::ClearSwitchover),
+        (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
+            PlannedActions::default()
+        }
+    };
     let role_plan = match &world.local.process {
         ProcessAssessment::Running(_) => PlannedActions::default(),
         ProcessAssessment::Idle | ProcessAssessment::Failed(_) => {
@@ -29,28 +47,6 @@ fn reconcile_publication(current: &PublicationState, desired: &DesiredState) -> 
             PlannedActions::default()
         }
         publication => PlannedActions::publication(PublicationAction::Publish(publication.clone())),
-    }
-}
-
-fn reconcile_switchover(world: &WorldView, desired: &DesiredState) -> PlannedActions {
-    match (
-        world
-            .global
-            .coordination
-            .as_quorum()
-            .map(|coordination| &coordination.switchover),
-        desired.clear_switchover,
-    ) {
-        (
-            Some(
-                super::types::SwitchoverState::AnyHealthyReplica
-                | super::types::SwitchoverState::Specific(_),
-            ),
-            true,
-        ) => PlannedActions::coordination(CoordinationAction::ClearSwitchover),
-        (Some(super::types::SwitchoverState::None) | None, _) | (_, false) => {
-            PlannedActions::default()
-        }
     }
 }
 
