@@ -80,8 +80,15 @@ impl ProcessIntentPlanner {
                 }))
             }
             ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
-                let source =
-                    rewind_source_from_leader(&identity.member_id, runtime, &observed.dcs, leader)?;
+                let (source_member_id, source_member) =
+                    resolve_source_member(&observed.dcs, leader)?;
+                let source = rewind_source_from_member(
+                    &identity.member_id,
+                    runtime,
+                    source_member_id,
+                    source_member,
+                )
+                .map_err(source_materialization_error)?;
                 Ok(ClusterProcessPlan::PgRewind(PgRewindSpec {
                     target_data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
                     source,
@@ -144,17 +151,6 @@ fn basebackup_source_from_leader(
 ) -> Result<MandatoryRoleSourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
     basebackup_source_from_member(self_id, runtime, source_member_id, source_member)
-        .map_err(source_materialization_error)
-}
-
-fn rewind_source_from_leader(
-    self_id: &MemberId,
-    runtime: &ProcessRuntimePlan,
-    dcs: &DcsSnapshot,
-    leader: &MemberId,
-) -> Result<MandatoryRoleSourceConn, ProcessError> {
-    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    rewind_source_from_member(self_id, runtime, source_member_id, source_member)
         .map_err(source_materialization_error)
 }
 
