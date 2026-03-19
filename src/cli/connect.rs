@@ -5,7 +5,7 @@ use crate::{
     },
     command::{
         authoritative_primary_member, CommandOutputDto, StateDerivedConnectionCommandDto,
-        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateProjectionDto,
+        StateDerivedConnectionTargetDto, StateProjectionDto,
     },
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
@@ -39,7 +39,6 @@ pub(crate) async fn run_primary(
     }
     let view = StateDerivedConnectionCommandDto {
         projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
-        kind: StateDerivedConnectionCommandKind::Primary,
         targets: vec![StateDerivedConnectionTargetDto {
             member_id: primary_id.0.clone(),
             conninfo: PgConnInfo {
@@ -101,7 +100,6 @@ pub(crate) async fn run_replicas(
 
     let view = StateDerivedConnectionCommandDto {
         projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
-        kind: StateDerivedConnectionCommandKind::Replicas,
         targets,
     };
     CommandOutputDto::Replicas { output: view }.render(options.json)

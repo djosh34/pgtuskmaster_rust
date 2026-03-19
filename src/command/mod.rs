@@ -138,18 +138,10 @@ pub struct StateSwitchoverDto {
     pub target_member_id: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateDerivedConnectionCommandKind {
-    Primary,
-    Replicas,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateDerivedConnectionCommandDto {
     pub projection: StateProjectionDto,
-    pub kind: StateDerivedConnectionCommandKind,
     pub targets: Vec<StateDerivedConnectionTargetDto>,
 }
 
@@ -363,8 +355,7 @@ mod tests {
 
     use super::{
         CommandOutputDto, StateCommandOutputDto, StateDerivedConnectionCommandDto,
-        StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateHealthDto,
-        StateProjectionDto, StateQueryOriginDto,
+        StateDerivedConnectionTargetDto, StateHealthDto, StateProjectionDto, StateQueryOriginDto,
     };
 
     fn sample_projection() -> StateProjectionDto {
@@ -387,7 +378,6 @@ mod tests {
     fn connection_command_display_uses_canonical_conninfo_rendering() -> Result<(), String> {
         let output = StateDerivedConnectionCommandDto {
             projection: sample_projection(),
-            kind: StateDerivedConnectionCommandKind::Primary,
             targets: vec![StateDerivedConnectionTargetDto {
                 member_id: "node-a".to_string(),
                 conninfo: PgConnInfo {
@@ -420,7 +410,6 @@ mod tests {
         let output = CommandOutputDto::Primary {
             output: StateDerivedConnectionCommandDto {
                 projection: sample_projection(),
-                kind: StateDerivedConnectionCommandKind::Primary,
                 targets: vec![StateDerivedConnectionTargetDto {
                     member_id: "node-a".to_string(),
                     conninfo: PgConnInfo {
