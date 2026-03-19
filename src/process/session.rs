@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use crate::{
     config::RuntimeConfig,
     postgres_managed::{materialize_managed_postgres_config, ManagedPostgresConfig},
@@ -28,10 +26,20 @@ impl ManagedPostgresSessionMaterializer {
         match plan {
             ClusterProcessPlan::StartManagedPostgres(start) => {
                 runtime.ensure_start_paths()?;
-                let start_intent = start
-                    .desired_session
-                    .clone()
-                    .into_start_intent(runtime_config.postgres.paths.data_dir.as_path());
+                let start_intent = match start.desired_session.clone() {
+                    DesiredManagedPostgresSession::Primary => ManagedPostgresStartIntent::primary(),
+                    DesiredManagedPostgresSession::DetachedStandby => {
+                        ManagedPostgresStartIntent::detached_standby()
+                    }
+                    DesiredManagedPostgresSession::Follow(plan) => ManagedPostgresStartIntent::replica(
+                        plan.source.conninfo,
+                        managed_standby_auth_from_role_auth(
+                            &plan.source.auth,
+                            runtime_config.postgres.paths.data_dir.as_path(),
+                        ),
+                        plan.primary_slot_name,
+                    ),
+                };
                 let config = materialize_managed_postgres_config(runtime_config, &start_intent)
                     .map_err(|err| {
                         crate::process::jobs::ProcessError::InvalidSpec(format!(
@@ -45,20 +53,6 @@ impl ManagedPostgresSessionMaterializer {
             | ClusterProcessPlan::PgRewind(_)
             | ClusterProcessPlan::Promote(_)
             | ClusterProcessPlan::Demote(_) => Ok(None),
-        }
-    }
-}
-
-impl DesiredManagedPostgresSession {
-    fn into_start_intent(self, data_dir: &Path) -> ManagedPostgresStartIntent {
-        match self {
-            Self::Primary => ManagedPostgresStartIntent::primary(),
-            Self::DetachedStandby => ManagedPostgresStartIntent::detached_standby(),
-            Self::Follow(plan) => ManagedPostgresStartIntent::replica(
-                plan.source.conninfo,
-                managed_standby_auth_from_role_auth(&plan.source.auth, data_dir),
-                plan.primary_slot_name,
-            ),
         }
     }
 }
