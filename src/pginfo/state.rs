@@ -4,12 +4,12 @@ use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
 pub use super::conninfo::{PgConnInfo, PgSslMode};
+use crate::logging::LogSender;
 use crate::state::StatePublisher;
 use crate::state::{
-    MemberId, NodeIdentity, ObservedWalPosition, PgEndpoint, SystemIdentifier, TimelineId,
-    UnixMillis, WalLsn, WorkerStatus,
+    MemberId, NodeIdentity, ObservedWalPosition, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
+    WorkerStatus,
 };
-use crate::{config::RuntimeConfig, logging::LogSender, process::state::ProcessRuntimePlan};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
 #[log_value(rename_all = "snake_case")]
@@ -206,15 +206,10 @@ impl PgInfoState {
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoWorkerCtx {
     pub(crate) identity: NodeIdentity,
-    pub(crate) probe: PgProbeTarget,
+    pub(crate) probe_conninfo: PgConnInfo,
     pub(crate) cadence: PgInfoCadence,
     pub(crate) state_channel: PgInfoStateChannel,
     pub(crate) runtime: PgInfoRuntime,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum PgProbeTarget {
-    Local(PgConnInfo),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -231,45 +226,6 @@ pub(crate) struct PgInfoStateChannel {
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoRuntime {
     pub(crate) log: LogSender,
-}
-
-impl PgProbeTarget {
-    pub(crate) fn local_from_config(
-        cfg: &RuntimeConfig,
-        process_plan: &ProcessRuntimePlan,
-    ) -> Self {
-        Self::Local(PgConnInfo {
-            endpoint: PgEndpoint::UnixSocket {
-                socket_dir: process_plan.postgres.paths.socket_dir.clone(),
-                port: process_plan.postgres.port,
-            },
-            hostaddr: None,
-            user: cfg
-                .postgres
-                .roles
-                .mandatory
-                .superuser
-                .username
-                .as_str()
-                .to_owned(),
-            dbname: "postgres".to_string(),
-            application_name: None,
-            connect_timeout_s: None,
-            options: None,
-            tls: super::conninfo::PgClientTls {
-                mode: crate::config::defaults::default_pg_ssl_mode(),
-                root_cert: None,
-                client_cert: None,
-                client_key: None,
-            },
-        })
-    }
-
-    pub(crate) fn to_conninfo(&self) -> PgConnInfo {
-        match self {
-            Self::Local(target) => target.clone(),
-        }
-    }
 }
 
 pub(crate) fn derive_readiness(sql: &SqlStatus, is_ready: bool) -> Readiness {

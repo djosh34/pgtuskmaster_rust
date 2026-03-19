@@ -14,7 +14,7 @@ pub(crate) async fn run(mut ctx: PgInfoWorkerCtx) -> Result<(), WorkerError> {
 pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx) -> Result<(), WorkerError> {
     let now = now_unix_millis()?;
     let poll = poll_state_once(
-        &ctx.probe.to_conninfo(),
+        &ctx.probe_conninfo,
         WorkerStatus::Running,
         SqlStatus::Healthy,
         now,

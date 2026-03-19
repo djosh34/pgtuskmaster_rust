@@ -1,14 +1,15 @@
 use std::time::Duration;
 
 use crate::{
+    config::defaults::default_pg_ssl_mode,
     config::RuntimeConfig,
     logging::LogSender,
     process::state::ProcessRuntimePlan,
-    state::{new_state_channel, NodeIdentity, WorkerError},
+    state::{new_state_channel, NodeIdentity, PgEndpoint, WorkerError},
 };
 
 use super::state::{
-    PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx, PgProbeTarget,
+    PgConnInfo, PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx,
 };
 
 pub(crate) struct PgInfoRuntimeBundle {
@@ -36,7 +37,31 @@ pub(crate) fn bootstrap(
         state,
         worker: PgInfoWorker(PgInfoWorkerCtx {
             identity,
-            probe: PgProbeTarget::local_from_config(cfg, process_plan),
+            probe_conninfo: PgConnInfo {
+                endpoint: PgEndpoint::UnixSocket {
+                    socket_dir: process_plan.postgres.paths.socket_dir.clone(),
+                    port: process_plan.postgres.port,
+                },
+                hostaddr: None,
+                user: cfg
+                    .postgres
+                    .roles
+                    .mandatory
+                    .superuser
+                    .username
+                    .as_str()
+                    .to_owned(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                options: None,
+                tls: super::conninfo::PgClientTls {
+                    mode: default_pg_ssl_mode(),
+                    root_cert: None,
+                    client_cert: None,
+                    client_key: None,
+                },
+            },
             cadence: PgInfoCadence {
                 poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
             },
