@@ -584,36 +584,24 @@ impl BinaryResolutionConfig {
 
 fn conventional_postgres_bin_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    directories.extend(all_child_bin_dirs(Path::new("/usr/lib/postgresql")));
-    directories.extend(prefixed_child_bin_dirs(Path::new("/usr"), "pgsql-"));
-    directories.extend(prefixed_child_bin_dirs(
+    directories.extend(child_bin_dirs_matching(Path::new("/usr/lib/postgresql"), |_| true));
+    directories.extend(child_bin_dirs_matching(Path::new("/usr"), |name| {
+        name.starts_with("pgsql-")
+    }));
+    directories.extend(child_bin_dirs_matching(
         Path::new("/opt/homebrew/opt"),
-        "postgresql@",
+        |name| name.starts_with("postgresql@"),
     ));
-    directories.extend(prefixed_child_bin_dirs(
+    directories.extend(child_bin_dirs_matching(
         Path::new("/usr/local/opt"),
-        "postgresql@",
+        |name| name.starts_with("postgresql@"),
     ));
     directories.push(PathBuf::from("/opt/homebrew/opt/libpq/bin"));
     directories.push(PathBuf::from("/usr/local/opt/libpq/bin"));
     directories
 }
 
-fn all_child_bin_dirs(root: &Path) -> Vec<PathBuf> {
-    child_dirs_matching(root, |_| true)
-        .into_iter()
-        .map(|path| path.join("bin"))
-        .collect()
-}
-
-fn prefixed_child_bin_dirs(root: &Path, prefix: &str) -> Vec<PathBuf> {
-    child_dirs_matching(root, |name| name.starts_with(prefix))
-        .into_iter()
-        .map(|path| path.join("bin"))
-        .collect()
-}
-
-fn child_dirs_matching<F>(root: &Path, predicate: F) -> Vec<PathBuf>
+fn child_bin_dirs_matching<F>(root: &Path, predicate: F) -> Vec<PathBuf>
 where
     F: Fn(&str) -> bool,
 {
@@ -630,7 +618,7 @@ where
             }
             let name = entry.file_name();
             let name = name.to_str()?;
-            predicate(name).then(|| entry.path())
+            predicate(name).then(|| entry.path().join("bin"))
         })
         .collect::<Vec<_>>();
     directories.sort();
