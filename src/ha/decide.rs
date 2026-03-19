@@ -485,18 +485,15 @@ fn compare_candidate_eligibility(
             ElectionEligibility::PromoteEligible(left_pos),
             ElectionEligibility::PromoteEligible(right_pos),
         ) => left_pos.cmp(right_pos).then_with(|| right_id.cmp(left_id)),
-        (
-            ElectionEligibility::PromoteEligible(_),
-            ElectionEligibility::BootstrapEligible,
-        ) => Ordering::Greater,
-        (
-            ElectionEligibility::BootstrapEligible,
-            ElectionEligibility::PromoteEligible(_),
-        ) => Ordering::Less,
-        (
-            ElectionEligibility::BootstrapEligible,
-            ElectionEligibility::BootstrapEligible,
-        ) => right_id.cmp(left_id),
+        (ElectionEligibility::PromoteEligible(_), ElectionEligibility::BootstrapEligible) => {
+            Ordering::Greater
+        }
+        (ElectionEligibility::BootstrapEligible, ElectionEligibility::PromoteEligible(_)) => {
+            Ordering::Less
+        }
+        (ElectionEligibility::BootstrapEligible, ElectionEligibility::BootstrapEligible) => {
+            right_id.cmp(left_id)
+        }
         (
             ElectionEligibility::PromoteEligible(_) | ElectionEligibility::BootstrapEligible,
             ElectionEligibility::Ineligible(_),

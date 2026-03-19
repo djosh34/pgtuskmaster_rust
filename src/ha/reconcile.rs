@@ -1,8 +1,8 @@
 use super::types::{
     CoordinationAction, DataDirState, DesiredState, FailSafeGoal, FenceReason, FollowGoal,
-    IdleReason, LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState,
-    ProcessAssessment, PublicationAction, PublicationGoal, PublicationState, RecoveryPlan,
-    TargetRole, WorldView,
+    LeadershipView, LocalAction, LocalDataState, PlannedActions, PostgresState,
+    ProcessAssessment, PublicationAction, PublicationGoal, PublicationState, RecoveryPlan, TargetRole,
+    WorldView,
 };
 use crate::process::jobs::{
     ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
@@ -114,7 +114,27 @@ fn reconcile_role(world: &WorldView, target: &TargetRole) -> PlannedActions {
             }
         },
         TargetRole::Fenced(reason) => reconcile_fenced_role(world, reason),
-        TargetRole::Idle(reason) => reconcile_idle_role(world, reason),
+        TargetRole::Idle(_) => {
+            let waiting_for_demote = world
+                .local
+                .observation
+                .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
+            match &world.local.postgres {
+                PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
+                PostgresState::Primary { .. } => {
+                    PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
+                }
+                PostgresState::Offline => match &world.local.data_dir {
+                    DataDirState::Initialized(_) => {
+                        PlannedActions::process(ProcessIntent::Start(
+                            PostgresStartIntent::DetachedStandby,
+                        ))
+                    }
+                    DataDirState::Missing => PlannedActions::default(),
+                },
+                PostgresState::Replica { .. } => PlannedActions::default(),
+            }
+        }
     }
 }
 
@@ -238,26 +258,6 @@ fn reconcile_fenced_role(world: &WorldView, reason: &FenceReason) -> PlannedActi
     }
 }
 
-fn reconcile_idle_role(world: &WorldView, _reason: &IdleReason) -> PlannedActions {
-    let waiting_for_demote = world
-        .local
-        .observation
-        .waiting_for_fresh_pg_after(ActiveJobKind::Demote);
-    match &world.local.postgres {
-        PostgresState::Primary { .. } if waiting_for_demote => PlannedActions::default(),
-        PostgresState::Primary { .. } => {
-            PlannedActions::process(ProcessIntent::Demote(ShutdownMode::Fast))
-        }
-        PostgresState::Offline => match &world.local.data_dir {
-            DataDirState::Initialized(_) => {
-                PlannedActions::process(ProcessIntent::Start(PostgresStartIntent::DetachedStandby))
-            }
-            DataDirState::Missing => PlannedActions::default(),
-        },
-        PostgresState::Replica { .. } => PlannedActions::default(),
-    }
-}
-
 fn leadership_held_by_self(world: &WorldView) -> bool {
     world
         .global
@@ -281,7 +281,7 @@ mod tests {
     use super::*;
     use crate::ha::types::{
         ApiVisibility, AuthorityProjection, CoordinationState, GlobalKnowledge, IneligibleReason,
-        LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
+        IdleReason, LeadershipView, LocalKnowledge, NoPrimaryFence, NoPrimaryProjection, ObservationState,
         PeerKnowledge, PrimaryObservation, PublicationState, QuorumCoordinationState, StorageState,
         SwitchoverState, WalPosition,
     };
