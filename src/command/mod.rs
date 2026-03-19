@@ -352,6 +352,7 @@ mod tests {
                 member_id: "node-a".to_string(),
                 conninfo: PgConnInfo {
                     endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
+                    hostaddr: None,
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,

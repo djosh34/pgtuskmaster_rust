@@ -497,6 +497,7 @@ mod tests {
                 role: MandatorySourceRole::Replicator,
                 conninfo: PgConnInfo {
                     endpoint: PgTcpTarget::new("10.0.0.11".to_string(), 5432)?,
+                    hostaddr: None,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -580,6 +581,7 @@ mod tests {
                     role: MandatorySourceRole::Replicator,
                     conninfo: PgConnInfo {
                         endpoint: PgTcpTarget::new("10.0.0.12".to_string(), 5432)?,
+                        hostaddr: None,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,

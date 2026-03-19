@@ -82,6 +82,7 @@ fn remote_conninfo(
 ) -> PgConnInfo {
     PgConnInfo {
         endpoint: member.postgres_target().clone(),
+        hostaddr: None,
         user: role.username.as_str().to_owned(),
         dbname: runtime.replica_access.dbname.clone(),
         application_name: None,

@@ -682,6 +682,7 @@ mod tests {
         if let PgInfoState::Replica { common, .. } = &mut state {
             common.pg_config.primary_conninfo = Some(PgConnInfo {
                 endpoint: PgTcpTarget::new(host.to_string(), port)?,
+                hostaddr: None,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: Some("node-a".to_string()),

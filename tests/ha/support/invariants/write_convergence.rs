@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::Cursor,
+    path::PathBuf,
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -23,8 +24,9 @@ use tokio::{
 use tokio_postgres::{Client, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
-use pgtuskmaster_rust::pginfo::conninfo::{
-    conninfo_entries, conninfo_value, render_conninfo_value,
+use pgtuskmaster_rust::pginfo::{
+    conninfo::PgClientTls,
+    state::{PgConnInfo, PgSslMode},
 };
 
 use crate::support::{
@@ -210,11 +212,9 @@ async fn connect_member(
     routing_target: &PostgresRoutingTarget,
     connect_timeout: Duration,
 ) -> Result<(Arc<Client>, ConnectionTask), String> {
-    let connect_dsn =
-        connectable_dsn(routing_target.dsn.as_str()).map_err(|err| err.to_string())?;
-    if dsn_uses_tls_files(routing_target.dsn.as_str())? {
-        let tls =
-            build_tls_connector(routing_target.dsn.as_str()).map_err(|err| err.to_string())?;
+    let connect_dsn = connectable_conninfo(&routing_target.conninfo).to_string();
+    if conninfo_uses_tls_files(&routing_target.conninfo) {
+        let tls = build_tls_connector(&routing_target.conninfo).map_err(|err| err.to_string())?;
         let (client, connection) = tokio::time::timeout(
             connect_timeout,
             tokio_postgres::connect(connect_dsn.as_str(), tls),
@@ -539,10 +539,21 @@ async fn read_count(
     })
 }
 
-fn build_tls_connector(dsn: &str) -> Result<MakeRustlsConnect, WriteConvergenceInvariantError> {
-    let root_cert_path = required_conninfo_value(dsn, "sslrootcert")?;
-    let client_cert_path = required_conninfo_value(dsn, "sslcert")?;
-    let client_key_path = required_conninfo_value(dsn, "sslkey")?;
+fn build_tls_connector(
+    conninfo: &PgConnInfo,
+) -> Result<MakeRustlsConnect, WriteConvergenceInvariantError> {
+    let root_cert_path = required_tls_path(
+        conninfo.tls.root_cert.as_ref(),
+        "sslrootcert",
+        conninfo,
+    )?;
+    let client_cert_path = required_tls_path(
+        conninfo.tls.client_cert.as_ref(),
+        "sslcert",
+        conninfo,
+    )?;
+    let client_key_path =
+        required_tls_path(conninfo.tls.client_key.as_ref(), "sslkey", conninfo)?;
 
     let mut roots = RootCertStore::empty();
     for cert in load_cert_chain(root_cert_path.as_str())? {
@@ -575,39 +586,41 @@ fn build_tls_connector(dsn: &str) -> Result<MakeRustlsConnect, WriteConvergenceI
     Ok(MakeRustlsConnect::new(client_config))
 }
 
-fn required_conninfo_value(dsn: &str, key: &str) -> Result<String, WriteConvergenceInvariantError> {
-    conninfo_value(dsn, key)
-        .map_err(WriteConvergenceInvariantError::Failed)?
-        .ok_or_else(|| {
-            WriteConvergenceInvariantError::Failed(format!("dsn did not contain `{key}`: {dsn}"))
-        })
+fn required_tls_path(
+    path: Option<&PathBuf>,
+    key: &str,
+    conninfo: &PgConnInfo,
+) -> Result<String, WriteConvergenceInvariantError> {
+    path.map(|value| value.display().to_string()).ok_or_else(|| {
+        WriteConvergenceInvariantError::Failed(format!(
+            "conninfo did not contain `{key}`: {conninfo}"
+        ))
+    })
 }
 
-fn dsn_uses_tls_files(dsn: &str) -> Result<bool, String> {
-    ["sslrootcert", "sslcert", "sslkey"]
-        .into_iter()
-        .try_fold(false, |uses_tls_files, key| {
-            conninfo_value(dsn, key).map(|value| uses_tls_files || value.is_some())
-        })
+fn conninfo_uses_tls_files(conninfo: &PgConnInfo) -> bool {
+    conninfo.tls.root_cert.is_some()
+        || conninfo.tls.client_cert.is_some()
+        || conninfo.tls.client_key.is_some()
 }
 
-fn connectable_dsn(dsn: &str) -> Result<String, WriteConvergenceInvariantError> {
-    conninfo_entries(dsn)
-        .map_err(WriteConvergenceInvariantError::Failed)
-        .map(|entries| {
-            entries
-                .into_iter()
-                .filter_map(|(key, value)| match key.as_str() {
-                    "sslrootcert" | "sslcert" | "sslkey" => None,
-                    "sslmode" if matches!(value.as_str(), "verify-ca" | "verify-full") => {
-                        Some((key, "require".to_string()))
-                    }
-                    _ => Some((key, value)),
-                })
-                .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
+fn connectable_conninfo(conninfo: &PgConnInfo) -> PgConnInfo {
+    let ssl_mode = match conninfo.ssl_mode {
+        PgSslMode::VerifyCa | PgSslMode::VerifyFull => PgSslMode::Require,
+        mode => mode,
+    };
+
+    PgConnInfo {
+        ssl_mode,
+        ssl_root_cert: None,
+        tls: PgClientTls {
+            mode: ssl_mode,
+            root_cert: None,
+            client_cert: None,
+            client_key: None,
+        },
+        ..conninfo.clone()
+    }
 }
 
 fn load_cert_chain(
@@ -701,12 +714,19 @@ fn convergence_failure(
 #[cfg(test)]
 mod tests {
     use super::{
-        connectable_dsn, convergence_failure, maintain_connected_member,
-        observations_match_expected, read_count, required_conninfo_value, ConnectionTask,
+        connectable_conninfo, convergence_failure, maintain_connected_member,
+        observations_match_expected, read_count, required_tls_path, ConnectionTask,
         MemberCountObservation, MemberWorker, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
     use crate::support::{observer::pgtm::PostgresRoutingTarget, topology::ClusterMember};
+    use pgtuskmaster_rust::{
+        pginfo::{
+            conninfo::PgClientTls,
+            state::{PgConnInfo, PgSslMode},
+        },
+        state::PgEndpoint,
+    };
     use pgtuskmaster_test_support::{
         binaries::require_pg16_bin_for_real_tests,
         namespace::NamespaceGuard,
@@ -725,6 +745,26 @@ mod tests {
     };
     use tokio::{sync::RwLock, time::Instant};
     use tokio_postgres::{Client, NoTls};
+
+    fn sample_routing_conninfo() -> Result<PgConnInfo, String> {
+        Ok(PgConnInfo {
+            endpoint: PgEndpoint::tcp("node-a".to_string(), 5432)?,
+            hostaddr: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            user: "postgres".to_string(),
+            dbname: "postgres db".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            ssl_mode: PgSslMode::VerifyFull,
+            ssl_root_cert: Some("/tmp/ca bundle.pem".into()),
+            options: None,
+            tls: PgClientTls {
+                mode: PgSslMode::VerifyFull,
+                root_cert: Some("/tmp/ca bundle.pem".into()),
+                client_cert: Some("/tmp/client.crt".into()),
+                client_key: Some("/tmp/client.key".into()),
+            },
+        })
+    }
 
     #[test]
     fn convergence_failure_reports_dual_primary_style_divergence() {
@@ -758,51 +798,30 @@ mod tests {
     }
 
     #[test]
-    fn required_conninfo_value_accepts_tls_paths_beyond_first_pair(
+    fn required_tls_path_accepts_all_tls_fields(
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let dsn = concat!(
-            "host=node-a ",
-            "hostaddr=127.0.0.1 ",
-            "port=5432 ",
-            "user=postgres ",
-            "dbname=postgres ",
-            "sslmode=verify-full ",
-            "sslrootcert='/tmp/ca bundle.pem' ",
-            "sslcert=/tmp/client.crt ",
-            "sslkey=/tmp/client.key"
-        );
+        let conninfo = sample_routing_conninfo()?;
 
         assert_eq!(
-            required_conninfo_value(dsn, "sslrootcert")?,
+            required_tls_path(conninfo.tls.root_cert.as_ref(), "sslrootcert", &conninfo)?,
             "/tmp/ca bundle.pem".to_string()
         );
         assert_eq!(
-            required_conninfo_value(dsn, "sslcert")?,
+            required_tls_path(conninfo.tls.client_cert.as_ref(), "sslcert", &conninfo)?,
             "/tmp/client.crt".to_string()
         );
         assert_eq!(
-            required_conninfo_value(dsn, "sslkey")?,
+            required_tls_path(conninfo.tls.client_key.as_ref(), "sslkey", &conninfo)?,
             "/tmp/client.key".to_string()
         );
         Ok(())
     }
 
     #[test]
-    fn connectable_dsn_strips_tls_path_fields_but_preserves_general_conninfo(
+    fn connectable_conninfo_strips_tls_path_fields_but_preserves_general_conninfo(
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let dsn = concat!(
-            "host=node-a ",
-            "hostaddr=127.0.0.1 ",
-            "port=5432 ",
-            "user=postgres ",
-            "dbname='postgres db' ",
-            "sslmode=verify-full ",
-            "sslrootcert='/tmp/ca bundle.pem' ",
-            "sslcert=/tmp/client.crt ",
-            "sslkey=/tmp/client.key"
-        );
-
-        let connect_dsn = connectable_dsn(dsn)?;
+        let connect_conninfo = connectable_conninfo(&sample_routing_conninfo()?);
+        let connect_dsn = connect_conninfo.to_string();
 
         assert!(connect_dsn.contains("host=node-a"));
         assert!(connect_dsn.contains("hostaddr=127.0.0.1"));
@@ -1042,7 +1061,9 @@ mod tests {
             })
             .await?;
 
-            let dsn = format!("host=127.0.0.1 port={port} user=postgres dbname=postgres");
+            let dsn = format!(
+                "host=127.0.0.1 port={port} user=postgres dbname=postgres sslmode=disable"
+            );
             wait_for_postgres_ready(dsn.as_str(), Duration::from_secs(20)).await?;
 
             Ok(Self {
@@ -1112,7 +1133,7 @@ mod tests {
         Ok(MemberWorker {
             routing_target: PostgresRoutingTarget {
                 member,
-                dsn: dsn.to_string(),
+                conninfo: dsn.parse()?,
             },
             task,
         })

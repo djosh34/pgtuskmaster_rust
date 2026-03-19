@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    net::SocketAddr,
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
 };
 
@@ -13,7 +13,11 @@ use pgtuskmaster_rust::{
         PgtmClientTlsConfig, PgtmConfig, PgtmPostgresConfig, RoleTokens, SecretSource,
         TlsClientIdentityConfig,
     },
-    pginfo::conninfo::render_conninfo_value,
+    pginfo::{
+        conninfo::PgClientTls,
+        state::{PgConnInfo, PgSslMode},
+    },
+    state::PgEndpoint,
 };
 
 use crate::support::{
@@ -27,7 +31,7 @@ use crate::support::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostgresRoutingTarget {
     pub member: ClusterMember,
-    pub dsn: String,
+    pub conninfo: PgConnInfo,
 }
 
 pub type ClusterStateObservation = BTreeMap<ClusterMember, std::result::Result<NodeState, String>>;
@@ -75,13 +79,13 @@ impl PgtmObserver {
         let observer_key_path = self.materialized_dir.join("configs/tls/observer.key");
         Ok(PostgresRoutingTarget {
             member,
-            dsn: host_postgres_dsn(
+            conninfo: host_postgres_conninfo(
                 member,
                 published_port,
                 ca_cert_path.as_path(),
                 observer_cert_path.as_path(),
                 observer_key_path.as_path(),
-            ),
+            )?,
         })
     }
 
@@ -263,28 +267,31 @@ fn command_label(output: &CommandOutputDto) -> &'static str {
     }
 }
 
-fn host_postgres_dsn(
+fn host_postgres_conninfo(
     member: ClusterMember,
     port: u16,
     ca_cert_path: &Path,
     observer_cert_path: &Path,
     observer_key_path: &Path,
-) -> String {
-    [
-        ("host", member.service_name().to_string()),
-        ("hostaddr", "127.0.0.1".to_string()),
-        ("port", port.to_string()),
-        ("user", "postgres".to_string()),
-        ("dbname", "postgres".to_string()),
-        ("sslmode", "verify-full".to_string()),
-        ("sslrootcert", ca_cert_path.display().to_string()),
-        ("sslcert", observer_cert_path.display().to_string()),
-        ("sslkey", observer_key_path.display().to_string()),
-    ]
-    .into_iter()
-    .map(|(key, value)| format!("{key}={}", render_conninfo_value(value.as_str())))
-    .collect::<Vec<_>>()
-    .join(" ")
+) -> Result<PgConnInfo> {
+    Ok(PgConnInfo {
+        endpoint: PgEndpoint::tcp(member.service_name().to_string(), port)
+            .map_err(HarnessError::message)?,
+        hostaddr: Some(Ipv4Addr::LOCALHOST.into()),
+        user: "postgres".to_string(),
+        dbname: "postgres".to_string(),
+        application_name: None,
+        connect_timeout_s: None,
+        ssl_mode: PgSslMode::VerifyFull,
+        ssl_root_cert: Some(ca_cert_path.to_path_buf()),
+        options: None,
+        tls: PgClientTls {
+            mode: PgSslMode::VerifyFull,
+            root_cert: Some(ca_cert_path.to_path_buf()),
+            client_cert: Some(observer_cert_path.to_path_buf()),
+            client_key: Some(observer_key_path.to_path_buf()),
+        },
+    })
 }
 
 fn build_host_observer_config(
@@ -335,24 +342,28 @@ fn build_host_observer_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{build_host_observer_config, host_postgres_dsn};
+    use super::{build_host_observer_config, host_postgres_conninfo};
     use crate::support::topology::ClusterMember;
     use pgtuskmaster_rust::config::PgtmConfig;
     use std::{net::SocketAddr, path::Path};
 
     #[test]
-    fn host_postgres_dsn_quotes_tls_paths() {
-        let dsn = host_postgres_dsn(
+    fn host_postgres_conninfo_renders_tls_paths() -> Result<(), String> {
+        let dsn = host_postgres_conninfo(
             ClusterMember::NodeA,
             5432,
             Path::new("/tmp/ca bundle.pem"),
             Path::new("/tmp/observer cert.pem"),
             Path::new("/tmp/observer key.pem"),
-        );
+        )
+        .map_err(|err| err.to_string())?
+        .to_string();
 
         assert!(dsn.contains("sslrootcert='/tmp/ca bundle.pem'"));
         assert!(dsn.contains("sslcert='/tmp/observer cert.pem'"));
         assert!(dsn.contains("sslkey='/tmp/observer key.pem'"));
+        assert!(dsn.contains("hostaddr=127.0.0.1"));
+        Ok(())
     }
 
     #[test]

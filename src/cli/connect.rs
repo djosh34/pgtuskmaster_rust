@@ -146,6 +146,7 @@ fn build_connection_conninfo(
     let tls = build_connection_tls(tls, emit_tls)?;
     Ok(PgConnInfo {
         endpoint: member.postgres_target().clone(),
+        hostaddr: None,
         user: "postgres".to_string(),
         dbname: "postgres".to_string(),
         application_name: None,

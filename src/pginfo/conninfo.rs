@@ -1,4 +1,4 @@
-use std::{fmt, path::PathBuf, str::FromStr};
+use std::{fmt, net::IpAddr, path::PathBuf, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -62,6 +62,7 @@ impl Serialize for PgSslMode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgConnInfo {
     pub endpoint: PgEndpoint,
+    pub hostaddr: Option<IpAddr>,
     pub user: String,
     pub dbname: String,
     pub application_name: Option<String>,
@@ -114,6 +115,14 @@ impl FromStr for PgConnInfo {
         };
         Ok(Self {
             endpoint,
+            hostaddr: entries
+                .get("hostaddr")
+                .map(|value| {
+                    value
+                        .parse::<IpAddr>()
+                        .map_err(|err| format!("invalid conninfo hostaddr: {err}"))
+                })
+                .transpose()?,
             user: entries
                 .get("user")
                 .cloned()
@@ -163,10 +172,15 @@ pub(crate) fn render_pg_conninfo(info: &PgConnInfo) -> String {
     };
     let mut pairs = vec![
         ("host".to_string(), host),
+    ];
+    if let Some(value) = info.hostaddr {
+        pairs.push(("hostaddr".to_string(), value.to_string()));
+    }
+    pairs.extend([
         ("port".to_string(), port.to_string()),
         ("user".to_string(), info.user.clone()),
         ("dbname".to_string(), info.dbname.clone()),
-    ];
+    ]);
 
     if let Some(value) = &info.application_name {
         pairs.push(("application_name".to_string(), value.clone()));
@@ -290,7 +304,10 @@ fn parse_conninfo_entries(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        path::PathBuf,
+    };
 
     use super::{
         conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value,
@@ -301,6 +318,7 @@ mod tests {
     fn sample_conninfo() -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
             endpoint: PgTcpTarget::new("127.0.0.1".to_string(), 5432)?,
+            hostaddr: None,
             user: "postgres".to_string(),
             dbname: "postgres".to_string(),
             application_name: Some("ha worker".to_string()),
@@ -336,6 +354,20 @@ mod tests {
         );
 
         assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()?));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_and_render_round_trip_hostaddr() -> Result<(), String> {
+        let conninfo = PgConnInfo {
+            hostaddr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            ..sample_conninfo()?
+        };
+
+        let rendered = render_pg_conninfo(&conninfo);
+
+        assert!(rendered.contains("hostaddr=127.0.0.1"));
+        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(conninfo));
         Ok(())
     }
 

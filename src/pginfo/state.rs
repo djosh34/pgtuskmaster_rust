@@ -227,6 +227,7 @@ impl PgProbeTarget {
                 socket_dir: process_plan.postgres.paths.socket_dir.clone(),
                 port: process_plan.postgres.port,
             },
+            hostaddr: None,
             user: cfg
                 .postgres
                 .roles

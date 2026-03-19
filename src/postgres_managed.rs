@@ -731,6 +731,7 @@ mod tests {
         let replica_start = ManagedPostgresStartIntent::replica(
             PgConnInfo {
                 endpoint: tcp_connect_target("leader.internal", 5432)?,
+                hostaddr: None,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: None,
@@ -805,6 +806,7 @@ mod tests {
             &ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
                     endpoint: tcp_connect_target("leader.internal", 5432)?,
+                    hostaddr: None,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -1166,6 +1168,7 @@ mod tests {
                     PgConnInfo {
                         endpoint: tcp_connect_target("127.0.0.1", primary_port)
                             .map_err(real_test_error)?,
+                        hostaddr: None,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,
@@ -1436,6 +1439,7 @@ mod tests {
     fn sample_replica_conninfo_for_port(port: u16) -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
             endpoint: tcp_connect_target("leader.internal", port)?,
+            hostaddr: None,
             user: "replicator".to_string(),
             dbname: "postgres".to_string(),
             application_name: None,

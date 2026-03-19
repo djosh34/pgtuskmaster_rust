@@ -434,6 +434,7 @@ mod tests {
             start_intent: ManagedPostgresStartIntent::replica(
                 PgConnInfo {
                     endpoint: PgEndpoint::tcp("leader.internal".to_string(), 5432)?,
+                    hostaddr: None,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: Some("node-b".to_string()),
@@ -621,6 +622,7 @@ mod tests {
             ManagedPostgresStartIntent::recovery(
                 PgConnInfo {
                     endpoint: PgEndpoint::tcp("leader.internal".to_string(), 5432)?,
+                    hostaddr: None,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
