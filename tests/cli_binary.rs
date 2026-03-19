@@ -53,8 +53,8 @@ fn spawn_single_request_server(
     Ok((addr, rx))
 }
 
-fn cli_bin_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtm") {
+fn binary_path(env_var: &str, binary_name: &str) -> Result<std::path::PathBuf, String> {
+    if let Ok(path) = std::env::var(env_var) {
         return Ok(std::path::PathBuf::from(path));
     }
 
@@ -63,42 +63,20 @@ fn cli_bin_path() -> Result<std::path::PathBuf, String> {
         .parent()
         .and_then(std::path::Path::parent)
         .ok_or_else(|| "failed to derive target/debug directory".to_string())?;
-    let candidate = if cfg!(windows) {
-        debug_dir.join("pgtm.exe")
-    } else {
-        debug_dir.join("pgtm")
-    };
-    if candidate.exists() {
-        Ok(candidate)
-    } else {
-        Err(format!("cli binary not found at {}", candidate.display()))
-    }
-}
-
-fn node_bin_path() -> Result<std::path::PathBuf, String> {
-    if let Ok(path) = std::env::var("CARGO_BIN_EXE_pgtuskmaster") {
-        return Ok(std::path::PathBuf::from(path));
-    }
-
-    let current = std::env::current_exe().map_err(|err| format!("current_exe failed: {err}"))?;
-    let debug_dir = current
-        .parent()
-        .and_then(std::path::Path::parent)
-        .ok_or_else(|| "failed to derive target/debug directory".to_string())?;
-    let mut candidate = debug_dir.join("pgtuskmaster");
+    let mut candidate = debug_dir.join(binary_name);
     if cfg!(windows) {
         candidate.set_extension("exe");
     }
     if candidate.exists() {
         Ok(candidate)
     } else {
-        Err(format!("node binary not found at {}", candidate.display()))
+        Err(format!("{binary_name} binary not found at {}", candidate.display()))
     }
 }
 
 #[test]
 fn help_exits_success() -> Result<(), String> {
-    let bin = cli_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtm", "pgtm")?;
     let output = Command::new(&bin)
         .arg("--help")
         .output()
@@ -129,7 +107,7 @@ fn help_exits_success() -> Result<(), String> {
 
 #[test]
 fn missing_required_subcommand_arg_exits_usage_code() -> Result<(), String> {
-    let bin = cli_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtm", "pgtm")?;
     let output = Command::new(&bin)
         .args(["switchover", "leader", "set"])
         .output()
@@ -145,7 +123,7 @@ fn missing_required_subcommand_arg_exits_usage_code() -> Result<(), String> {
 
 #[test]
 fn status_command_uses_state_endpoint() -> Result<(), String> {
-    let bin = cli_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtm", "pgtm")?;
     let (addr, rx) = spawn_single_request_server(
         "HTTP/1.1 503 Service Unavailable\r\ncontent-type: text/plain\r\ncontent-length: 7\r\n\r\nunready",
     )?;
@@ -165,7 +143,7 @@ fn status_command_uses_state_endpoint() -> Result<(), String> {
 
 #[test]
 fn switchover_clear_uses_delete_switchover_endpoint() -> Result<(), String> {
-    let bin = cli_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtm", "pgtm")?;
     let (addr, rx) = spawn_single_request_server(
         "HTTP/1.1 202 Accepted\r\ncontent-type: application/json\r\ncontent-length: 17\r\n\r\n{\"accepted\":true}",
     )?;
@@ -194,7 +172,7 @@ fn switchover_clear_uses_delete_switchover_endpoint() -> Result<(), String> {
 
 #[test]
 fn status_auth_failure_maps_to_exit_4() -> Result<(), String> {
-    let bin = cli_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtm", "pgtm")?;
     let (addr, _rx) = spawn_single_request_server(
         "HTTP/1.1 401 Unauthorized\r\ncontent-type: text/plain\r\ncontent-length: 13\r\n\r\nmissing token",
     )?;
@@ -213,7 +191,7 @@ fn status_auth_failure_maps_to_exit_4() -> Result<(), String> {
 
 #[test]
 fn node_help_exits_success() -> Result<(), String> {
-    let bin = node_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let output = Command::new(&bin)
         .arg("--help")
         .output()
@@ -236,7 +214,7 @@ fn node_help_exits_success() -> Result<(), String> {
 
 #[test]
 fn node_missing_incomplete_config_reports_parse_error() -> Result<(), String> {
-    let bin = node_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_config(
         "missing-config-version",
         r#"
@@ -270,7 +248,7 @@ member_id = "member-a"
 
 #[test]
 fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
-    let bin = node_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_config(
         "missing-process-binaries",
         r#"
@@ -339,7 +317,7 @@ auth = { type = "disabled" }
 
 #[test]
 fn node_rejects_empty_dcs_basic_auth_username_with_stable_field_path() -> Result<(), String> {
-    let bin = node_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_config(
         "dcs-basic-auth-empty-username",
         r#"
@@ -399,7 +377,7 @@ auth = { type = "disabled" }
 
 #[test]
 fn node_rejects_https_dcs_without_tls_config() -> Result<(), String> {
-    let bin = node_bin_path()?;
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_config(
         "https-dcs-without-client-tls",
         r#"
