@@ -6,8 +6,7 @@ use crate::{
 };
 
 use super::state::{
-    PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx,
-    PgProbeTarget,
+    PgInfoCadence, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx, PgProbeTarget,
 };
 
 pub(crate) struct PgInfoRuntimeRequest {

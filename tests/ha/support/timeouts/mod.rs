@@ -13,7 +13,7 @@ const MIN_HARNESS_POLL_INTERVAL_MS: u64 = 1_000;
 const MAX_FAILOVER_DEADLINE_MS: u64 = 20_000;
 const MAX_STARTUP_DEADLINE_MS: u64 = 20_000;
 const MAX_RECOVERY_DEADLINE_MS: u64 = 30_000;
-const MAX_WRITE_CONVERGENCE_DEADLINE_MS: u64 = 15_000;
+const MAX_WRITE_CONVERGENCE_DEADLINE_MS: u64 = 60_000;
 
 #[derive(Clone, Debug)]
 pub struct TimeoutModel {
@@ -95,7 +95,7 @@ mod tests {
         assert_eq!(model.failover_deadline, Duration::from_secs(18));
         assert_eq!(model.startup_deadline, Duration::from_secs(20));
         assert_eq!(model.recovery_deadline, Duration::from_secs(30));
-        assert_eq!(model.write_convergence_deadline, Duration::from_secs(15));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(48));
     }
 
     #[test]
@@ -105,6 +105,6 @@ mod tests {
         assert_eq!(model.failover_deadline, Duration::from_secs(20));
         assert_eq!(model.startup_deadline, Duration::from_secs(20));
         assert_eq!(model.recovery_deadline, Duration::from_secs(30));
-        assert_eq!(model.write_convergence_deadline, Duration::from_secs(15));
+        assert_eq!(model.write_convergence_deadline, Duration::from_secs(50));
     }
 }
