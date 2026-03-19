@@ -18,6 +18,15 @@ pub enum InlineOrPath {
     Inline { content: String },
 }
 
+impl InlineOrPath {
+    pub fn as_path(&self) -> Option<&Path> {
+        match self {
+            Self::Path(path) | Self::PathConfig { path } => Some(path.as_path()),
+            Self::Inline { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum SecretSource {
@@ -43,6 +52,20 @@ impl SecretSource {
         match self {
             Self::None => None,
             Self::Env { .. } | Self::File { .. } | Self::String { .. } => Some(self),
+        }
+    }
+
+    pub fn as_path(&self) -> Option<&Path> {
+        match self {
+            Self::File { path } => Some(path.as_path()),
+            Self::None | Self::Env { .. } | Self::String { .. } => None,
+        }
+    }
+
+    pub fn as_string(&self) -> Option<&str> {
+        match self {
+            Self::String { value } => Some(value.as_str()),
+            Self::None | Self::Env { .. } | Self::File { .. } => None,
         }
     }
 }

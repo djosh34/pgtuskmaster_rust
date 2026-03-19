@@ -363,8 +363,8 @@ fn authorize_request(
         return AuthDecision::Allowed;
     };
 
-    let read_token = token_string(&tokens.read_token);
-    let admin_token = token_string(&tokens.admin_token);
+    let read_token = tokens.read_token.as_string();
+    let admin_token = tokens.admin_token.as_string();
 
     if read_token.is_none() && admin_token.is_none() {
         return AuthDecision::Allowed;
@@ -426,7 +426,7 @@ fn resolve_auth_state(
 }
 
 fn resolve_runtime_token(field: &str, raw: &SecretSource) -> Result<SecretSource, WorkerError> {
-    if matches!(raw, SecretSource::None) {
+    if raw.is_none() {
         return Ok(SecretSource::None);
     }
 
@@ -440,13 +440,6 @@ fn resolve_runtime_token(field: &str, raw: &SecretSource) -> Result<SecretSource
             value: trimmed.to_string(),
         }
     })
-}
-
-fn token_string(raw: &SecretSource) -> Option<&str> {
-    match raw {
-        SecretSource::String { value } => Some(value.as_str()),
-        SecretSource::None | SecretSource::Env { .. } | SecretSource::File { .. } => None,
-    }
 }
 
 #[cfg(test)]

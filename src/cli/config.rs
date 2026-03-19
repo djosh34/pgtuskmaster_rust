@@ -1,4 +1,4 @@
-use std::{net::IpAddr, path::PathBuf};
+use std::net::IpAddr;
 
 use reqwest::Url;
 
@@ -83,10 +83,15 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
                     .transpose()
                     .map(|result| result.map(String::into_bytes))
                     .map_err(|err| CliError::Config(err.to_string()))?,
-                ca_cert_path: ca_cert.and_then(inline_or_path_to_path_buf),
+                ca_cert_path: ca_cert
+                    .and_then(InlineOrPath::as_path)
+                    .map(|path| path.to_path_buf()),
                 client_cert_path: identity
-                    .and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
-                client_key_path: identity.and_then(|identity| secret_to_path_buf(&identity.key)),
+                    .and_then(|identity| identity.cert.as_path())
+                    .map(|path| path.to_path_buf()),
+                client_key_path: identity
+                    .and_then(|identity| identity.key.as_path())
+                    .map(|path| path.to_path_buf()),
             }
         }
         None => CliTlsConfig::default(),
@@ -312,30 +317,19 @@ fn resolve_api_client_tls(
         ca_cert_path: api_client
             .ca_cert
             .as_ref()
-            .and_then(inline_or_path_to_path_buf),
+            .and_then(InlineOrPath::as_path)
+            .map(|path| path.to_path_buf()),
         client_cert_path: api_client
             .identity
             .as_ref()
-            .and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
+            .and_then(|identity| identity.cert.as_path())
+            .map(|path| path.to_path_buf()),
         client_key_path: api_client
             .identity
             .as_ref()
-            .and_then(|identity| secret_to_path_buf(&identity.key)),
+            .and_then(|identity| identity.key.as_path())
+            .map(|path| path.to_path_buf()),
     })
-}
-
-fn inline_or_path_to_path_buf(source: &InlineOrPath) -> Option<PathBuf> {
-    match source {
-        InlineOrPath::Path(path) | InlineOrPath::PathConfig { path } => Some(path.clone()),
-        InlineOrPath::Inline { .. } => None,
-    }
-}
-
-fn secret_to_path_buf(source: &SecretSource) -> Option<PathBuf> {
-    match source {
-        SecretSource::File { path } => Some(path.clone()),
-        SecretSource::None | SecretSource::Env { .. } | SecretSource::String { .. } => None,
-    }
 }
 
 fn resolve_optional_secret(

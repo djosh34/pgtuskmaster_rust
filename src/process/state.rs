@@ -207,11 +207,8 @@ impl ProcessRuntimePlan {
                     .transport
                     .ca_cert
                     .as_ref()
-                    .and_then(|source| match source {
-                        crate::config::InlineOrPath::Path(path)
-                        | crate::config::InlineOrPath::PathConfig { path } => Some(path.clone()),
-                        crate::config::InlineOrPath::Inline { .. } => None,
-                    }),
+                    .and_then(crate::config::InlineOrPath::as_path)
+                    .map(|path| path.to_path_buf()),
                 connect_timeout_s: cfg.postgres.connect_timeout_s,
             },
         }

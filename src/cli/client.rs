@@ -250,11 +250,8 @@ where
 }
 
 fn normalize_token(raw: &SecretSource) -> Option<String> {
-    match raw {
-        SecretSource::String { value } => {
-            let trimmed = value.trim();
-            (!trimmed.is_empty()).then(|| trimmed.to_string())
-        }
-        SecretSource::None | SecretSource::Env { .. } | SecretSource::File { .. } => None,
-    }
+    raw.as_string().and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
