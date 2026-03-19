@@ -978,14 +978,10 @@ fn subprocess_log_event(job_kind: ProcessJobKind, line: ProcessOutputLine) -> Su
     SubprocessLogEvent::Line {
         job_kind,
         stream: captured_stream(line.stream),
-        line: decode_process_output_line(line.bytes),
-    }
-}
-
-fn decode_process_output_line(bytes: Vec<u8>) -> String {
-    match String::from_utf8(bytes) {
-        Ok(line) => line,
-        Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+        line: match String::from_utf8(line.bytes) {
+            Ok(line) => line,
+            Err(err) => String::from_utf8_lossy(err.as_bytes()).into_owned(),
+        },
     }
 }
 
