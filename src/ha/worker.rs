@@ -59,7 +59,15 @@ pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError>
         .map_err(|err| WorkerError::Message(format!("ha publish failed: {err}")))?;
     ctx.state_channel.current = next_state;
 
-    execute_plan(ctx, ctx.state_channel.current.tick, &plan).await?;
+    if let Some(action) = &plan.coordination {
+        execute_coordination_action(ctx, ctx.state_channel.current.tick, 0, action).await?;
+    }
+    if let Some(action) = &plan.local {
+        execute_local_action(ctx, ctx.state_channel.current.tick, 1, action).await?;
+    }
+    if let Some(action) = &plan.process {
+        execute_process_action(ctx, ctx.state_channel.current.tick, 2, action).await?;
+    }
 
     Ok(())
 }
@@ -228,23 +236,6 @@ fn apply_publication_goal(current: &PublicationState, goal: &PublicationGoal) ->
         PublicationGoal::KeepCurrent => current.clone(),
         PublicationGoal::Publish(projection) => PublicationState::Projected(projection.clone()),
     }
-}
-
-async fn execute_plan(
-    ctx: &mut HaRuntimeCtx,
-    ha_tick: u64,
-    plan: &PlannedActions,
-) -> Result<(), WorkerError> {
-    if let Some(action) = &plan.coordination {
-        execute_coordination_action(ctx, ha_tick, 0, action).await?;
-    }
-    if let Some(action) = &plan.local {
-        execute_local_action(ctx, ha_tick, 1, action).await?;
-    }
-    if let Some(action) = &plan.process {
-        execute_process_action(ctx, ha_tick, 2, action).await?;
-    }
-    Ok(())
 }
 
 async fn execute_coordination_action(
