@@ -24,6 +24,7 @@ EOF_APPEND_PROGRESS_LOG
     - [ ] If you read nothing/ TO BE VERIFIED, follow these steps:
         - [ ] Iterate on the plan, can something be represented better? better enums that make unrepresentable states impossible? Other Structs/Enums in need of big changes to align with new design? change ALL those types first (before fixing compile errors)
           - [ ] Make use of improve-code-boundaries skill to evaluate your design and to improve the plan and the codebase
+          - [ ] Aim to Remove/Merge struct/enums/functions to simplify code
         - [ ] Once your happy with type design, replace end of plan with 'NOW EXECUTE'
         - [ ] QUIT IMMEDIATELY!
     - [ ] When you read 'NOW EXECUTE': 
