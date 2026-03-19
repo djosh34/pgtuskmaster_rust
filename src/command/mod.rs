@@ -4,9 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
-    dcs::{MemberPostgresView, SwitchoverView},
     ha::types::{AuthorityProjection, PublicationState},
-    pginfo::state::{PgConnInfo, Readiness},
+    pginfo::state::{PgConnInfo, PgInfoState, Readiness},
     state::{MemberId, SwitchoverState},
 };
 
@@ -214,7 +213,7 @@ impl fmt::Display for StateCommandOutputDto {
                         member_id.0.clone(),
                         yes_no(is_self).to_string(),
                         member_role_label(member.postgres()).to_string(),
-                        dcs_mode_label(&self.state.dcs).to_string(),
+                        self.state.dcs.mode_label().to_string(),
                         authoritative_primary_member(&self.state)
                             .map(MemberId::as_str)
                             .unwrap_or("-")
@@ -232,7 +231,7 @@ impl fmt::Display for StateCommandOutputDto {
                         member_id.0.clone(),
                         yes_no(is_self).to_string(),
                         member_role_label(member.postgres()).to_string(),
-                        dcs_mode_label(&self.state.dcs).to_string(),
+                        self.state.dcs.mode_label().to_string(),
                         readiness_label(&member.postgres().readiness()).to_string(),
                         "-".to_string(),
                     ]
@@ -302,7 +301,7 @@ pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberI
 fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
     let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
         code: "degraded_dcs_mode".to_string(),
-        message: format!("seed node reports {} DCS mode", dcs_mode_label(&state.dcs)),
+        message: format!("seed node reports {} DCS mode", state.dcs.mode_label()),
     });
     let no_primary_warning =
         authoritative_primary_member(state)
@@ -327,7 +326,7 @@ fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
     .collect()
 }
 
-fn member_role_label(member: &MemberPostgresView) -> &'static str {
+fn member_role_label(member: &PgInfoState) -> &'static str {
     if member.is_primary() {
         "primary"
     } else if member.upstream().is_some() || member.is_ready_replica() {
@@ -345,17 +344,13 @@ fn readiness_label(readiness: &Readiness) -> &'static str {
     }
 }
 
-fn dcs_mode_label(snapshot: &crate::dcs::DcsView) -> &'static str {
-    snapshot.mode_label()
-}
-
-pub fn switchover_projection(snapshot: &crate::dcs::DcsView) -> Option<StateSwitchoverDto> {
+pub fn switchover_projection(snapshot: &crate::dcs::DcsSnapshot) -> Option<StateSwitchoverDto> {
     match snapshot.switchover() {
-        Some(SwitchoverView::AnyHealthyReplica) => Some(StateSwitchoverDto {
+        Some(SwitchoverState::AnyHealthyReplica) => Some(StateSwitchoverDto {
             pending: true,
             target_member_id: None,
         }),
-        Some(SwitchoverView::Specific(member_id)) => Some(StateSwitchoverDto {
+        Some(SwitchoverState::Specific(member_id)) => Some(StateSwitchoverDto {
             pending: true,
             target_member_id: Some(member_id.0.clone()),
         }),

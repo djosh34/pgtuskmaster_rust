@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
     config::{PostgresRoleName, PostgresRoleSlots, ProcessConfig, RoleAuthConfig, RuntimeConfig},
-    dcs::DcsView,
+    dcs::DcsSnapshot,
     logging::LogSender,
     pginfo::state::PgSslMode,
     postgres_managed_conf::ManagedRecoverySignal,
@@ -145,13 +145,13 @@ pub(crate) type ProcessNodeIdentity = NodeIdentity;
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedState {
     pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
-    pub(crate) dcs: StateSubscriber<DcsView>,
+    pub(crate) dcs: StateSubscriber<DcsSnapshot>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedSnapshot {
     pub(crate) runtime_config: RuntimeConfig,
-    pub(crate) dcs: DcsView,
+    pub(crate) dcs: DcsSnapshot,
     pub(crate) managed_recovery_state: ManagedRecoverySignal,
 }
 

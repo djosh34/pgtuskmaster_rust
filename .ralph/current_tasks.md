@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 03:39:52 AM CET 2026
+Generated: Thu Mar 19 03:50:43 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -60,6 +60,18 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 ==============
 
+# Task `.ralph/tasks/bugs/bug-leaky-reload-certificates-tests.md`
+
+```
+## Bug: Reload certificates tests leak processes <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` passed on 2026-03-19, but `cargo nextest` reported 5 leaky tests in `api::worker::tests::{reload_certificates_returns_error_when_postmaster_data_dir_mismatches,reload_certificates_returns_error_when_postmaster_pid_is_stale,reload_certificates_does_not_signal_postgres_when_api_reload_fails,reload_certificates_returns_error_when_https_runtime_sees_http_config,reload_certificates_succeeds_for_https_transport_and_signals_postgres}`.
+Explore and research the codebase first, identify which child process or resource is not being cleaned up in these test paths, then fix the leak so the default test suite is clean.
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/bug-make-test-nextest-build-fails-missing-rlib-archive.md`
 
 ```
@@ -89,6 +101,18 @@ The failure observed every member at count `4` on `public.write_convergence_inva
 
 <description>
 `make test` currently fails in `process::postmaster::tests::reload_managed_postmaster_sends_sighup`.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/bug-task-switch-rm-missing-current-task-file.md`
+
+```
+## Bug: task_switch.sh reports rm error when current_task.txt is already absent <status>not_started</status> <passes>false</passes>
+
+<description>
+`bash .ralph/task_switch.sh` completed its main flow but still emitted `rm: cannot remove '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/current_task.txt': No such file or directory`.
+Explore and research the Ralph task-switch flow first, then fix the script so task switching does not emit this avoidable file-removal error when the current-task marker is already missing.
 ```
 
 ==============

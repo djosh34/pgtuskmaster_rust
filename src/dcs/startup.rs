@@ -16,8 +16,6 @@ use super::{
     DcsHandle,
 };
 
-pub(crate) type DcsAdvertisedEndpoints = PgEndpoint;
-
 pub(crate) struct DcsRuntime {
     pub(crate) state: crate::state::StateSubscriber<DcsSnapshot>,
     pub(crate) handle: DcsHandle,
@@ -25,18 +23,6 @@ pub(crate) struct DcsRuntime {
 }
 
 pub(crate) struct DcsWorker(pub(super) DcsRuntimeCtx);
-
-impl DcsAdvertisedEndpoints {
-    pub(crate) fn from_config(cfg: &RuntimeConfig) -> Result<Self, DcsError> {
-        let advertise_port = cfg
-            .postgres
-            .network
-            .advertise_port
-            .unwrap_or(cfg.postgres.network.listen_port);
-        PgEndpoint::tcp(cfg.postgres.network.listen_host.clone(), advertise_port)
-            .map_err(DcsError::Io)
-    }
-}
 
 impl DcsWorker {
     pub(crate) async fn run(self) -> Result<(), WorkerError> {
@@ -58,7 +44,7 @@ pub(crate) fn bootstrap(
         client: cfg.dcs.client.clone(),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
         member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised_postgres: DcsAdvertisedEndpoints::from_config(cfg)?,
+        advertised_postgres: advertised_postgres_from_config(cfg)?,
         pg: pg_subscriber,
         publisher,
         members: BTreeMap::new(),
@@ -74,4 +60,13 @@ pub(crate) fn bootstrap(
         handle,
         worker: DcsWorker(ctx),
     })
+}
+
+fn advertised_postgres_from_config(cfg: &RuntimeConfig) -> Result<PgEndpoint, DcsError> {
+    let advertise_port = cfg
+        .postgres
+        .network
+        .advertise_port
+        .unwrap_or(cfg.postgres.network.listen_port);
+    PgEndpoint::tcp(cfg.postgres.network.listen_host.clone(), advertise_port).map_err(DcsError::Io)
 }

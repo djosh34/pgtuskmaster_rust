@@ -5,7 +5,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     config::RuntimeConfig,
-    dcs::{DcsHandle, DcsView},
+    dcs::{DcsHandle, DcsSnapshot},
     pginfo::state::PgInfoState,
     process::state::{ProcessIntentRequest, ProcessState},
     state::{NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
@@ -46,7 +46,7 @@ pub(crate) struct HaStateChannel {
 pub(crate) struct HaObservedState {
     pub(crate) config: StateSubscriber<RuntimeConfig>,
     pub(crate) pg: StateSubscriber<PgInfoState>,
-    pub(crate) dcs: StateSubscriber<DcsView>,
+    pub(crate) dcs: StateSubscriber<DcsSnapshot>,
     pub(crate) process: StateSubscriber<ProcessState>,
 }
 

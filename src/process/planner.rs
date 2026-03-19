@@ -1,5 +1,5 @@
 use crate::{
-    dcs::{ClusterMemberView, DcsView},
+    dcs::{DcsMemberState, DcsSnapshot},
     postgres_managed_conf::ManagedRecoverySignal,
     process::{
         jobs::{
@@ -139,7 +139,7 @@ impl ProcessIntentPlanner {
 fn basebackup_source_from_leader(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     leader: &MemberId,
 ) -> Result<MandatoryRoleSourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
@@ -150,7 +150,7 @@ fn basebackup_source_from_leader(
 fn rewind_source_from_leader(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     leader: &MemberId,
 ) -> Result<MandatoryRoleSourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
@@ -159,9 +159,9 @@ fn rewind_source_from_leader(
 }
 
 fn resolve_source_member<'a>(
-    dcs: &'a DcsView,
+    dcs: &'a DcsSnapshot,
     leader: &'a MemberId,
-) -> Result<(&'a MemberId, &'a ClusterMemberView), ProcessError> {
+) -> Result<(&'a MemberId, &'a DcsMemberState), ProcessError> {
     let cluster = dcs.quorum_state().ok_or_else(|| {
         ProcessError::InvalidSpec(
             "source member resolution requires a DCS cluster view, but DCS is currently not trusted"
@@ -192,9 +192,9 @@ mod tests {
     };
 
     use crate::{
-        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        dcs::{DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::RuntimeConfigBuilder,
-        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
             jobs::{
@@ -239,10 +239,10 @@ mod tests {
             .build()
     }
 
-    fn primary_member(host: &str, port: u16) -> Result<ClusterMemberView, String> {
-        Ok(ClusterMemberView {
+    fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
+        Ok(DcsMemberState {
             postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
-            postgres: MemberPostgresView::Primary {
+            postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,
                     sql: SqlStatus::Healthy,
@@ -266,7 +266,7 @@ mod tests {
 
     fn observed_snapshot(
         runtime_config: crate::config::RuntimeConfig,
-        dcs: DcsView,
+        dcs: DcsSnapshot,
         managed_recovery_state: ManagedRecoverySignal,
     ) -> ProcessObservedSnapshot {
         ProcessObservedSnapshot {
@@ -281,7 +281,7 @@ mod tests {
         let root = unique_test_dir("intent-variants")?;
         let runtime_config = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
-        let dcs = DcsView::quorum(
+        let dcs = DcsSnapshot::quorum(
             None,
             SwitchoverState::None,
             BTreeMap::from([(leader.clone(), primary_member("10.0.0.8", 5432)?)]),
@@ -355,7 +355,7 @@ mod tests {
         let runtime_config = sample_runtime(root.join("data"));
         let snapshot = observed_snapshot(
             runtime_config.clone(),
-            DcsView::starting(),
+            DcsSnapshot::starting(),
             ManagedRecoverySignal::Standby,
         );
         let runtime = ProcessRuntimePlan::from_config(&runtime_config);
@@ -382,7 +382,7 @@ mod tests {
         let root = unique_test_dir("source-roles")?;
         let runtime_config = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
-        let dcs = DcsView::quorum(
+        let dcs = DcsSnapshot::quorum(
             None,
             SwitchoverState::None,
             BTreeMap::from([(leader.clone(), primary_member("10.0.0.9", 5432)?)]),

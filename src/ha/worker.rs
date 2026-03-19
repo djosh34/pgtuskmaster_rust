@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use crate::{
-    dcs::{ClusterMemberView, DcsQuorumState, DcsView, MemberPostgresView},
+    dcs::{DcsMemberState, DcsQuorumState, DcsSnapshot},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     postgres_roles,
     process::jobs::{ActiveJobKind, PostgresStartIntent, ProcessIntent},
@@ -148,7 +148,7 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
 }
 
 fn local_member_identity_fallback(
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     self_id: &MemberId,
     observation: &ObservationState,
 ) -> (Option<u64>, Option<u64>) {
@@ -373,7 +373,7 @@ fn build_replication_state(
 }
 
 fn build_storage_state(
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     pg: &PgInfoState,
     lease_ttl_ms: u64,
     self_id: &MemberId,
@@ -395,7 +395,7 @@ fn build_storage_state(
 }
 
 fn build_global_knowledge(
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
     pg: &PgInfoState,
     local_data_dir: &DataDirState,
     self_id: &MemberId,
@@ -431,18 +431,18 @@ fn build_global_knowledge(
     }
 }
 
-fn build_peer_knowledge_from_member(member: &ClusterMemberView) -> PeerKnowledge {
+fn build_peer_knowledge_from_member(member: &DcsMemberState) -> PeerKnowledge {
     let api = ApiVisibility::Reachable;
     let readiness = member.postgres().readiness();
     let eligibility = match member.postgres() {
-        MemberPostgresView::Unknown { .. } => {
+        PgInfoState::Unknown { .. } => {
             if readiness == Readiness::Ready {
                 ElectionEligibility::BootstrapEligible
             } else {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             }
         }
-        MemberPostgresView::Primary { .. } => {
+        PgInfoState::Primary { .. } => {
             if readiness != Readiness::Ready {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             } else {
@@ -454,7 +454,7 @@ fn build_peer_knowledge_from_member(member: &ClusterMemberView) -> PeerKnowledge
                     .unwrap_or(ElectionEligibility::Ineligible(IneligibleReason::Lagging))
             }
         }
-        MemberPostgresView::Replica { .. } => {
+        PgInfoState::Replica { .. } => {
             if readiness != Readiness::Ready {
                 ElectionEligibility::Ineligible(IneligibleReason::NotReady)
             } else {
@@ -517,7 +517,7 @@ fn self_replica_position(pg: &PgInfoState) -> Option<WalPosition> {
 
 fn resolve_replica_upstream(
     primary_conninfo: Option<&crate::pginfo::state::PgConnInfo>,
-    dcs: &DcsView,
+    dcs: &DcsSnapshot,
 ) -> Option<MemberId> {
     let PgEndpoint::Tcp { host, port } = &primary_conninfo?.endpoint else {
         return None;
@@ -547,25 +547,25 @@ fn build_leadership_view(dcs: &DcsQuorumState, self_id: &MemberId) -> Leadership
     }
 }
 
-fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> LeadershipView {
+fn classify_foreign_leader(member: &DcsMemberState, epoch: LeaseEpoch) -> LeadershipView {
     match member.postgres() {
-        MemberPostgresView::Primary { .. } if member.postgres().readiness() == Readiness::Ready => {
+        PgInfoState::Primary { .. } if member.postgres().readiness() == Readiness::Ready => {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::PrimaryReady,
             }
         }
-        MemberPostgresView::Primary { .. } => LeadershipView::HeldByPeer {
+        PgInfoState::Primary { .. } => LeadershipView::HeldByPeer {
             epoch,
             state: PeerLeaderState::Recovering,
         },
-        MemberPostgresView::Unknown { .. } if member.postgres().readiness() == Readiness::Ready => {
+        PgInfoState::Unknown { .. } if member.postgres().readiness() == Readiness::Ready => {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::Unreachable,
             }
         }
-        MemberPostgresView::Unknown { .. } | MemberPostgresView::Replica { .. } => {
+        PgInfoState::Unknown { .. } | PgInfoState::Replica { .. } => {
             LeadershipView::HeldByPeer {
                 epoch,
                 state: PeerLeaderState::Recovering,
@@ -577,7 +577,7 @@ fn classify_foreign_leader(member: &ClusterMemberView, epoch: LeaseEpoch) -> Lea
 fn observed_primary_member(dcs: &DcsQuorumState, self_id: &MemberId) -> Option<ObservedPrimary> {
     dcs.members().find_map(|(member_id, member)| {
         ((*member_id != *self_id)
-            && matches!(member.postgres(), MemberPostgresView::Primary { .. })
+            && matches!(member.postgres(), PgInfoState::Primary { .. })
             && member.postgres().readiness() == Readiness::Ready)
             .then(|| ObservedPrimary {
                 member: member_id.clone(),
@@ -587,14 +587,14 @@ fn observed_primary_member(dcs: &DcsQuorumState, self_id: &MemberId) -> Option<O
     })
 }
 
-fn member_timeline(member: &ClusterMemberView) -> Option<u64> {
+fn member_timeline(member: &DcsMemberState) -> Option<u64> {
     member
         .postgres()
         .timeline()
         .map(|timeline| u64::from(timeline.0))
 }
 
-fn member_system_identifier(member: &ClusterMemberView) -> Option<u64> {
+fn member_system_identifier(member: &DcsMemberState) -> Option<u64> {
     member.postgres().system_identifier().map(|value| value.0)
 }
 
@@ -625,7 +625,7 @@ mod tests {
     use crate::{
         config::RuntimeConfig,
         dev_support::runtime_config::RuntimeConfigBuilder,
-        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        dcs::{DcsMemberState, DcsSnapshot},
         ha::state::{HaControlPlane, HaObservedState, HaStateChannel, HaWorkerCadence},
         pginfo::conninfo::PgClientTls,
         pginfo::state::PgConnInfo,
@@ -690,15 +690,15 @@ mod tests {
         Ok(state)
     }
 
-    fn dcs_view_for_member(member_id: &str, host: &str, port: u16) -> Result<DcsView, String> {
-        Ok(DcsView::quorum(
+    fn dcs_view_for_member(member_id: &str, host: &str, port: u16) -> Result<DcsSnapshot, String> {
+        Ok(DcsSnapshot::quorum(
             None,
             SwitchoverState::None,
             BTreeMap::from([(
                 MemberId(member_id.to_string()),
-                ClusterMemberView {
+                DcsMemberState {
                     postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
-                    postgres: MemberPostgresView::Unknown {
+                    postgres: PgInfoState::Unknown {
                         common: PgInfoCommon {
                             worker: WorkerStatus::Running,
                             sql: SqlStatus::Healthy,
@@ -768,7 +768,7 @@ mod tests {
         Ok(())
     }
 
-    fn ha_context(runtime_config: RuntimeConfig, pg: PgInfoState, dcs: DcsView) -> HaRuntimeCtx {
+    fn ha_context(runtime_config: RuntimeConfig, pg: PgInfoState, dcs: DcsSnapshot) -> HaRuntimeCtx {
         let (config_publisher, config) = new_state_channel(runtime_config);
         let (pg_publisher, pg_subscriber) = new_state_channel(pg);
         let (dcs_publisher, dcs_subscriber) = new_state_channel(dcs);

@@ -1,6 +1,6 @@
 use crate::{
     api::{AcceptedResponse, ApiError, ApiResult},
-    dcs::{ClusterMemberView, DcsHandle, DcsSnapshot},
+    dcs::{DcsHandle, DcsMemberState, DcsSnapshot},
     ha::{
         state::HaState,
         types::{AuthorityProjection, PublicationState},
@@ -89,7 +89,7 @@ fn validate_switchover_request(
     Ok(SwitchoverState::Specific(target_member_id))
 }
 
-fn member_slot_is_eligible_target(value: &ClusterMemberView) -> bool {
+fn member_slot_is_eligible_target(value: &DcsMemberState) -> bool {
     let postgres = value.postgres();
     postgres.readiness() == Readiness::Ready && !postgres.is_primary()
 }

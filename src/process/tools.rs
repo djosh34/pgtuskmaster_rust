@@ -487,7 +487,7 @@ mod tests {
         let runtime = ProcessRuntimePlan::from_config(&runtime_config);
         let observed = ProcessObservedSnapshot {
             runtime_config: runtime_config.clone(),
-            dcs: crate::dcs::DcsView::starting(),
+            dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
         let plan = ClusterProcessPlan::BaseBackup(crate::process::jobs::BaseBackupSpec {
@@ -551,7 +551,7 @@ mod tests {
         let runtime = ProcessRuntimePlan::from_config(&runtime_config);
         let observed = ProcessObservedSnapshot {
             runtime_config: runtime_config.clone(),
-            dcs: crate::dcs::DcsView::starting(),
+            dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
         let config_file = data_dir.join("pgtm.postgresql.conf");

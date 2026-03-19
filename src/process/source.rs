@@ -1,9 +1,11 @@
 use thiserror::Error;
 
 use crate::{
-    dcs::{ClusterMemberView, MemberPostgresView},
-    pginfo::conninfo::PgClientTls,
-    pginfo::state::PgConnInfo,
+    dcs::DcsMemberState,
+    pginfo::{
+        conninfo::PgClientTls,
+        state::{PgConnInfo, PgInfoState},
+    },
     process::{
         jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
         state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
@@ -25,7 +27,7 @@ pub(crate) fn basebackup_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
     member_id: &MemberId,
-    member: &ClusterMemberView,
+    member: &DcsMemberState,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member_id, member)?;
     Ok(MandatoryRoleSourceConn {
@@ -39,7 +41,7 @@ pub(crate) fn rewind_source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
     member_id: &MemberId,
-    member: &ClusterMemberView,
+    member: &DcsMemberState,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member_id, member)?;
     Ok(MandatoryRoleSourceConn {
@@ -52,7 +54,7 @@ pub(crate) fn rewind_source_from_member(
 fn validate_remote_primary_source(
     self_id: &MemberId,
     member_id: &MemberId,
-    member: &ClusterMemberView,
+    member: &DcsMemberState,
 ) -> Result<(), SourceMaterializationError> {
     if member_id == self_id {
         return Err(SourceMaterializationError::SelfTarget {
@@ -66,7 +68,7 @@ fn validate_remote_primary_source(
         });
     }
 
-    if !matches!(member.postgres(), MemberPostgresView::Primary { .. }) {
+    if !matches!(member.postgres(), PgInfoState::Primary { .. }) {
         return Err(SourceMaterializationError::NotHealthyPrimary {
             member_id: member_id.0.clone(),
         });
@@ -76,7 +78,7 @@ fn validate_remote_primary_source(
 }
 
 fn remote_conninfo(
-    member: &ClusterMemberView,
+    member: &DcsMemberState,
     role: &MandatoryPostgresRoleCredential,
     runtime: &ProcessRuntimePlan,
 ) -> PgConnInfo {

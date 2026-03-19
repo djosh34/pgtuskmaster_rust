@@ -144,9 +144,9 @@ mod tests {
     };
 
     use crate::{
-        dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        dcs::{DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
-        pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
             jobs::{PostgresStartIntent, ProcessIntent},
@@ -188,10 +188,10 @@ mod tests {
             .build()
     }
 
-    fn primary_member(host: &str, port: u16) -> Result<ClusterMemberView, String> {
-        Ok(ClusterMemberView {
+    fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
+        Ok(DcsMemberState {
             postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
-            postgres: MemberPostgresView::Primary {
+            postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,
                     sql: SqlStatus::Healthy,
@@ -222,7 +222,7 @@ mod tests {
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
             runtime_config: runtime_config.clone(),
-            dcs: DcsView::quorum(
+            dcs: DcsSnapshot::quorum(
                 None,
                 SwitchoverState::None,
                 BTreeMap::from([(leader.clone(), primary_member("10.0.0.13", 5432)?)]),

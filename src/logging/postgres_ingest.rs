@@ -1300,7 +1300,7 @@ mod tests {
         use tokio::sync::mpsc;
         use tokio::time::Instant;
 
-        use crate::dcs::{ClusterMemberView, DcsView, SwitchoverView};
+        use crate::dcs::{DcsMemberState, DcsSnapshot};
         use crate::dev_support::binaries::{
             require_pg16_bin_for_real_tests, require_pg16_process_binaries_for_real_tests,
         };
@@ -1431,7 +1431,7 @@ mod tests {
         fn build_process_worker_ctx(
             cfg: &crate::config::RuntimeConfig,
             log: crate::logging::LogSender,
-            dcs: DcsView,
+            dcs: DcsSnapshot,
             inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
         ) -> (
             ProcessWorkerCtx,
@@ -1691,7 +1691,7 @@ mod tests {
 
             let (tx, rx) = mpsc::unbounded_channel();
             let (mut process_ctx, _process_state_subscriber) =
-                build_process_worker_ctx(&cfg, test_log.sender(), DcsView::starting(), rx);
+                build_process_worker_ctx(&cfg, test_log.sender(), DcsSnapshot::starting(), rx);
 
             let ingest_ctx = PostgresIngestWorkerCtx {
                 cfg,
@@ -1926,12 +1926,12 @@ mod tests {
             let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
-            let dcs = DcsView::quorum(
+            let dcs = DcsSnapshot::quorum(
                 None,
-                SwitchoverView::None,
+                crate::state::SwitchoverState::None,
                 std::collections::BTreeMap::from([(
                     MemberId("node-b".to_string()),
-                    ClusterMemberView {
+                    DcsMemberState {
                         postgres_endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 9).map_err(
                             |err| WorkerError::Message(format!("test dcs target failed: {err}")),
                         )?,

@@ -6,9 +6,9 @@ use std::{
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
     api::NodeState,
-    dcs::{ClusterMemberView, MemberPostgresView},
+    dcs::DcsMemberState,
     ha::types::{AuthorityProjection, PublicationState},
-    pginfo::state::Readiness,
+    pginfo::state::{PgInfoState, Readiness},
     state::ObservedWalPosition,
 };
 
@@ -647,9 +647,9 @@ fn select_planned_switchover_target(
         .map(|(member, _)| member)
 }
 
-fn planned_switchover_target_rank(member: &ClusterMemberView) -> (u8, u64, u64) {
+fn planned_switchover_target_rank(member: &DcsMemberState) -> (u8, u64, u64) {
     match member.postgres() {
-        MemberPostgresView::Replica {
+        PgInfoState::Replica {
             common,
             replay_lsn,
             follow_lsn,
@@ -672,19 +672,19 @@ fn planned_switchover_target_rank(member: &ClusterMemberView) -> (u8, u64, u64) 
             )
         })
         .unwrap_or((0, 0, 0)),
-        MemberPostgresView::Unknown { common } => (
+        PgInfoState::Unknown { common } => (
             0,
             common.timeline.map_or(0, |timeline| u64::from(timeline.0)),
             0,
         ),
-        MemberPostgresView::Primary { .. } => (0, 0, 0),
+        PgInfoState::Primary { .. } => (0, 0, 0),
     }
 }
 
-fn member_slot_is_api_switchover_eligible(member: &ClusterMemberView) -> bool {
+fn member_slot_is_api_switchover_eligible(member: &DcsMemberState) -> bool {
     match member.postgres() {
-        MemberPostgresView::Primary { .. } => false,
-        MemberPostgresView::Unknown { common } | MemberPostgresView::Replica { common, .. } => {
+        PgInfoState::Primary { .. } => false,
+        PgInfoState::Unknown { common } | PgInfoState::Replica { common, .. } => {
             common.readiness == Readiness::Ready
         }
     }
@@ -881,7 +881,7 @@ fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
         .filter(|(_member_id, member)| {
             matches!(
                 member.postgres(),
-                MemberPostgresView::Replica { common, .. }
+                PgInfoState::Replica { common, .. }
                     if common.readiness == Readiness::Ready
             )
         })

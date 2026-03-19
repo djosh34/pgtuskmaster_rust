@@ -21,7 +21,7 @@ pub fn build_test_router(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
 pub fn build_test_router_with_live_state(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
-    let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsView::starting());
+    let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsSnapshot::starting());
     let (_ha_publisher, ha) = new_state_channel(HaState::initial(WorkerStatus::Running));
 
     build_test_router_with_state(

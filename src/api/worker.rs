@@ -18,7 +18,7 @@ use crate::{
         PostgresReloadSignal, ReloadCertificatesResponse,
     },
     config::{ApiAuthConfig, RoleTokens, RuntimeConfig, SecretSource, TokenAuth},
-    dcs::{DcsHandle, DcsView},
+    dcs::{DcsHandle, DcsSnapshot},
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::PgInfoState,
@@ -34,7 +34,7 @@ pub(crate) enum ApiObservedState {
     Live {
         pg: StateSubscriber<PgInfoState>,
         process: StateSubscriber<ProcessState>,
-        dcs: StateSubscriber<DcsView>,
+        dcs: StateSubscriber<DcsSnapshot>,
         ha: StateSubscriber<HaState>,
     },
 }
@@ -616,7 +616,7 @@ mod tests {
         let (_pg_publisher, pg) = new_state_channel(crate::pginfo::state::PgInfoState::starting());
         let (_process_publisher, process) =
             new_state_channel(crate::process::state::ProcessState::starting());
-        let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsView::starting());
+        let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsSnapshot::starting());
         let (_ha_publisher, ha) = new_state_channel(crate::ha::state::HaState::initial(
             crate::state::WorkerStatus::Starting,
         ));

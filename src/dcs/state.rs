@@ -159,12 +159,6 @@ impl DcsSnapshot {
     }
 }
 
-pub type DcsView = DcsSnapshot;
-pub type ClusterView = DcsQuorumState;
-pub type ClusterMemberView = DcsMemberState;
-pub type SwitchoverView = SwitchoverState;
-pub type MemberPostgresView = PgInfoState;
-
 pub(super) struct DcsRuntimeCtx {
     pub(super) identity: NodeIdentity,
     pub(super) endpoints: Vec<DcsEndpoint>,

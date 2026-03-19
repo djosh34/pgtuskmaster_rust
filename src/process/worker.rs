@@ -1088,7 +1088,7 @@ mod tests {
 
     use crate::{
         config::{HaConfig, ProcessTimeoutsConfig},
-        dcs::DcsView,
+        dcs::DcsSnapshot,
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
         logging::LogSender,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
@@ -1265,7 +1265,7 @@ mod tests {
         let initial = ProcessState::starting();
         let (publisher, subscriber) = new_state_channel(initial.clone());
         let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsView::starting());
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsSnapshot::starting());
         let (_tx, inbox) = unbounded_channel();
 
         Ok((
