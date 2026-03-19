@@ -1,4 +1,4 @@
-## Smell Set: dcs-bootstrap-removal-and-worker-collapse <status>not_started</status> <passes>false</passes>
+## Smell Set: dcs-bootstrap-removal-and-worker-collapse <status>completed</status> <passes>true</passes>
 
 Please refer to skill `improve-code-boundaries` to see what smells there are.
 
@@ -8,7 +8,7 @@ Inside dirs:
 Solve each smell:
 
 ---
-- [ ] Smell 3, wrong place-ism and bootstrap spaghetti: `src/dcs/startup.rs` must go fully
+- [x] Smell 3, wrong place-ism and bootstrap spaghetti: `src/dcs/startup.rs` must go fully
 `src/dcs/startup.rs` is a bootstrap courier. Runtime disassembles `RuntimeConfig`, passes pieces into `bootstrap(...)`, `bootstrap(...)` reconstructs `DcsRuntimeCtx`, then returns `DcsRuntime { state, handle, worker }`, and `startup::run(...)` forwards directly into `worker::run(...)`.
 
 This is exactly the smell-3 corridor:
@@ -84,7 +84,7 @@ let dcs =
 ```
 
 ---
-- [ ] Smell 10, remove the damn helpers: `src/dcs/worker.rs` is fragmented into a fake reusable API and must lose almost all of its helper functions
+- [x] Smell 10, remove the damn helpers: `src/dcs/worker.rs` is fragmented into a fake reusable API and must lose almost all of its helper functions
 `src/dcs/worker.rs` currently has a single owning actor loop but it is cut into a large pile of private helper functions that mostly have one real caller. This is artificial decomposition, not real modularity.
 
 The file currently spreads one workflow across all of these helpers:
@@ -165,7 +165,7 @@ pub(super) async fn run(mut ctx: DcsRuntimeCtx) -> Result<(), WorkerError> {
 ```
 
 ---
-- [ ] Smell 5, duplicate parse/render and repeated mutation paths in DCS key handling
+- [x] Smell 5, duplicate parse/render and repeated mutation paths in DCS key handling
 The worker duplicates DCS key knowledge across parse helpers, render helpers, snapshot load, watch apply, delete apply, and write paths. That should become one reusable artifact, not five tiny functions and two mutation pipelines.
 
 Specific duplication that should be collapsed into one `DcsKey`-style artifact with parse/render/apply support:
@@ -228,7 +228,7 @@ fn apply_delete(...) {
 ```
 
 ---
-- [ ] Smell 1, useless overabstraction and duplicated branching in session/error handling
+- [x] Smell 1, useless overabstraction and duplicated branching in session/error handling
 There are multiple pairs of functions that do almost the same thing but split on phase names instead of real invariants:
 - `connected_failure_event` and `initial_connect_failure_event`
 - connected reconnect flow and disconnected reconnect flow inside `run`
@@ -267,3 +267,19 @@ fn handle_initial_connect_failure(
     err: &DcsError,
 ) -> Result<(), WorkerError> { ... }
 ```
+
+<plan>
+- [x] Delete [`src/dcs/startup.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/startup.rs) entirely and move DCS-owned composition into the owning DCS boundary so [`src/runtime/node.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/runtime/node.rs) stops constructing DCS internals. Runtime should only receive the three externally needed artifacts directly: the DCS state subscriber, the DCS command handle, and the actor/worker to run.
+- [x] Replace the current broad `DcsRuntimeCtx` courier in [`src/dcs/state.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/state.rs) with a flatter actor-owned shape that separates immutable runtime inputs from mutable cluster state. Keep only real ownership boundaries, for example: actor inputs (`identity`, DCS config/client inputs, pg subscriber, command inbox, log sender, publisher) and actor state (`members`, `leadership`, `switchover`, `last_emitted_authority`, optional live session). Do not introduce another wrapper that merely restates `{ state, handle, worker }`.
+- [x] Introduce one scope-owned DCS key artifact inside [`src/dcs/worker.rs`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/src/dcs/worker.rs) that owns prefix rendering/parsing plus record application. The same artifact should cover member/leader/switchover path rendering, snapshot/watch decode, and put/delete application so `parse_key`, `scope_prefix`, `member_path`, `leader_path`, `switchover_path`, `apply_key_value`, `apply_delete`, and the write sites disappear together instead of being replaced one-by-one.
+- [x] Collapse the worker around one actor loop plus one real connected-session artifact. Inline the one-caller helpers into the loop or into the owning artifact, keep only a small etcd utility boundary for connect/TLS/timeout/lease timing, and replace the connected-vs-initial failure split with one explicit phase enum plus one error-to-log mapping function. `load_snapshot` and watch handling should feed the same apply pipeline rather than maintaining separate mutation paths.
+- [x] After the type and ownership rewrite compiles, run the required validation gates in repo order: `make check`, `make lint`, `make test`, and `make test-long`. If execution shows the ADTs are still wrong, switch this task back to `TO BE VERIFIED`, explain the remaining design gap precisely in this file, and stop immediately.
+NOW EXECUTE
+</plan>
+
+### Execution notes
+1. Start with the boundary move, not helper cleanup: remove `startup.rs`, rewrite the runtime call site, and make DCS own its own channel/config/advertisement assembly before touching the worker internals.
+2. Flatten types before repairing the full compile: the current `DcsRuntime` wrapper and broad `DcsRuntimeCtx` courier are the wrong shapes, so replace them first and then let compiler fallout drive the remaining call-site updates.
+3. When collapsing helpers, prefer one readable match or one impl block over chains of tiny private functions. The only helpers that should survive are the small etcd utility boundary and any method that enforces a real session invariant across more than one caller.
+4. Keep the key boundary typed. No new ad hoc string formatting/parsing helpers should survive outside the single DCS key artifact.
+5. Do not preserve stage-specific wrappers just because the log event enum currently splits “initial connect” and “connected step” events. If the phase matters, model it once with a small enum and map from that.

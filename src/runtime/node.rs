@@ -80,8 +80,8 @@ async fn run_workers(
     let pginfo =
         crate::pginfo::startup::bootstrap(identity.clone(), &cfg, &process_plan, log.clone());
 
-    let dcs =
-        crate::dcs::startup::bootstrap(identity.clone(), &cfg, pginfo.state.clone(), log.clone())
+    let (dcs_state, dcs_handle, dcs_worker) =
+        crate::dcs::bootstrap(identity.clone(), &cfg, pginfo.state.clone(), log.clone())
             .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
 
     let process = crate::process::startup::bootstrap(
@@ -89,7 +89,7 @@ async fn run_workers(
         &cfg,
         crate::process::state::ProcessObservedState {
             runtime_config: cfg_subscriber.clone(),
-            dcs: dcs.state.clone(),
+            dcs: dcs_state.clone(),
         },
         process_plan,
         log.clone(),
@@ -101,23 +101,23 @@ async fn run_workers(
         crate::ha::state::HaObservedState {
             config: cfg_subscriber.clone(),
             pg: pginfo.state.clone(),
-            dcs: dcs.state.clone(),
+            dcs: dcs_state.clone(),
             process: process.state.clone(),
         },
         crate::ha::state::HaControlPlane {
             process_intent_inbox: process.control.intents.clone(),
-            dcs_handle: dcs.handle.clone(),
+            dcs_handle: dcs_handle.clone(),
         },
     );
 
     let api = crate::api::startup::bootstrap(
         identity,
         cfg_subscriber,
-        dcs.handle.clone(),
+        dcs_handle.clone(),
         crate::api::worker::ApiObservedState::Live {
             pg: pginfo.state.clone(),
             process: process.state.clone(),
-            dcs: dcs.state.clone(),
+            dcs: dcs_state.clone(),
             ha: ha.state.clone(),
         },
         log.clone(),
@@ -127,7 +127,7 @@ async fn run_workers(
     let ((), pginfo_result, dcs_result, process_result, ingest_result, ha_result, api_result) = tokio::join!(
         log_worker.run(),
         crate::pginfo::startup::run(pginfo.worker),
-        crate::dcs::startup::run(dcs.worker),
+        crate::dcs::run(dcs_worker),
         crate::process::startup::run(process.worker),
         crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
             cfg.clone(),

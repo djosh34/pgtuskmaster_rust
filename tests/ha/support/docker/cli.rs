@@ -455,7 +455,9 @@ impl DockerInspectEntry {
                         Some(binding) => match binding.host_port.as_deref() {
                             Some(host_port) => match host_port.parse::<u16>() {
                                 Ok(host_port) => PublishedPortBinding::Published(host_port),
-                                Err(_) => PublishedPortBinding::InvalidHostPort(host_port.to_string()),
+                                Err(_) => {
+                                    PublishedPortBinding::InvalidHostPort(host_port.to_string())
+                                }
                             },
                             None => PublishedPortBinding::MissingHostPort,
                         },
@@ -466,10 +468,7 @@ impl DockerInspectEntry {
             .collect();
         Self {
             published_ports,
-            state_status: entry
-                .state
-                .as_ref()
-                .and_then(|state| state.status.clone()),
+            state_status: entry.state.as_ref().and_then(|state| state.status.clone()),
             health_status: entry
                 .state
                 .as_ref()
@@ -732,15 +731,15 @@ mod tests {
 }]"#,
         )?;
 
-        let missing_binding_error =
-            match missing_binding.published_host_port("node-a", "5432/tcp") {
-                Ok(host_port) => {
-                    return Err(HarnessError::message(format!(
-                        "expected missing binding error, got host port `{host_port}`"
-                    )));
-                }
-                Err(error) => error,
-            };
+        let missing_binding_error = match missing_binding.published_host_port("node-a", "5432/tcp")
+        {
+            Ok(host_port) => {
+                return Err(HarnessError::message(format!(
+                    "expected missing binding error, got host port `{host_port}`"
+                )));
+            }
+            Err(error) => error,
+        };
         assert!(missing_binding_error
             .to_string()
             .contains("has no host binding"));

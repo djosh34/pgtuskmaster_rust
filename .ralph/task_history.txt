@@ -333,3 +333,4 @@ NONE
 NONE
 NONE
 NONE
+.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md

@@ -1,18 +1,11 @@
-use std::{collections::BTreeMap, fmt, time::Duration};
+use std::{collections::BTreeMap, fmt};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{DcsClientConfig, DcsEndpoint},
-    logging::LogSender,
     pginfo::state::PgInfoState,
-    state::{
-        LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, StatePublisher, StateSubscriber,
-        SwitchoverState,
-    },
+    state::{LeaseEpoch, MemberId, PgEndpoint, SwitchoverState},
 };
-
-use super::command::DcsCommandInbox;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DcsMemberState {
@@ -153,23 +146,6 @@ impl DcsSnapshot {
             Self::Quorum(cluster) => Some(&cluster.members),
         }
     }
-}
-
-pub(crate) struct DcsRuntimeCtx {
-    pub(super) identity: NodeIdentity,
-    pub(super) endpoints: Vec<DcsEndpoint>,
-    pub(super) client: DcsClientConfig,
-    pub(super) poll_interval: Duration,
-    pub(super) member_ttl_ms: u64,
-    pub(super) advertised_postgres: PgEndpoint,
-    pub(super) pg: StateSubscriber<PgInfoState>,
-    pub(super) publisher: StatePublisher<DcsSnapshot>,
-    pub(super) members: BTreeMap<MemberId, DcsMemberState>,
-    pub(super) leadership: Option<LeaseEpoch>,
-    pub(super) switchover: SwitchoverState,
-    pub(super) command_inbox: DcsCommandInbox,
-    pub(super) log: LogSender,
-    pub(super) last_emitted_authority: Option<DcsAuthority>,
 }
 
 pub(crate) fn build_local_member_state(

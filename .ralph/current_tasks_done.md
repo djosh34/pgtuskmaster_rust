@@ -1,48 +1,15 @@
 # Done Tasks Summary
 
-Generated: Thu Mar 19 08:41:41 AM CET 2026
+Generated: Thu Mar 19 09:49:25 AM CET 2026
 
-# Task `.ralph/tasks/bugs/bug-dcs-must-never-report-stale-cluster-data-outside-authoritative-quorum.md`
-
-```
-## Bug: DCS must never report stale cluster data outside authoritative quorum <status>done</status> <passes>true</passes>
-
-<description>
-The intended product invariant is stricter than the behavior that was reintroduced during `.ralph/tasks/story-general-architecture-improvement-finding/07-task-collapse-duplicate-struct-trees-into-canonical-domain-adts-and-prove-the-struct-count-went-down.md`: DCS has only two meaningful states, and stale or reused cluster data is never allowed outside authoritative quorum.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/bug-ha-primary-storage-stalled-then-new-primary-takes-over-can-stall-with-no-authoritative-primary.md`
+# Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
 ```
-## Bug: HA storage-stall failover scenario can stall with no authoritative primary <status>done</status> <passes>true</passes> <priority>high</priority>
+## Smell Set: dcs-bootstrap-removal-and-worker-collapse <status>completed</status> <passes>true</passes>
 
-<description>
-`make test-long` is currently not reliably green because `ha_primary_storage_stalled_then_new_primary_takes_over` can fail waiting for a replacement primary.
-```
+Please refer to skill `improve-code-boundaries` to see what smells there are.
 
-==============
-
-# Task `.ralph/tasks/bugs/bug-ha-stable-primary-gate-allows-non-writable-primary.md`
-
-```
-## Bug: HA stable-primary gate allows non-writable primary <status>completed</status> <passes>true</passes>
-
-<blocked_by>Full completion of `.ralph/tasks/story-general-architecture-improvement-finding/06-task-move-ha-scenario-execution-into-a-per-scenario-runner-container-and-remove-docker-daemon-polling.md`</blocked_by>
-
-<description>
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/bug-remove-primary-and-replica-api-commands-and-derive-cli-output-from-state.md`
-
-```
-## Bug: Remove Primary And Replica API Commands And Derive CLI Output From State <status>done</status> <passes>true</passes>
-
-<description>
-`pgtm primary` / `pgtm replicas` can disagree with the cluster `state` view during HA scenarios. This was detected while restoring the older HA harness: ultra-long HA tests exposed cases where the authoritative state view showed one primary expectation while the primary-resolution command returned something different or no authoritative primary at all.
+Inside dirs:
 ```
 
 ==============
