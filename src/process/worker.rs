@@ -1094,12 +1094,15 @@ mod tests {
                 ProcessCommandSpec, ProcessIntent, ReplicaProvisionIntent,
             },
             state::{
-                ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
-                ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-                ProcessStateChannel, ProcessWorkerCtx,
+                ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
+                ProcessRuntime, ProcessRuntimePlan, ProcessState, ProcessStateChannel,
+                ProcessWorkerCtx,
             },
         },
-        state::{new_state_channel, JobId, MemberId, StateSubscriber, UnixMillis, WorkerStatus},
+        state::{
+            new_state_channel, JobId, MemberId, NodeIdentity, StateSubscriber, UnixMillis,
+            WorkerStatus,
+        },
     };
 
     use super::{start_job, step_once};
@@ -1271,7 +1274,7 @@ mod tests {
                     now: Box::new(super::system_now_unix_millis),
                 },
                 config: cfg.process.clone(),
-                identity: ProcessNodeIdentity {
+                identity: NodeIdentity {
                     cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
                     scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
                     member_id: MemberId(cfg.cluster.member_id.clone()),

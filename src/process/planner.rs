@@ -8,9 +8,9 @@ use crate::{
             ProcessError, ProcessIntent, PromoteSpec, ReplicaProvisionIntent,
         },
         source::source_from_member,
-        state::{ProcessNodeIdentity, ProcessObservedSnapshot, ProcessRuntimePlan},
+        state::{ProcessObservedSnapshot, ProcessRuntimePlan},
     },
-    state::MemberId,
+    state::{MemberId, NodeIdentity},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,7 +48,7 @@ pub(crate) struct ProcessIntentPlanner;
 impl ProcessIntentPlanner {
     pub(crate) fn plan(
         &self,
-        identity: &ProcessNodeIdentity,
+        identity: &NodeIdentity,
         runtime: &ProcessRuntimePlan,
         observed: &ProcessObservedSnapshot,
         intent: &ProcessIntent,
@@ -204,7 +204,7 @@ mod tests {
                 MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
                 ShutdownMode,
             },
-            state::{ProcessNodeIdentity, ProcessObservedSnapshot, ProcessRuntimePlan},
+            state::{ProcessObservedSnapshot, ProcessRuntimePlan},
         },
         state::{
             ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState,
@@ -228,7 +228,7 @@ mod tests {
         Ok(dir)
     }
 
-    fn sample_identity() -> ProcessNodeIdentity {
+    fn sample_identity() -> NodeIdentity {
         NodeIdentity {
             cluster_name: ClusterName("cluster-a".to_string()),
             scope: ScopeName("scope-a".to_string()),

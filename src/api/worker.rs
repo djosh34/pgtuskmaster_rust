@@ -39,10 +39,6 @@ pub(crate) enum ApiObservedState {
     },
 }
 
-pub(crate) type ResolvedApiRoleTokens = RoleTokens;
-
-pub(crate) type ApiAuthState = TokenAuth;
-
 #[derive(Clone, Debug)]
 pub(crate) enum ApiBindConfig {
     Listen(SocketAddr),
@@ -150,9 +146,6 @@ pub(crate) struct ApiRuntimeCtx {
     pub(crate) reload_certificates: ApiReloadCertificatesHandle,
     pub(crate) _log: LogSender,
 }
-
-type ApiAppState = ApiRuntimeCtx;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequiredRole {
     Read,
@@ -205,14 +198,14 @@ pub(crate) fn build_router(ctx: ApiRuntimeCtx) -> Result<Router, WorkerError> {
 
 fn build_app_state(
     ctx: ApiRuntimeCtx,
-) -> Result<(ApiBindConfig, ApiServerTransport, ApiAppState), WorkerError> {
+) -> Result<(ApiBindConfig, ApiServerTransport, ApiRuntimeCtx), WorkerError> {
     let auth = resolve_auth_state(&ctx.auth, &ctx.runtime_config.latest())?;
     let bind = ctx.bind.clone();
     let transport = ctx.transport.clone();
-    Ok((bind, transport, ApiAppState { auth, ..ctx }))
+    Ok((bind, transport, ApiRuntimeCtx { auth, ..ctx }))
 }
 
-fn router_from_state(app_state: ApiAppState) -> Router {
+fn router_from_state(app_state: ApiRuntimeCtx) -> Router {
     let read_routes =
         Router::new()
             .route("/state", get(get_state))
@@ -256,7 +249,7 @@ pub(super) async fn run(ctx: ApiRuntimeCtx) -> Result<(), WorkerError> {
     }
 }
 
-async fn get_state(State(state): State<ApiAppState>) -> Result<Json<NodeState>, ApiHttpError> {
+async fn get_state(State(state): State<ApiRuntimeCtx>) -> Result<Json<NodeState>, ApiHttpError> {
     let ApiObservedState::Live {
         pg,
         process,
@@ -278,7 +271,7 @@ async fn get_state(State(state): State<ApiAppState>) -> Result<Json<NodeState>, 
 }
 
 async fn post_switchover_handler(
-    State(state): State<ApiAppState>,
+    State(state): State<ApiRuntimeCtx>,
     Json(request): Json<SwitchoverRequest>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
     let ApiObservedState::Live { dcs, ha, .. } = &state.observed else {
@@ -299,14 +292,14 @@ async fn post_switchover_handler(
 }
 
 async fn delete_switchover_handler(
-    State(state): State<ApiAppState>,
+    State(state): State<ApiRuntimeCtx>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
     let response = delete_switchover(state.identity.scope.as_str(), &state.dcs_handle).await?;
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 async fn reload_certificates(
-    State(state): State<ApiAppState>,
+    State(state): State<ApiRuntimeCtx>,
 ) -> Result<Json<ReloadCertificatesResponse>, ApiHttpError> {
     let reloaded = state
         .reload_certificates
@@ -317,7 +310,7 @@ async fn reload_certificates(
 }
 
 async fn require_read_auth(
-    State(state): State<ApiAppState>,
+    State(state): State<ApiRuntimeCtx>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiHttpError> {
@@ -325,7 +318,7 @@ async fn require_read_auth(
 }
 
 async fn require_admin_auth(
-    State(state): State<ApiAppState>,
+    State(state): State<ApiRuntimeCtx>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiHttpError> {
@@ -333,7 +326,7 @@ async fn require_admin_auth(
 }
 
 async fn require_auth(
-    state: ApiAppState,
+    state: ApiRuntimeCtx,
     required_role: RequiredRole,
     request: Request,
     next: Next,
@@ -355,11 +348,11 @@ enum AuthDecision {
 }
 
 fn authorize_request(
-    auth: &ApiAuthState,
+    auth: &TokenAuth,
     required_role: RequiredRole,
     request: &Request,
 ) -> AuthDecision {
-    let ApiAuthState::RoleTokens(tokens) = auth else {
+    let TokenAuth::RoleTokens(tokens) = auth else {
         return AuthDecision::Allowed;
     };
 
@@ -402,26 +395,24 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
 }
 
 fn resolve_auth_state(
-    configured: &ApiAuthState,
+    configured: &TokenAuth,
     cfg: &RuntimeConfig,
-) -> Result<ApiAuthState, WorkerError> {
+) -> Result<TokenAuth, WorkerError> {
     match configured {
-        ApiAuthState::Disabled => match &cfg.api.auth {
-            ApiAuthConfig::Disabled => Ok(ApiAuthState::Disabled),
-            ApiAuthConfig::RoleTokens(tokens) => {
-                Ok(ApiAuthState::RoleTokens(ResolvedApiRoleTokens {
-                    read_token: resolve_runtime_token(
-                        "api.security.auth.role_tokens.read_token",
-                        &tokens.read_token,
-                    )?,
-                    admin_token: resolve_runtime_token(
-                        "api.security.auth.role_tokens.admin_token",
-                        &tokens.admin_token,
-                    )?,
-                }))
-            }
+        TokenAuth::Disabled => match &cfg.api.auth {
+            ApiAuthConfig::Disabled => Ok(TokenAuth::Disabled),
+            ApiAuthConfig::RoleTokens(tokens) => Ok(TokenAuth::RoleTokens(RoleTokens {
+                read_token: resolve_runtime_token(
+                    "api.security.auth.role_tokens.read_token",
+                    &tokens.read_token,
+                )?,
+                admin_token: resolve_runtime_token(
+                    "api.security.auth.role_tokens.admin_token",
+                    &tokens.admin_token,
+                )?,
+            })),
         },
-        ApiAuthState::RoleTokens(tokens) => Ok(ApiAuthState::RoleTokens(tokens.clone())),
+        TokenAuth::RoleTokens(tokens) => Ok(TokenAuth::RoleTokens(tokens.clone())),
     }
 }
 
@@ -463,6 +454,7 @@ mod tests {
         config::{
             ApiAuthConfig, ApiClientAuthConfig, ApiRoleTokensConfig, ApiTlsConfig,
             ApiTransportConfig, InlineOrPath, RuntimeConfig, SecretSource, TlsServerIdentityConfig,
+            TokenAuth,
         },
         dcs::DcsHandle,
         dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
@@ -472,8 +464,7 @@ mod tests {
     };
 
     use super::{
-        build_router, ApiAuthState, ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle,
-        ApiRuntimeCtx,
+        build_router, ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
     };
 
     struct ChildGuard(Option<Child>);
@@ -630,7 +621,7 @@ mod tests {
             runtime_config,
             dcs_handle: DcsHandle::closed(),
             bind: ApiBindConfig::listen(cfg.api.listen_addr),
-            auth: ApiAuthState::Disabled,
+            auth: TokenAuth::Disabled,
             transport: transport.clone(),
             reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
             _log: LogSender::disabled(),

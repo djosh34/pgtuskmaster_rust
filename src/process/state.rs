@@ -127,7 +127,7 @@ pub(crate) struct ProcessRuntimePlan {
 pub(crate) struct ProcessWorkerCtx {
     pub(crate) cadence: ProcessCadence,
     pub(crate) config: ProcessConfig,
-    pub(crate) identity: ProcessNodeIdentity,
+    pub(crate) identity: NodeIdentity,
     pub(crate) observed: ProcessObservedState,
     pub(crate) plan: ProcessRuntimePlan,
     pub(crate) state_channel: ProcessStateChannel,
@@ -139,8 +139,6 @@ pub(crate) struct ProcessCadence {
     pub(crate) poll_interval: Duration,
     pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
 }
-
-pub(crate) type ProcessNodeIdentity = NodeIdentity;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedState {

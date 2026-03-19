@@ -11,6 +11,7 @@ use crate::{
         },
         tools::ExternalToolLowerer,
     },
+    state::NodeIdentity,
 };
 
 use super::jobs::{ProcessCommandSpec, ProcessError};
@@ -50,7 +51,7 @@ impl ProcessPreparationError {
 }
 
 pub(crate) struct ProcessCluster {
-    identity: crate::process::state::ProcessNodeIdentity,
+    identity: NodeIdentity,
     runtime: ProcessRuntimePlan,
     observed: ProcessObservedSnapshot,
     planner: ProcessIntentPlanner,
@@ -80,7 +81,7 @@ impl ProcessCluster {
     }
 
     pub(crate) fn from_snapshot(
-        identity: crate::process::state::ProcessNodeIdentity,
+        identity: NodeIdentity,
         runtime: ProcessRuntimePlan,
         observed: ProcessObservedSnapshot,
     ) -> Self {

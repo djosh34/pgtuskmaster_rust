@@ -1315,14 +1315,14 @@ mod tests {
             PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
         };
         use crate::process::state::{
-            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessNodeIdentity,
-            ProcessObservedState, ProcessRuntime, ProcessRuntimePlan, ProcessState,
-            ProcessStateChannel, ProcessWorkerCtx,
+            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
+            ProcessRuntime, ProcessRuntimePlan, ProcessState, ProcessStateChannel,
+            ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{
-            new_state_channel, JobId, MemberId, PgEndpoint, TimelineId, WalLsn, WorkerError,
-            WorkerStatus,
+            new_state_channel, JobId, MemberId, NodeIdentity, PgEndpoint, TimelineId, WalLsn,
+            WorkerError, WorkerStatus,
         };
 
         use super::super::{
@@ -1448,7 +1448,7 @@ mod tests {
                         now: Box::new(crate::process::worker::system_now_unix_millis),
                     },
                     config: cfg.process.clone(),
-                    identity: ProcessNodeIdentity {
+                    identity: NodeIdentity {
                         cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
                         scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
                         member_id: MemberId(cfg.cluster.member_id.clone()),
