@@ -11,6 +11,6 @@ pub use ids::{
     ClusterName, JobId, MemberId, NodeIdentity, ScopeName, SwitchoverRequestId, SystemIdentifier,
     TimelineId, WalLsn,
 };
-pub use net::{PgConnectTarget, PgEndpoint, PgTcpTarget, PgUnixTarget};
+pub use net::PgEndpoint;
 pub use time::{UnixMillis, WorkerStatus};
 pub use watch_state::{new_state_channel, StatePublisher, StateSubscriber};

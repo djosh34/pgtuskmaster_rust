@@ -9,10 +9,6 @@ pub enum PgEndpoint {
 }
 
 impl PgEndpoint {
-    pub fn new(host: String, port: u16) -> Result<Self, String> {
-        Self::tcp(host, port)
-    }
-
     pub fn tcp(host: String, port: u16) -> Result<Self, String> {
         let trimmed = host.trim().to_string();
         if trimmed.is_empty() {
@@ -54,7 +50,3 @@ impl PgEndpoint {
         }
     }
 }
-
-pub type PgTcpTarget = PgEndpoint;
-pub type PgUnixTarget = PgEndpoint;
-pub type PgConnectTarget = PgEndpoint;

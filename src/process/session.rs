@@ -74,7 +74,7 @@ mod tests {
             },
             state::ProcessRuntimePlan,
         },
-        state::PgTcpTarget,
+        state::PgEndpoint,
     };
 
     use super::ManagedPostgresSessionMaterializer;
@@ -109,7 +109,7 @@ mod tests {
         let source = MandatoryRoleSourceConn {
             role: MandatorySourceRole::Replicator,
             conninfo: crate::pginfo::state::PgConnInfo {
-                endpoint: PgTcpTarget::new("10.0.0.10".to_string(), 5432)?,
+                endpoint: PgEndpoint::tcp("10.0.0.10".to_string(), 5432)?,
                 hostaddr: None,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),

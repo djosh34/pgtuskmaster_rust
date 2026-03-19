@@ -609,7 +609,7 @@ mod tests {
         ha::types::{FailureRecovery, JobFailure},
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
         state::{
-            new_state_channel, ClusterName, NodeIdentity, PgTcpTarget, ScopeName, SwitchoverState,
+            new_state_channel, ClusterName, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState,
             SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
@@ -646,7 +646,7 @@ mod tests {
         let mut state = replica_pg_state(67_272_104, Some(67_272_104));
         if let PgInfoState::Replica { common, .. } = &mut state {
             common.pg_config.primary_conninfo = Some(PgConnInfo {
-                endpoint: PgTcpTarget::new(host.to_string(), port)?,
+                endpoint: PgEndpoint::tcp(host.to_string(), port)?,
                 hostaddr: None,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
@@ -671,7 +671,7 @@ mod tests {
             BTreeMap::from([(
                 MemberId(member_id.to_string()),
                 DcsMemberState {
-                    postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+                    postgres_endpoint: PgEndpoint::tcp(host.to_string(), port)?,
                     postgres: PgInfoState::Unknown {
                         common: PgInfoCommon {
                             worker: WorkerStatus::Running,

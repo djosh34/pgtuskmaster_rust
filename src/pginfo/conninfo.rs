@@ -318,11 +318,11 @@ mod tests {
         conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value, PgClientTls,
         PgConnInfo, PgSslMode,
     };
-    use crate::state::PgTcpTarget;
+    use crate::state::PgEndpoint;
 
     fn sample_conninfo() -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            endpoint: PgTcpTarget::new("127.0.0.1".to_string(), 5432)?,
+            endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 5432)?,
             hostaddr: None,
             user: "postgres".to_string(),
             dbname: "postgres".to_string(),

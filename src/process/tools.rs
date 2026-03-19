@@ -447,7 +447,7 @@ mod tests {
             session::PreparedManagedPostgresSession,
             state::{ProcessObservedSnapshot, ProcessRuntimePlan},
         },
-        state::PgTcpTarget,
+        state::PgEndpoint,
     };
 
     use super::ExternalToolLowerer;
@@ -495,7 +495,7 @@ mod tests {
             source: MandatoryRoleSourceConn {
                 role: MandatorySourceRole::Replicator,
                 conninfo: PgConnInfo {
-                    endpoint: PgTcpTarget::new("10.0.0.11".to_string(), 5432)?,
+                    endpoint: PgEndpoint::tcp("10.0.0.11".to_string(), 5432)?,
                     hostaddr: None,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
@@ -577,7 +577,7 @@ mod tests {
                 source: MandatoryRoleSourceConn {
                     role: MandatorySourceRole::Replicator,
                     conninfo: PgConnInfo {
-                        endpoint: PgTcpTarget::new("10.0.0.12".to_string(), 5432)?,
+                        endpoint: PgEndpoint::tcp("10.0.0.12".to_string(), 5432)?,
                         hostaddr: None,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),

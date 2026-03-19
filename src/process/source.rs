@@ -93,12 +93,12 @@ mod tests {
             source::{source_from_member, SourceMaterializationError},
             state::ProcessRuntimePlan,
         },
-        state::{MemberId, PgTcpTarget, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
+        state::{MemberId, PgEndpoint, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
     };
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
-            postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+            postgres_endpoint: PgEndpoint::tcp(host.to_string(), port)?,
             postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,
