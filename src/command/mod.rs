@@ -103,97 +103,89 @@ pub struct StateDerivedConnectionTargetDto {
 
 impl fmt::Display for CommandOutputDto {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rendered = match self {
-            Self::State { output } => render_state_command_text(output),
-            Self::Primary { output } | Self::Replicas { output } => output.to_string(),
-            Self::Switchover { output } => format!("accepted={}", output.accepted),
+        match self {
+            Self::State { output } => output.fmt(formatter),
+            Self::Primary { output } | Self::Replicas { output } => output.fmt(formatter),
+            Self::Switchover { output } => write!(formatter, "accepted={}", output.accepted),
             Self::ReloadCertificates { output } => match serde_json::to_string_pretty(output) {
-                Ok(json) => json,
-                Err(_) => "failed to encode reload certificates response".to_string(),
+                Ok(json) => formatter.write_str(json.as_str()),
+                Err(_) => formatter.write_str("failed to encode reload certificates response"),
             },
-        };
-        formatter.write_str(rendered.as_str())
+        }
     }
 }
 
 impl fmt::Display for StateDerivedConnectionCommandDto {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let rendered = self
-            .targets
-            .iter()
-            .map(|target| target.conninfo.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        formatter.write_str(rendered.as_str())
+        for (index, target) in self.targets.iter().enumerate() {
+            if index > 0 {
+                writeln!(formatter)?;
+            }
+            write!(formatter, "{}", target.conninfo)?;
+        }
+        Ok(())
     }
 }
 
-fn render_state_command_text(output: &StateCommandOutputDto) -> String {
-    let projection = &output.projection;
-    let header_lines = [
-        format!(
+impl fmt::Display for StateCommandOutputDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let projection = &self.projection;
+        writeln!(
+            formatter,
             "cluster: {}  health: {}",
-            projection.cluster_name,
-            health_label(projection.health)
-        ),
-        format!("queried via: {}", projection.queried_via.api_url),
-    ];
-    let warning_lines = projection
-        .warnings
-        .iter()
-        .map(|warning| format!("warning: {}", warning.message));
-    let switchover_lines = projection
-        .switchover
-        .as_ref()
-        .map(|switchover| {
-            format!(
+            projection.cluster_name, projection.health
+        )?;
+        writeln!(formatter, "queried via: {}", projection.queried_via.api_url)?;
+
+        for warning in &projection.warnings {
+            writeln!(formatter, "warning: {}", warning.message)?;
+        }
+
+        if let Some(switchover) = &projection.switchover {
+            writeln!(
+                formatter,
                 "switchover: pending -> {}",
                 switchover.target_member_id.as_deref().unwrap_or("auto")
-            )
-        })
-        .into_iter();
-    let spacer_line = (!projection.warnings.is_empty() || projection.switchover.is_some())
-        .then(String::new)
-        .into_iter();
-    let headers = if projection.verbose {
-        vec![
-            "NODE",
-            "SELF",
-            "ROLE",
-            "TRUST",
-            "LEADER",
-            "READINESS",
-            "PROCESS",
-            "API",
-        ]
-    } else {
-        vec!["NODE", "SELF", "ROLE", "TRUST", "READINESS", "API"]
-    };
-    let rows = sorted_state_rows(&output.state, projection.verbose);
-    let widths = rows.iter().fold(
-        headers.iter().map(|value| value.len()).collect::<Vec<_>>(),
-        |widths, row| {
-            widths
-                .into_iter()
-                .zip(row.iter())
-                .map(|(current, value)| current.max(value.len()))
-                .collect::<Vec<_>>()
-        },
-    );
-    let table_lines = std::iter::once(render_table_line(headers.as_slice(), widths.as_slice()))
-        .chain(
-            rows.into_iter()
-                .map(|row| render_table_line(row.as_slice(), widths.as_slice())),
+            )?;
+        }
+
+        if !projection.warnings.is_empty() || projection.switchover.is_some() {
+            writeln!(formatter)?;
+        }
+
+        let headers: &[&str] = if projection.verbose {
+            &[
+                "NODE",
+                "SELF",
+                "ROLE",
+                "TRUST",
+                "LEADER",
+                "READINESS",
+                "PROCESS",
+                "API",
+            ]
+        } else {
+            &["NODE", "SELF", "ROLE", "TRUST", "READINESS", "API"]
+        };
+        let rows = sorted_state_rows(&self.state, projection.verbose);
+        let widths = rows.iter().fold(
+            headers.iter().map(|value| value.len()).collect::<Vec<_>>(),
+            |widths, row| {
+                widths
+                    .into_iter()
+                    .zip(row.iter())
+                    .map(|(current, value)| current.max(value.len()))
+                    .collect::<Vec<_>>()
+            },
         );
 
-    header_lines
-        .into_iter()
-        .chain(warning_lines)
-        .chain(switchover_lines)
-        .chain(spacer_line)
-        .chain(table_lines)
-        .collect::<Vec<_>>()
-        .join("\n")
+        fmt_table_line(formatter, headers, widths.as_slice())?;
+        for row in rows {
+            writeln!(formatter)?;
+            fmt_table_line(formatter, row.as_slice(), widths.as_slice())?;
+        }
+        Ok(())
+    }
 }
 
 fn sorted_state_rows(state: &NodeState, verbose: bool) -> Vec<Vec<String>> {
@@ -216,10 +208,10 @@ fn state_row(
     if verbose {
         vec![
             member_id.0.clone(),
-            yes_no(is_self),
+            yes_no(is_self).to_string(),
             member_role_label(member.postgres()).to_string(),
             dcs_mode_label(&state.dcs).to_string(),
-            authority_primary_member(state).unwrap_or_else(|| "-".to_string()),
+            authority_primary_member(state).unwrap_or("-").to_string(),
             readiness_label(&member.postgres().readiness()).to_string(),
             if is_self {
                 format!("{:?}", state.process).to_lowercase()
@@ -231,7 +223,7 @@ fn state_row(
     } else {
         vec![
             member_id.0.clone(),
-            yes_no(is_self),
+            yes_no(is_self).to_string(),
             member_role_label(member.postgres()).to_string(),
             dcs_mode_label(&state.dcs).to_string(),
             readiness_label(&member.postgres().readiness()).to_string(),
@@ -240,34 +232,41 @@ fn state_row(
     }
 }
 
-fn render_table_line(values: &[impl AsRef<str>], widths: &[usize]) -> String {
-    values
-        .iter()
-        .zip(widths.iter())
-        .map(|(value, width)| format!("{:<width$}", value.as_ref(), width = *width))
-        .collect::<Vec<_>>()
-        .join("  ")
+fn fmt_table_line<T: AsRef<str>>(
+    formatter: &mut fmt::Formatter<'_>,
+    values: &[T],
+    widths: &[usize],
+) -> fmt::Result {
+    for (index, (value, width)) in values.iter().zip(widths.iter()).enumerate() {
+        if index > 0 {
+            formatter.write_str("  ")?;
+        }
+        write!(formatter, "{:<width$}", value.as_ref(), width = *width)?;
+    }
+    Ok(())
 }
 
-fn health_label(value: StateHealthDto) -> &'static str {
-    match value {
-        StateHealthDto::Healthy => "healthy",
-        StateHealthDto::Degraded => "degraded",
+impl fmt::Display for StateHealthDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Healthy => "healthy",
+            Self::Degraded => "degraded",
+        })
     }
 }
 
-fn yes_no(value: bool) -> String {
+fn yes_no(value: bool) -> &'static str {
     if value {
-        "yes".to_string()
+        "yes"
     } else {
-        "no".to_string()
+        "no"
     }
 }
 
-fn authority_primary_member(state: &NodeState) -> Option<String> {
+fn authority_primary_member(state: &NodeState) -> Option<&str> {
     match &state.ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            Some(epoch.holder.0.clone())
+            Some(epoch.holder.as_str())
         }
         PublicationState::Unknown
         | PublicationState::Projected(AuthorityProjection::NoPrimary(_)) => None,
