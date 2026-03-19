@@ -120,18 +120,18 @@ async fn run_workers(
         },
     );
 
-    let api = crate::api::startup::bootstrap(crate::api::startup::ApiRuntimeRequest {
+    let api = crate::api::startup::bootstrap(
         identity,
-        runtime_config: cfg_subscriber,
-        dcs_handle: dcs.handle.clone(),
-        observed_state: crate::api::worker::ApiObservedState::Live {
+        cfg_subscriber,
+        dcs.handle.clone(),
+        crate::api::worker::ApiObservedState::Live {
             pg: pginfo.state.clone(),
             process: process.state.clone(),
             dcs: dcs.state.clone(),
             ha: ha.state.clone(),
         },
-        log: log.clone(),
-    })
+        log.clone(),
+    )
     .map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     let ((), pginfo_result, dcs_result, process_result, ingest_result, ha_result, api_result) = tokio::join!(
@@ -144,7 +144,7 @@ async fn run_workers(
             log.clone(),
         )),
         crate::ha::worker::run(ha.worker),
-        api.worker.run(),
+        crate::api::startup::run(api),
     );
 
     pginfo_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;

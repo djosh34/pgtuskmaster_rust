@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use axum::Router;
 
 use crate::{
-    api::{startup::ApiRuntimeRequest, worker::ApiObservedState},
+    api::{startup::into_router, worker::ApiObservedState},
     config::RuntimeConfig,
     ha::state::HaState,
     logging::LogSender,
@@ -40,21 +40,19 @@ fn build_test_router_with_state(
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
-    let runtime = crate::api::startup::bootstrap(ApiRuntimeRequest {
-        identity: NodeIdentity {
+    let runtime = crate::api::startup::bootstrap(
+        NodeIdentity {
             cluster_name: ClusterName(cfg.cluster.name.clone()),
             scope: ScopeName(cfg.cluster.scope.clone()),
             member_id: MemberId(cfg.cluster.member_id.clone()),
         },
         runtime_config,
-        dcs_handle: crate::dcs::DcsHandle::closed(),
-        observed_state: observed,
-        log: LogSender::disabled(),
-    })
+        crate::dcs::DcsHandle::closed(),
+        observed,
+        LogSender::disabled(),
+    )
     .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
-    runtime
-        .into_router()
-        .map_err(|err| HarnessError::InvalidInput(err.to_string()))
+    into_router(runtime).map_err(|err| HarnessError::InvalidInput(err.to_string()))
 }
 
 fn sample_pg_state() -> PgInfoState {
