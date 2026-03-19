@@ -34,21 +34,63 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         .as_ref()
         .map(|path| load_operator_config_source(path.as_path()))
         .transpose()?;
+    let config_source = config_source.as_ref();
 
-    let base_url = resolve_api_url(cli.base_url.as_deref(), config_source.as_ref())?;
-    validate_effective_api_url(&base_url, config_source.as_ref())?;
+    let base_url = resolve_api_url(cli.base_url.as_deref(), config_source)?;
+    validate_effective_api_url(&base_url, config_source)?;
 
     let (config_read_token, config_admin_token, api_auth_enabled) =
-        resolve_config_auth(config_source.as_ref())?;
+        resolve_config_auth(config_source)?;
     let read_token = normalize_optional_token(cli.read_token.as_deref()).or(config_read_token);
     let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or(config_admin_token);
 
     let api_client_tls = if base_url.scheme() == "https" {
-        resolve_api_client_tls(config_source.as_ref())?
+        resolve_api_client_tls(config_source)?
     } else {
         CliTlsConfig::default()
     };
-    let postgres_client_tls = resolve_postgres_client_tls(config_source.as_ref())?;
+    let postgres_client_tls = match config_source.and_then(|source| source.operator.as_ref()) {
+        Some(operator) => {
+            let ca_cert = operator.postgres.tls.ca_cert.as_ref().or(operator
+                .api
+                .tls
+                .ca_cert
+                .as_ref());
+            let identity = operator.postgres.tls.identity.as_ref().or(operator
+                .api
+                .tls
+                .identity
+                .as_ref());
+
+            CliTlsConfig {
+                ca_cert_pem: ca_cert
+                    .map(|source| resolve_inline_or_path_bytes("pgtm.postgres.tls.ca_cert", source))
+                    .transpose()
+                    .map_err(|err| CliError::Config(err.to_string()))?,
+                client_cert_pem: identity
+                    .map(|identity| {
+                        resolve_inline_or_path_bytes(
+                            "pgtm.postgres.tls.identity.cert",
+                            &identity.cert,
+                        )
+                    })
+                    .transpose()
+                    .map_err(|err| CliError::Config(err.to_string()))?,
+                client_key_pem: identity
+                    .map(|identity| {
+                        resolve_secret_string("pgtm.postgres.tls.identity.key", &identity.key)
+                    })
+                    .transpose()
+                    .map(|result| result.map(String::into_bytes))
+                    .map_err(|err| CliError::Config(err.to_string()))?,
+                ca_cert_path: ca_cert.and_then(inline_or_path_to_path_buf),
+                client_cert_path: identity
+                    .and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
+                client_key_path: identity.and_then(|identity| secret_to_path_buf(&identity.key)),
+            }
+        }
+        None => CliTlsConfig::default(),
+    };
 
     Ok(OperatorContext {
         api_client: CliApiClientConfig {
@@ -65,7 +107,7 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
                 },
             },
             tls: api_client_tls,
-            resolve_to: resolve_api_resolution(config_source.as_ref()),
+            resolve_to: resolve_api_resolution(config_source),
         },
         postgres_client_tls,
         api_auth_enabled,
@@ -279,50 +321,6 @@ fn resolve_api_client_tls(
             .identity
             .as_ref()
             .and_then(|identity| secret_to_path_buf(&identity.key)),
-    })
-}
-
-fn resolve_postgres_client_tls(
-    config_source: Option<&OperatorConfigSource>,
-) -> Result<CliTlsConfig, CliError> {
-    let Some(source) = config_source else {
-        return Ok(CliTlsConfig::default());
-    };
-    let Some(operator) = source.operator.as_ref() else {
-        return Ok(CliTlsConfig::default());
-    };
-    let ca_cert = operator
-        .postgres
-        .tls
-        .ca_cert
-        .as_ref()
-        .or(operator.api.tls.ca_cert.as_ref());
-    let identity = operator
-        .postgres
-        .tls
-        .identity
-        .as_ref()
-        .or(operator.api.tls.identity.as_ref());
-
-    Ok(CliTlsConfig {
-        ca_cert_pem: ca_cert
-            .map(|source| resolve_inline_or_path_bytes("pgtm.postgres.tls.ca_cert", source))
-            .transpose()
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        client_cert_pem: identity
-            .map(|identity| {
-                resolve_inline_or_path_bytes("pgtm.postgres.tls.identity.cert", &identity.cert)
-            })
-            .transpose()
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        client_key_pem: identity
-            .map(|identity| resolve_secret_string("pgtm.postgres.tls.identity.key", &identity.key))
-            .transpose()
-            .map(|result| result.map(String::into_bytes))
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        ca_cert_path: ca_cert.and_then(inline_or_path_to_path_buf),
-        client_cert_path: identity.and_then(|identity| inline_or_path_to_path_buf(&identity.cert)),
-        client_key_path: identity.and_then(|identity| secret_to_path_buf(&identity.key)),
     })
 }
 
