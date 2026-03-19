@@ -38,13 +38,22 @@ pub(crate) fn bootstrap(
 ) -> Result<DcsRuntime, DcsError> {
     let (publisher, state) = new_state_channel(DcsSnapshot::starting());
     let (handle, command_inbox) = dcs_command_channel();
+    let advertise_port = cfg
+        .postgres
+        .network
+        .advertise_port
+        .unwrap_or(cfg.postgres.network.listen_port);
     let ctx = DcsRuntimeCtx {
         identity,
         endpoints: cfg.dcs.endpoints.clone(),
         client: cfg.dcs.client.clone(),
         poll_interval: Duration::from_millis(cfg.ha.loop_interval_ms),
         member_ttl_ms: cfg.ha.lease_ttl_ms,
-        advertised_postgres: advertised_postgres_from_config(cfg)?,
+        advertised_postgres: PgEndpoint::tcp(
+            cfg.postgres.network.listen_host.clone(),
+            advertise_port,
+        )
+        .map_err(DcsError::Io)?,
         pg: pg_subscriber,
         publisher,
         members: BTreeMap::new(),
@@ -60,13 +69,4 @@ pub(crate) fn bootstrap(
         handle,
         worker: DcsWorker(ctx),
     })
-}
-
-fn advertised_postgres_from_config(cfg: &RuntimeConfig) -> Result<PgEndpoint, DcsError> {
-    let advertise_port = cfg
-        .postgres
-        .network
-        .advertise_port
-        .unwrap_or(cfg.postgres.network.listen_port);
-    PgEndpoint::tcp(cfg.postgres.network.listen_host.clone(), advertise_port).map_err(DcsError::Io)
 }
