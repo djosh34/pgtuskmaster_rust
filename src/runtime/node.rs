@@ -119,16 +119,20 @@ async fn run_workers(
             log: log.clone(),
         });
 
-    let ha = crate::ha::startup::bootstrap(crate::ha::startup::HaRuntimeRequest {
-        identity: identity.clone(),
-        poll_interval: worker_poll_interval,
-        config_subscriber: cfg_subscriber.clone(),
-        pg_subscriber: pginfo.state.clone(),
-        dcs_subscriber: dcs.state.clone(),
-        process_subscriber: process.state.clone(),
-        process_control: process.control.clone(),
-        dcs_handle: dcs.handle.clone(),
-    });
+    let ha = crate::ha::startup::bootstrap(
+        identity.clone(),
+        worker_poll_interval,
+        crate::ha::state::HaObservedState {
+            config: cfg_subscriber.clone(),
+            pg: pginfo.state.clone(),
+            dcs: dcs.state.clone(),
+            process: process.state.clone(),
+        },
+        crate::ha::state::HaControlPlane {
+            process_intent_inbox: process.control.intents.clone(),
+            dcs_handle: dcs.handle.clone(),
+        },
+    );
 
     let api = crate::api::startup::bootstrap(crate::api::startup::ApiRuntimeRequest {
         identity,
@@ -153,7 +157,7 @@ async fn run_workers(
             cfg.clone(),
             log.clone(),
         )),
-        ha.worker.run(),
+        crate::ha::worker::run(ha.worker),
         api.worker.run(),
     );
 
