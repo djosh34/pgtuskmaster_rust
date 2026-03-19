@@ -1,5 +1,6 @@
 use std::{
     fs, io,
+    num::{ParseIntError, TryFromIntError},
     path::{Path, PathBuf},
 };
 
@@ -63,24 +64,29 @@ pub(crate) struct ManagedPostmasterSignalDelivery {
     pub(crate) postmaster: VerifiedManagedPostmaster,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[derive(Debug, Error)]
 pub(crate) enum ManagedPostmasterError {
     #[cfg(not(unix))]
     #[error("managed postmaster lookup is unsupported on this platform")]
     UnsupportedPlatform,
-    #[error("read postmaster pid file {pid_file} failed: {message}")]
-    ReadPidFile { pid_file: PathBuf, message: String },
+    #[error("read postmaster pid file {pid_file} failed: {source}")]
+    ReadPidFile {
+        pid_file: PathBuf,
+        #[source]
+        source: io::Error,
+    },
     #[error("postmaster pid file {pid_file} is missing")]
     MissingPidFile { pid_file: PathBuf },
     #[error("postmaster pid file {pid_file} is missing pid line")]
     MissingPidLine { pid_file: PathBuf },
     #[error("postmaster pid file {pid_file} has an empty pid line")]
     EmptyPidLine { pid_file: PathBuf },
-    #[error("parse postmaster pid '{value}' from {pid_file} failed: {message}")]
+    #[error("parse postmaster pid '{value}' from {pid_file} failed: {source}")]
     InvalidPid {
         pid_file: PathBuf,
         value: String,
-        message: String,
+        #[source]
+        source: ParseIntError,
     },
     #[error("postmaster pid {pid} from {pid_file} is not running")]
     PidNotRunning { pid: u32, pid_file: PathBuf },
@@ -90,15 +96,24 @@ pub(crate) enum ManagedPostmasterError {
         expected_data_dir: PathBuf,
         pid_file: PathBuf,
     },
-    #[error("read process metadata {path} failed: {message}")]
-    ReadProcessMetadata { path: PathBuf, message: String },
-    #[error("postmaster pid {pid} cannot be converted to pid_t: {message}")]
-    PidOutOfRange { pid: u32, message: String },
-    #[error("send {signal} to postmaster pid {pid} failed: {message}")]
+    #[error("read process metadata {path} failed: {source}")]
+    ReadProcessMetadata {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("postmaster pid {pid} cannot be converted to pid_t: {source}")]
+    PidOutOfRange {
+        pid: u32,
+        #[source]
+        source: TryFromIntError,
+    },
+    #[error("send {signal} to postmaster pid {pid} failed: {source}")]
     SignalDelivery {
         pid: u32,
         signal: &'static str,
-        message: String,
+        #[source]
+        source: io::Error,
     },
 }
 
@@ -139,15 +154,7 @@ pub(crate) fn signal_managed_postmaster(
 }
 
 fn parse_postmaster_pid(pid_file: &Path) -> Result<ManagedPostmasterPid, ManagedPostmasterError> {
-    let contents = fs::read_to_string(pid_file).map_err(|err| match err.kind() {
-        io::ErrorKind::NotFound => ManagedPostmasterError::MissingPidFile {
-            pid_file: pid_file.to_path_buf(),
-        },
-        _ => ManagedPostmasterError::ReadPidFile {
-            pid_file: pid_file.to_path_buf(),
-            message: err.to_string(),
-        },
-    })?;
+    let contents = read_postmaster_pid_file(pid_file)?;
     let first_line =
         contents
             .lines()
@@ -165,10 +172,10 @@ fn parse_postmaster_pid(pid_file: &Path) -> Result<ManagedPostmasterPid, Managed
     trimmed
         .parse::<u32>()
         .map(ManagedPostmasterPid::new)
-        .map_err(|err| ManagedPostmasterError::InvalidPid {
+        .map_err(|source| ManagedPostmasterError::InvalidPid {
             pid_file: pid_file.to_path_buf(),
             value: trimmed.to_string(),
-            message: err.to_string(),
+            source,
         })
 }
 
@@ -176,15 +183,7 @@ fn postmaster_pid_data_dir_matches(
     pid_file: &Path,
     data_dir: &Path,
 ) -> Result<bool, ManagedPostmasterError> {
-    let contents = fs::read_to_string(pid_file).map_err(|err| match err.kind() {
-        io::ErrorKind::NotFound => ManagedPostmasterError::MissingPidFile {
-            pid_file: pid_file.to_path_buf(),
-        },
-        _ => ManagedPostmasterError::ReadPidFile {
-            pid_file: pid_file.to_path_buf(),
-            message: err.to_string(),
-        },
-    })?;
+    let contents = read_postmaster_pid_file(pid_file)?;
     let Some(raw_data_dir) = contents.lines().nth(1) else {
         return Ok(false);
     };
@@ -222,7 +221,7 @@ fn pid_matches_data_dir(
             Err(err) => {
                 return Err(ManagedPostmasterError::ReadProcessMetadata {
                     path: cmdline_path,
-                    message: err.to_string(),
+                    source: err,
                 });
             }
         };
@@ -263,9 +262,9 @@ fn pid_exists(pid: ManagedPostmasterPid) -> Result<bool, ManagedPostmasterError>
     {
         let pid_value = pid.value();
         let pid_i32 =
-            i32::try_from(pid_value).map_err(|err| ManagedPostmasterError::PidOutOfRange {
+            i32::try_from(pid_value).map_err(|source| ManagedPostmasterError::PidOutOfRange {
                 pid: pid_value,
-                message: err.to_string(),
+                source,
             })?;
         let rc = unsafe { libc::kill(pid_i32, 0) };
         if rc == 0 {
@@ -281,7 +280,7 @@ fn pid_exists(pid: ManagedPostmasterPid) -> Result<bool, ManagedPostmasterError>
         }
         Err(ManagedPostmasterError::ReadProcessMetadata {
             path: PathBuf::from(format!("/proc/{pid_value}")),
-            message: err.to_string(),
+            source: err,
         })
     }
     #[cfg(not(unix))]
@@ -299,9 +298,9 @@ fn send_signal(
     {
         let pid_value = pid.value();
         let pid_i32 =
-            i32::try_from(pid_value).map_err(|err| ManagedPostmasterError::PidOutOfRange {
+            i32::try_from(pid_value).map_err(|source| ManagedPostmasterError::PidOutOfRange {
                 pid: pid_value,
-                message: err.to_string(),
+                source,
             })?;
         let rc = unsafe { libc::kill(pid_i32, signal.raw()) };
         if rc == 0 {
@@ -312,7 +311,7 @@ fn send_signal(
         Err(ManagedPostmasterError::SignalDelivery {
             pid: pid_value,
             signal: signal.label(),
-            message: err.to_string(),
+            source: err,
         })
     }
     #[cfg(not(unix))]
@@ -321,6 +320,18 @@ fn send_signal(
         let _signal = signal;
         Err(ManagedPostmasterError::UnsupportedPlatform)
     }
+}
+
+fn read_postmaster_pid_file(pid_file: &Path) -> Result<String, ManagedPostmasterError> {
+    fs::read_to_string(pid_file).map_err(|source| match source.kind() {
+        io::ErrorKind::NotFound => ManagedPostmasterError::MissingPidFile {
+            pid_file: pid_file.to_path_buf(),
+        },
+        _ => ManagedPostmasterError::ReadPidFile {
+            pid_file: pid_file.to_path_buf(),
+            source,
+        },
+    })
 }
 
 #[cfg(test)]
