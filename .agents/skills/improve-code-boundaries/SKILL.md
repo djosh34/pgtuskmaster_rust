@@ -41,6 +41,8 @@ Chose one of the following are concrete smell signals:
   Read [smell-8-too-much-in-one-file.md](smell-8-too-much-in-one-file.md).
 - Smell 9: typed error boundary, not string buckets
   Read [smell-9-typed-error-boundary.md](smell-9-typed-error-boundary.md).
+- Smell 10: remove the damn helpers
+  Read [smell-10-remove-the-damn-helpers.md](smell-10-remove-the-damn-helpers.md).
 
 ## Hard constraints while using this skill
 
