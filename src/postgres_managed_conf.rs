@@ -173,11 +173,17 @@ pub(crate) fn render_managed_postgres_conf(
             primary_slot_name,
         } => {
             push_bool_setting(&mut rendered, "hot_standby", true);
+            let mut primary_conninfo_with_passfile = primary_conninfo.to_string();
+            primary_conninfo_with_passfile.push(' ');
+            primary_conninfo_with_passfile.push_str("passfile=");
+            primary_conninfo_with_passfile.push_str(
+                render_conninfo_value(managed_standby_passfile_path.display().to_string().as_str())
+                    .as_str(),
+            );
             push_string_setting(
                 &mut rendered,
                 "primary_conninfo",
-                render_managed_primary_conninfo(primary_conninfo, managed_standby_passfile_path)
-                    .as_str(),
+                primary_conninfo_with_passfile.as_str(),
             );
             if let Some(slot) = primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
@@ -205,16 +211,6 @@ pub(crate) fn validate_extra_guc_entry(
 
 pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
-}
-
-fn render_managed_primary_conninfo(conninfo: &PgConnInfo, standby_passfile_path: &Path) -> String {
-    let mut rendered = conninfo.to_string();
-    rendered.push(' ');
-    rendered.push_str("passfile=");
-    rendered.push_str(
-        render_conninfo_value(standby_passfile_path.display().to_string().as_str()).as_str(),
-    );
-    rendered
 }
 
 fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
