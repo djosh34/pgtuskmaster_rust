@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 01:26:52 AM CET 2026
+Generated: Thu Mar 19 01:32:24 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -8,7 +8,7 @@ Generated: Thu Mar 19 01:26:52 AM CET 2026
 ## Bug: API worker reload certificate tests leak resources under nextest <status>not_started</status> <passes>false</passes>
 
 <description>
-`make test` currently passes but nextest reports four leaky tests in `pgtuskmaster_rust::api::worker::tests`:
+`make test` currently passes but nextest reports leaky tests in `pgtuskmaster_rust::api::worker::tests`:
 `reload_certificates_returns_error_when_postmaster_pid_is_stale`,
 ```
 

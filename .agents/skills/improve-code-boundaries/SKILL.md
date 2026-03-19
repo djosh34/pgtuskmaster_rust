@@ -9,6 +9,8 @@ Use this skill when the code works but the behavior lives in the wrong folder, w
 
 The goal is narrow and strict:
 
+- first check `found_smells/`; if it contains a smell file, do that before picking anything else
+- when that smell is fully done, remove the processed file from `found_smells/`
 - pick one single smell
 - find one single boundary issue for that smell (if you can't find any, switch smell)
 - untangle it fully according to the smell instructions
@@ -19,12 +21,24 @@ BE BOLD in your refactors: Large-scale code cleanups are encouraged:
 - If you can remove an entire file -> Greater!
 - If you can remove/merge an entire mod/dir -> GREATEST!
 
+## Found smells first
+
+Before choosing from the standard smell list, inspect `found_smells/`.
+
+- If there is a smell file in `found_smells/`, read it first and use that as the task for this run.
+- Finish that smell completely before touching any other smell.
+- After the work is complete, delete the processed file from `found_smells/`.
+- Ignore `.gitkeep`.
+
+## User/Agent Found new smell
+- Read [how-to-create-found-smell.md](how-to-create-found-smell.md) on how to add smell
+
 ## Chose a smell
 
 Chose one of the following are concrete smell signals:
 
-- Smell 1: useless overabstraction and overnesting
-  Read [smell-1-overabstraction.md](smell-1-overabstraction.md).
+- Smell 10: remove the damn helpers
+  Read [smell-10-remove-the-damn-helpers.md](smell-10-remove-the-damn-helpers.md).
 - Smell 2: wrong config-ingestion boundary
   Read [smell-2-config-boundary.md](smell-2-config-boundary.md).
 - Smell 3: wrong place-ism and request/bootstrap spaghetti
@@ -41,8 +55,8 @@ Chose one of the following are concrete smell signals:
   Read [smell-8-too-much-in-one-file.md](smell-8-too-much-in-one-file.md).
 - Smell 9: typed error boundary, not string buckets
   Read [smell-9-typed-error-boundary.md](smell-9-typed-error-boundary.md).
-- Smell 10: remove the damn helpers
-  Read [smell-10-remove-the-damn-helpers.md](smell-10-remove-the-damn-helpers.md).
+- Smell 1: useless overabstraction and overnesting
+  Read [smell-1-overabstraction.md](smell-1-overabstraction.md).
 
 ## Hard constraints while using this skill
 
