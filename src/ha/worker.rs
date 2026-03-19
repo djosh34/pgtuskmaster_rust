@@ -106,7 +106,30 @@ fn observe(ctx: &HaRuntimeCtx, now: crate::state::UnixMillis) -> Result<WorldVie
             &process_assessment,
             &observed_primary,
         ),
-        postgres: build_postgres_state(&pg, &dcs),
+        postgres: match &pg {
+            PgInfoState::Primary {
+                common, wal_lsn, ..
+            } if common.sql == SqlStatus::Healthy => PostgresState::Primary {
+                committed_lsn: wal_lsn.0,
+            },
+            PgInfoState::Replica {
+                common,
+                replay_lsn,
+                follow_lsn,
+                upstream,
+            } if common.sql == SqlStatus::Healthy => PostgresState::Replica {
+                upstream: upstream
+                    .as_ref()
+                    .map(|value| value.member_id.clone())
+                    .or_else(|| {
+                        resolve_replica_upstream(common.pg_config.primary_conninfo.as_ref(), &dcs)
+                    }),
+                replication: build_replication_state(common.timeline, *replay_lsn, *follow_lsn),
+            },
+            PgInfoState::Unknown { .. }
+            | PgInfoState::Primary { .. }
+            | PgInfoState::Replica { .. } => PostgresState::Offline,
+        },
         process: process_assessment,
         storage: build_storage_state(
             &dcs,
@@ -330,33 +353,6 @@ fn build_data_dir_state(
     };
 
     DataDirState::Initialized(local_state)
-}
-
-fn build_postgres_state(pg: &PgInfoState, dcs: &DcsView) -> PostgresState {
-    match pg {
-        PgInfoState::Primary {
-            common, wal_lsn, ..
-        } if common.sql == SqlStatus::Healthy => PostgresState::Primary {
-            committed_lsn: wal_lsn.0,
-        },
-        PgInfoState::Replica {
-            common,
-            replay_lsn,
-            follow_lsn,
-            upstream,
-        } if common.sql == SqlStatus::Healthy => PostgresState::Replica {
-            upstream: upstream
-                .as_ref()
-                .map(|value| value.member_id.clone())
-                .or_else(|| {
-                    resolve_replica_upstream(common.pg_config.primary_conninfo.as_ref(), dcs)
-                }),
-            replication: build_replication_state(common.timeline, *replay_lsn, *follow_lsn),
-        },
-        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } | PgInfoState::Replica { .. } => {
-            PostgresState::Offline
-        }
-    }
 }
 
 fn build_replication_state(
@@ -627,16 +623,20 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
+        config::RuntimeConfig,
+        dev_support::runtime_config::RuntimeConfigBuilder,
         dcs::{ClusterMemberView, DcsView, MemberPostgresView},
+        ha::state::{HaControlPlane, HaObservedState, HaStateChannel, HaWorkerCadence},
         pginfo::conninfo::PgClientTls,
         pginfo::state::PgConnInfo,
+        process::state::ProcessState,
     };
     use crate::{
         ha::types::{FailureRecovery, JobFailure},
         pginfo::state::{PgConfig, PgInfoCommon, Readiness, SqlStatus},
         state::{
-            PgTcpTarget, SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
-            WorkerStatus,
+            new_state_channel, ClusterName, NodeIdentity, PgTcpTarget, ScopeName,
+            SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
 
@@ -737,11 +737,23 @@ mod tests {
     }
 
     #[test]
-    fn postgres_state_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
-        let state = build_postgres_state(
-            &replica_pg_state_with_primary_conninfo("node-b", 5432)?,
-            &dcs_view_for_member("node-b", "node-b", 5432)?,
-        );
+    fn observe_resolves_replica_upstream_from_primary_conninfo() -> Result<(), String> {
+        let data_dir = std::env::temp_dir().join(format!(
+            "pgtm-ha-observe-test-{}",
+            std::process::id()
+        ));
+        let runtime_config = RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
+            .build();
+        let pg = replica_pg_state_with_primary_conninfo("node-b", 5432)?;
+        let dcs = dcs_view_for_member("node-b", "node-b", 5432)?;
+        let state = observe(
+            &ha_context(runtime_config, pg, dcs),
+            UnixMillis(123),
+        )
+        .map_err(|err| err.to_string())?
+        .local
+        .postgres;
 
         assert_eq!(
             state,
@@ -754,6 +766,50 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    fn ha_context(runtime_config: RuntimeConfig, pg: PgInfoState, dcs: DcsView) -> HaRuntimeCtx {
+        let (config_publisher, config) = new_state_channel(runtime_config);
+        let (pg_publisher, pg_subscriber) = new_state_channel(pg);
+        let (dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
+        let (process_publisher, process) = new_state_channel(ProcessState::Idle {
+            worker: WorkerStatus::Running,
+            last_outcome: None,
+        });
+        let initial_state = HaState::initial(WorkerStatus::Starting);
+        let (publisher, _state) = new_state_channel(initial_state.clone());
+        let (process_intent_inbox, _process_intent_receiver) = tokio::sync::mpsc::unbounded_channel();
+
+        drop(config_publisher);
+        drop(pg_publisher);
+        drop(dcs_publisher);
+        drop(process_publisher);
+
+        HaRuntimeCtx {
+            cadence: HaWorkerCadence {
+                poll_interval: std::time::Duration::from_secs(1),
+                now: Box::new(|| Ok(UnixMillis(123))),
+            },
+            state_channel: HaStateChannel {
+                current: initial_state,
+                publisher,
+            },
+            observed: HaObservedState {
+                config,
+                pg: pg_subscriber,
+                dcs: dcs_subscriber,
+                process,
+            },
+            control: HaControlPlane {
+                process_intent_inbox,
+                dcs_handle: crate::dcs::DcsHandle::closed(),
+            },
+            identity: NodeIdentity {
+                cluster_name: ClusterName("cluster-a".to_string()),
+                scope: ScopeName("scope-a".to_string()),
+                member_id: MemberId("node-a".to_string()),
+            },
+        }
     }
 
     #[test]
