@@ -8,7 +8,7 @@ use crate::{
     },
     process::{
         jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
-        state::{MandatoryPostgresRoleCredential, ProcessRuntimePlan},
+        state::ProcessRuntimePlan,
     },
     state::MemberId,
 };
@@ -23,31 +23,36 @@ pub(crate) enum SourceMaterializationError {
     EmptyHost { member_id: String },
 }
 
-pub(crate) fn basebackup_source_from_member(
+pub(crate) fn source_from_member(
     self_id: &MemberId,
     runtime: &ProcessRuntimePlan,
     member_id: &MemberId,
     member: &DcsMemberState,
+    role: MandatorySourceRole,
 ) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
     validate_remote_primary_source(self_id, member_id, member)?;
+    let credential = match &role {
+        MandatorySourceRole::Replicator => &runtime.replica_access.roles.replicator,
+        MandatorySourceRole::Rewinder => &runtime.replica_access.roles.rewinder,
+    };
     Ok(MandatoryRoleSourceConn {
-        role: MandatorySourceRole::Replicator,
-        conninfo: remote_conninfo(member, &runtime.replica_access.roles.replicator, runtime),
-        auth: runtime.replica_access.roles.replicator.auth.clone(),
-    })
-}
-
-pub(crate) fn rewind_source_from_member(
-    self_id: &MemberId,
-    runtime: &ProcessRuntimePlan,
-    member_id: &MemberId,
-    member: &DcsMemberState,
-) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
-    validate_remote_primary_source(self_id, member_id, member)?;
-    Ok(MandatoryRoleSourceConn {
-        role: MandatorySourceRole::Rewinder,
-        conninfo: remote_conninfo(member, &runtime.replica_access.roles.rewinder, runtime),
-        auth: runtime.replica_access.roles.rewinder.auth.clone(),
+        role,
+        conninfo: PgConnInfo {
+            endpoint: member.postgres_target().clone(),
+            hostaddr: None,
+            user: credential.username.as_str().to_owned(),
+            dbname: runtime.replica_access.dbname.clone(),
+            application_name: None,
+            connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
+            options: None,
+            tls: PgClientTls {
+                mode: runtime.replica_access.ssl_mode,
+                root_cert: runtime.replica_access.ssl_root_cert.clone(),
+                client_cert: None,
+                client_key: None,
+            },
+        },
+        auth: credential.auth.clone(),
     })
 }
 
@@ -77,24 +82,127 @@ fn validate_remote_primary_source(
     Ok(())
 }
 
-fn remote_conninfo(
-    member: &DcsMemberState,
-    role: &MandatoryPostgresRoleCredential,
-    runtime: &ProcessRuntimePlan,
-) -> PgConnInfo {
-    PgConnInfo {
-        endpoint: member.postgres_target().clone(),
-        hostaddr: None,
-        user: role.username.as_str().to_owned(),
-        dbname: runtime.replica_access.dbname.clone(),
-        application_name: None,
-        connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
-        options: None,
-        tls: PgClientTls {
-            mode: runtime.replica_access.ssl_mode,
-            root_cert: runtime.replica_access.ssl_root_cert.clone(),
-            client_cert: None,
-            client_key: None,
+#[cfg(test)]
+mod tests {
+    use crate::{
+        dcs::DcsMemberState,
+        dev_support::runtime_config::RuntimeConfigBuilder,
+        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        process::{
+            jobs::MandatorySourceRole,
+            source::{source_from_member, SourceMaterializationError},
+            state::ProcessRuntimePlan,
         },
+        state::{MemberId, PgTcpTarget, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
+    };
+
+    fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
+        Ok(DcsMemberState {
+            postgres_endpoint: PgTcpTarget::new(host.to_string(), port)?,
+            postgres: PgInfoState::Primary {
+                common: PgInfoCommon {
+                    worker: WorkerStatus::Running,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: Some(TimelineId(1)),
+                    system_identifier: Some(SystemIdentifier(7)),
+                    pg_config: PgConfig {
+                        port: Some(port),
+                        hot_standby: Some(false),
+                        primary_conninfo: None,
+                        primary_slot_name: None,
+                        extra: std::collections::BTreeMap::new(),
+                    },
+                    last_refresh_at: Some(UnixMillis(1)),
+                },
+                wal_lsn: crate::state::WalLsn(8),
+                slots: Vec::new(),
+            },
+        })
+    }
+
+    #[test]
+    fn source_from_member_selects_role_specific_credentials() -> Result<(), String> {
+        let runtime_config = RuntimeConfigBuilder::new().build();
+        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let member_id = MemberId("node-b".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        let replicator = source_from_member(
+            &MemberId("node-a".to_string()),
+            &runtime,
+            &member_id,
+            &member,
+            MandatorySourceRole::Replicator,
+        )
+        .map_err(|err| err.to_string())?;
+        let rewinder = source_from_member(
+            &MemberId("node-a".to_string()),
+            &runtime,
+            &member_id,
+            &member,
+            MandatorySourceRole::Rewinder,
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(replicator.role, MandatorySourceRole::Replicator);
+        assert_eq!(
+            replicator.conninfo.user,
+            runtime
+                .replica_access
+                .roles
+                .replicator
+                .username
+                .as_str()
+                .to_string()
+        );
+        assert_eq!(
+            replicator.conninfo.connect_timeout_s,
+            Some(runtime.replica_access.connect_timeout_s)
+        );
+        assert_eq!(
+            replicator.auth,
+            runtime.replica_access.roles.replicator.auth.clone()
+        );
+
+        assert_eq!(rewinder.role, MandatorySourceRole::Rewinder);
+        assert_eq!(
+            rewinder.conninfo.user,
+            runtime
+                .replica_access
+                .roles
+                .rewinder
+                .username
+                .as_str()
+                .to_string()
+        );
+        assert_eq!(
+            rewinder.auth,
+            runtime.replica_access.roles.rewinder.auth.clone()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_rejects_self_target() -> Result<(), String> {
+        let runtime = ProcessRuntimePlan::from_config(&RuntimeConfigBuilder::new().build());
+        let member_id = MemberId("node-a".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        let err = source_from_member(
+            &member_id,
+            &runtime,
+            &member_id,
+            &member,
+            MandatorySourceRole::Replicator,
+        );
+
+        assert_eq!(
+            err,
+            Err(SourceMaterializationError::SelfTarget {
+                member_id: "node-a".to_string(),
+            })
+        );
+        Ok(())
     }
 }

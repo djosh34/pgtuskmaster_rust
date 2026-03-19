@@ -3,11 +3,11 @@ use crate::{
     postgres_managed_conf::ManagedRecoverySignal,
     process::{
         jobs::{
-            BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn, PgRewindSpec,
-            PostgresStartIntent, PostgresStartMode, ProcessError, ProcessIntent, PromoteSpec,
-            ReplicaProvisionIntent,
+            BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn,
+            MandatorySourceRole, PgRewindSpec, PostgresStartIntent, PostgresStartMode,
+            ProcessError, ProcessIntent, PromoteSpec, ReplicaProvisionIntent,
         },
-        source::{basebackup_source_from_member, rewind_source_from_member},
+        source::source_from_member,
         state::{ProcessNodeIdentity, ProcessObservedSnapshot, ProcessRuntimePlan},
     },
     state::MemberId,
@@ -82,11 +82,12 @@ impl ProcessIntentPlanner {
             ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
                 let (source_member_id, source_member) =
                     resolve_source_member(&observed.dcs, leader)?;
-                let source = rewind_source_from_member(
+                let source = source_from_member(
                     &identity.member_id,
                     runtime,
                     source_member_id,
                     source_member,
+                    MandatorySourceRole::Rewinder,
                 )
                 .map_err(source_materialization_error)?;
                 Ok(ClusterProcessPlan::PgRewind(PgRewindSpec {
@@ -150,8 +151,14 @@ fn basebackup_source_from_leader(
     leader: &MemberId,
 ) -> Result<MandatoryRoleSourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    basebackup_source_from_member(self_id, runtime, source_member_id, source_member)
-        .map_err(source_materialization_error)
+    source_from_member(
+        self_id,
+        runtime,
+        source_member_id,
+        source_member,
+        MandatorySourceRole::Replicator,
+    )
+    .map_err(source_materialization_error)
 }
 
 fn resolve_source_member<'a>(
