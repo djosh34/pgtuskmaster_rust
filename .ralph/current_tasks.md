@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 01:05:11 AM CET 2026
+Generated: Thu Mar 19 01:15:56 AM CET 2026
 
 # Task `.ralph/tasks/bugs/bug-api-worker-reload-certificate-tests-leak.md`
 
@@ -192,6 +192,18 @@ The `src/process` module still uses several stringly error variants and `format!
 <description>
 `make test` currently fails in `pgtuskmaster_rust::api::worker::tests::reload_certificates_succeeds_for_https_transport_and_signals_postgres`.
 The observed error is `signal log /tmp/pgtm-api-worker-reload-success-533849-1773863709231/signal.log was not written in time`.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/test-child-cleanup-ignores-process-termination-errors.md`
+
+```
+## Bug: Test child cleanup ignores process termination errors <status>not_started</status> <passes>false</passes>
+
+<description>
+The `Drop` cleanup for the fake postgres child in `src/api/worker.rs` ignores failures from `child.kill()` and `child.wait()` with `let _ = ...`.
+This swallows cleanup failures and can hide broken test behavior or leaked subprocesses.
 ```
 
 ==============

@@ -17,6 +17,8 @@ This is a **RECURRING META-TASK**. Every time this task is picked up, the engine
 
 </description>
 
+When done, run bash .ralph/task_switch.sh
+
 <acceptance_criteria>
 - [ ] `make test` — passes cleanly
 - [ ] `make test-long` — passes cleanly

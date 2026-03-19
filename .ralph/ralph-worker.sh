@@ -134,13 +134,34 @@ backoff_reset() {
 
 # Determine which prompt to use based on current_task.txt existence.
 # Returns the prompt filename via PROMPT_NAME global.
+PROMPT_SOURCE=""
+
+read_trimmed_first_line() {
+  head -n 1 "$1" | tr -d '\r' | xargs
+}
+
 determine_prompt() {
-  if [[ -f "$SCRIPT_DIR/alt_prompt.txt" ]]; then
-    PROMPT_NAME="$(head -n 1 "$SCRIPT_DIR/alt_prompt.txt" | tr -d '\r' | xargs)"
-  elif [[ -f "$SCRIPT_DIR/current_task.txt" ]]; then
-    PROMPT_NAME="$DO_TASK_PROMPT"
+  if [[ -f "$SCRIPT_DIR/current_task.txt" ]]; then
+    CURRENT_TASK_PATH="$(read_trimmed_first_line "$SCRIPT_DIR/current_task.txt")"
+    TEST_CYCLE_TASK_PATH="$(read_trimmed_first_line "$SCRIPT_DIR/test_cycle_task_path.txt")"
+
+    if [[ "$CURRENT_TASK_PATH" == "$TEST_CYCLE_TASK_PATH" ]]; then
+      echo "Current task matches test_cycle_task_path.txt; using task file contents as prompt: $CURRENT_TASK_PATH"
+      PROMPT_NAME="$CURRENT_TASK_PATH"
+      PROMPT_SOURCE="$WORK_DIR/$CURRENT_TASK_PATH"
+    elif [[ -f "$SCRIPT_DIR/alt_prompt.txt" ]]; then
+      PROMPT_NAME="$(read_trimmed_first_line "$SCRIPT_DIR/alt_prompt.txt")"
+      PROMPT_SOURCE="$SCRIPT_DIR/$PROMPT_NAME"
+    else
+      PROMPT_NAME="$DO_TASK_PROMPT"
+      PROMPT_SOURCE="$SCRIPT_DIR/$PROMPT_NAME"
+    fi
+  elif [[ -f "$SCRIPT_DIR/alt_prompt.txt" ]]; then
+    PROMPT_NAME="$(read_trimmed_first_line "$SCRIPT_DIR/alt_prompt.txt")"
+    PROMPT_SOURCE="$SCRIPT_DIR/$PROMPT_NAME"
   else
     PROMPT_NAME="$CHOOSE_TASK_PROMPT"
+    PROMPT_SOURCE="$SCRIPT_DIR/$PROMPT_NAME"
   fi
 #PROMPT_NAME="ralph-stop.md"
 }
@@ -209,6 +230,7 @@ while true; do
   echo "                                             "
   echo "                                             "
   echo "Using prompt: $PROMPT_NAME"
+  echo "Prompt source: $PROMPT_SOURCE"
   echo "                                             "
   echo "                                             "
   echo "                                             "
@@ -259,7 +281,7 @@ while true; do
 
   ITERATION_ERRORED=0
   if [[ "$MODE" == "opencode" ]]; then
-    opencode run "$(cat "$SCRIPT_DIR/$PROMPT_NAME")" --model "github-copilot/gpt-5.3-codex" --format json | while read -r line; do
+    opencode run "$(cat "$PROMPT_SOURCE")" --model "github-copilot/gpt-5.3-codex" --format json | while read -r line; do
       process_line "$line"
     done || {
       EXIT_CODE=$?
@@ -274,7 +296,7 @@ while true; do
       --json \
       --profile "$CODEX_PROFILE" \
       --skip-git-repo-check \
-      < "$SCRIPT_DIR/$PROMPT_NAME" | while read -r line; do
+      < "$PROMPT_SOURCE" | while read -r line; do
       process_line "$line"
     done || {
       EXIT_CODE=$?
@@ -284,7 +306,7 @@ while true; do
       ITERATION_ERRORED=1
     }
   elif [[ "$MODE" == "claude" ]]; then
-    claude -p "$(cat "$SCRIPT_DIR/$PROMPT_NAME")" --dangerously-skip-permissions --output-format stream-json --verbose --model opus | while read -r line; do
+    claude -p "$(cat "$PROMPT_SOURCE")" --dangerously-skip-permissions --output-format stream-json --verbose --model opus | while read -r line; do
       # Check for STOP file after claude command completes
       if [[ -f "$SCRIPT_DIR/STOP" ]]; then
         echo ""

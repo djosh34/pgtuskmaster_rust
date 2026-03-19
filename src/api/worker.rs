@@ -87,20 +87,14 @@ impl ApiTlsCertificateReloadHandle {
     ) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
         match self {
             Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
-            Self::Https { server_config } => match &cfg.api.transport {
-                crate::config::ApiTransportConfig::Http => Err(ReloadCertificatesError::Api {
-                    message: "api cert reload requires https transport".to_string(),
-                }),
-                crate::config::ApiTransportConfig::Https { tls } => {
-                    let reloaded = crate::tls::build_api_server_config(tls).map_err(|err| {
-                        ReloadCertificatesError::Api {
-                            message: err.to_string(),
-                        }
-                    })?;
-                    server_config.reload_from_config(reloaded);
-                    Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
-                }
-            },
+            Self::Https { server_config } => {
+                let crate::config::ApiTransportConfig::Https { tls } = &cfg.api.transport else {
+                    return Err(ReloadCertificatesError::ApiTransportMismatch);
+                };
+                let reloaded = crate::tls::build_api_server_config(tls)?;
+                server_config.reload_from_config(reloaded);
+                Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
+            }
         }
     }
 }
@@ -136,8 +130,10 @@ impl ApiReloadCertificatesHandle {
 
 #[derive(Debug, thiserror::Error)]
 enum ReloadCertificatesError {
-    #[error("api certificate reload failed: {message}")]
-    Api { message: String },
+    #[error("api certificate reload requires https transport")]
+    ApiTransportMismatch,
+    #[error("api certificate reload failed: {0}")]
+    ApiTls(#[from] crate::tls::TlsConfigError),
     #[error("postgres certificate reload failed: {0}")]
     Postgres(#[from] crate::process::postmaster::ManagedPostmasterError),
 }
@@ -1013,6 +1009,44 @@ mod tests {
         if !body.contains("api certificate reload failed") {
             return Err(format!(
                 "response body did not mention api reload failure: {body}"
+            ));
+        }
+        assert_no_signal_written(&signal_log).await?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn reload_certificates_returns_error_when_https_runtime_sees_http_config(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("reload-transport-mismatch")?;
+        let data_dir = root.join("data");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let _child = child;
+        wait_for_managed_postmaster_ready(&data_dir)?;
+        let cfg = sample_https_runtime_config(data_dir.clone())?;
+        let (app, cfg_publisher) = build_test_app(cfg)?;
+        cfg_publisher
+            .publish(sample_http_runtime_config(data_dir))
+            .map_err(|err| err.to_string())?;
+
+        let response = app
+            .oneshot(sample_admin_request("/reload/certs")?)
+            .await
+            .map_err(|err| err.to_string())?;
+
+        if response.status() != StatusCode::INTERNAL_SERVER_ERROR {
+            return Err(format!("unexpected status {}", response.status()));
+        }
+        let body = response_body_text(response).await?;
+        if !body.contains("api certificate reload requires https transport") {
+            return Err(format!(
+                "response body did not mention transport mismatch: {body}"
             ));
         }
         assert_no_signal_written(&signal_log).await?;
