@@ -1,4 +1,4 @@
-use std::process::ExitCode;
+use std::{io, process::ExitCode};
 
 use thiserror::Error;
 
@@ -17,7 +17,11 @@ pub enum CliError {
     #[error("resolution error: {0}")]
     Resolution(String),
     #[error("output serialization failed: {0}")]
-    Output(String),
+    OutputSerialize(#[from] serde_json::Error),
+    #[error("watch write failed: {0}")]
+    OutputWrite(#[source] io::Error),
+    #[error("watch flush failed: {0}")]
+    OutputFlush(#[source] io::Error),
 }
 
 impl CliError {
@@ -26,7 +30,32 @@ impl CliError {
             Self::Config(_) => ExitCode::from(6),
             Self::Transport(_) | Self::RequestBuild(_) => ExitCode::from(3),
             Self::ApiStatus { .. } | Self::Resolution(_) => ExitCode::from(4),
-            Self::Decode(_) | Self::Output(_) => ExitCode::from(5),
+            Self::Decode(_)
+            | Self::OutputSerialize(_)
+            | Self::OutputWrite(_)
+            | Self::OutputFlush(_) => ExitCode::from(5),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{error::Error as _, io, process::ExitCode};
+
+    use super::CliError;
+
+    #[test]
+    fn output_serialize_errors_keep_source_and_exit_code() {
+        let err = CliError::from(serde_json::Error::io(io::Error::other("json sink failed")));
+
+        assert_eq!(err.exit_code(), ExitCode::from(5));
+        assert_eq!(
+            err.to_string(),
+            "output serialization failed: json sink failed"
+        );
+        assert_eq!(
+            err.source().map(ToString::to_string).as_deref(),
+            Some("json sink failed")
+        );
     }
 }

@@ -65,15 +65,11 @@ async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<
                 )
             })?;
         if options.json {
-            writeln!(stdout, "{rendered}")
-                .map_err(|err| CliError::Output(format!("watch write failed: {err}")))?;
+            writeln!(stdout, "{rendered}").map_err(CliError::OutputWrite)?;
         } else {
-            writeln!(stdout, "\x1B[2J\x1B[H{rendered}")
-                .map_err(|err| CliError::Output(format!("watch write failed: {err}")))?;
+            writeln!(stdout, "\x1B[2J\x1B[H{rendered}").map_err(CliError::OutputWrite)?;
         }
-        stdout
-            .flush()
-            .map_err(|err| CliError::Output(format!("watch flush failed: {err}")))?;
+        stdout.flush().map_err(CliError::OutputFlush)?;
 
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return Ok(String::new()),
