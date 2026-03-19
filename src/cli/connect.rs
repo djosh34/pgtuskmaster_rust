@@ -1,5 +1,4 @@
 use crate::{
-    api::NodeState,
     cli::{
         args::ConnectionOptions, client::CliTlsConfig, config::OperatorContext, error::CliError,
         status::fetch_seed_state,
@@ -7,7 +6,6 @@ use crate::{
     command::{
         authoritative_primary_member, CommandOutputDto, StateDerivedConnectionCommandDto,
         StateDerivedConnectionCommandKind, StateDerivedConnectionTargetDto, StateProjectionDto,
-        StateQueryOriginDto,
     },
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
@@ -64,22 +62,7 @@ pub(crate) async fn run_replicas(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_replicas_view(
-        &state,
-        queried_via,
-        &context.postgres_client_tls,
-        options.tls,
-    )?;
-    CommandOutputDto::Replicas { output: view }.render(options.json)
-}
-
-fn resolve_replicas_view(
-    state: &NodeState,
-    queried_via: StateQueryOriginDto,
-    tls: &CliTlsConfig,
-    emit_tls: bool,
-) -> Result<StateDerivedConnectionCommandDto, CliError> {
-    let connection_tls = build_connection_tls(tls, emit_tls)?;
+    let connection_tls = build_connection_tls(&context.postgres_client_tls, options.tls)?;
     let targets = state
         .dcs
         .members()
@@ -116,11 +99,12 @@ fn resolve_replicas_view(
         ));
     }
 
-    Ok(StateDerivedConnectionCommandDto {
-        projection: StateProjectionDto::from_seed_state(state, queried_via, false),
+    let view = StateDerivedConnectionCommandDto {
+        projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
         kind: StateDerivedConnectionCommandKind::Replicas,
         targets,
-    })
+    };
+    CommandOutputDto::Replicas { output: view }.render(options.json)
 }
 
 fn build_connection_tls(tls: &CliTlsConfig, emit_tls: bool) -> Result<PgClientTls, CliError> {
