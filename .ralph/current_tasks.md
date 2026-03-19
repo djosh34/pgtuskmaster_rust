@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 07:02:04 AM CET 2026
+Generated: Thu Mar 19 07:12:51 AM CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-are-leaky.md`
 
@@ -226,6 +226,18 @@ The `src/process` module still uses several stringly error variants and `format!
 <description>
 `make test` currently fails in `pgtuskmaster_rust::api::worker::tests::reload_certificates_succeeds_for_https_transport_and_signals_postgres`.
 The observed error is `signal log /tmp/pgtm-api-worker-reload-success-533849-1773863709231/signal.log was not written in time`.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/task-switch-missing-current-task-file.md`
+
+```
+## Bug: task_switch.sh fails when current_task.txt is absent <status>not_started</status> <passes>false</passes>
+
+<description>
+`bash .ralph/task_switch.sh` completed but emitted `rm: cannot remove '/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/.ralph/current_task.txt': No such file or directory`.
+This means the task switch flow is attempting unconditional cleanup of a file that may not exist.
 ```
 
 ==============

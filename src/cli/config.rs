@@ -55,8 +55,14 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
             base_url,
             timeout_ms: cli.timeout_ms,
             auth: CliAuthConfig {
-                read_token: optional_token_source(read_token),
-                admin_token: optional_token_source(admin_token),
+                read_token: match read_token {
+                    Some(value) => SecretSource::String { value },
+                    None => SecretSource::None,
+                },
+                admin_token: match admin_token {
+                    Some(value) => SecretSource::String { value },
+                    None => SecretSource::None,
+                },
             },
             tls: api_client_tls,
             resolve_to: resolve_api_resolution(config_source.as_ref()),
@@ -354,13 +360,6 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
-}
-
-fn optional_token_source(value: Option<String>) -> SecretSource {
-    match value {
-        Some(token) => SecretSource::String { value: token },
-        None => SecretSource::None,
-    }
 }
 
 fn api_requires_client_cert(source: &OperatorConfigSource) -> bool {
