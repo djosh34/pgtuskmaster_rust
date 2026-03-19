@@ -601,8 +601,8 @@ fn publish_current_view(ctx: &mut DcsRuntimeCtx, etcd_reachable: bool) -> Result
         ctx.last_emitted_authority = Some(next_authority);
         ctx.log
             .send(DcsLogEvent::CoordinationModeTransition {
-                previous: previous.map(|authority| authority.label().to_string()),
-                next: next_authority.label().to_string(),
+                previous: previous.map(|authority| authority.to_string()),
+                next: next_authority.to_string(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("dcs coordination mode log emit failed: {err}"))

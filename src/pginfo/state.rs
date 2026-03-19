@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
@@ -24,6 +24,16 @@ pub enum Readiness {
     Unknown,
     Ready,
     NotReady,
+}
+
+impl fmt::Display for Readiness {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Unknown => "unknown",
+            Self::Ready => "ready",
+            Self::NotReady => "not_ready",
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

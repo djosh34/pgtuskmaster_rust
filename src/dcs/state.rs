@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, fmt, time::Duration};
 
 use serde::{Deserialize, Serialize};
 
@@ -36,12 +36,12 @@ pub enum DcsAuthority {
     Quorum,
 }
 
-impl DcsAuthority {
-    pub fn label(self) -> &'static str {
-        match self {
+impl fmt::Display for DcsAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
             Self::NoQuorum => "no_quorum",
             Self::Quorum => "quorum",
-        }
+        })
     }
 }
 
@@ -99,10 +99,6 @@ impl DcsSnapshot {
             Self::NoQuorum => DcsAuthority::NoQuorum,
             Self::Quorum(_) => DcsAuthority::Quorum,
         }
-    }
-
-    pub fn mode_label(&self) -> &'static str {
-        self.authority().label()
     }
 
     pub fn is_quorum(&self) -> bool {

@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     api::{AcceptedResponse, NodeState, ReloadCertificatesResponse},
     ha::types::{AuthorityProjection, PublicationState},
-    pginfo::state::{PgConnInfo, PgInfoState, Readiness},
+    pginfo::state::PgConnInfo,
     state::{MemberId, SwitchoverState},
 };
 
@@ -208,34 +208,38 @@ impl fmt::Display for StateCommandOutputDto {
             .members()
             .map(|(member_id, member)| {
                 let is_self = member_id == &self.state.identity.member_id;
+                let postgres = member.postgres();
+                let mut row = vec![
+                    member_id.0.clone(),
+                    if is_self { "yes" } else { "no" }.to_string(),
+                    if postgres.is_primary() {
+                        "primary"
+                    } else if postgres.upstream().is_some() || postgres.is_ready_replica() {
+                        "replica"
+                    } else {
+                        "unknown"
+                    }
+                    .to_string(),
+                    self.state.dcs.authority().to_string(),
+                ];
                 if projection.verbose {
-                    vec![
-                        member_id.0.clone(),
-                        yes_no(is_self).to_string(),
-                        member_role_label(member.postgres()).to_string(),
-                        self.state.dcs.mode_label().to_string(),
+                    row.push(
                         authoritative_primary_member(&self.state)
                             .map(MemberId::as_str)
                             .unwrap_or("-")
                             .to_string(),
-                        readiness_label(&member.postgres().readiness()).to_string(),
-                        if is_self {
-                            format!("{:?}", self.state.process).to_lowercase()
-                        } else {
-                            "-".to_string()
-                        },
-                        "-".to_string(),
-                    ]
-                } else {
-                    vec![
-                        member_id.0.clone(),
-                        yes_no(is_self).to_string(),
-                        member_role_label(member.postgres()).to_string(),
-                        self.state.dcs.mode_label().to_string(),
-                        readiness_label(&member.postgres().readiness()).to_string(),
-                        "-".to_string(),
-                    ]
+                    );
                 }
+                row.push(postgres.readiness().to_string());
+                if projection.verbose {
+                    row.push(if is_self {
+                        format!("{:?}", self.state.process).to_lowercase()
+                    } else {
+                        "-".to_string()
+                    });
+                }
+                row.push("-".to_string());
+                row
             })
             .collect::<Vec<Vec<String>>>();
         rows.sort_by(|left, right| right[1].cmp(&left[1]).then_with(|| left[0].cmp(&right[0])));
@@ -282,14 +286,6 @@ impl fmt::Display for StateHealthDto {
     }
 }
 
-fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
-}
-
 pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberId> {
     match &state.ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch)) => Some(&epoch.holder),
@@ -301,7 +297,7 @@ pub(crate) fn authoritative_primary_member(state: &NodeState) -> Option<&MemberI
 fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
     let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
         code: "degraded_dcs_mode".to_string(),
-        message: format!("seed node reports {} DCS mode", state.dcs.mode_label()),
+        message: format!("seed node reports {} DCS mode", state.dcs.authority()),
     });
     let no_primary_warning =
         authoritative_primary_member(state)
@@ -326,24 +322,6 @@ fn collect_warnings(state: &NodeState) -> Vec<StateWarningDto> {
     .collect()
 }
 
-fn member_role_label(member: &PgInfoState) -> &'static str {
-    if member.is_primary() {
-        "primary"
-    } else if member.upstream().is_some() || member.is_ready_replica() {
-        "replica"
-    } else {
-        "unknown"
-    }
-}
-
-fn readiness_label(readiness: &Readiness) -> &'static str {
-    match readiness {
-        Readiness::Unknown => "unknown",
-        Readiness::Ready => "ready",
-        Readiness::NotReady => "not_ready",
-    }
-}
-
 pub fn switchover_projection(snapshot: &crate::dcs::DcsSnapshot) -> Option<StateSwitchoverDto> {
     match snapshot.switchover() {
         Some(SwitchoverState::AnyHealthyReplica) => Some(StateSwitchoverDto {
@@ -360,18 +338,25 @@ pub fn switchover_projection(snapshot: &crate::dcs::DcsSnapshot) -> Option<State
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
+        api::NodeState,
+        dcs::{DcsMemberState, DcsSnapshot},
+        ha::state::HaState,
         pginfo::{
             conninfo::{PgClientTls, PgSslMode},
-            state::PgConnInfo,
+            state::{PgConfig, PgConnInfo, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         },
-        state::PgEndpoint,
+        process::state::ProcessState,
+        state::{
+            ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState, WalLsn,
+            WorkerStatus,
+        },
     };
 
     use super::{
-        StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
+        StateCommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionCommandKind,
         StateDerivedConnectionTargetDto, StateHealthDto, StateProjectionDto, StateQueryOriginDto,
     };
 
@@ -421,5 +406,96 @@ mod tests {
             "host=db.internal port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert='/tmp/ca bundle.pem' sslcert='/tmp/client cert.pem' sslkey='/tmp/client key.pem'"
         );
         Ok(())
+    }
+
+    fn sample_pg_info(readiness: Readiness) -> PgInfoState {
+        PgInfoState::Primary {
+            common: PgInfoCommon {
+                worker: WorkerStatus::Running,
+                sql: SqlStatus::Healthy,
+                readiness,
+                timeline: None,
+                system_identifier: None,
+                pg_config: PgConfig {
+                    port: Some(5432),
+                    hot_standby: Some(false),
+                    primary_conninfo: None,
+                    primary_slot_name: None,
+                    extra: BTreeMap::new(),
+                },
+                last_refresh_at: None,
+            },
+            wal_lsn: WalLsn(42),
+            slots: Vec::new(),
+        }
+    }
+
+    fn sample_state(dcs: DcsSnapshot, readiness: Readiness) -> NodeState {
+        let member_id = MemberId("node-a".to_string());
+        NodeState {
+            identity: NodeIdentity {
+                cluster_name: ClusterName("cluster-a".to_string()),
+                scope: ScopeName("scope-a".to_string()),
+                member_id: member_id.clone(),
+            },
+            pg: sample_pg_info(readiness.clone()),
+            process: ProcessState::Idle {
+                worker: WorkerStatus::Running,
+                last_outcome: None,
+            },
+            dcs,
+            ha: HaState::initial(WorkerStatus::Running),
+        }
+    }
+
+    #[test]
+    fn state_command_display_renders_typed_trust_and_readiness_labels() -> Result<(), String> {
+        let member_id = MemberId("node-a".to_string());
+        let output = StateCommandOutputDto::from_seed_state(
+            sample_state(
+                DcsSnapshot::quorum(
+                    None,
+                    SwitchoverState::None,
+                    BTreeMap::from([(
+                        member_id.clone(),
+                        DcsMemberState {
+                            postgres_endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
+                            postgres: sample_pg_info(Readiness::Ready),
+                        },
+                    )]),
+                ),
+                Readiness::Ready,
+            ),
+            StateQueryOriginDto {
+                member_id: member_id.0,
+                api_url: "http://node-a:8443".to_string(),
+            },
+            false,
+        );
+
+        let rendered = output.to_string();
+        assert!(rendered.contains("ROLE"));
+        assert!(rendered.contains("TRUST"));
+        assert!(rendered.contains("READINESS"));
+        assert!(rendered.contains("primary"));
+        assert!(rendered.contains("quorum"));
+        assert!(rendered.contains("ready"));
+        Ok(())
+    }
+
+    #[test]
+    fn state_command_display_warns_with_typed_no_quorum_label() {
+        let output = StateCommandOutputDto::from_seed_state(
+            sample_state(DcsSnapshot::NoQuorum, Readiness::NotReady),
+            StateQueryOriginDto {
+                member_id: "node-a".to_string(),
+                api_url: "http://node-a:8443".to_string(),
+            },
+            false,
+        );
+
+        assert!(output
+            .to_string()
+            .contains("warning: seed node reports no_quorum DCS mode"));
     }
 }
