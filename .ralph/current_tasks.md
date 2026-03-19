@@ -1,17 +1,6 @@
 # Current Tasks Summary
 
-Generated: Thu Mar 19 11:59:39 AM CET 2026
-
-# Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
-
-```
-## Bug: Healthy write convergence over-selects recovering members <status>not_started</status> <passes>false</passes>
-
-<description>
-`make test-long` exposed two remaining failures after moving strong write-convergence checks out of cleanup and into `cluster becomes healthy`:
-```
-
-==============
+Generated: Thu Mar 19 12:09:12 PM CET 2026
 
 # Task `.ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md`
 
