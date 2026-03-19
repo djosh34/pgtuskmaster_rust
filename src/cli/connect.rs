@@ -20,36 +20,7 @@ pub(crate) async fn run_primary(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_primary_view(
-        &state,
-        queried_via,
-        &context.postgres_client_tls,
-        options.tls,
-    )?;
-    output::render_command_output(&CommandOutputDto::Primary { output: view }, options.json)
-}
-
-pub(crate) async fn run_replicas(
-    context: &OperatorContext,
-    options: ConnectionOptions,
-) -> Result<String, CliError> {
-    let (state, queried_via) = fetch_seed_state(context).await?;
-    let view = resolve_replicas_view(
-        &state,
-        queried_via,
-        &context.postgres_client_tls,
-        options.tls,
-    )?;
-    output::render_command_output(&CommandOutputDto::Replicas { output: view }, options.json)
-}
-
-fn resolve_primary_view(
-    state: &NodeState,
-    queried_via: StateQueryOriginDto,
-    tls: &CliTlsConfig,
-    emit_tls: bool,
-) -> Result<StateDerivedConnectionCommandDto, CliError> {
-    let primary_id = authoritative_primary_member(state).ok_or_else(|| {
+    let primary_id = authoritative_primary_member(&state).ok_or_else(|| {
         CliError::Resolution(
             "seed state does not currently expose an authoritative primary".to_string(),
         )
@@ -68,9 +39,8 @@ fn resolve_primary_view(
             "member does not advertise PostgreSQL host/port".to_string(),
         ));
     }
-
-    Ok(StateDerivedConnectionCommandDto {
-        projection: StateProjectionDto::from_seed_state(state, queried_via, false),
+    let view = StateDerivedConnectionCommandDto {
+        projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
         kind: StateDerivedConnectionCommandKind::Primary,
         targets: vec![StateDerivedConnectionTargetDto {
             member_id: primary_id.0.clone(),
@@ -82,10 +52,25 @@ fn resolve_primary_view(
                 application_name: None,
                 connect_timeout_s: None,
                 options: None,
-                tls: build_connection_tls(tls, emit_tls)?,
+                tls: build_connection_tls(&context.postgres_client_tls, options.tls)?,
             },
         }],
-    })
+    };
+    output::render_command_output(&CommandOutputDto::Primary { output: view }, options.json)
+}
+
+pub(crate) async fn run_replicas(
+    context: &OperatorContext,
+    options: ConnectionOptions,
+) -> Result<String, CliError> {
+    let (state, queried_via) = fetch_seed_state(context).await?;
+    let view = resolve_replicas_view(
+        &state,
+        queried_via,
+        &context.postgres_client_tls,
+        options.tls,
+    )?;
+    output::render_command_output(&CommandOutputDto::Replicas { output: view }, options.json)
 }
 
 fn resolve_replicas_view(
