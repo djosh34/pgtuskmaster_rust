@@ -10,7 +10,10 @@ use thiserror::Error;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::{
-    config_v2::{types::{DcsEndpoint, TlsConfig}, RuntimeConfigV2},
+    config_v2::{
+        types::{DcsEndpoint, TlsConfig},
+        RuntimeConfigV2,
+    },
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
@@ -989,8 +992,11 @@ fn lease_ttl_ms(cfg: &RuntimeConfigV2) -> u64 {
 }
 
 fn advertised_postgres(cfg: &RuntimeConfigV2) -> Result<PgEndpoint, DcsError> {
-    PgEndpoint::tcp(cfg.postgres.listen_host.clone(), cfg.postgres.advertise_port)
-        .map_err(DcsError::Io)
+    PgEndpoint::tcp(
+        cfg.postgres.listen_host.clone(),
+        cfg.postgres.advertise_port,
+    )
+    .map_err(DcsError::Io)
 }
 
 fn read_tls_file(path: &std::path::Path) -> Result<Vec<u8>, DcsError> {

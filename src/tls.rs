@@ -13,15 +13,15 @@ use x509_parser::parse_x509_certificate;
 
 #[cfg(test)]
 use crate::config::TlsServerConfig;
-use crate::{
-    api::worker::{ApiServerTransport, ApiTlsRuntime},
-    config::ConfigMaterializeError,
-    config_v2::types::ApiTransport as ApiTransportV2,
-};
 #[cfg(test)]
 use crate::config::{
     resolve_inline_or_path_bytes, ApiClientAuthConfig, ClientCertificateMode, ClientCommonName,
     InlineOrPath, TlsClientAuthConfig,
+};
+use crate::{
+    api::worker::{ApiServerTransport, ApiTlsRuntime},
+    config::ConfigMaterializeError,
+    config_v2::types::ApiTransport as ApiTransportV2,
 };
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -100,7 +100,9 @@ pub(crate) fn build_rustls_server_config(
 }
 
 fn build_api_rustls_config_v2(transport: &ApiTransportV2) -> Result<RustlsConfig, TlsConfigError> {
-    Ok(RustlsConfig::from_config(build_api_server_config_v2(transport)?))
+    Ok(RustlsConfig::from_config(build_api_server_config_v2(
+        transport,
+    )?))
 }
 
 #[cfg(test)]

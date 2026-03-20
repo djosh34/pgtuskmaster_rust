@@ -37,8 +37,8 @@ impl ManagedPostgresSessionMaterializer {
                         )
                     }
                 };
-                let config = materialize_managed_postgres_config(cfg, &start_intent)
-                    .map_err(|err| {
+                let config =
+                    materialize_managed_postgres_config(cfg, &start_intent).map_err(|err| {
                         crate::process::jobs::ProcessError::InvalidSpec(format!(
                             "materialize managed postgres config failed: {err}"
                         ))
@@ -103,7 +103,8 @@ mod tests {
         let root = unique_test_dir("follow")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let source = MandatoryRoleSourceConn {
             role: MandatorySourceRole::Replicator,
             conninfo: crate::pginfo::state::PgConnInfo {
@@ -168,7 +169,8 @@ mod tests {
     fn materialize_skips_non_start_plans() -> Result<(), String> {
         let root = unique_test_dir("skip-non-start")?;
         let runtime_config = sample_runtime_config(root.join("data"));
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let plan = ClusterProcessPlan::Promote(crate::process::jobs::PromoteSpec {
             data_dir: cfg.postgres.data_dir.clone(),
             wait_seconds: None,

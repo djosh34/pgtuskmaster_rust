@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 07:55:13 PM CET 2026
+Generated: Fri Mar 20 08:16:06 PM CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -42,6 +42,17 @@ The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key 
 
 <description>
 `make test` exposed a failure in `tests/ha/support/invariants/write_convergence.rs::one_primary_and_two_replicas_are_determined_healthy` where `ensure_healthy()` expected all members to converge to count `3` but observed `4` on every member instead.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/write-convergence-healthy-check-still-flakes-in-make-test.md`
+
+```
+## Bug: Write convergence healthy check still flakes in make test after prior race fix <status>completed</status> <passes>true</passes>
+
+<description>
+`make test` failed while executing `.ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md`, even though the current task only changed config_v2 operator parsing/tests.
 ```
 
 ==============

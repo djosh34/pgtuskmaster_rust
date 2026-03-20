@@ -468,7 +468,8 @@ mod tests {
             .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
 
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
@@ -488,10 +489,10 @@ mod tests {
                     tls: PgClientTls {
                         mode: crate::pginfo::state::PgSslMode::Prefer,
                         root_cert: None,
-                    client_cert: None,
-                    client_key: None,
+                        client_cert: None,
+                        client_key: None,
+                    },
                 },
-            },
                 auth: cfg.postgres.replicator.password.clone(),
             },
             timeout_ms: None,
@@ -531,7 +532,8 @@ mod tests {
         let root = unique_test_dir("start-command")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
@@ -569,10 +571,10 @@ mod tests {
                         tls: PgClientTls {
                             mode: crate::pginfo::state::PgSslMode::Prefer,
                             root_cert: None,
-                        client_cert: None,
-                        client_key: None,
+                            client_cert: None,
+                            client_key: None,
+                        },
                     },
-                },
                     auth: cfg.postgres.replicator.password.clone(),
                 },
                 primary_slot_name: None,

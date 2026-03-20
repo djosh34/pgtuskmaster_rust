@@ -586,22 +586,22 @@ pub(crate) async fn start_job(
         }
     };
     let prepared_launch = match cluster.prepare(&request) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                log_prepare_failure(ctx, &request, &error)?;
-                transition_to_idle(
-                    ctx,
-                    JobOutcome::Failure {
-                        id: request.id,
-                        job_kind: active_kind_from_intent(&request.intent),
-                        error: error.into_process_error(),
-                        finished_at: now,
-                    },
-                    now,
-                )?;
-                return Ok(());
-            }
-        };
+        Ok(prepared) => prepared,
+        Err(error) => {
+            log_prepare_failure(ctx, &request, &error)?;
+            transition_to_idle(
+                ctx,
+                JobOutcome::Failure {
+                    id: request.id,
+                    job_kind: active_kind_from_intent(&request.intent),
+                    error: error.into_process_error(),
+                    finished_at: now,
+                },
+                now,
+            )?;
+            return Ok(());
+        }
+    };
     let execution_request = prepared_launch.request;
     let timeout_ms = timeout_for_kind(ctx, &execution_request.kind);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
@@ -1015,30 +1015,24 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
 
 fn timeout_for_kind(ctx: &ProcessWorkerCtx<'_>, kind: &ProcessExecutionKind) -> u64 {
     match kind {
-        ProcessExecutionKind::Bootstrap(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
-        }
-        ProcessExecutionKind::BaseBackup(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
-        }
-        ProcessExecutionKind::PgRewind(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.pg_rewind_timeout))
-        }
-        ProcessExecutionKind::Promote(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
-        }
-        ProcessExecutionKind::Demote(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.fencing_timeout))
-        }
-        ProcessExecutionKind::StartPostgres(spec) => {
-            spec.timeout_ms
-                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
-        }
+        ProcessExecutionKind::Bootstrap(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
+        ProcessExecutionKind::BaseBackup(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
+        ProcessExecutionKind::PgRewind(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.pg_rewind_timeout)),
+        ProcessExecutionKind::Promote(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
+        ProcessExecutionKind::Demote(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.fencing_timeout)),
+        ProcessExecutionKind::StartPostgres(spec) => spec
+            .timeout_ms
+            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
     }
 }
 

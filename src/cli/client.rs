@@ -248,7 +248,10 @@ fn read_optional_tls_bytes(
     match (inline_pem, path) {
         (Some(bytes), _) => Ok(Some(bytes.to_vec())),
         (None, Some(path)) => fs::read(path).map(Some).map_err(|err| {
-            CliError::RequestBuild(format!("read {field} from {} failed: {err}", path.display()))
+            CliError::RequestBuild(format!(
+                "read {field} from {} failed: {err}",
+                path.display()
+            ))
         }),
         (None, None) => Ok(None),
     }

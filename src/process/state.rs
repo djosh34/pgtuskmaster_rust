@@ -10,8 +10,7 @@ use crate::{
     pginfo::state::PgInfoState,
     postgres_managed_conf::ManagedRecoverySignal,
     state::{
-        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError,
-        WorkerStatus,
+        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
     },
 };
 
@@ -134,10 +133,16 @@ pub(crate) struct ProcessRuntime {
 
 pub(crate) fn ensure_start_paths(cfg: &RuntimeConfigV2) -> Result<(), ProcessError> {
     for (field, path) in [
-        ("process.binaries.overrides.postgres", &cfg.binaries.postgres),
+        (
+            "process.binaries.overrides.postgres",
+            &cfg.binaries.postgres,
+        ),
         ("process.binaries.overrides.pg_ctl", &cfg.binaries.pg_ctl),
         ("process.binaries.overrides.initdb", &cfg.binaries.initdb),
-        ("process.binaries.overrides.pg_rewind", &cfg.binaries.pg_rewind),
+        (
+            "process.binaries.overrides.pg_rewind",
+            &cfg.binaries.pg_rewind,
+        ),
         (
             "process.binaries.overrides.pg_basebackup",
             &cfg.binaries.pg_basebackup,

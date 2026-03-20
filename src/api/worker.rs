@@ -220,12 +220,10 @@ pub(super) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> 
     let app = router_from_state(app_state);
 
     match transport {
-        ApiServerTransport::Http => {
-            axum_server::bind(listen_addr)
-                .serve(app.into_make_service())
-                .await
-                .map_err(|err| WorkerError::Message(format!("api server failed: {err}")))
-        }
+        ApiServerTransport::Http => axum_server::bind(listen_addr)
+            .serve(app.into_make_service())
+            .await
+            .map_err(|err| WorkerError::Message(format!("api server failed: {err}"))),
         ApiServerTransport::Https(runtime) => {
             axum_server::bind_rustls(listen_addr, runtime.server_config)
                 .serve(app.into_make_service())
@@ -235,7 +233,9 @@ pub(super) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> 
     }
 }
 
-async fn get_state(State(state): State<ApiRuntimeCtx<'_>>) -> Result<Json<NodeState>, ApiHttpError> {
+async fn get_state(
+    State(state): State<ApiRuntimeCtx<'_>>,
+) -> Result<Json<NodeState>, ApiHttpError> {
     let ApiObservedState::Live {
         pg,
         process,
@@ -384,7 +384,6 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
     header.strip_prefix("Bearer ").map(str::trim)
 }
 
-
 #[cfg(test)]
 mod tests {
     use std::{
@@ -493,19 +492,19 @@ mod tests {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
         let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
             RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(&data_dir)
-            .transform_api(|api| crate::config::ApiConfig {
-                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: SecretSource::String {
-                        value: "read-secret".to_string(),
-                    },
-                    admin_token: SecretSource::String {
-                        value: "admin-secret".to_string(),
-                    },
-                }),
-                ..api
-            })
-            .build(),
+                .with_postgres_data_dir(&data_dir)
+                .transform_api(|api| crate::config::ApiConfig {
+                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                        read_token: SecretSource::String {
+                            value: "read-secret".to_string(),
+                        },
+                        admin_token: SecretSource::String {
+                            value: "admin-secret".to_string(),
+                        },
+                    }),
+                    ..api
+                })
+                .build(),
         )?;
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(
@@ -523,19 +522,19 @@ mod tests {
     fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
         let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
             RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(&data_dir)
-            .transform_api(|api| crate::config::ApiConfig {
-                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: SecretSource::String {
-                        value: "read-secret".to_string(),
-                    },
-                    admin_token: SecretSource::String {
-                        value: "admin-secret".to_string(),
-                    },
-                }),
-                ..api
-            })
-            .build(),
+                .with_postgres_data_dir(&data_dir)
+                .transform_api(|api| crate::config::ApiConfig {
+                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                        read_token: SecretSource::String {
+                            value: "read-secret".to_string(),
+                        },
+                        admin_token: SecretSource::String {
+                            value: "admin-secret".to_string(),
+                        },
+                    }),
+                    ..api
+                })
+                .build(),
         )?;
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(data_dir.as_path(), "not a certificate", "not a key")?,
@@ -549,19 +548,19 @@ mod tests {
     fn sample_http_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
         crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
             RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .transform_api(|api| crate::config::ApiConfig {
-                auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                    read_token: SecretSource::String {
-                        value: "read-secret".to_string(),
-                    },
-                    admin_token: SecretSource::String {
-                        value: "admin-secret".to_string(),
-                    },
-                }),
-                ..api
-            })
-            .build(),
+                .with_postgres_data_dir(data_dir)
+                .transform_api(|api| crate::config::ApiConfig {
+                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
+                        read_token: SecretSource::String {
+                            value: "read-secret".to_string(),
+                        },
+                        admin_token: SecretSource::String {
+                            value: "admin-secret".to_string(),
+                        },
+                    }),
+                    ..api
+                })
+                .build(),
         )
     }
 

@@ -141,9 +141,15 @@ impl WriteConvergenceInvariantRunner {
         let write_deadline = self.write_deadline;
         let poll_interval = self.poll_interval;
         let observer = self.observer.clone();
-        let expected_count = self.write_gate.accepted_count();
-        let last_write_error = self.write_gate.last_error();
+        let write_gate = Arc::clone(&self.write_gate);
         let future = async move {
+            let (expected_count, last_write_error) = convergence_expectation(
+                write_gate.as_ref(),
+                members.as_slice(),
+                observer.as_ref(),
+                poll_interval,
+            )
+            .await?;
             wait_for_convergence(
                 members.as_slice(),
                 observer.as_ref(),
@@ -743,6 +749,61 @@ async fn wait_for_convergence(
     }
 }
 
+async fn convergence_expectation(
+    write_gate: &WriteGate,
+    members: &[PostgresRoutingTarget],
+    observer: Option<&PgtmObserver>,
+    query_timeout: Duration,
+) -> Result<(Option<u64>, Option<String>), WriteConvergenceInvariantError> {
+    let last_write_error = write_gate.last_error();
+    let accepted_count = write_gate.accepted_count();
+    let expected_count = if last_write_error_is_ambiguous_timeout(last_write_error.as_deref()) {
+        let authoritative_count = read_count_via_target(
+            &authoritative_reconciliation_target(members, observer)?,
+            query_timeout,
+        )
+        .await?;
+        Some(accepted_count.map_or(authoritative_count, |count| count.max(authoritative_count)))
+    } else {
+        accepted_count
+    };
+    Ok((expected_count, last_write_error))
+}
+
+fn last_write_error_is_ambiguous_timeout(last_write_error: Option<&str>) -> bool {
+    last_write_error.is_some_and(|error| error.contains("increment fixture row timed out after"))
+}
+
+fn authoritative_reconciliation_target(
+    members: &[PostgresRoutingTarget],
+    observer: Option<&PgtmObserver>,
+) -> Result<PostgresRoutingTarget, WriteConvergenceInvariantError> {
+    if let Some(observer) = observer {
+        if let Some(routing_target) = authoritative_primary_routing_target(observer)
+            .map_err(WriteConvergenceInvariantError::Failed)?
+        {
+            return Ok(routing_target);
+        }
+    }
+    members.first().cloned().ok_or_else(|| {
+        WriteConvergenceInvariantError::Failed(
+            "write convergence invariant has no selected members to reconcile".to_string(),
+        )
+    })
+}
+
+async fn read_count_via_target(
+    routing_target: &PostgresRoutingTarget,
+    query_timeout: Duration,
+) -> Result<u64, WriteConvergenceInvariantError> {
+    let (client, connection_task) = connect_member(routing_target, query_timeout)
+        .await
+        .map_err(WriteConvergenceInvariantError::Failed)?;
+    let read_result = read_count(client.as_ref(), query_timeout).await;
+    connection_task.abort();
+    read_result
+}
+
 async fn read_count(
     client: &Client,
     query_timeout: Duration,
@@ -1248,6 +1309,40 @@ mod tests {
 
             runner.ensure_healthy(ClusterMember::ALL.as_slice())?;
             drop(runner);
+            Ok(())
+        }
+        .await;
+
+        fixture.handle.shutdown().await?;
+        run_result
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ambiguous_timeout_reconciles_expected_count_before_health_check(
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let mut fixture = RealPostgresFixture::spawn("write-convergence-ambiguous-timeout").await?;
+        let run_result = async {
+            initialize_fixture_row_via_dsn(fixture.dsn.as_str(), 4).await?;
+            let write_gate = Arc::new(WriteGate::new());
+            write_gate.record_accepted_count(3);
+            write_gate.record_last_error(
+                "authoritative write via `node-a` failed: increment fixture row timed out after 10ms"
+                    .to_string(),
+            );
+            let runner = WriteConvergenceInvariantRunner::new(
+                None,
+                Duration::from_millis(10),
+                Duration::from_millis(150),
+                Arc::clone(&write_gate),
+                ClusterMember::ALL
+                    .into_iter()
+                    .map(|member| routing_target_for_dsn(member, fixture.dsn.as_str()))
+                    .collect::<Result<Vec<_>, _>>()?,
+                Arc::new(AtomicBool::new(false)),
+                None,
+            );
+
+            runner.ensure_healthy(ClusterMember::ALL.as_slice())?;
             Ok(())
         }
         .await;

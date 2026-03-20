@@ -19,9 +19,17 @@ pub(crate) fn bootstrap<'a>(
     cfg: &'a RuntimeConfigV2,
     pg_subscriber: StateSubscriber<PgInfoState>,
     log: LogSender,
-) -> Result<(StateSubscriber<DcsSnapshot>, DcsHandle, worker::DcsWorker<'a>), worker::DcsError> {
+) -> Result<
+    (
+        StateSubscriber<DcsSnapshot>,
+        DcsHandle,
+        worker::DcsWorker<'a>,
+    ),
+    worker::DcsError,
+> {
     let (publisher, state) = new_state_channel(DcsSnapshot::starting());
     let (handle, command_inbox) = command::dcs_command_channel();
-    let worker = worker::DcsWorker::new(cfg, identity, pg_subscriber, publisher, command_inbox, log);
+    let worker =
+        worker::DcsWorker::new(cfg, identity, pg_subscriber, publisher, command_inbox, log);
     Ok((state, handle, worker))
 }

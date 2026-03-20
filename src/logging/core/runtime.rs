@@ -656,12 +656,13 @@ pub(crate) fn bootstrap(
         let path = cfg.logging.file_path.clone();
 
         let label = format!("file:{}", path.display());
-        let sink = JsonlFileSink::new(path.clone(), cfg.logging.file_mode.clone()).map_err(
-            |err| LogBootstrapError::FileSinkInit {
-                path,
-                cause: err.to_string(),
-            },
-        )?;
+        let sink =
+            JsonlFileSink::new(path.clone(), cfg.logging.file_mode.clone()).map_err(|err| {
+                LogBootstrapError::FileSinkInit {
+                    path,
+                    cause: err.to_string(),
+                }
+            })?;
         sinks.push((label, Arc::new(sink) as Arc<dyn LogSink>));
     }
 
@@ -680,7 +681,11 @@ pub(crate) fn bootstrap(
     let (sender, receiver) = mpsc::unbounded_channel();
 
     Ok(LoggingSystem {
-        sender: LogSender::new(context, sender, LogSeverity::from(cfg.logging.level.clone())),
+        sender: LogSender::new(
+            context,
+            sender,
+            LogSeverity::from(cfg.logging.level.clone()),
+        ),
         worker: LogWorker { receiver, backend },
     })
 }
@@ -968,7 +973,10 @@ mod tests {
         let path = root.join("log.jsonl");
         std::fs::write(&path, b"{\"stale\":true}\n{\"stale\":true}\n")?;
 
-        let sink = JsonlFileSink::new(path.clone(), crate::config_v2::types::FileSinkMode::Truncate)?;
+        let sink = JsonlFileSink::new(
+            path.clone(),
+            crate::config_v2::types::FileSinkMode::Truncate,
+        )?;
         sink.emit(&sample_record("fresh"))?;
         drop(sink);
 

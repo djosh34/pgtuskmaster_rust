@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 07:55:13 PM CET 2026
+Generated: Fri Mar 20 08:16:06 PM CET 2026
 
 # Task `.ralph/tasks/bugs/config-v2-binaries-drop-postgres-and-psql-needed-by-ha-fixtures.md`
 
@@ -97,17 +97,6 @@ The direct-cfg reduction for the daemon runtime cannot finish correctly because 
 
 <description>
 `src/dev_support/runtime_config_v2.rs` currently converts legacy `RuntimeConfig` into `RuntimeConfigV2` for test and harness code, but it silently drops `postgres.tls` by always setting the v2 field to `None`.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/write-convergence-healthy-check-still-flakes-in-make-test.md`
-
-```
-## Bug: Write convergence healthy check still flakes in make test after prior race fix <status>not_started</status> <passes>false</passes>
-
-<description>
-`make test` failed while executing `.ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md`, even though the current task only changed config_v2 operator parsing/tests.
 ```
 
 ==============

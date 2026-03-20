@@ -7,12 +7,10 @@ use crate::{
         InlineOrPath, PostgresBinaryName, PostgresClientTransportConfig, PostgresRoleConfig,
         RoleAuthConfig, RuntimeConfig, TlsServerConfig,
     },
-    config_v2::{
-        types::{
-            ApiAuth, ApiConfig, ApiTransport, BinariesConfig, DcsAuth, DcsConfig, DcsEndpoint,
-            FileSinkMode, LogLevel, LoggingConfig, PostgresConfig, RoleConfig, RuntimeConfigV2,
-            Secret, TimingConfig, TlsConfig,
-        },
+    config_v2::types::{
+        ApiAuth, ApiConfig, ApiTransport, BinariesConfig, DcsAuth, DcsConfig, DcsEndpoint,
+        FileSinkMode, LogLevel, LoggingConfig, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret,
+        TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
 };
@@ -118,7 +116,9 @@ pub(crate) fn from_legacy_runtime_config(cfg: RuntimeConfig) -> Result<RuntimeCo
                 .pg_ctl_log_file
                 .clone()
                 .unwrap_or_else(|| cfg.postgres_log_file()),
-            postgres_log_poll_interval: Duration::from_millis(cfg.logging.postgres.poll_interval_ms),
+            postgres_log_poll_interval: Duration::from_millis(
+                cfg.logging.postgres.poll_interval_ms,
+            ),
             postgres_log_cleanup_enabled: cfg.logging.postgres.cleanup.enabled,
             postgres_log_cleanup_max_files: cfg.logging.postgres.cleanup.max_files,
             postgres_log_cleanup_max_age: Duration::from_secs(
@@ -155,7 +155,9 @@ fn map_role(field: &str, role: &PostgresRoleConfig) -> Result<RoleConfig, String
     let RoleAuthConfig::Password { password } = &role.auth;
     Ok(RoleConfig {
         username: role.username.as_str().to_string(),
-        password: Secret::new(resolve_secret_string(field, password).map_err(|err| err.to_string())?),
+        password: Secret::new(
+            resolve_secret_string(field, password).map_err(|err| err.to_string())?,
+        ),
     })
 }
 
@@ -177,12 +179,18 @@ fn map_postgres_tls(cfg: &RuntimeConfig) -> Result<Option<TlsConfig>, String> {
             cert: materialize_path_or_inline(
                 "postgres.tls.identity.cert_chain",
                 &identity.cert_chain,
-                cfg.postgres.paths.data_dir.join("pgtm.test.source.server.crt"),
+                cfg.postgres
+                    .paths
+                    .data_dir
+                    .join("pgtm.test.source.server.crt"),
             )?,
             key: materialize_path_or_inline(
                 "postgres.tls.identity.private_key",
                 &identity.private_key,
-                cfg.postgres.paths.data_dir.join("pgtm.test.source.server.key"),
+                cfg.postgres
+                    .paths
+                    .data_dir
+                    .join("pgtm.test.source.server.key"),
             )?,
             ca_cert: client_auth
                 .as_ref()
@@ -190,7 +198,10 @@ fn map_postgres_tls(cfg: &RuntimeConfig) -> Result<Option<TlsConfig>, String> {
                     materialize_path_or_inline(
                         "postgres.tls.client_auth.client_ca",
                         &client_auth.client_ca,
-                        cfg.postgres.paths.data_dir.join("pgtm.test.source.client-ca.crt"),
+                        cfg.postgres
+                            .paths
+                            .data_dir
+                            .join("pgtm.test.source.client-ca.crt"),
                     )
                 })
                 .transpose()?,
@@ -248,7 +259,8 @@ fn materialize_path_or_inline(
                 fs::create_dir_all(parent)
                     .map_err(|err| format!("create {} failed: {err}", parent.display()))?;
             }
-            let bytes = resolve_inline_or_path_bytes(field, source).map_err(|err| err.to_string())?;
+            let bytes =
+                resolve_inline_or_path_bytes(field, source).map_err(|err| err.to_string())?;
             fs::write(&target, bytes)
                 .map_err(|err| format!("write {} failed: {err}", target.display()))?;
             Ok(target)

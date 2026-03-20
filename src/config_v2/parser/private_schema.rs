@@ -1,8 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    net::SocketAddr,
-    path::PathBuf,
-};
+use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
 
 use serde::Deserialize;
 
@@ -112,7 +108,9 @@ pub(super) enum TlsServerConfig {
 pub(super) enum ApiClientAuthConfig {
     #[default]
     Disabled,
-    Optional { client_ca: PathOrInline },
+    Optional {
+        client_ca: PathOrInline,
+    },
     Required {
         client_ca: PathOrInline,
         #[serde(default)]
@@ -133,7 +131,9 @@ pub(super) struct ApiTlsConfig {
 pub(super) enum ApiTransportConfig {
     #[default]
     Http,
-    Https { tls: ApiTlsConfig },
+    Https {
+        tls: ApiTlsConfig,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -311,7 +311,10 @@ pub(super) struct DcsClientConfig {
 pub(super) enum DcsAuthConfig {
     #[default]
     Disabled,
-    Basic { username: String, password: SecretSource },
+    Basic {
+        username: String,
+        password: SecretSource,
+    },
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]

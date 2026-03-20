@@ -9,12 +9,14 @@ use super::{
     load_config::{
         normalize_optional_string, parse_error, read_config_file, resolve_path_only,
         resolve_secret_optional, resolve_secret_path, take_token_sources, token_auth_mode,
-        validation_error, validate_non_empty, TokenAuthMode,
+        validate_non_empty, validation_error, TokenAuthMode,
     },
     private_schema as raw,
 };
 
-pub fn load_operator_config(path: &Path) -> Result<OperatorConfigV2, crate::config_v2::ConfigErrorV2> {
+pub fn load_operator_config(
+    path: &Path,
+) -> Result<OperatorConfigV2, crate::config_v2::ConfigErrorV2> {
     let contents = read_config_file(path)?;
     let document: raw::OperatorConfigDocument =
         toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
@@ -22,10 +24,7 @@ pub fn load_operator_config(path: &Path) -> Result<OperatorConfigV2, crate::conf
     let operator = match document {
         raw::OperatorConfigDocument::Operator(operator) => *operator,
         raw::OperatorConfigDocument::Runtime(runtime) => runtime.pgtm.ok_or_else(|| {
-            validation_error(
-                "pgtm",
-                "missing operator config block in runtime document",
-            )
+            validation_error("pgtm", "missing operator config block in runtime document")
         })?,
     };
 
@@ -56,7 +55,9 @@ pub fn load_operator_config(path: &Path) -> Result<OperatorConfigV2, crate::conf
     })
 }
 
-fn map_operator_auth(auth: raw::TokenAuthConfig) -> Result<ApiClientTokens, crate::config_v2::ConfigErrorV2> {
+fn map_operator_auth(
+    auth: raw::TokenAuthConfig,
+) -> Result<ApiClientTokens, crate::config_v2::ConfigErrorV2> {
     let mode = token_auth_mode(&auth);
     let (read_token, admin_token) = take_token_sources(auth);
     match mode {
@@ -116,9 +117,7 @@ fn merge_optional_path(
     match (left, right) {
         (Some(left), Some(right)) if left != right => Err(validation_error(
             merged_field,
-            format!(
-                "`{left_field}` and `{right_field}` must match when both are configured"
-            ),
+            format!("`{left_field}` and `{right_field}` must match when both are configured"),
         )),
         (Some(path), Some(_)) | (Some(path), None) | (None, Some(path)) => Ok(Some(path)),
         (None, None) => Ok(None),
@@ -176,7 +175,8 @@ mod tests {
     use std::{path::PathBuf, time::SystemTime};
 
     #[test]
-    fn load_operator_config_preserves_expected_transport_for_operator_documents() -> Result<(), String> {
+    fn load_operator_config_preserves_expected_transport_for_operator_documents(
+    ) -> Result<(), String> {
         let path = write_temp_config(
             r#"
 [api]
@@ -200,7 +200,8 @@ expected_transport = "https"
     }
 
     #[test]
-    fn load_operator_config_preserves_expected_transport_for_runtime_documents() -> Result<(), String> {
+    fn load_operator_config_preserves_expected_transport_for_runtime_documents(
+    ) -> Result<(), String> {
         let path = write_temp_config(
             r#"
 [cluster]

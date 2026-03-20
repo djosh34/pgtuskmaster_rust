@@ -82,8 +82,9 @@ fn resolve_api_url(
         )
     })?;
 
-    let url = reqwest::Url::parse(base_url.as_str())
-        .map_err(|err| CliError::Config(format!("invalid `api.base_url` in operator config: {err}")))?;
+    let url = reqwest::Url::parse(base_url.as_str()).map_err(|err| {
+        CliError::Config(format!("invalid `api.base_url` in operator config: {err}"))
+    })?;
     validate_expected_transport(&url, Some(config))?;
     Ok(url)
 }
@@ -151,14 +152,8 @@ fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> Result<CliTlsConfig,
         client_cert_pem: None,
         client_key_pem: None,
         ca_cert_path: tls.ca_cert.clone(),
-        client_cert_path: tls
-            .identity
-            .as_ref()
-            .map(|identity| identity.cert.clone()),
-        client_key_path: tls
-            .identity
-            .as_ref()
-            .map(|identity| identity.key.clone()),
+        client_cert_path: tls.identity.as_ref().map(|identity| identity.cert.clone()),
+        client_key_path: tls.identity.as_ref().map(|identity| identity.key.clone()),
     })
 }
 
@@ -393,12 +388,7 @@ expected_transport = "https"
         let _ = std::fs::remove_file(path);
 
         match err {
-            Err(err) if err
-                .to_string()
-                .contains("expects `https` API transport") =>
-            {
-                Ok(())
-            }
+            Err(err) if err.to_string().contains("expects `https` API transport") => Ok(()),
             Err(err) => Err(format!("unexpected error: {err}")),
             Ok(_) => Err("expected transport mismatch failure".to_string()),
         }

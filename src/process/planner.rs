@@ -61,12 +61,8 @@ impl ProcessIntentPlanner {
                 timeout_ms: None,
             })),
             ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-                let source = basebackup_source_from_leader(
-                    &identity.member_id,
-                    cfg,
-                    &observed.dcs,
-                    leader,
-                )?;
+                let source =
+                    basebackup_source_from_leader(&identity.member_id, cfg, &observed.dcs, leader)?;
                 Ok(ClusterProcessPlan::BaseBackup(BaseBackupSpec {
                     data_dir: cfg.postgres.data_dir.clone(),
                     source,
@@ -108,12 +104,8 @@ impl ProcessIntentPlanner {
                 }))
             }
             ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
-                let source = basebackup_source_from_leader(
-                    &identity.member_id,
-                    cfg,
-                    &observed.dcs,
-                    leader,
-                )?;
+                let source =
+                    basebackup_source_from_leader(&identity.member_id, cfg, &observed.dcs, leader)?;
                 Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
                     mode: PostgresStartMode::Replica,
                     desired_session: DesiredManagedPostgresSession::Follow(Box::new(
@@ -145,8 +137,14 @@ fn basebackup_source_from_leader(
     leader: &MemberId,
 ) -> Result<MandatoryRoleSourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    source_from_member(self_id, cfg, source_member_id, source_member, MandatorySourceRole::Replicator)
-        .map_err(source_materialization_error)
+    source_from_member(
+        self_id,
+        cfg,
+        source_member_id,
+        source_member,
+        MandatorySourceRole::Replicator,
+    )
+    .map_err(source_materialization_error)
 }
 
 fn resolve_source_member<'a>(
@@ -273,7 +271,8 @@ mod tests {
     fn planner_maps_process_intents_to_expected_plan_variants() -> Result<(), String> {
         let root = unique_test_dir("intent-variants")?;
         let runtime_config = sample_runtime(root.join("data"));
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,
@@ -346,11 +345,9 @@ mod tests {
     fn planner_rejects_primary_start_with_existing_managed_replica_state() -> Result<(), String> {
         let root = unique_test_dir("primary-reject")?;
         let runtime_config = sample_runtime(root.join("data"));
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
-        let snapshot = observed_snapshot(
-            DcsSnapshot::starting(),
-            ManagedRecoverySignal::Standby,
-        );
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let snapshot = observed_snapshot(DcsSnapshot::starting(), ManagedRecoverySignal::Standby);
         let planner = ProcessIntentPlanner;
         let error = planner
             .plan(
@@ -373,7 +370,8 @@ mod tests {
     fn planner_uses_distinct_source_roles_for_basebackup_and_rewind() -> Result<(), String> {
         let root = unique_test_dir("source-roles")?;
         let runtime_config = sample_runtime(root.join("data"));
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,

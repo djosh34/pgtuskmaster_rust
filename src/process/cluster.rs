@@ -6,7 +6,10 @@ use crate::{
     process::{
         planner::ProcessIntentPlanner,
         session::ManagedPostgresSessionMaterializer,
-        state::{ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx},
+        state::{
+            ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot,
+            ProcessWorkerCtx,
+        },
         tools::ExternalToolLowerer,
     },
     state::NodeIdentity,
@@ -60,12 +63,9 @@ pub(crate) struct ProcessCluster<'a> {
 impl<'a> ProcessCluster<'a> {
     pub(crate) fn production_from_ctx(ctx: &'a ProcessWorkerCtx<'a>) -> Result<Self, ProcessError> {
         let managed_recovery_state =
-            inspect_managed_recovery_state(ctx.cfg.postgres.data_dir.as_path())
-                .map_err(|err| {
-                    ProcessError::InvalidSpec(format!(
-                        "inspect managed recovery state failed: {err}"
-                    ))
-                })?;
+            inspect_managed_recovery_state(ctx.cfg.postgres.data_dir.as_path()).map_err(|err| {
+                ProcessError::InvalidSpec(format!("inspect managed recovery state failed: {err}"))
+            })?;
         Ok(Self::from_snapshot(
             ctx.cfg,
             ctx.identity.clone(),
@@ -97,12 +97,7 @@ impl<'a> ProcessCluster<'a> {
     ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
         let plan = self
             .planner
-            .plan(
-                &self.identity,
-                self.cfg,
-                &self.observed,
-                &request.intent,
-            )
+            .plan(&self.identity, self.cfg, &self.observed, &request.intent)
             .map_err(ProcessPreparationError::Planning)?;
         let prepared_session = self
             .sessions
@@ -213,7 +208,8 @@ mod tests {
         let root = unique_test_dir("replica-start")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg =
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
             dcs: DcsSnapshot::quorum(

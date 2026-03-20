@@ -61,8 +61,7 @@ pub(crate) fn materialize_managed_postgres_config(
         absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
     let managed_standby_passfile =
         absolutize_path(&managed_standby_passfile_path(&cfg.postgres.data_dir))?;
-    let standby_signal =
-        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
+    let standby_signal = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
     let recovery_signal =
         absolutize_path(&cfg.postgres.data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME))?;
     let postgresql_auto_conf =
@@ -73,7 +72,11 @@ pub(crate) fn materialize_managed_postgres_config(
             .join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME),
     )?;
 
-    write_atomic(&managed_hba, cfg.postgres.pg_hba_contents.as_bytes(), Some(0o644))?;
+    write_atomic(
+        &managed_hba,
+        cfg.postgres.pg_hba_contents.as_bytes(),
+        Some(0o644),
+    )?;
     write_atomic(
         &managed_ident,
         cfg.postgres.pg_ident_contents.as_bytes(),

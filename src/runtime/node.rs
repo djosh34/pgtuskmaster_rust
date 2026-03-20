@@ -120,7 +120,10 @@ async fn run_workers(
         crate::pginfo::startup::run(pginfo.worker),
         crate::dcs::run(dcs_worker),
         crate::process::startup::run(process.worker),
-        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(cfg, log.clone())),
+        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
+            cfg,
+            log.clone()
+        )),
         crate::ha::worker::run(ha.worker),
         crate::api::startup::run(api),
     );

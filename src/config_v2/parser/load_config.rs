@@ -7,7 +7,7 @@ use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
         DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, PostgresConfig, RoleConfig,
-        RuntimeConfigV2, Secret, TlsConfig, TimingConfig,
+        RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
     state::{ClusterName, MemberId, ScopeName},
@@ -326,7 +326,9 @@ pub(super) fn resolve_secret_optional(
     field: &'static str,
     source: Option<raw::SecretSource>,
 ) -> Result<Option<Secret>, ConfigErrorV2> {
-    source.map(|source| resolve_secret_required(field, source)).transpose()
+    source
+        .map(|source| resolve_secret_required(field, source))
+        .transpose()
 }
 
 pub(super) fn resolve_secret_required(
@@ -341,8 +343,8 @@ pub(super) fn resolve_secret_required(
             })?
         }
         raw::SecretSource::Tagged(raw::TaggedSecretSource::None) => String::new(),
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::Env { env }) => {
-            std::env::var(&env).map_err(|err| {
+        raw::SecretSource::Tagged(raw::TaggedSecretSource::Env { env }) => std::env::var(&env)
+            .map_err(|err| {
                 validation_error(
                     field,
                     match err {
@@ -354,8 +356,7 @@ pub(super) fn resolve_secret_required(
                         }
                     },
                 )
-            })?
-        }
+            })?,
         raw::SecretSource::Tagged(raw::TaggedSecretSource::File { path }) => {
             std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
                 path: path.display().to_string(),
@@ -531,7 +532,10 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
                 match tls.client_auth {
                     raw::ApiClientAuthConfig::Disabled => (None, false, Vec::new()),
                     raw::ApiClientAuthConfig::Optional { client_ca } => (
-                        Some(resolve_path_only("api.transport.tls.client_auth.client_ca", client_ca)?),
+                        Some(resolve_path_only(
+                            "api.transport.tls.client_auth.client_ca",
+                            client_ca,
+                        )?),
                         false,
                         Vec::new(),
                     ),
@@ -539,7 +543,10 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
                         client_ca,
                         allowed_common_names,
                     } => (
-                        Some(resolve_path_only("api.transport.tls.client_auth.client_ca", client_ca)?),
+                        Some(resolve_path_only(
+                            "api.transport.tls.client_auth.client_ca",
+                            client_ca,
+                        )?),
                         true,
                         allowed_common_names,
                     ),
@@ -606,9 +613,7 @@ pub(super) fn take_token_sources(
 pub(super) fn token_auth_mode(auth: &raw::TokenAuthConfig) -> TokenAuthMode {
     match auth.kind.as_deref() {
         Some("disabled") | None
-            if auth.read_token.is_none()
-                && auth.admin_token.is_none()
-                && auth.tokens.is_none() =>
+            if auth.read_token.is_none() && auth.admin_token.is_none() && auth.tokens.is_none() =>
         {
             TokenAuthMode::Disabled
         }
@@ -721,16 +726,21 @@ fn resolve_binary_path(
 
 fn conventional_postgres_bin_dirs() -> Vec<PathBuf> {
     let mut directories = Vec::new();
-    directories.extend(child_bin_dirs_matching(Path::new("/usr/lib/postgresql"), |_| true));
+    directories.extend(child_bin_dirs_matching(
+        Path::new("/usr/lib/postgresql"),
+        |_| true,
+    ));
     directories.extend(child_bin_dirs_matching(Path::new("/usr"), |name| {
         name.starts_with("pgsql-")
     }));
-    directories.extend(child_bin_dirs_matching(Path::new("/opt/homebrew/opt"), |name| {
-        name.starts_with("postgresql@")
-    }));
-    directories.extend(child_bin_dirs_matching(Path::new("/usr/local/opt"), |name| {
-        name.starts_with("postgresql@")
-    }));
+    directories.extend(child_bin_dirs_matching(
+        Path::new("/opt/homebrew/opt"),
+        |name| name.starts_with("postgresql@"),
+    ));
+    directories.extend(child_bin_dirs_matching(
+        Path::new("/usr/local/opt"),
+        |name| name.starts_with("postgresql@"),
+    ));
     directories.push(PathBuf::from("/opt/homebrew/opt/libpq/bin"));
     directories.push(PathBuf::from("/usr/local/opt/libpq/bin"));
     directories
@@ -828,7 +838,10 @@ psql = "/bin/true"
 
         let config = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
 
-        assert_eq!(config.postgres.source_client_tls.mode, PgSslMode::VerifyFull);
+        assert_eq!(
+            config.postgres.source_client_tls.mode,
+            PgSslMode::VerifyFull
+        );
         assert_eq!(
             config.postgres.source_client_tls.root_cert,
             Some(ca_cert.clone())

@@ -1,10 +1,10 @@
+use crate::pginfo::conninfo::PgClientTls;
+use crate::state::{ClusterName, MemberId, ScopeName};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
-use crate::pginfo::conninfo::PgClientTls;
-use crate::state::{ClusterName, MemberId, ScopeName};
 
 #[derive(Debug, Error)]
 pub enum ConfigErrorV2 {
@@ -39,7 +39,6 @@ pub(crate) struct RuntimeConfigV2 {
     pub logging: LoggingConfig,
     pub api: ApiConfig,
 }
-
 
 #[derive(Clone, Debug)]
 pub(crate) struct TlsConfig {

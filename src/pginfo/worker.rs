@@ -108,11 +108,7 @@ fn probe_conninfo(cfg: &RuntimeConfigV2) -> PgConnInfo {
 #[cfg(test)]
 mod tests {
     use super::probe_conninfo;
-    use crate::{
-        config_v2::load_runtime_config,
-        pginfo::state::PgSslMode,
-        state::PgEndpoint,
-    };
+    use crate::{config_v2::load_runtime_config, pginfo::state::PgSslMode, state::PgEndpoint};
     use std::{
         path::{Path, PathBuf},
         time::SystemTime,
@@ -141,7 +137,10 @@ mod tests {
             return Err(format!("unexpected local database {}", conninfo.dbname));
         }
         if conninfo.tls.mode != PgSslMode::Disable {
-            return Err(format!("expected sslmode disable, got {:?}", conninfo.tls.mode));
+            return Err(format!(
+                "expected sslmode disable, got {:?}",
+                conninfo.tls.mode
+            ));
         }
         if conninfo.tls.root_cert.is_some()
             || conninfo.tls.client_cert.is_some()

@@ -227,7 +227,8 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx<'_>) -> Result<(), WorkerEr
             }
         }
         tokio::time::sleep(Duration::from_millis(
-            u64::try_from(ctx.cfg.logging.postgres_log_poll_interval.as_millis()).unwrap_or(u64::MAX),
+            u64::try_from(ctx.cfg.logging.postgres_log_poll_interval.as_millis())
+                .unwrap_or(u64::MAX),
         ))
         .await;
     }
@@ -275,7 +276,10 @@ struct PostgresIngestWorkerState {
 impl PostgresIngestWorkerState {
     fn new(cfg: &RuntimeConfigV2) -> Self {
         Self {
-            pg_ctl_log: FileTailer::new(cfg.logging.postgres_pg_ctl_log.clone(), StartPosition::Beginning),
+            pg_ctl_log: FileTailer::new(
+                cfg.logging.postgres_pg_ctl_log.clone(),
+                StartPosition::Beginning,
+            ),
             dir_tailers: DirTailers::default(),
         }
     }
@@ -411,7 +415,11 @@ async fn step_once(
                     enabled: ctx.cfg.logging.postgres_log_cleanup_enabled,
                     max_files: ctx.cfg.logging.postgres_log_cleanup_max_files,
                     max_age_seconds: ctx.cfg.logging.postgres_log_cleanup_max_age.as_secs(),
-                    protect_recent_seconds: ctx.cfg.logging.postgres_log_cleanup_protect_recent.as_secs(),
+                    protect_recent_seconds: ctx
+                        .cfg
+                        .logging
+                        .postgres_log_cleanup_protect_recent
+                        .as_secs(),
                 },
                 protected.as_slice(),
                 SystemTime::now(),
@@ -870,7 +878,10 @@ fn map_pg_severity(raw: &str) -> LogSeverity {
     }
 }
 
-pub(crate) fn build_ctx<'a>(cfg: &'a RuntimeConfigV2, log: LogSender) -> PostgresIngestWorkerCtx<'a> {
+pub(crate) fn build_ctx<'a>(
+    cfg: &'a RuntimeConfigV2,
+    log: LogSender,
+) -> PostgresIngestWorkerCtx<'a> {
     PostgresIngestWorkerCtx { cfg, log }
 }
 
@@ -1698,7 +1709,7 @@ mod tests {
             let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
                 legacy_cfg.clone(),
             )
-                .map_err(WorkerError::Message)?;
+            .map_err(WorkerError::Message)?;
 
             let test_log = start_test_log();
 
