@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 08:26:48 PM CET 2026
+Generated: Fri Mar 20 08:43:45 PM CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -42,6 +42,17 @@ The direct-cfg reduction for the daemon runtime cannot finish correctly because 
 
 <description>
 `make test-long` exposed two remaining failures after moving strong write-convergence checks out of cleanup and into `cluster becomes healthy`:
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/legacy-runtime-config-v2-test-converter-drops-api-and-dcs-tls.md`
+
+```
+## Bug: Legacy RuntimeConfigV2 Test Converter Drops API And DCS TLS <status>completed</status> <passes>true</passes>
+
+<description>
+`src/dev_support/runtime_config_v2.rs` currently converts legacy `RuntimeConfig` into `RuntimeConfigV2` for test and harness code, but it silently degrades TLS settings instead of preserving or rejecting them.
 ```
 
 ==============

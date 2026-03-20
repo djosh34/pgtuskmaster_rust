@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 08:26:48 PM CET 2026
+Generated: Fri Mar 20 08:43:45 PM CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-leak-managed-postgres-processes.md`
 
@@ -75,17 +75,6 @@ Ultra-long HA scenarios now progress past seed-primary bootstrap, but replica st
 
 <description>
 `make test` and focused `cargo nextest run` invocations can fail during the build phase with linker/archive errors such as `ld: cannot find ... .rcgu.o` or `failed to build archive ... .rlib: failed to open object file`. The failures point at missing members under `target/aarch64-unknown-linux-gnu/debug/deps` while `CARGO_INCREMENTAL=1` is enabled.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/legacy-runtime-config-v2-test-converter-drops-api-and-dcs-tls.md`
-
-```
-## Bug: Legacy RuntimeConfigV2 Test Converter Drops API And DCS TLS <status>not_started</status> <passes>false</passes>
-
-<description>
-`src/dev_support/runtime_config_v2.rs` currently converts legacy `RuntimeConfig` into `RuntimeConfigV2` for test and harness code, but it silently degrades TLS settings instead of preserving or rejecting them.
 ```
 
 ==============

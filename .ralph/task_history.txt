@@ -347,3 +347,4 @@ NONE
 .ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md
 .ralph/tasks/bugs/write-convergence-healthy-check-still-flakes-in-make-test.md
 .ralph/tasks/bugs/config-v2-missing-managed-postgres-and-local-database-fields.md
+.ralph/tasks/bugs/legacy-runtime-config-v2-test-converter-drops-api-and-dcs-tls.md
