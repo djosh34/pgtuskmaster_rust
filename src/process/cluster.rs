@@ -134,12 +134,14 @@ mod tests {
     };
 
     use crate::{
+        config_v2::load_runtime_config,
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::RuntimeConfigBuilder,
+        pginfo::conninfo::PgConnInfo,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
-            jobs::{PostgresStartIntent, ProcessIntent},
+            jobs::{PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent},
             state::{ProcessIntentRequest, ProcessObservedSnapshot},
         },
         state::{
@@ -176,6 +178,65 @@ mod tests {
         RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .build()
+    }
+
+    fn write_runtime_config_v2_with_source_ca(root: &std::path::Path) -> Result<PathBuf, String> {
+        let data_dir = root.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let ca_cert = root.join("source-ca.crt");
+        fs::write(&ca_cert, "test ca")
+            .map_err(|err| format!("write ca cert {} failed: {err}", ca_cert.display()))?;
+        let config_path = root.join("runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[cluster]
+name = "cluster-a"
+scope = "scope-a"
+member_id = "node-a"
+
+[postgres.paths]
+data_dir = "{}"
+
+[postgres.rewind.transport]
+ssl_mode = "verify-full"
+ca_cert = {{ path = "{}" }}
+
+[postgres.roles.mandatory.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
+
+[postgres.roles.mandatory.replicator]
+username = "replicator"
+auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
+
+[postgres.roles.mandatory.rewinder]
+username = "rewinder"
+auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
+
+[postgres.access]
+hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+ident = {{ content = "" }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+
+[process.binaries.overrides]
+postgres = "/bin/true"
+pg_ctl = "/bin/true"
+initdb = "/bin/true"
+pg_rewind = "/bin/true"
+pg_basebackup = "/bin/true"
+psql = "/bin/true"
+"#,
+                data_dir.display(),
+                ca_cert.display()
+            ),
+        )
+        .map_err(|err| format!("write runtime config {} failed: {err}", config_path.display()))?;
+        Ok(config_path)
     }
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
@@ -248,6 +309,69 @@ mod tests {
                 }
             }
             other => return Err(format!("unexpected execution request kind: {other:?}")),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_basebackup_from_config_v2_preserves_sslrootcert_in_conninfo() -> Result<(), String> {
+        let root = unique_test_dir("basebackup-source-ca")?;
+        let config_path = write_runtime_config_v2_with_source_ca(root.as_path())?;
+        let cfg = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
+        let leader = MemberId("node-b".to_string());
+        let snapshot = ProcessObservedSnapshot {
+            dcs: DcsSnapshot::quorum(
+                None,
+                SwitchoverState::None,
+                BTreeMap::from([(leader.clone(), primary_member("10.0.0.13", 5432)?)]),
+            ),
+            managed_recovery_state: ManagedRecoverySignal::None,
+        };
+        let cluster = ProcessCluster::from_snapshot(&cfg, sample_identity(), snapshot);
+        let request = ProcessIntentRequest {
+            id: JobId("job-basebackup".to_string()),
+            intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
+        };
+
+        let prepared = cluster
+            .prepare(&request)
+            .map_err(|err| format!("prepare basebackup failed: {err}"))?;
+
+        if prepared.command.job_kind != crate::process::jobs::ProcessJobKind::BaseBackup {
+            return Err(format!(
+                "unexpected prepared command job kind: {:?}",
+                prepared.command.job_kind
+            ));
+        }
+        let conninfo_arg = prepared
+            .command
+            .args
+            .windows(2)
+            .find_map(|window| {
+                if window[0] == "--dbname" {
+                    Some(window[1].clone())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| "basebackup command did not include --dbname".to_string())?;
+        let conninfo: PgConnInfo = conninfo_arg.parse()?;
+        let expected_root_cert = config_path
+            .parent()
+            .ok_or_else(|| {
+                format!(
+                    "config path {} unexpectedly had no parent directory",
+                    config_path.display()
+                )
+            })?
+            .join("source-ca.crt");
+        if conninfo.tls.root_cert != Some(expected_root_cert.clone()) {
+            return Err(format!(
+                "basebackup conninfo lost sslrootcert, expected {}, observed {:?}",
+                expected_root_cert.display(),
+                conninfo.tls.root_cert
+            ));
         }
 
         Ok(())

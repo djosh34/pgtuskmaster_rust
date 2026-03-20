@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 08:52:25 PM CET 2026
+Generated: Fri Mar 20 21:08:06 CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-leak-managed-postgres-processes.md`
 
@@ -20,17 +20,6 @@ Generated: Fri Mar 20 08:52:25 PM CET 2026
 
 <description>
 `src/config_v2/parser/load_config.rs` currently accepts `dcs.endpoints` entries with the `https://` scheme even when `dcs.client.tls` is absent. The legacy parser rejected that configuration with a stable `dcs.client.tls` validation error, but the config-v2 path now lets startup proceed until it fails later in unrelated runtime preparation.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/config-v2-drops-replica-source-tls-ca-needed-by-basebackup.md`
-
-```
-## Bug: Config v2 drops replica source TLS CA needed by basebackup <status>not_started</status> <passes>false</passes>
-
-<description>
-Ultra-long HA scenarios now progress past seed-primary bootstrap, but replica startup still fails because `pg_basebackup` is launched without the configured TLS root CA.
 ```
 
 ==============

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 08:52:25 PM CET 2026
+Generated: Fri Mar 20 21:08:06 CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -20,6 +20,17 @@ The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key 
 
 <description>
 `src/config_v2/parser/load_config.rs` currently rejects `process.binaries.overrides.postgres` and `process.binaries.overrides.psql` as unsupported, and `config_v2::types::BinariesConfig` has no place to carry them. The ultra-long HA fixtures still depend on those binary overrides, so seed-primary bootstrap dies during config parsing before the cluster can start.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/config-v2-drops-replica-source-tls-ca-needed-by-basebackup.md`
+
+```
+## Bug: Config v2 drops replica source TLS CA needed by basebackup <status>completed</status> <passes>true</passes>
+
+<description>
+Ultra-long HA scenarios now progress past seed-primary bootstrap, but replica startup still fails because `pg_basebackup` is launched without the configured TLS root CA.
 ```
 
 ==============
