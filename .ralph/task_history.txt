@@ -344,3 +344,4 @@ NONE
 .ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md
 .ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md
+.ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md

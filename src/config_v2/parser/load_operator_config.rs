@@ -41,7 +41,12 @@ pub fn load_operator_config(path: &Path) -> Result<OperatorConfigV2, crate::conf
 
     Ok(OperatorConfigV2 {
         api_base_url: normalize_optional_string(operator.api.base_url),
-        expected_transport: map_expected_transport(operator.api.expected_transport),
+        expected_transport: operator.api.expected_transport.map(|expected_transport| {
+            match expected_transport {
+                raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
+                raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
+            }
+        }),
         api_resolve_to: operator.api.resolve_to,
         client_tls: merge_client_tls(
             map_operator_client_tls("pgtm.api.tls", operator.api.tls)?,
@@ -61,15 +66,6 @@ fn map_operator_auth(auth: raw::TokenAuthConfig) -> Result<ApiClientTokens, crat
             admin_token: resolve_secret_optional("pgtm.api.auth.admin_token", admin_token)?,
         }),
     }
-}
-
-fn map_expected_transport(
-    expected_transport: Option<raw::PgtmApiTransportExpectation>,
-) -> Option<PgtmApiTransportExpectation> {
-    expected_transport.map(|expected_transport| match expected_transport {
-        raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
-        raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
-    })
 }
 
 fn map_operator_client_tls(
@@ -180,7 +176,7 @@ mod tests {
     use std::{path::PathBuf, time::SystemTime};
 
     #[test]
-    fn load_operator_config_preserves_expected_transport() -> Result<(), String> {
+    fn load_operator_config_preserves_expected_transport_for_operator_documents() -> Result<(), String> {
         let path = write_temp_config(
             r#"
 [api]
@@ -196,6 +192,57 @@ expected_transport = "https"
         if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "expected https transport expectation, got {:?}",
+                config.expected_transport
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_preserves_expected_transport_for_runtime_documents() -> Result<(), String> {
+        let path = write_temp_config(
+            r#"
+[cluster]
+name = "cluster-a"
+scope = "scope-a"
+member_id = "node-a"
+
+[postgres.paths]
+data_dir = "/tmp/data"
+
+[postgres.roles.mandatory.superuser]
+username = "postgres"
+auth = { type = "password", password = { type = "string", value = "postgres" } }
+
+[postgres.roles.mandatory.replicator]
+username = "replicator"
+auth = { type = "password", password = { type = "string", value = "replicator" } }
+
+[postgres.roles.mandatory.rewinder]
+username = "rewinder"
+auth = { type = "password", password = { type = "string", value = "rewinder" } }
+
+[postgres.access]
+hba = { content = "host all all 127.0.0.1/32 trust" }
+ident = { content = "" }
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+
+[pgtm.api]
+base_url = "https://127.0.0.1:8443"
+expected_transport = "https"
+"#,
+        )?;
+
+        let config = load_operator_config(path.as_path()).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+
+        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+            return Err(format!(
+                "expected https transport expectation from runtime document, got {:?}",
                 config.expected_transport
             ));
         }

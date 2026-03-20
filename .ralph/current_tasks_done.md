@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 07:39:26 PM CET 2026
+Generated: Fri Mar 20 07:55:13 PM CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -9,6 +9,17 @@ Generated: Fri Mar 20 07:39:26 PM CET 2026
 
 <description>
 The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key paths, but `src/cli/client.rs` only consumes the inline PEM byte fields and silently ignores the file-backed fields populated by operator config loading.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md`
+
+```
+## Bug: Config v2 operator config rejects expected_transport needed by HA harness <status>completed</status> <passes>true</passes>
+
+<description>
+`make test-long` currently fails during HA harness bootstrap because `src/config_v2/parser/load_operator_config.rs` rejects `pgtm.api.expected_transport` as unsupported, even though the config_v2 private schema still accepts that field and the HA observer support code still materializes it.
 ```
 
 ==============
