@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 08:43:45 PM CET 2026
+Generated: Fri Mar 20 20:52:07 CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -9,6 +9,17 @@ Generated: Fri Mar 20 08:43:45 PM CET 2026
 
 <description>
 The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key paths, but `src/cli/client.rs` only consumes the inline PEM byte fields and silently ignores the file-backed fields populated by operator config loading.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/config-v2-binaries-drop-postgres-and-psql-needed-by-ha-fixtures.md`
+
+```
+## Bug: Config V2 Binaries Drop Postgres And Psql Needed By HA Fixtures <status>completed</status> <passes>true</passes>
+
+<description>
+`src/config_v2/parser/load_config.rs` currently rejects `process.binaries.overrides.postgres` and `process.binaries.overrides.psql` as unsupported, and `config_v2::types::BinariesConfig` has no place to carry them. The ultra-long HA fixtures still depend on those binary overrides, so seed-primary bootstrap dies during config parsing before the cluster can start.
 ```
 
 ==============

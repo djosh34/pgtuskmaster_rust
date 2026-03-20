@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 08:43:45 PM CET 2026
+Generated: Fri Mar 20 20:52:07 CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-leak-managed-postgres-processes.md`
 
@@ -9,17 +9,6 @@ Generated: Fri Mar 20 08:43:45 PM CET 2026
 
 <description>
 `make test` currently exits zero, but nextest reports five leaky tests in `api::worker::tests::reload_certificates_*`:
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/config-v2-binaries-drop-postgres-and-psql-needed-by-ha-fixtures.md`
-
-```
-## Bug: Config V2 Binaries Drop Postgres And Psql Needed By HA Fixtures <status>not_started</status> <passes>false</passes>
-
-<description>
-`src/config_v2/parser/load_config.rs` currently rejects `process.binaries.overrides.postgres` and `process.binaries.overrides.psql` as unsupported, and `config_v2::types::BinariesConfig` has no place to carry them. The ultra-long HA fixtures still depend on those binary overrides, so seed-primary bootstrap dies during config parsing before the cluster can start.
 ```
 
 ==============
