@@ -35,8 +35,6 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
 }
 
 pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
-    validate_runtime_config(&cfg)?;
-
     let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
     })?;

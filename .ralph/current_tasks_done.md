@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Thu Mar 19 12:45:06 PM CET 2026
+Generated: Fri Mar 20 03:30:15 PM CET 2026
 
 # Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
 
@@ -75,8 +75,9 @@ Inside dirs:
 ```
 ## Task: Rewrite Config Around Typed TOML + `serde` And Remove The Hand-Rolled Parser <status>not_started</status> <passes>true</passes>
 
+**Superseded:** the current repo direction for config migration is now `.ralph/tasks/story-config-v2-direct-cfg-collapse/`. Do not implement this task as written without reconciling it against that newer story first; this older task preserves a weaker boundary than the current agreed architecture.
+
 <priority>medium</priority>
-<blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
 ```
 
 ==============

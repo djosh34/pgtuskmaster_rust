@@ -338,3 +338,5 @@ NONE
 .ralph/tasks/bugs/write-convergence-health-check-race.md
 .ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md
 .ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-reimplement-private-config-v2-loaders-and-expose-only-runtimeconfigv2-and-operatorconfigv2.md
+NONE
