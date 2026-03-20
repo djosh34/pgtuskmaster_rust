@@ -300,7 +300,111 @@ let advertised_postgres = PgEndpoint::tcp(
 - do not add another wrapper such as `runtime`, `ctx`, or `static`
 - once the package compiles again, QUIT IMMEDIATELY
 
-**Example corridor 3 from research: process nested mirror chain**
+**Example corridor 3 from research: identity can also be part of the cfg corridor**
+
+Iteration 2 must not stop at "identity is a runtime concept" and move on blindly. The field has to be opened. If the worker only uses `identity` to recover static membership/config values that already exist in `cfg`, then that part of `identity` is also inside the cfg corridor and must be collapsed.
+
+Current code after iteration 2:
+
+```rust
+// src/dcs/worker.rs
+pub(crate) struct DcsWorker<'a> {
+    cfg: &'a RuntimeConfigV2,
+    identity: NodeIdentity,
+    keys: DcsKeySpace,
+    pg: StateSubscriber<PgInfoState>,
+    publisher: StatePublisher<DcsSnapshot>,
+    command_inbox: DcsCommandInbox,
+    log: LogSender,
+    cluster: DcsClusterState,
+    session: Option<ConnectedSession>,
+}
+
+impl<'a> DcsWorker<'a> {
+    async fn publish_current_view(&self, connected: bool) -> Result<(), WorkerError> {
+        let member = DcsMember::new(
+            self.identity.member_id.clone(),
+            self.cfg.postgres.listen_host.clone(),
+            self.cfg.postgres.advertise_port, // very important to mention that advertise_port should already be checked to be correct value in RuntimeConfigV2. Not a single use of unwrap_or must stay, that is a bug and must be resolved by doing that logic inside config_v2
+            connected,
+        );
+        self.publisher.publish(DcsSnapshot::from_member(member))?;
+        Ok(())
+    }
+}
+```
+
+**Discovery judgment for iteration 3:**
+- `identity`: not automatically runtime state; it must be opened and judged by field
+- `identity.scope`: if only used to build static DCS paths/namespaces already derivable from cfg, cfg-derived, must be removed from this corridor
+- `identity.member_id`: if only used as the configured member name/identifier already present in cfg, cfg-derived, must be removed from this corridor
+- `keys`: if it exists only because it was built from `identity.scope`, cfg-derived, must be removed
+- if some surviving identity field is truly runtime-discovered and not in cfg, that field may stay, but the judgment must be explicit
+- `pg`: runtime subscriber, may stay
+- `publisher`: runtime state, may stay
+- `command_inbox`: runtime state, may stay
+- `log`: runtime state, may stay
+
+**Iteration 3 exact code change: stop re-carrying cfg-backed identity fields through the worker**
+
+```rust
+// src/dcs/worker.rs
+pub(crate) struct DcsWorker<'a> {
+    cfg: &'a RuntimeConfigV2,
+    pg: StateSubscriber<PgInfoState>,
+    publisher: StatePublisher<DcsSnapshot>,
+    command_inbox: DcsCommandInbox,
+    log: LogSender,
+    cluster: DcsClusterState,
+    session: Option<ConnectedSession>,
+}
+
+impl<'a> DcsWorker<'a> {
+    pub(crate) fn new(
+        cfg: &'a RuntimeConfigV2,
+        pg: StateSubscriber<PgInfoState>,
+        publisher: StatePublisher<DcsSnapshot>,
+        command_inbox: DcsCommandInbox,
+        log: LogSender,
+    ) -> Self {
+        Self {
+            cfg,
+            pg,
+            publisher,
+            command_inbox,
+            log,
+            cluster: DcsClusterState::new(),
+            session: None,
+        }
+    }
+
+    async fn publish_current_view(&self, connected: bool) -> Result<(), WorkerError> {
+        let member = DcsMember::new(
+            self.cfg.identity.member_id.clone(), // still using self.cfg, so therefore this task is NOT done, but this will be fixed in a future iteration of this task
+            self.cfg.postgres.listen_host.clone(),
+            self.cfg.postgres.advertise_port,
+            connected,
+        );
+        self.publisher.publish(DcsSnapshot::from_member(member))?;
+        Ok(())
+    }
+}
+```
+
+**Expected compiler errors after iteration 3:**
+- `self.identity.*` no longer exists
+- `self.keys` no longer exists
+- constructor callsites still pass `identity`
+- any helper that still rebuilds DCS paths from `identity.scope`
+
+**Correct fix direction for iteration 3:**
+- replace `self.identity.*` reads with direct `self.cfg.identity.*` reads
+- replace `self.keys` derivations with direct key construction from `self.cfg`
+- do not keep `identity` around as a disguised cfg cache
+- only preserve identity fields that are proven to be runtime state and not representable in cfg
+- once the package compiles again, QUIT IMMEDIATELY
+
+**Example corridor 4 from research: process nested mirror chain**
 
 Current code:
 
@@ -372,7 +476,7 @@ pub(crate) fn materialize(
 }
 ```
 
-**Discovery judgment for iteration 3:**
+**Discovery judgment for iteration 4:**
 - `ManagedPostgresPaths.data_dir`: in cfg, must be removed
 - `ManagedPostgresPaths.socket_dir`: in cfg, must be removed
 - `ManagedPostgresPaths.log_file`: in cfg, must be removed
@@ -386,7 +490,7 @@ pub(crate) fn materialize(
 - `ProcessObservedSnapshot.runtime_config`: whole cfg carried through another corridor, must be deleted
 - even after those deletions, continue exploring surviving structs and spec types, because a “clean-looking” wrapper may still hide cfg-derived fields one layer deeper
 
-**Iteration 3 exact code change: delete the mirror structs and fix callsites to use `ctx.cfg` directly**
+**Iteration 4 exact code change: delete the mirror structs and fix callsites to use `ctx.cfg` directly**
 
 ```rust
 // src/process/state.rs
@@ -417,7 +521,7 @@ pub(crate) struct ProcessObservedSnapshot {
 pub(crate) fn plan(
     &self,
     cfg: &RuntimeConfigV2,
-    identity: &NodeIdentity,
+    identity: &NodeIdentity, // still not done, but fixed in next
     observed: &ProcessObservedSnapshot,
     intent: &ProcessIntent,
 ) -> Result<ClusterProcessPlan, ProcessError> {
@@ -447,12 +551,12 @@ pub(crate) fn materialize(
 }
 ```
 
-**Expected compiler errors after iteration 3:**
+**Expected compiler errors after iteration 4:**
 - every callsite using `ctx.plan.*`
 - every callsite using `observed.runtime_config.*`
 - every job/spec carrying now-deleted path/timeout/port fields
 
-**Correct fix direction for iteration 3:**
+**Correct fix direction for iteration 4:**
 - delete the deleted-field reads
 - replace them with direct `ctx.cfg...` or `cfg...`
 - keep only dynamic intent-specific state in the plan/spec layer
@@ -477,12 +581,13 @@ pub(crate) fn materialize(
 
 <acceptance_criteria>
 - [ ] The step plan in this task is followed by the package tasks in this story
-- [ ] The task shows three real iterations from this repo, including the DCS `inputs` collapse and a deeper process mirror collapse
+- [ ] The task shows four real iterations from this repo, including the DCS `inputs` collapse, the identity-in-cfg collapse, and a deeper process mirror collapse
 - [ ] The task explicitly requires judging nested fields as cfg-derived vs runtime-state
 - [ ] The task explicitly requires `self.cfg`, not `self.inputs.cfg` or another wrapper
 - [ ] The task explicitly requires visiting structs that initially look clean, and continuing until there are zero further fields left to explore
 - [ ] The task explicitly requires stopping after each clean iteration with `QUIT IMMEDIATELY`
 - [ ] The task explicitly defines done as recursive absence of config-like fields from surviving runtime structs
+- [ ] As long as you still find any structs to be constructed where one of the fields uses/clones some field from cfg, you are not done with the task
 - [ ] `make check` — passes cleanly
 - [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
 - [ ] `make lint` — passes cleanly
