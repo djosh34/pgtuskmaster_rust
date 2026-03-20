@@ -52,7 +52,7 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
 ```
 
 ```rust
-// src/config/parser.rs
+// src/config/parser.rs -> and then move to src/config_v2/parser/load_operator_config.rs
 pub fn load_operator_config(path: &Path) -> Result<PgtmConfig, ConfigError> {
     let contents = read_config_file(path)?;
     let document: OperatorConfigDocument = toml::from_str(&contents)?;
@@ -73,7 +73,7 @@ pub fn load_operator_config(path: &Path) -> Result<PgtmConfig, ConfigError> {
   - operator loader returning `OperatorConfigV2`
 - do not expose raw DTOs or validation helpers
 - delete or stop exporting all old `validate_*` entrypoints
-- keep impossible states out of the V2 types where practical
+- keep impossible states out of the V2 types
 - do not preserve old runtime/operator dual parsing for CLI
 - add a progress log section to this task as the work proceeds and keep `<passes>false</passes>`
 - when this task is fully complete, update the task body with `QUIT IMMEDIATLY`
