@@ -1,5 +1,7 @@
 ## Task: Rewrite Config Around Typed TOML + `serde` And Remove The Hand-Rolled Parser <status>not_started</status> <passes>true</passes>
 
+**Superseded:** the current repo direction for config migration is now `.ralph/tasks/story-config-v2-direct-cfg-collapse/`. Do not implement this task as written without reconciling it against that newer story first; this older task preserves a weaker boundary than the current agreed architecture.
+
 <priority>medium</priority>
 <blocked_by>Full completion of `.ralph/tasks/story-ctl-operator-experience/`</blocked_by>
 
