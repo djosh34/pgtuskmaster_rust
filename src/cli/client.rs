@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path::PathBuf, time::Duration};
+use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -197,7 +197,12 @@ fn apply_tls_config(
     builder: reqwest::ClientBuilder,
     config: &CliTlsConfig,
 ) -> Result<reqwest::ClientBuilder, CliError> {
-    let builder = if let Some(ca_cert_pem) = config.ca_cert_pem.as_ref() {
+    let ca_cert_pem = read_optional_tls_bytes(
+        "api.tls.ca_cert",
+        config.ca_cert_pem.as_deref(),
+        config.ca_cert_path.as_deref(),
+    )?;
+    let builder = if let Some(ca_cert_pem) = ca_cert_pem.as_deref() {
         let certificate = reqwest::Certificate::from_pem(ca_cert_pem)
             .map_err(|err| CliError::RequestBuild(format!("parse CA certificate failed: {err}")))?;
         builder.add_root_certificate(certificate)
@@ -205,16 +210,25 @@ fn apply_tls_config(
         builder
     };
 
-    if config.client_cert_pem.is_none() && config.client_key_pem.is_none() {
+    let client_cert_pem = read_optional_tls_bytes(
+        "api.tls.identity.cert",
+        config.client_cert_pem.as_deref(),
+        config.client_cert_path.as_deref(),
+    )?;
+    let client_key_pem = read_optional_tls_bytes(
+        "api.tls.identity.key",
+        config.client_key_pem.as_deref(),
+        config.client_key_path.as_deref(),
+    )?;
+
+    if client_cert_pem.is_none() && client_key_pem.is_none() {
         return Ok(builder);
     }
 
-    let client_cert_pem = config
-        .client_cert_pem
+    let client_cert_pem = client_cert_pem
         .as_ref()
         .ok_or_else(|| CliError::RequestBuild("client certificate missing".to_string()))?;
-    let client_key_pem = config
-        .client_key_pem
+    let client_key_pem = client_key_pem
         .as_ref()
         .ok_or_else(|| CliError::RequestBuild("client key missing".to_string()))?;
     let mut client_identity_pem =
@@ -224,6 +238,20 @@ fn apply_tls_config(
     let identity = reqwest::Identity::from_pem(&client_identity_pem)
         .map_err(|err| CliError::RequestBuild(format!("parse client identity failed: {err}")))?;
     Ok(builder.identity(identity))
+}
+
+fn read_optional_tls_bytes(
+    field: &str,
+    inline_pem: Option<&[u8]>,
+    path: Option<&std::path::Path>,
+) -> Result<Option<Vec<u8>>, CliError> {
+    match (inline_pem, path) {
+        (Some(bytes), _) => Ok(Some(bytes.to_vec())),
+        (None, Some(path)) => fs::read(path).map(Some).map_err(|err| {
+            CliError::RequestBuild(format!("read {field} from {} failed: {err}", path.display()))
+        }),
+        (None, None) => Ok(None),
+    }
 }
 
 async fn read_json_response<T>(
@@ -254,4 +282,122 @@ fn normalize_token(raw: &SecretSource) -> Option<String> {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use axum::{routing::get, Json, Router};
+    use axum_server::tls_rustls::RustlsConfig;
+    use reqwest::{Method, StatusCode, Url};
+    use serde_json::{json, Value};
+
+    use super::{AuthRole, CliApiClient, CliApiClientConfig, CliTlsConfig};
+    use crate::{
+        cli::client::CliAuthConfig,
+        config::SecretSource,
+        dev_support::tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
+    };
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-cli-client-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn write_pem_file(dir: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
+        let path = dir.join(name);
+        std::fs::write(&path, contents)
+            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
+        Ok(path)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cli_api_client_loads_tls_material_from_paths() -> Result<(), String> {
+        let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
+        let dir = unique_test_dir("tls-paths")?;
+        let ca_cert = write_pem_file(
+            dir.as_path(),
+            "ca.crt",
+            fixture.valid_server_ca.cert.cert_pem.as_str(),
+        )?;
+        let client_cert = write_pem_file(
+            dir.as_path(),
+            "client.crt",
+            fixture.trusted_client.cert_pem.as_str(),
+        )?;
+        let client_key = write_pem_file(
+            dir.as_path(),
+            "client.key",
+            fixture.trusted_client.key_pem.as_str(),
+        )?;
+
+        let tls = CliTlsConfig {
+            ca_cert_pem: None,
+            client_cert_pem: None,
+            client_key_pem: None,
+            ca_cert_path: Some(ca_cert),
+            client_cert_path: Some(client_cert),
+            client_key_path: Some(client_key),
+        };
+
+        let server_config = build_server_config_with_client_auth(
+            &fixture.valid_server,
+            &fixture.valid_server_ca.cert,
+            &fixture.trusted_client_ca.cert,
+        )
+        .map_err(|err| err.to_string())?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|err| format!("bind test listener failed: {err}"))?;
+        let listen_addr = listener
+            .local_addr()
+            .map_err(|err| format!("read test listener addr failed: {err}"))?;
+        drop(listener);
+        let server = tokio::spawn(async move {
+            axum_server::bind_rustls(listen_addr, RustlsConfig::from_config(server_config))
+                .serve(
+                    Router::new()
+                        .route("/state", get(|| async { Json(json!({ "ok": true })) }))
+                        .into_make_service(),
+                )
+                .await
+        });
+
+        let client = CliApiClient::from_config(CliApiClientConfig {
+            base_url: Url::parse(format!("https://localhost:{}/", listen_addr.port()).as_str())
+                .map_err(|err| format!("build test url failed: {err}"))?,
+            timeout_ms: 5_000,
+            auth: CliAuthConfig {
+                read_token: SecretSource::None,
+                admin_token: SecretSource::None,
+            },
+            tls,
+            resolve_to: None,
+        })
+        .map_err(|err| err.to_string())?;
+
+        let response = client
+            .send_json_no_body::<Value>(Method::GET, "/state", AuthRole::Read, StatusCode::OK)
+            .await
+            .map_err(|err| err.to_string())?;
+        if response != json!({ "ok": true }) {
+            return Err(format!("unexpected response payload: {response}"));
+        }
+
+        server.abort();
+        let _ = server.await;
+        Ok(())
+    }
 }

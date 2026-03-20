@@ -3,7 +3,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use crate::{
-    config::RuntimeConfig,
+    config_v2::RuntimeConfigV2,
     logging::LogSender,
     state::{new_state_channel, NodeIdentity, WorkerError},
 };
@@ -11,7 +11,7 @@ use crate::{
 use super::{
     state::{
         ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
-        ProcessRuntime, ProcessRuntimePlan, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
+        ProcessRuntime, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
     },
     worker::{system_now_unix_millis, TokioCommandRunner},
 };
@@ -23,23 +23,22 @@ pub(crate) struct ProcessControlHandle {
     pub(crate) intents: tokio::sync::mpsc::UnboundedSender<ProcessIntentRequest>,
 }
 
-pub(crate) struct ProcessRuntimeBundle {
+pub(crate) struct ProcessRuntimeBundle<'a> {
     pub(crate) state: crate::state::StateSubscriber<ProcessState>,
     pub(crate) control: ProcessControlHandle,
-    pub(crate) worker: ProcessWorkerCtx,
+    pub(crate) worker: ProcessWorkerCtx<'a>,
 }
 
-pub(crate) async fn run(ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn run(ctx: ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     super::worker::run(ctx).await
 }
 
-pub(crate) fn bootstrap(
+pub(crate) fn bootstrap<'a>(
     identity: NodeIdentity,
-    cfg: &RuntimeConfig,
+    cfg: &'a RuntimeConfigV2,
     observed: ProcessObservedState,
-    plan: ProcessRuntimePlan,
     log: LogSender,
-) -> ProcessRuntimeBundle {
+) -> ProcessRuntimeBundle<'a> {
     let initial_state = ProcessState::starting();
     let (publisher, state) = new_state_channel(initial_state.clone());
     let (intents, inbox) = mpsc::unbounded_channel();
@@ -48,14 +47,13 @@ pub(crate) fn bootstrap(
         state,
         control: ProcessControlHandle { intents },
         worker: ProcessWorkerCtx {
+            cfg,
             cadence: ProcessCadence {
                 poll_interval: PROCESS_WORKER_POLL_INTERVAL,
                 now: Box::new(system_now_unix_millis),
             },
-            config: cfg.process.clone(),
             identity,
             observed,
-            plan,
             state_channel: ProcessStateChannel {
                 current: initial_state,
                 publisher,
@@ -68,7 +66,6 @@ pub(crate) fn bootstrap(
             },
             runtime: ProcessRuntime {
                 log,
-                capture_subprocess_output: cfg.logging.capture_subprocess_output,
                 command_runner: Box::new(TokioCommandRunner),
             },
         },

@@ -7,7 +7,6 @@ use tokio::{
 };
 
 use crate::{
-    config::ProcessConfig,
     process::{
         cluster::{ProcessCluster, ProcessPreparationError},
         postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
@@ -286,11 +285,11 @@ fn can_accept_job(state: &ProcessState) -> bool {
     matches!(state, ProcessState::Idle { .. })
 }
 
-pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn run(mut ctx: ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     ctx.runtime
         .log
         .send(ProcessLogEvent::WorkerRunStarted {
-            capture_subprocess_output: ctx.runtime.capture_subprocess_output,
+            capture_subprocess_output: ctx.cfg.logging.capture_subprocess_output,
         })
         .map_err(|err| {
             WorkerError::Message(format!("process worker start log send failed: {err}"))
@@ -301,7 +300,7 @@ pub(crate) async fn run(mut ctx: ProcessWorkerCtx) -> Result<(), WorkerError> {
     }
 }
 
-pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     let mut request = None;
     let mut inbox_disconnected = false;
     loop {
@@ -461,7 +460,7 @@ fn start_postgres_preflight_is_already_running(
 }
 
 fn start_postgres_preflight_details(
-    ctx: &ProcessWorkerCtx,
+    ctx: &ProcessWorkerCtx<'_>,
     intent: &ProcessIntent,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf, u16)> {
     match intent {
@@ -469,20 +468,17 @@ fn start_postgres_preflight_details(
             PostgresStartIntent::Primary
             | PostgresStartIntent::DetachedStandby
             | PostgresStartIntent::Replica { .. },
-        ) => {
-            let runtime_config = ctx.observed.runtime_config.latest();
-            Some((
-                runtime_config.postgres.paths.data_dir.clone(),
-                ctx.plan.postgres.paths.socket_dir.clone(),
-                ctx.plan.postgres.port,
-            ))
-        }
+        ) => Some((
+            ctx.cfg.postgres.data_dir.clone(),
+            ctx.cfg.postgres.socket_dir.clone(),
+            ctx.cfg.postgres.listen_port,
+        )),
         _ => None,
     }
 }
 
 pub(crate) async fn start_job(
-    ctx: &mut ProcessWorkerCtx,
+    ctx: &mut ProcessWorkerCtx<'_>,
     request: ProcessIntentRequest,
 ) -> Result<(), WorkerError> {
     if !can_accept_job(&ctx.state_channel.current) {
@@ -589,8 +585,7 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
-    let prepared_launch =
-        match cluster.prepare(&request, &ctx.config, ctx.runtime.capture_subprocess_output) {
+    let prepared_launch = match cluster.prepare(&request) {
             Ok(prepared) => prepared,
             Err(error) => {
                 log_prepare_failure(ctx, &request, &error)?;
@@ -608,7 +603,7 @@ pub(crate) async fn start_job(
             }
         };
     let execution_request = prepared_launch.request;
-    let timeout_ms = timeout_for_kind(&execution_request.kind, &ctx.config);
+    let timeout_ms = timeout_for_kind(ctx, &execution_request.kind);
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
     let command = prepared_launch.command;
 
@@ -664,7 +659,7 @@ pub(crate) async fn start_job(
     publish_state(ctx)
 }
 
-pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
+pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     let mut runtime = match ctx.control.active_runtime.take() {
         Some(runtime) => runtime,
         None => return Ok(()),
@@ -986,7 +981,7 @@ fn subprocess_log_event(job_kind: ProcessJobKind, line: ProcessOutputLine) -> Su
 }
 
 fn transition_to_idle(
-    ctx: &mut ProcessWorkerCtx,
+    ctx: &mut ProcessWorkerCtx<'_>,
     outcome: JobOutcome,
     _now: UnixMillis,
 ) -> Result<(), WorkerError> {
@@ -997,7 +992,7 @@ fn transition_to_idle(
     publish_state(ctx)
 }
 
-fn publish_state(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
+fn publish_state(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     ctx.state_channel
         .publisher
         .publish(ctx.state_channel.current.clone())
@@ -1005,7 +1000,7 @@ fn publish_state(ctx: &mut ProcessWorkerCtx) -> Result<(), WorkerError> {
     Ok(())
 }
 
-fn current_time(ctx: &mut ProcessWorkerCtx) -> Result<UnixMillis, WorkerError> {
+fn current_time(ctx: &mut ProcessWorkerCtx<'_>) -> Result<UnixMillis, WorkerError> {
     (ctx.cadence.now)()
 }
 
@@ -1018,29 +1013,37 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-fn timeout_for_kind(kind: &ProcessExecutionKind, config: &ProcessConfig) -> u64 {
+fn timeout_for_kind(ctx: &ProcessWorkerCtx<'_>, kind: &ProcessExecutionKind) -> u64 {
     match kind {
         ProcessExecutionKind::Bootstrap(spec) => {
-            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
         }
         ProcessExecutionKind::BaseBackup(spec) => {
-            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
         }
         ProcessExecutionKind::PgRewind(spec) => {
-            spec.timeout_ms.unwrap_or(config.timeouts.pg_rewind_ms)
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.pg_rewind_timeout))
         }
         ProcessExecutionKind::Promote(spec) => {
-            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
         }
-        ProcessExecutionKind::Demote(spec) => spec.timeout_ms.unwrap_or(config.timeouts.fencing_ms),
+        ProcessExecutionKind::Demote(spec) => {
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.fencing_timeout))
+        }
         ProcessExecutionKind::StartPostgres(spec) => {
-            spec.timeout_ms.unwrap_or(config.timeouts.bootstrap_ms)
+            spec.timeout_ms
+                .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout))
         }
     }
 }
 
 fn log_prepare_failure(
-    ctx: &mut ProcessWorkerCtx,
+    ctx: &mut ProcessWorkerCtx<'_>,
     request: &ProcessIntentRequest,
     error: &ProcessPreparationError,
 ) -> Result<(), WorkerError> {
@@ -1071,6 +1074,10 @@ fn log_prepare_failure(
     }
 }
 
+fn duration_millis_u64(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1095,8 +1102,7 @@ mod tests {
             },
             state::{
                 ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
-                ProcessRuntime, ProcessRuntimePlan, ProcessState, ProcessStateChannel,
-                ProcessWorkerCtx,
+                ProcessRuntime, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
             },
         },
         state::{
@@ -1230,7 +1236,7 @@ mod tests {
         log_file: PathBuf,
     ) -> Result<
         (
-            ProcessWorkerCtx,
+            ProcessWorkerCtx<'static>,
             StateSubscriber<ProcessState>,
             UnboundedSender<ProcessIntentRequest>,
         ),
@@ -1261,29 +1267,29 @@ mod tests {
                 binaries: sample_binary_paths(),
             })
             .build();
+        let cfg = Box::leak(Box::new(
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?,
+        ));
         let initial = ProcessState::starting();
         let (publisher, subscriber) = new_state_channel(initial.clone());
-        let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
         let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsSnapshot::starting());
         let (_tx, inbox) = unbounded_channel();
 
         Ok((
             ProcessWorkerCtx {
+                cfg,
                 cadence: ProcessCadence {
                     poll_interval: Duration::from_millis(10),
                     now: Box::new(super::system_now_unix_millis),
                 },
-                config: cfg.process.clone(),
                 identity: NodeIdentity {
-                    cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
-                    scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
-                    member_id: MemberId(cfg.cluster.member_id.clone()),
+                    cluster_name: cfg.cluster_name.clone(),
+                    scope: cfg.scope.clone(),
+                    member_id: cfg.member_id.clone(),
                 },
                 observed: ProcessObservedState {
-                    runtime_config,
                     dcs: dcs_subscriber,
                 },
-                plan: ProcessRuntimePlan::from_config(&cfg),
                 state_channel: ProcessStateChannel {
                     current: initial,
                     publisher,
@@ -1296,7 +1302,6 @@ mod tests {
                 },
                 runtime: ProcessRuntime {
                     log: LogSender::disabled(),
-                    capture_subprocess_output: true,
                     command_runner: Box::new(UnexpectedSpawnRunner),
                 },
             },

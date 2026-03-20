@@ -1,9 +1,10 @@
-use std::{fmt, time::Duration};
+use std::fmt;
 
 use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 
 pub use super::conninfo::{PgConnInfo, PgSslMode};
+use crate::config_v2::RuntimeConfigV2;
 use crate::logging::LogSender;
 use crate::state::StatePublisher;
 use crate::state::{
@@ -204,17 +205,11 @@ impl PgInfoState {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct PgInfoWorkerCtx {
+pub(crate) struct PgInfoWorkerCtx<'a> {
+    pub(crate) cfg: &'a RuntimeConfigV2,
     pub(crate) identity: NodeIdentity,
-    pub(crate) probe_conninfo: PgConnInfo,
-    pub(crate) cadence: PgInfoCadence,
     pub(crate) state_channel: PgInfoStateChannel,
     pub(crate) runtime: PgInfoRuntime,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgInfoCadence {
-    pub(crate) poll_interval: Duration,
 }
 
 #[derive(Clone, Debug)]

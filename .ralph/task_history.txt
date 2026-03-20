@@ -340,3 +340,6 @@ NONE
 .ralph/tasks/bugs/write-convergence-overcounts-isolated-primary-writes.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-reimplement-private-config-v2-loaders-and-expose-only-runtimeconfigv2-and-operatorconfigv2.md
 NONE
+.ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md

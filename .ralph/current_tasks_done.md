@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 03:30:15 PM CET 2026
+Generated: Fri Mar 20 07:28:04 PM CET 2026
 
 # Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
 
@@ -78,6 +78,17 @@ Inside dirs:
 **Superseded:** the current repo direction for config migration is now `.ralph/tasks/story-config-v2-direct-cfg-collapse/`. Do not implement this task as written without reconciling it against that newer story first; this older task preserves a weaker boundary than the current agreed architecture.
 
 <priority>medium</priority>
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md`
+
+```
+## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>in_progress</status> <passes>true</passes>
+
+<description>
+**Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to only depend on config_v2 package and 0 on config package, and LARGE SCALE CODE REDUCTION/NESTED STRUCT COLLAPSE
 ```
 
 ==============

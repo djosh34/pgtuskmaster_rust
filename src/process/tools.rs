@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 use crate::{
-    config::{PostgresBinaryName, ProcessConfig, RoleAuthConfig},
+    config_v2::{types::Secret, RuntimeConfigV2},
     process::{
         jobs::{
             ActiveJobKind, PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
@@ -9,10 +9,7 @@ use crate::{
         },
         planner::ClusterProcessPlan,
         session::PreparedManagedPostgresSession,
-        state::{
-            ProcessExecutionKind, ProcessExecutionRequest, ProcessObservedSnapshot,
-            ProcessRuntimePlan,
-        },
+        state::{ProcessExecutionKind, ProcessExecutionRequest, ProcessObservedSnapshot},
     },
 };
 
@@ -25,9 +22,9 @@ impl ExternalToolLowerer {
     pub(crate) fn lower_execution_request(
         &self,
         request_id: crate::state::JobId,
+        cfg: &RuntimeConfigV2,
         plan: &ClusterProcessPlan,
-        runtime: &ProcessRuntimePlan,
-        observed: &ProcessObservedSnapshot,
+        _observed: &ProcessObservedSnapshot,
         prepared_session: Option<&PreparedManagedPostgresSession>,
     ) -> Result<ProcessExecutionRequest, ProcessError> {
         let kind = match plan {
@@ -48,11 +45,11 @@ impl ExternalToolLowerer {
                 })?;
                 ProcessExecutionKind::StartPostgres(StartPostgresSpec {
                     mode: start.mode,
-                    data_dir: observed.runtime_config.postgres.paths.data_dir.clone(),
-                    socket_dir: runtime.postgres.paths.socket_dir.clone(),
-                    port: runtime.postgres.port,
+                    data_dir: cfg.postgres.data_dir.clone(),
+                    socket_dir: cfg.postgres.socket_dir.clone(),
+                    port: cfg.postgres.listen_port,
                     config_file: prepared_session.config.postgresql_conf_path.clone(),
-                    log_file: runtime.postgres.paths.log_file.clone(),
+                    log_file: cfg.postgres.log_file.clone(),
                     wait_seconds: None,
                     timeout_ms: None,
                 })
@@ -69,9 +66,8 @@ impl ExternalToolLowerer {
 
     pub(crate) fn build_command(
         &self,
-        config: &ProcessConfig,
+        cfg: &RuntimeConfigV2,
         kind: &ProcessExecutionKind,
-        capture_output: bool,
     ) -> Result<ProcessCommandSpec, ProcessError> {
         match kind {
             ProcessExecutionKind::Bootstrap(spec) => {
@@ -81,7 +77,7 @@ impl ExternalToolLowerer {
                         "bootstrap.superuser must not be empty".to_string(),
                     ));
                 }
-                let program = resolve_process_binary(config, PostgresBinaryName::Initdb)?;
+                let program = cfg.binaries.initdb.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args: vec![
@@ -93,7 +89,7 @@ impl ExternalToolLowerer {
                         spec.superuser.as_str().to_string(),
                     ],
                     env: Vec::new(),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
@@ -113,7 +109,7 @@ impl ExternalToolLowerer {
                         "basebackup.source_conninfo.dbname must not be empty".to_string(),
                     ));
                 }
-                let program = resolve_process_binary(config, PostgresBinaryName::PgBasebackup)?;
+                let program = cfg.binaries.pg_basebackup.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args: vec![
@@ -125,7 +121,7 @@ impl ExternalToolLowerer {
                         "-Xs".to_string(),
                     ],
                     env: role_auth_env(&spec.source.auth),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
@@ -145,7 +141,7 @@ impl ExternalToolLowerer {
                         "pg_rewind.source_conninfo.dbname must not be empty".to_string(),
                     ));
                 }
-                let program = resolve_process_binary(config, PostgresBinaryName::PgRewind)?;
+                let program = cfg.binaries.pg_rewind.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args: vec![
@@ -155,7 +151,7 @@ impl ExternalToolLowerer {
                         spec.source.conninfo.to_string(),
                     ],
                     env: role_auth_env(&spec.source.auth),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
@@ -171,18 +167,18 @@ impl ExternalToolLowerer {
                     args.push("-t".to_string());
                     args.push(wait_seconds.to_string());
                 }
-                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                let program = cfg.binaries.pg_ctl.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args,
                     env: Vec::new(),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
             ProcessExecutionKind::Demote(spec) => {
                 validate_non_empty_path("demote.data_dir", &spec.data_dir)?;
-                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                let program = cfg.binaries.pg_ctl.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args: vec![
@@ -194,7 +190,7 @@ impl ExternalToolLowerer {
                         "-w".to_string(),
                     ],
                     env: Vec::new(),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
@@ -208,7 +204,7 @@ impl ExternalToolLowerer {
                     format!("config_file={}", spec.config_file.display()),
                 ];
                 let options = render_pg_ctl_option_string(&option_tokens)?;
-                let program = resolve_process_binary(config, PostgresBinaryName::PgCtl)?;
+                let program = cfg.binaries.pg_ctl.clone();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args: vec![
@@ -224,7 +220,7 @@ impl ExternalToolLowerer {
                         wait_seconds.to_string(),
                     ],
                     env: Vec::new(),
-                    capture_output,
+                    capture_output: cfg.logging.capture_subprocess_output,
                     job_kind: process_job_kind_from_execution(kind),
                 })
             }
@@ -281,23 +277,11 @@ pub(crate) fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> Pr
     }
 }
 
-fn resolve_process_binary(
-    config: &ProcessConfig,
-    binary: PostgresBinaryName,
-) -> Result<std::path::PathBuf, ProcessError> {
-    config
-        .binaries
-        .resolve_binary_path(binary)
-        .map_err(ProcessError::InvalidSpec)
-}
-
-fn role_auth_env(auth: &RoleAuthConfig) -> Vec<ProcessEnvVar> {
-    match auth {
-        RoleAuthConfig::Password { password } => vec![ProcessEnvVar {
-            key: "PGPASSWORD".to_string(),
-            value: ProcessEnvValue::Secret(password.clone()),
-        }],
-    }
+fn role_auth_env(auth: &Secret) -> Vec<ProcessEnvVar> {
+    vec![ProcessEnvVar {
+        key: "PGPASSWORD".to_string(),
+        value: ProcessEnvValue::Secret(auth.clone()),
+    }]
 }
 
 fn wipe_data_dir(data_dir: &Path) -> Result<(), ProcessError> {
@@ -434,7 +418,7 @@ mod tests {
     };
 
     use crate::{
-        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        dev_support::runtime_config::RuntimeConfigBuilder,
         pginfo::{conninfo::PgClientTls, state::PgConnInfo},
         postgres_managed::ManagedPostgresConfig,
         postgres_managed_conf::ManagedRecoverySignal,
@@ -445,7 +429,7 @@ mod tests {
                 ReplicaFollowPlan,
             },
             session::PreparedManagedPostgresSession,
-            state::{ProcessObservedSnapshot, ProcessRuntimePlan},
+            state::ProcessObservedSnapshot,
         },
         state::PgEndpoint,
     };
@@ -484,9 +468,8 @@ mod tests {
             .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
 
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let observed = ProcessObservedSnapshot {
-            runtime_config: runtime_config.clone(),
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
@@ -505,11 +488,11 @@ mod tests {
                     tls: PgClientTls {
                         mode: crate::pginfo::state::PgSslMode::Prefer,
                         root_cert: None,
-                        client_cert: None,
-                        client_key: None,
-                    },
+                    client_cert: None,
+                    client_key: None,
                 },
-                auth: runtime.replica_access.roles.replicator.auth.clone(),
+            },
+                auth: cfg.postgres.replicator.password.clone(),
             },
             timeout_ms: None,
         });
@@ -517,8 +500,8 @@ mod tests {
         let request = ExternalToolLowerer
             .lower_execution_request(
                 crate::state::JobId("job-basebackup".to_string()),
+                &cfg,
                 &plan,
-                &runtime,
                 &observed,
                 None,
             )
@@ -548,9 +531,8 @@ mod tests {
         let root = unique_test_dir("start-command")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let observed = ProcessObservedSnapshot {
-            runtime_config: runtime_config.clone(),
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
@@ -587,11 +569,11 @@ mod tests {
                         tls: PgClientTls {
                             mode: crate::pginfo::state::PgSslMode::Prefer,
                             root_cert: None,
-                            client_cert: None,
-                            client_key: None,
-                        },
+                        client_cert: None,
+                        client_key: None,
                     },
-                    auth: runtime.replica_access.roles.replicator.auth.clone(),
+                },
+                    auth: cfg.postgres.replicator.password.clone(),
                 },
                 primary_slot_name: None,
             })),
@@ -600,21 +582,14 @@ mod tests {
         let execution_request = ExternalToolLowerer
             .lower_execution_request(
                 crate::state::JobId("job-start".to_string()),
+                &cfg,
                 &plan,
-                &runtime,
                 &observed,
                 Some(&prepared_session),
             )
             .map_err(|err| format!("lower start execution request failed: {err}"))?;
         let command = ExternalToolLowerer
-            .build_command(
-                &crate::config::ProcessConfig {
-                    binaries: sample_binary_paths(),
-                    ..runtime_config.process.clone()
-                },
-                &execution_request.kind,
-                true,
-            )
+            .build_command(&cfg, &execution_request.kind)
             .map_err(|err| format!("build start command failed: {err}"))?;
 
         if command.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {

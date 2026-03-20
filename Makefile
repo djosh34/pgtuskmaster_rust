@@ -41,7 +41,7 @@ test: ensure-nextest
 	exit "$$status"
 
 test.nextest: ensure-nextest
-	CARGO_INCREMENTAL=1 cargo nextest run --workspace --all-targets --profile default --no-tests fail
+	CARGO_INCREMENTAL=0 cargo nextest run --workspace --all-targets --profile default --no-tests fail
 
 test.convert-logs:
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/default/junit.xml ./target/nextest/default/logs
@@ -55,7 +55,7 @@ test-long: ensure-nextest
 	exit "$$status"
 
 test-long.nextest: ensure-nextest
-	CARGO_INCREMENTAL=1 NEXTEST_DOUBLE_SPAWN=0 cargo nextest run --workspace --profile ultra-long --no-tests fail $(TEST_LONG_SELECTION_ARGS)
+	CARGO_INCREMENTAL=0 NEXTEST_DOUBLE_SPAWN=0 cargo nextest run --workspace --profile ultra-long --no-tests fail $(TEST_LONG_SELECTION_ARGS)
 
 test-long.convert-logs:
 	python3 ./tools/export-nextest-junit-logs.py ./target/nextest/ultra-long/junit.xml ./target/nextest/ultra-long/logs

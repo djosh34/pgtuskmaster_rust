@@ -15,11 +15,13 @@ use x509_parser::parse_x509_certificate;
 use crate::config::TlsServerConfig;
 use crate::{
     api::worker::{ApiServerTransport, ApiTlsRuntime},
-    config::{
-        resolve_inline_or_path_bytes, ApiClientAuthConfig, ApiTlsConfig, ApiTransportConfig,
-        ClientCertificateMode, ClientCommonName, ConfigMaterializeError, InlineOrPath,
-        TlsClientAuthConfig,
-    },
+    config::ConfigMaterializeError,
+    config_v2::types::ApiTransport as ApiTransportV2,
+};
+#[cfg(test)]
+use crate::config::{
+    resolve_inline_or_path_bytes, ApiClientAuthConfig, ClientCertificateMode, ClientCommonName,
+    InlineOrPath, TlsClientAuthConfig,
 };
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -40,27 +42,37 @@ impl From<ConfigMaterializeError> for TlsConfigError {
     }
 }
 
-pub(crate) fn build_api_server_transport(
-    transport: &ApiTransportConfig,
+pub(crate) fn build_api_server_transport_v2(
+    transport: &ApiTransportV2,
 ) -> Result<ApiServerTransport, TlsConfigError> {
     match transport {
-        ApiTransportConfig::Http => Ok(ApiServerTransport::Http),
-        ApiTransportConfig::Https { tls } => Ok(ApiServerTransport::Https(ApiTlsRuntime {
-            server_config: build_api_rustls_config(tls)?,
+        ApiTransportV2::Http => Ok(ApiServerTransport::Http),
+        ApiTransportV2::Https { .. } => Ok(ApiServerTransport::Https(ApiTlsRuntime {
+            server_config: build_api_rustls_config_v2(transport)?,
         })),
     }
 }
 
-pub(crate) fn build_api_server_config(
-    tls: &ApiTlsConfig,
+pub(crate) fn build_api_server_config_v2(
+    transport: &ApiTransportV2,
 ) -> Result<Arc<rustls::ServerConfig>, TlsConfigError> {
-    let verifier = api_client_verifier(&tls.client_auth)?;
-    let mut config = build_server_config(
-        "api.security.transport.https.tls.identity",
-        &tls.identity.cert_chain,
-        &tls.identity.private_key,
-        verifier,
+    let ApiTransportV2::Https {
+        tls,
+        client_ca,
+        client_cert_required,
+        allowed_client_common_names,
+    } = transport
+    else {
+        return Err(TlsConfigError::Rustls {
+            message: "https transport required for rustls server config".to_string(),
+        });
+    };
+    let verifier = build_client_verifier_from_paths(
+        client_ca.as_deref(),
+        *client_cert_required,
+        allowed_client_common_names,
     )?;
+    let mut config = build_server_config_from_paths(&tls.cert, &tls.key, verifier)?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
 }
@@ -87,10 +99,11 @@ pub(crate) fn build_rustls_server_config(
     }
 }
 
-fn build_api_rustls_config(tls: &ApiTlsConfig) -> Result<RustlsConfig, TlsConfigError> {
-    Ok(RustlsConfig::from_config(build_api_server_config(tls)?))
+fn build_api_rustls_config_v2(transport: &ApiTransportV2) -> Result<RustlsConfig, TlsConfigError> {
+    Ok(RustlsConfig::from_config(build_api_server_config_v2(transport)?))
 }
 
+#[cfg(test)]
 fn build_server_config(
     identity_field_prefix: &'static str,
     cert_chain: &InlineOrPath,
@@ -122,6 +135,34 @@ fn build_server_config(
         })
 }
 
+fn build_server_config_from_paths(
+    cert_path: &std::path::Path,
+    private_key_path: &std::path::Path,
+    verifier: Arc<dyn ClientCertVerifier>,
+) -> Result<rustls::ServerConfig, TlsConfigError> {
+    let cert_pem = std::fs::read(cert_path).map_err(|err| TlsConfigError::Io {
+        message: format!("read {} failed: {err}", cert_path.display()),
+    })?;
+    let key_pem = std::fs::read(private_key_path).map_err(|err| TlsConfigError::Io {
+        message: format!("read {} failed: {err}", private_key_path.display()),
+    })?;
+
+    let cert_chain = parse_pem_cert_chain(cert_pem.as_slice())?;
+    let key = parse_pem_private_key(key_pem.as_slice())?;
+
+    let provider = rustls::crypto::ring::default_provider();
+    rustls::ServerConfig::builder_with_provider(provider.into())
+        .with_safe_default_protocol_versions()
+        .map_err(|err| TlsConfigError::Rustls {
+            message: format!("build server config failed: {err}"),
+        })?
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(cert_chain, key)
+        .map_err(|err| TlsConfigError::Rustls {
+            message: format!("configure server cert/key failed: {err}"),
+        })
+}
+
 #[cfg(test)]
 fn plain_client_verifier(
     client_auth: Option<&TlsClientAuthConfig>,
@@ -136,6 +177,7 @@ fn plain_client_verifier(
     }
 }
 
+#[cfg(test)]
 fn api_client_verifier(
     client_auth: &ApiClientAuthConfig,
 ) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
@@ -163,6 +205,7 @@ fn api_client_verifier(
     }
 }
 
+#[cfg(test)]
 fn build_client_verifier(
     client_auth: &TlsClientAuthConfig,
     common_name_policy: CommonNamePolicy,
@@ -211,6 +254,52 @@ fn build_client_verifier(
     }
 }
 
+fn build_client_verifier_from_paths(
+    client_ca: Option<&std::path::Path>,
+    client_cert_required: bool,
+    allowed_client_common_names: &[String],
+) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
+    let Some(client_ca) = client_ca else {
+        return Ok(Arc::new(rustls::server::NoClientAuth));
+    };
+    let ca_pem = std::fs::read(client_ca).map_err(|err| TlsConfigError::Io {
+        message: format!("read {} failed: {err}", client_ca.display()),
+    })?;
+    let ca_certs = parse_pem_cert_chain(ca_pem.as_slice())?;
+
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in ca_certs {
+        roots.add(cert).map_err(|err| TlsConfigError::Rustls {
+            message: format!("add client ca cert failed: {err}"),
+        })?;
+    }
+
+    let provider = rustls::crypto::ring::default_provider();
+    let mut verifier_builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots),
+        provider.into(),
+    );
+    if !client_cert_required {
+        verifier_builder = verifier_builder.allow_unauthenticated();
+    }
+
+    let verifier = verifier_builder
+        .build()
+        .map_err(|err| TlsConfigError::Rustls {
+            message: format!("build client cert verifier failed: {err}"),
+        })?;
+
+    if allowed_client_common_names.is_empty() {
+        Ok(verifier)
+    } else {
+        Ok(Arc::new(AllowedCommonNamesClientCertVerifier {
+            inner: verifier,
+            allowed_common_names: allowed_client_common_names.iter().cloned().collect(),
+        }))
+    }
+}
+
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum CommonNamePolicy {
     Disabled,
@@ -316,6 +405,7 @@ fn certificate_common_names(
     Ok(values)
 }
 
+#[cfg(test)]
 fn client_common_names(values: &[ClientCommonName]) -> BTreeSet<String> {
     values
         .iter()

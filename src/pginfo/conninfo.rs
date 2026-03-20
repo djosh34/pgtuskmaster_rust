@@ -32,8 +32,8 @@ impl PgSslMode {
             "allow" => Some(Self::Allow),
             "prefer" => Some(Self::Prefer),
             "require" => Some(Self::Require),
-            "verify-ca" => Some(Self::VerifyCa),
-            "verify-full" => Some(Self::VerifyFull),
+            "verify-ca" | "verify_ca" => Some(Self::VerifyCa),
+            "verify-full" | "verify_full" => Some(Self::VerifyFull),
             _ => None,
         }
     }
@@ -416,5 +416,11 @@ mod tests {
             render_conninfo_value("/etc/pgtm/ca bundle\\with'space.pem"),
             r"'/etc/pgtm/ca bundle\\with\'space.pem'"
         );
+    }
+
+    #[test]
+    fn pg_ssl_mode_parse_accepts_snake_case_aliases() {
+        assert_eq!(PgSslMode::parse("verify_ca"), Some(PgSslMode::VerifyCa));
+        assert_eq!(PgSslMode::parse("verify_full"), Some(PgSslMode::VerifyFull));
     }
 }

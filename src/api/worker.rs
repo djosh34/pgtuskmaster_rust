@@ -17,7 +17,7 @@ use crate::{
         ApiCertificateReloadStep, ApiError, NodeState, PostgresCertificateReloadStep,
         PostgresReloadSignal, ReloadCertificatesResponse,
     },
-    config::{ApiAuthConfig, RoleTokens, RuntimeConfig, SecretSource, TokenAuth},
+    config_v2::{types::ApiAuth, RuntimeConfigV2},
     dcs::{DcsHandle, DcsSnapshot},
     ha::state::HaState,
     logging::LogSender,
@@ -37,17 +37,6 @@ pub(crate) enum ApiObservedState {
         dcs: StateSubscriber<DcsSnapshot>,
         ha: StateSubscriber<HaState>,
     },
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum ApiBindConfig {
-    Listen(SocketAddr),
-}
-
-impl ApiBindConfig {
-    pub(crate) fn listen(listen_addr: SocketAddr) -> Self {
-        Self::Listen(listen_addr)
-    }
 }
 
 #[derive(Clone)]
@@ -79,15 +68,15 @@ impl ApiTlsCertificateReloadHandle {
 
     async fn reload(
         &self,
-        cfg: &RuntimeConfig,
+        cfg: &RuntimeConfigV2,
     ) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
         match self {
             Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
             Self::Https { server_config } => {
-                let crate::config::ApiTransportConfig::Https { tls } = &cfg.api.transport else {
+                let crate::config_v2::types::ApiTransport::Https { .. } = &cfg.api.transport else {
                     return Err(ReloadCertificatesError::ApiTransportMismatch);
                 };
-                let reloaded = crate::tls::build_api_server_config(tls)?;
+                let reloaded = crate::tls::build_api_server_config_v2(&cfg.api.transport)?;
                 server_config.reload_from_config(reloaded);
                 Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
             }
@@ -109,10 +98,10 @@ impl ApiReloadCertificatesHandle {
 
     async fn reload(
         &self,
-        cfg: &RuntimeConfig,
+        cfg: &RuntimeConfigV2,
     ) -> Result<ReloadCertificatesResponse, ReloadCertificatesError> {
         let api = self.api_tls.reload(cfg).await?;
-        let target = ManagedPostmasterTarget::from_data_dir(cfg.postgres.paths.data_dir.clone());
+        let target = ManagedPostmasterTarget::from_data_dir(cfg.postgres.data_dir.clone());
         let postgres = reload_managed_postmaster(&target)?;
         Ok(ReloadCertificatesResponse {
             api,
@@ -135,13 +124,11 @@ enum ReloadCertificatesError {
 }
 
 #[derive(Clone)]
-pub(crate) struct ApiRuntimeCtx {
+pub(crate) struct ApiRuntimeCtx<'a> {
+    pub(crate) cfg: &'a RuntimeConfigV2,
     pub(crate) identity: NodeIdentity,
     pub(crate) observed: ApiObservedState,
-    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs_handle: DcsHandle,
-    pub(crate) bind: ApiBindConfig,
-    pub(crate) auth: TokenAuth,
     pub(crate) transport: ApiServerTransport,
     pub(crate) reload_certificates: ApiReloadCertificatesHandle,
     pub(crate) _log: LogSender,
@@ -191,21 +178,20 @@ impl From<ApiError> for ApiHttpError {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn build_router(ctx: ApiRuntimeCtx) -> Result<Router, WorkerError> {
+pub(crate) fn build_router(ctx: ApiRuntimeCtx<'static>) -> Result<Router, WorkerError> {
     let (_bind, _transport, app_state) = build_app_state(ctx)?;
     Ok(router_from_state(app_state))
 }
 
 fn build_app_state(
-    ctx: ApiRuntimeCtx,
-) -> Result<(ApiBindConfig, ApiServerTransport, ApiRuntimeCtx), WorkerError> {
-    let auth = resolve_auth_state(&ctx.auth, &ctx.runtime_config.latest())?;
-    let bind = ctx.bind.clone();
+    ctx: ApiRuntimeCtx<'static>,
+) -> Result<(SocketAddr, ApiServerTransport, ApiRuntimeCtx<'static>), WorkerError> {
+    let bind = ctx.cfg.api.listen_addr;
     let transport = ctx.transport.clone();
-    Ok((bind, transport, ApiRuntimeCtx { auth, ..ctx }))
+    Ok((bind, transport, ctx))
 }
 
-fn router_from_state(app_state: ApiRuntimeCtx) -> Router {
+fn router_from_state(app_state: ApiRuntimeCtx<'static>) -> Router {
     let read_routes =
         Router::new()
             .route("/state", get(get_state))
@@ -229,18 +215,18 @@ fn router_from_state(app_state: ApiRuntimeCtx) -> Router {
         .with_state(app_state)
 }
 
-pub(super) async fn run(ctx: ApiRuntimeCtx) -> Result<(), WorkerError> {
-    let (bind, transport, app_state) = build_app_state(ctx)?;
+pub(super) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> {
+    let (listen_addr, transport, app_state) = build_app_state(ctx)?;
     let app = router_from_state(app_state);
 
-    match (bind, transport) {
-        (ApiBindConfig::Listen(listen_addr), ApiServerTransport::Http) => {
+    match transport {
+        ApiServerTransport::Http => {
             axum_server::bind(listen_addr)
                 .serve(app.into_make_service())
                 .await
                 .map_err(|err| WorkerError::Message(format!("api server failed: {err}")))
         }
-        (ApiBindConfig::Listen(listen_addr), ApiServerTransport::Https(runtime)) => {
+        ApiServerTransport::Https(runtime) => {
             axum_server::bind_rustls(listen_addr, runtime.server_config)
                 .serve(app.into_make_service())
                 .await
@@ -249,7 +235,7 @@ pub(super) async fn run(ctx: ApiRuntimeCtx) -> Result<(), WorkerError> {
     }
 }
 
-async fn get_state(State(state): State<ApiRuntimeCtx>) -> Result<Json<NodeState>, ApiHttpError> {
+async fn get_state(State(state): State<ApiRuntimeCtx<'_>>) -> Result<Json<NodeState>, ApiHttpError> {
     let ApiObservedState::Live {
         pg,
         process,
@@ -271,7 +257,7 @@ async fn get_state(State(state): State<ApiRuntimeCtx>) -> Result<Json<NodeState>
 }
 
 async fn post_switchover_handler(
-    State(state): State<ApiRuntimeCtx>,
+    State(state): State<ApiRuntimeCtx<'_>>,
     Json(request): Json<SwitchoverRequest>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
     let ApiObservedState::Live { dcs, ha, .. } = &state.observed else {
@@ -292,25 +278,25 @@ async fn post_switchover_handler(
 }
 
 async fn delete_switchover_handler(
-    State(state): State<ApiRuntimeCtx>,
+    State(state): State<ApiRuntimeCtx<'_>>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
     let response = delete_switchover(state.identity.scope.as_str(), &state.dcs_handle).await?;
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
 async fn reload_certificates(
-    State(state): State<ApiRuntimeCtx>,
+    State(state): State<ApiRuntimeCtx<'_>>,
 ) -> Result<Json<ReloadCertificatesResponse>, ApiHttpError> {
     let reloaded = state
         .reload_certificates
-        .reload(&state.runtime_config.latest())
+        .reload(state.cfg)
         .await
         .map_err(|err| ApiHttpError::internal(err.to_string()))?;
     Ok(Json(reloaded))
 }
 
 async fn require_read_auth(
-    State(state): State<ApiRuntimeCtx>,
+    State(state): State<ApiRuntimeCtx<'_>>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiHttpError> {
@@ -318,7 +304,7 @@ async fn require_read_auth(
 }
 
 async fn require_admin_auth(
-    State(state): State<ApiRuntimeCtx>,
+    State(state): State<ApiRuntimeCtx<'_>>,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiHttpError> {
@@ -326,12 +312,12 @@ async fn require_admin_auth(
 }
 
 async fn require_auth(
-    state: ApiRuntimeCtx,
+    state: ApiRuntimeCtx<'_>,
     required_role: RequiredRole,
     request: Request,
     next: Next,
 ) -> Result<Response, ApiHttpError> {
-    match authorize_request(&state.auth, required_role, &request) {
+    match authorize_request(&state.cfg.api.auth, required_role, &request) {
         AuthDecision::Allowed => Ok(next.run(request).await),
         AuthDecision::Unauthorized => {
             Err(ApiHttpError::new(StatusCode::UNAUTHORIZED, "unauthorized"))
@@ -348,18 +334,22 @@ enum AuthDecision {
 }
 
 fn authorize_request(
-    auth: &TokenAuth,
+    auth: &ApiAuth,
     required_role: RequiredRole,
     request: &Request,
 ) -> AuthDecision {
-    let TokenAuth::RoleTokens(tokens) = auth else {
-        return AuthDecision::Allowed;
+    let (read_token, admin_token) = match auth {
+        ApiAuth::Disabled => return AuthDecision::Allowed,
+        ApiAuth::Tokens {
+            read_token,
+            admin_token,
+        } => (
+            Some(read_token.as_str().trim()),
+            Some(admin_token.as_str().trim()),
+        ),
     };
 
-    let read_token = tokens.read_token.as_string();
-    let admin_token = tokens.admin_token.as_string();
-
-    if read_token.is_none() && admin_token.is_none() {
+    if read_token.is_none_or(str::is_empty) && admin_token.is_none_or(str::is_empty) {
         return AuthDecision::Allowed;
     }
 
@@ -394,44 +384,6 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
     header.strip_prefix("Bearer ").map(str::trim)
 }
 
-fn resolve_auth_state(
-    configured: &TokenAuth,
-    cfg: &RuntimeConfig,
-) -> Result<TokenAuth, WorkerError> {
-    match configured {
-        TokenAuth::Disabled => match &cfg.api.auth {
-            ApiAuthConfig::Disabled => Ok(TokenAuth::Disabled),
-            ApiAuthConfig::RoleTokens(tokens) => Ok(TokenAuth::RoleTokens(RoleTokens {
-                read_token: resolve_runtime_token(
-                    "api.security.auth.role_tokens.read_token",
-                    &tokens.read_token,
-                )?,
-                admin_token: resolve_runtime_token(
-                    "api.security.auth.role_tokens.admin_token",
-                    &tokens.admin_token,
-                )?,
-            })),
-        },
-        TokenAuth::RoleTokens(tokens) => Ok(TokenAuth::RoleTokens(tokens.clone())),
-    }
-}
-
-fn resolve_runtime_token(field: &str, raw: &SecretSource) -> Result<SecretSource, WorkerError> {
-    if raw.is_none() {
-        return Ok(SecretSource::None);
-    }
-
-    let value = crate::config::resolve_secret_string(field, raw)
-        .map_err(|err| WorkerError::Message(err.to_string()))?;
-    let trimmed = value.trim();
-    Ok(if trimmed.is_empty() {
-        SecretSource::None
-    } else {
-        SecretSource::String {
-            value: trimmed.to_string(),
-        }
-    })
-}
 
 #[cfg(test)]
 mod tests {
@@ -451,20 +403,21 @@ mod tests {
 
     use crate::{
         api::{ApiCertificateReloadStep, PostgresReloadSignal, ReloadCertificatesResponse},
-        config::{
-            ApiAuthConfig, ApiClientAuthConfig, ApiRoleTokensConfig, ApiTlsConfig,
-            ApiTransportConfig, InlineOrPath, RuntimeConfig, SecretSource, TlsServerIdentityConfig,
-            TokenAuth,
+        config::{ApiAuthConfig, ApiRoleTokensConfig, SecretSource},
+        config_v2::{
+            types::{ApiTransport, TlsConfig},
+            RuntimeConfigV2,
         },
         dcs::DcsHandle,
         dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
         logging::LogSender,
         process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget},
-        state::{new_state_channel, StatePublisher},
+        state::new_state_channel,
     };
 
     use super::{
-        build_router, ApiBindConfig, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
+        build_router, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
+        ApiServerTransport,
     };
 
     struct ChildGuard(Option<Child>);
@@ -515,24 +468,33 @@ mod tests {
         Ok(dir)
     }
 
-    fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfig, String> {
+    fn write_test_tls_files(
+        data_dir: &Path,
+        cert_pem: &str,
+        key_pem: &str,
+    ) -> Result<TlsConfig, String> {
+        let tls_dir = data_dir.join("api-test-tls");
+        fs::create_dir_all(&tls_dir)
+            .map_err(|err| format!("create tls dir {} failed: {err}", tls_dir.display()))?;
+        let cert = tls_dir.join("server.crt");
+        let key = tls_dir.join("server.key");
+        fs::write(&cert, cert_pem)
+            .map_err(|err| format!("write test cert {} failed: {err}", cert.display()))?;
+        fs::write(&key, key_pem)
+            .map_err(|err| format!("write test key {} failed: {err}", key.display()))?;
+        Ok(TlsConfig {
+            cert,
+            key,
+            ca_cert: None,
+        })
+    }
+
+    fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        Ok(RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
+        let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
+            RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
             .transform_api(|api| crate::config::ApiConfig {
-                transport: ApiTransportConfig::Https {
-                    tls: ApiTlsConfig {
-                        identity: TlsServerIdentityConfig {
-                            cert_chain: InlineOrPath::Inline {
-                                content: fixture.valid_server.cert_pem.clone(),
-                            },
-                            private_key: InlineOrPath::Inline {
-                                content: fixture.valid_server.key_pem.clone(),
-                            },
-                        },
-                        client_auth: ApiClientAuthConfig::Disabled,
-                    },
-                },
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
                     read_token: SecretSource::String {
                         value: "read-secret".to_string(),
@@ -543,26 +505,26 @@ mod tests {
                 }),
                 ..api
             })
-            .build())
+            .build(),
+        )?;
+        cfg.api.transport = ApiTransport::Https {
+            tls: write_test_tls_files(
+                data_dir.as_path(),
+                fixture.valid_server.cert_pem.as_str(),
+                fixture.valid_server.key_pem.as_str(),
+            )?,
+            client_ca: None,
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
+        };
+        Ok(cfg)
     }
 
-    fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
-        RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
+    fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
+        let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
+            RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
             .transform_api(|api| crate::config::ApiConfig {
-                transport: ApiTransportConfig::Https {
-                    tls: ApiTlsConfig {
-                        identity: TlsServerIdentityConfig {
-                            cert_chain: InlineOrPath::Inline {
-                                content: "not a certificate".to_string(),
-                            },
-                            private_key: InlineOrPath::Inline {
-                                content: "not a key".to_string(),
-                            },
-                        },
-                        client_auth: ApiClientAuthConfig::Disabled,
-                    },
-                },
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
                     read_token: SecretSource::String {
                         value: "read-secret".to_string(),
@@ -573,11 +535,20 @@ mod tests {
                 }),
                 ..api
             })
-            .build()
+            .build(),
+        )?;
+        cfg.api.transport = ApiTransport::Https {
+            tls: write_test_tls_files(data_dir.as_path(), "not a certificate", "not a key")?,
+            client_ca: None,
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
+        };
+        Ok(cfg)
     }
 
-    fn sample_http_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
-        RuntimeConfigBuilder::new()
+    fn sample_http_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
+        crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
+            RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .transform_api(|api| crate::config::ApiConfig {
                 auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
@@ -590,13 +561,21 @@ mod tests {
                 }),
                 ..api
             })
-            .build()
+            .build(),
+        )
     }
 
-    fn build_test_app(
-        cfg: RuntimeConfig,
-    ) -> Result<(Router, StatePublisher<RuntimeConfig>), String> {
-        let (cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+    fn build_test_app(cfg: RuntimeConfigV2) -> Result<Router, String> {
+        let transport = crate::tls::build_api_server_transport_v2(&cfg.api.transport)
+            .map_err(|err| err.to_string())?;
+        build_test_app_with_transport(cfg, transport)
+    }
+
+    fn build_test_app_with_transport(
+        cfg: RuntimeConfigV2,
+        transport: ApiServerTransport,
+    ) -> Result<Router, String> {
+        let cfg = Box::leak(Box::new(cfg));
         let (_pg_publisher, pg) = new_state_channel(crate::pginfo::state::PgInfoState::starting());
         let (_process_publisher, process) =
             new_state_channel(crate::process::state::ProcessState::starting());
@@ -604,13 +583,12 @@ mod tests {
         let (_ha_publisher, ha) = new_state_channel(crate::ha::state::HaState::initial(
             crate::state::WorkerStatus::Starting,
         ));
-        let transport = crate::tls::build_api_server_transport(&cfg.api.transport)
-            .map_err(|err| err.to_string())?;
         let app = build_router(ApiRuntimeCtx {
+            cfg,
             identity: crate::state::NodeIdentity {
-                cluster_name: crate::state::ClusterName(cfg.cluster.name.clone()),
-                scope: crate::state::ScopeName(cfg.cluster.scope.clone()),
-                member_id: crate::state::MemberId(cfg.cluster.member_id.clone()),
+                cluster_name: cfg.cluster_name.clone(),
+                scope: cfg.scope.clone(),
+                member_id: cfg.member_id.clone(),
             },
             observed: ApiObservedState::Live {
                 pg,
@@ -618,16 +596,13 @@ mod tests {
                 dcs,
                 ha,
             },
-            runtime_config,
             dcs_handle: DcsHandle::closed(),
-            bind: ApiBindConfig::listen(cfg.api.listen_addr),
-            auth: TokenAuth::Disabled,
             transport: transport.clone(),
             reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
             _log: LogSender::disabled(),
         })
         .map_err(|err| err.to_string())?;
-        Ok((app, cfg_publisher))
+        Ok(app)
     }
 
     async fn response_body_text(response: axum::response::Response) -> Result<String, String> {
@@ -804,7 +779,7 @@ mod tests {
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
         let cfg = sample_https_runtime_config(data_dir)?;
-        let (app, _cfg_publisher) = build_test_app(cfg)?;
+        let app = build_test_app(cfg)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -848,8 +823,8 @@ mod tests {
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let cfg = sample_http_runtime_config(data_dir);
-        let (app, _cfg_publisher) = build_test_app(cfg)?;
+        let cfg = sample_http_runtime_config(data_dir)?;
+        let app = build_test_app(cfg)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -893,8 +868,8 @@ mod tests {
             .wait()
             .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
-        let cfg = sample_http_runtime_config(data_dir);
-        let (app, _cfg_publisher) = build_test_app(cfg)?;
+        let cfg = sample_http_runtime_config(data_dir)?;
+        let app = build_test_app(cfg)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -935,8 +910,8 @@ mod tests {
         let pid = child.child()?.id();
         write_postmaster_pid(&target_data_dir, pid, &real_data_dir)?;
         let _child = child;
-        let cfg = sample_http_runtime_config(target_data_dir.clone());
-        let (app, _cfg_publisher) = build_test_app(cfg)?;
+        let cfg = sample_http_runtime_config(target_data_dir.clone())?;
+        let app = build_test_app(cfg)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -975,11 +950,13 @@ mod tests {
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
-        let cfg = sample_https_runtime_config(data_dir.clone())?;
-        let (app, cfg_publisher) = build_test_app(cfg)?;
-        cfg_publisher
-            .publish(sample_invalid_https_runtime_config(data_dir))
+        let good_cfg = sample_https_runtime_config(data_dir.clone())?;
+        let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
+        let app = build_test_app_with_transport(
+            sample_invalid_https_runtime_config(data_dir)?,
+            transport,
+        )?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -1013,11 +990,10 @@ mod tests {
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
-        let cfg = sample_https_runtime_config(data_dir.clone())?;
-        let (app, cfg_publisher) = build_test_app(cfg)?;
-        cfg_publisher
-            .publish(sample_http_runtime_config(data_dir))
+        let good_cfg = sample_https_runtime_config(data_dir.clone())?;
+        let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
+        let app = build_test_app_with_transport(sample_http_runtime_config(data_dir)?, transport)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)

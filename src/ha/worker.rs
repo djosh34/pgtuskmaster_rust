@@ -16,8 +16,8 @@ use super::{
     },
 };
 
-pub(crate) async fn run(mut ctx: HaRuntimeCtx) -> Result<(), WorkerError> {
-    let mut interval = tokio::time::interval(ctx.cadence.poll_interval);
+pub(crate) async fn run(mut ctx: HaRuntimeCtx<'_>) -> Result<(), WorkerError> {
+    let mut interval = tokio::time::interval(ctx.cfg.timing.ha_loop_interval);
     loop {
         tokio::select! {
             changed = ctx.observed.pg.changed() => {
@@ -29,17 +29,14 @@ pub(crate) async fn run(mut ctx: HaRuntimeCtx) -> Result<(), WorkerError> {
             changed = ctx.observed.process.changed() => {
                 changed.map_err(|err| WorkerError::Message(format!("ha process subscriber closed: {err}")))?;
             }
-            changed = ctx.observed.config.changed() => {
-                changed.map_err(|err| WorkerError::Message(format!("ha config subscriber closed: {err}")))?;
-            }
             _ = interval.tick() => {}
         }
         step_once(&mut ctx).await?;
     }
 }
 
-pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError> {
-    let now = (ctx.cadence.now)()?;
+pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx<'_>) -> Result<(), WorkerError> {
+    let now = (ctx.now)()?;
     let observation = observe(ctx, now)?;
     let decision = decide(&observation, &ctx.identity.member_id);
     let steps = reconcile(&observation, &decision);
@@ -85,14 +82,13 @@ pub(crate) async fn step_once(ctx: &mut HaRuntimeCtx) -> Result<(), WorkerError>
 }
 
 fn observe(
-    ctx: &HaRuntimeCtx,
+    ctx: &HaRuntimeCtx<'_>,
     now: crate::state::UnixMillis,
 ) -> Result<HaObservation, WorkerError> {
-    let config = ctx.observed.config.latest();
     let pg = ctx.observed.pg.latest();
     let dcs = ctx.observed.dcs.latest();
     let process = ctx.observed.process.latest();
-    let data_dir_path = config.postgres.paths.data_dir.clone();
+    let data_dir_path = ctx.cfg.postgres.data_dir.clone();
     let self_id = &ctx.identity.member_id;
 
     let ready_primary = dcs.quorum_state().and_then(|quorum| {
@@ -201,7 +197,7 @@ fn observe(
         }
     ) && (dcs.member(self_id).is_none()
         || pg.last_refresh_at().is_none_or(|last_refresh_at| {
-            now.0.saturating_sub(last_refresh_at.0) > config.ha.lease_ttl_ms
+            now.0.saturating_sub(last_refresh_at.0) > lease_ttl_ms(ctx.cfg)
         }));
 
     Ok(HaObservation {
@@ -219,7 +215,7 @@ fn observe(
 }
 
 async fn execute_step(
-    ctx: &mut HaRuntimeCtx,
+    ctx: &mut HaRuntimeCtx<'_>,
     ha_tick: u64,
     action_index: usize,
     step: &HaStep,
@@ -243,12 +239,7 @@ async fn execute_step(
             ))
         }),
         HaStep::ReconcileManagedRoles => {
-            let runtime_config = ctx.observed.config.latest();
-            postgres_roles::reconcile_managed_roles(
-                &runtime_config,
-                runtime_config.postgres_socket_dir().as_path(),
-                runtime_config.postgres.network.listen_port,
-            )
+            postgres_roles::reconcile_managed_roles_v2(ctx.cfg)
             .await
             .map_err(|err| {
                 WorkerError::Message(format!(
@@ -267,6 +258,10 @@ async fn execute_step(
     }
 }
 
+fn lease_ttl_ms(cfg: &crate::config_v2::RuntimeConfigV2) -> u64 {
+    u64::try_from(cfg.timing.ha_lease_ttl.as_millis()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -275,7 +270,7 @@ mod tests {
         config::RuntimeConfig,
         dcs::{DcsHandle, DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::RuntimeConfigBuilder,
-        ha::state::{HaControlPlane, HaObservedState, HaStateChannel, HaWorkerCadence},
+        ha::state::{HaControlPlane, HaObservedState, HaStateChannel},
         pginfo::conninfo::PgClientTls,
         pginfo::state::{PgConfig, PgConnInfo, PgInfoCommon, Readiness},
         process::state::ProcessState,
@@ -379,7 +374,7 @@ mod tests {
             .build();
         let pg = replica_pg_state_with_primary_conninfo("node-b", 5432)?;
         let dcs = dcs_view_for_member("node-b", "node-b", 5432)?;
-        let observation = observe(&ha_context(runtime_config, pg, dcs), UnixMillis(123))
+        let observation = observe(&ha_context(runtime_config, pg, dcs)?, UnixMillis(123))
             .map_err(|err| err.to_string())?;
 
         assert_eq!(
@@ -408,7 +403,7 @@ mod tests {
             .build();
         let pg = PgInfoState::unknown(WorkerStatus::Running, SqlStatus::Unknown, None);
         let dcs = dcs_view_for_member("node-a", "node-a", 5432)?;
-        let mut ctx = ha_context(runtime_config, pg, dcs);
+        let mut ctx = ha_context(runtime_config, pg, dcs)?;
         ctx.state_channel.current.managed_roles_reconciled = true;
         ctx.state_channel.current.publication = PublicationState::Projected(
             AuthorityProjection::NoPrimary(crate::ha::types::NoPrimaryProjection::LeaseOpen),
@@ -434,8 +429,10 @@ mod tests {
         runtime_config: RuntimeConfig,
         pg: PgInfoState,
         dcs: DcsSnapshot,
-    ) -> HaRuntimeCtx {
-        let (config_publisher, config) = new_state_channel(runtime_config);
+    ) -> Result<HaRuntimeCtx<'static>, String> {
+        let cfg = Box::leak(Box::new(
+            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?,
+        ));
         let (pg_publisher, pg_subscriber) = new_state_channel(pg);
         let (dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
         let (process_publisher, process) = new_state_channel(ProcessState::Idle {
@@ -447,22 +444,18 @@ mod tests {
         let (process_intent_inbox, _process_intent_receiver) =
             tokio::sync::mpsc::unbounded_channel();
 
-        drop(config_publisher);
         drop(pg_publisher);
         drop(dcs_publisher);
         drop(process_publisher);
 
-        HaRuntimeCtx {
-            cadence: HaWorkerCadence {
-                poll_interval: std::time::Duration::from_secs(1),
-                now: Box::new(|| Ok(UnixMillis(123))),
-            },
+        Ok(HaRuntimeCtx {
+            cfg,
+            now: Box::new(|| Ok(UnixMillis(123))),
             state_channel: HaStateChannel {
                 current: initial_state,
                 publisher,
             },
             observed: HaObservedState {
-                config,
                 pg: pg_subscriber,
                 dcs: dcs_subscriber,
                 process,
@@ -476,6 +469,6 @@ mod tests {
                 scope: ScopeName("scope".to_string()),
                 member_id: MemberId("node-a".to_string()),
             },
-        }
+        })
     }
 }

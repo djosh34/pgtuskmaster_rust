@@ -1,14 +1,12 @@
 use thiserror::Error;
 
 use crate::{
+    config_v2::RuntimeConfigV2,
     postgres_managed::inspect_managed_recovery_state,
     process::{
         planner::ProcessIntentPlanner,
         session::ManagedPostgresSessionMaterializer,
-        state::{
-            ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot,
-            ProcessRuntimePlan, ProcessWorkerCtx,
-        },
+        state::{ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx},
         tools::ExternalToolLowerer,
     },
     state::NodeIdentity,
@@ -50,44 +48,42 @@ impl ProcessPreparationError {
     }
 }
 
-pub(crate) struct ProcessCluster {
+pub(crate) struct ProcessCluster<'a> {
+    cfg: &'a RuntimeConfigV2,
     identity: NodeIdentity,
-    runtime: ProcessRuntimePlan,
     observed: ProcessObservedSnapshot,
     planner: ProcessIntentPlanner,
     sessions: ManagedPostgresSessionMaterializer,
     tools: ExternalToolLowerer,
 }
 
-impl ProcessCluster {
-    pub(crate) fn production_from_ctx(ctx: &ProcessWorkerCtx) -> Result<Self, ProcessError> {
-        let runtime_config = ctx.observed.runtime_config.latest();
+impl<'a> ProcessCluster<'a> {
+    pub(crate) fn production_from_ctx(ctx: &'a ProcessWorkerCtx<'a>) -> Result<Self, ProcessError> {
         let managed_recovery_state =
-            inspect_managed_recovery_state(runtime_config.postgres.paths.data_dir.as_path())
+            inspect_managed_recovery_state(ctx.cfg.postgres.data_dir.as_path())
                 .map_err(|err| {
                     ProcessError::InvalidSpec(format!(
                         "inspect managed recovery state failed: {err}"
                     ))
                 })?;
         Ok(Self::from_snapshot(
+            ctx.cfg,
             ctx.identity.clone(),
-            ctx.plan.clone(),
             ProcessObservedSnapshot {
                 dcs: ctx.observed.dcs.latest(),
-                runtime_config,
                 managed_recovery_state,
             },
         ))
     }
 
     pub(crate) fn from_snapshot(
+        cfg: &'a RuntimeConfigV2,
         identity: NodeIdentity,
-        runtime: ProcessRuntimePlan,
         observed: ProcessObservedSnapshot,
     ) -> Self {
         Self {
+            cfg,
             identity,
-            runtime,
             observed,
             planner: ProcessIntentPlanner,
             sessions: ManagedPostgresSessionMaterializer,
@@ -98,35 +94,33 @@ impl ProcessCluster {
     pub(crate) fn prepare(
         &self,
         request: &ProcessIntentRequest,
-        config: &crate::config::ProcessConfig,
-        capture_output: bool,
     ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
         let plan = self
             .planner
             .plan(
                 &self.identity,
-                &self.runtime,
+                self.cfg,
                 &self.observed,
                 &request.intent,
             )
             .map_err(ProcessPreparationError::Planning)?;
         let prepared_session = self
             .sessions
-            .materialize(&self.observed.runtime_config, &self.runtime, &plan)
+            .materialize(self.cfg, &plan)
             .map_err(ProcessPreparationError::SessionMaterialization)?;
         let execution_request = self
             .tools
             .lower_execution_request(
                 request.id.clone(),
+                self.cfg,
                 &plan,
-                &self.runtime,
                 &self.observed,
                 prepared_session.as_ref(),
             )
             .map_err(ProcessPreparationError::ToolLowering)?;
         let command = self
             .tools
-            .build_command(config, &execution_request.kind, capture_output)
+            .build_command(self.cfg, &execution_request.kind)
             .map_err(ProcessPreparationError::ToolLowering)?;
         Ok(PreparedProcessLaunch {
             request: execution_request,
@@ -146,12 +140,12 @@ mod tests {
 
     use crate::{
         dcs::{DcsMemberState, DcsSnapshot},
-        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        dev_support::runtime_config::RuntimeConfigBuilder,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
             jobs::{PostgresStartIntent, ProcessIntent},
-            state::{ProcessIntentRequest, ProcessObservedSnapshot, ProcessRuntimePlan},
+            state::{ProcessIntentRequest, ProcessObservedSnapshot},
         },
         state::{
             ClusterName, JobId, MemberId, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState,
@@ -219,10 +213,9 @@ mod tests {
         let root = unique_test_dir("replica-start")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
-            runtime_config: runtime_config.clone(),
             dcs: DcsSnapshot::quorum(
                 None,
                 SwitchoverState::None,
@@ -230,21 +223,14 @@ mod tests {
             ),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
-        let cluster = ProcessCluster::from_snapshot(sample_identity(), runtime, snapshot);
+        let cluster = ProcessCluster::from_snapshot(&cfg, sample_identity(), snapshot);
         let request = ProcessIntentRequest {
             id: JobId("job-start-replica".to_string()),
             intent: ProcessIntent::Start(PostgresStartIntent::Replica { leader }),
         };
 
         let prepared = cluster
-            .prepare(
-                &request,
-                &crate::config::ProcessConfig {
-                    binaries: sample_binary_paths(),
-                    ..runtime_config.process.clone()
-                },
-                true,
-            )
+            .prepare(&request)
             .map_err(|err| format!("prepare replica start failed: {err}"))?;
 
         if prepared.command.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {

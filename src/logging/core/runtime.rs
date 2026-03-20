@@ -46,15 +46,15 @@ impl LogSeverity {
     }
 }
 
-impl From<crate::config::LogLevel> for LogSeverity {
-    fn from(value: crate::config::LogLevel) -> Self {
+impl From<crate::config_v2::types::LogLevel> for LogSeverity {
+    fn from(value: crate::config_v2::types::LogLevel) -> Self {
         match value {
-            crate::config::LogLevel::Trace => Self::Trace,
-            crate::config::LogLevel::Debug => Self::Debug,
-            crate::config::LogLevel::Info => Self::Info,
-            crate::config::LogLevel::Warn => Self::Warn,
-            crate::config::LogLevel::Error => Self::Error,
-            crate::config::LogLevel::Fatal => Self::Fatal,
+            crate::config_v2::types::LogLevel::Trace => Self::Trace,
+            crate::config_v2::types::LogLevel::Debug => Self::Debug,
+            crate::config_v2::types::LogLevel::Info => Self::Info,
+            crate::config_v2::types::LogLevel::Warn => Self::Warn,
+            crate::config_v2::types::LogLevel::Error => Self::Error,
+            crate::config_v2::types::LogLevel::Fatal => Self::Fatal,
         }
     }
 }
@@ -147,8 +147,6 @@ pub(crate) enum LogError {
 
 #[derive(Debug, Error)]
 pub(crate) enum LogBootstrapError {
-    #[error("file sink enabled but no file path was configured")]
-    FileSinkPathMissing,
     #[error("file sink init failed for `{path}`: {cause}")]
     FileSinkInit { path: PathBuf, cause: String },
 }
@@ -199,7 +197,10 @@ pub(crate) struct JsonlFileSink {
 }
 
 impl JsonlFileSink {
-    pub(crate) fn new(path: PathBuf, mode: crate::config::FileSinkMode) -> Result<Self, LogError> {
+    pub(crate) fn new(
+        path: PathBuf,
+        mode: crate::config_v2::types::FileSinkMode,
+    ) -> Result<Self, LogError> {
         if path.as_os_str().is_empty() {
             return Err(LogError::SinkIo("file sink path is empty".to_string()));
         }
@@ -219,10 +220,10 @@ impl JsonlFileSink {
         let mut options = OpenOptions::new();
         options.create(true).write(true);
         match mode {
-            crate::config::FileSinkMode::Append => {
+            crate::config_v2::types::FileSinkMode::Append => {
                 options.append(true);
             }
-            crate::config::FileSinkMode::Truncate => {
+            crate::config_v2::types::FileSinkMode::Truncate => {
                 options.truncate(true);
             }
         }
@@ -633,41 +634,34 @@ pub(crate) struct LoggingSystem {
 }
 
 pub(crate) fn bootstrap(
-    cfg: &crate::config::RuntimeConfig,
+    cfg: &crate::config_v2::RuntimeConfigV2,
 ) -> Result<LoggingSystem, LogBootstrapError> {
     let hostname = detect_hostname();
     let context = LogContext {
         hostname,
-        cluster_name: cfg.cluster.name.clone(),
-        scope: cfg.cluster.scope.clone(),
-        member_id: cfg.cluster.member_id.clone(),
+        cluster_name: cfg.cluster_name.as_str().to_string(),
+        scope: cfg.scope.as_str().to_string(),
+        member_id: cfg.member_id.as_str().to_string(),
     };
     let mut sinks: Vec<(String, Arc<dyn LogSink>)> = Vec::new();
 
-    if cfg.logging.sinks.stderr.enabled {
+    if cfg.logging.stderr_enabled {
         sinks.push((
             "stderr".to_string(),
             Arc::new(JsonlStderrSink::new()) as Arc<dyn LogSink>,
         ));
     }
 
-    if cfg.logging.sinks.file.enabled {
-        let path = cfg
-            .logging
-            .sinks
-            .file
-            .path
-            .clone()
-            .ok_or(LogBootstrapError::FileSinkPathMissing)?;
+    if cfg.logging.file_enabled {
+        let path = cfg.logging.file_path.clone();
 
         let label = format!("file:{}", path.display());
-        let sink =
-            JsonlFileSink::new(path.clone(), cfg.logging.sinks.file.mode).map_err(|err| {
-                LogBootstrapError::FileSinkInit {
-                    path,
-                    cause: err.to_string(),
-                }
-            })?;
+        let sink = JsonlFileSink::new(path.clone(), cfg.logging.file_mode.clone()).map_err(
+            |err| LogBootstrapError::FileSinkInit {
+                path,
+                cause: err.to_string(),
+            },
+        )?;
         sinks.push((label, Arc::new(sink) as Arc<dyn LogSink>));
     }
 
@@ -686,7 +680,7 @@ pub(crate) fn bootstrap(
     let (sender, receiver) = mpsc::unbounded_channel();
 
     Ok(LoggingSystem {
-        sender: LogSender::new(context, sender, LogSeverity::from(cfg.logging.level)),
+        sender: LogSender::new(context, sender, LogSeverity::from(cfg.logging.level.clone())),
         worker: LogWorker { receiver, backend },
     })
 }
@@ -806,7 +800,7 @@ mod tests {
     fn sample_runtime_event() -> RuntimeLogEvent {
         RuntimeLogEvent::StartupEntered {
             startup_run_id: "run-1".to_string(),
-            logging_level: crate::config::LogLevel::Info,
+            logging_level: "info".to_string(),
         }
     }
 
@@ -926,7 +920,7 @@ mod tests {
         remove_dir_all_if_exists(&root)?;
 
         let path = root.join("a").join("b").join("log.jsonl");
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append)?;
+        let sink = JsonlFileSink::new(path.clone(), crate::config_v2::types::FileSinkMode::Append)?;
         sink.emit(&sample_record("hello"))?;
         drop(sink);
 
@@ -949,7 +943,7 @@ mod tests {
         let path = root.join("log.jsonl");
         std::fs::write(&path, b"{\"pre\":1}\n")?;
 
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append)?;
+        let sink = JsonlFileSink::new(path.clone(), crate::config_v2::types::FileSinkMode::Append)?;
         sink.emit(&sample_record("post"))?;
         drop(sink);
 
@@ -974,7 +968,7 @@ mod tests {
         let path = root.join("log.jsonl");
         std::fs::write(&path, b"{\"stale\":true}\n{\"stale\":true}\n")?;
 
-        let sink = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Truncate)?;
+        let sink = JsonlFileSink::new(path.clone(), crate::config_v2::types::FileSinkMode::Truncate)?;
         sink.emit(&sample_record("fresh"))?;
         drop(sink);
 
@@ -999,7 +993,7 @@ mod tests {
         assert!(write_res.is_ok());
 
         let path = not_a_dir.join("app.jsonl");
-        let err = JsonlFileSink::new(path.clone(), crate::config::FileSinkMode::Append);
+        let err = JsonlFileSink::new(path.clone(), crate::config_v2::types::FileSinkMode::Append);
         assert!(matches!(err, Err(LogError::SinkIo(_))));
 
         if let Err(LogError::SinkIo(msg)) = err {
@@ -1103,17 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_file_enabled_without_path_returns_misconfigured() {
-        let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = None;
-
-        let res = bootstrap(&cfg);
-        assert!(matches!(res, Err(LogBootstrapError::FileSinkPathMissing)));
-    }
-
-    #[test]
     fn bootstrap_file_enabled_with_path_writes_jsonl() -> Result<(), Box<dyn std::error::Error>> {
         let root = unique_temp_root("bootstrap-file-enabled");
         remove_dir_all_if_exists(&root)?;
@@ -1125,6 +1108,7 @@ mod tests {
         cfg.logging.sinks.stderr.enabled = false;
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = Some(path.clone());
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?;
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1137,7 +1121,7 @@ mod tests {
         assert_eq!(v["message"], "runtime starting");
         assert_eq!(v["severity_text"], "info");
         assert_eq!(v["event.name"], "runtime.startup_entered");
-        assert_eq!(v["pgtm.cluster_name"], cfg.cluster.name);
+        assert_eq!(v["pgtm.cluster_name"], cfg.cluster_name.0);
 
         remove_dir_all_if_exists(&root)?;
         Ok(())
@@ -1156,6 +1140,7 @@ mod tests {
         cfg.logging.sinks.stderr.enabled = true;
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = Some(path.clone());
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?;
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1172,12 +1157,14 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), LogBootstrapError> {
+    fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), String> {
         let mut cfg = sample_runtime_config();
         cfg.logging.sinks.stderr.enabled = false;
         cfg.logging.sinks.file.enabled = false;
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
+            .map_err(|err| format!("legacy runtime config to v2 conversion failed: {err}"))?;
 
-        let system = bootstrap(&cfg)?;
+        let system = bootstrap(&cfg).map_err(|err| err.to_string())?;
         let res = system.sender.send(sample_runtime_event());
         assert!(res.is_ok(), "expected null sink to accept record: {res:?}");
         Ok(())

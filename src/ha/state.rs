@@ -1,10 +1,8 @@
-use std::time::Duration;
-
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    config::RuntimeConfig,
+    config_v2::RuntimeConfigV2,
     dcs::{DcsHandle, DcsSnapshot},
     pginfo::state::PgInfoState,
     process::state::{ProcessIntentRequest, ProcessState},
@@ -25,17 +23,13 @@ pub struct HaState {
     pub steps: HaPlan,
 }
 
-pub(crate) struct HaRuntimeCtx {
-    pub(crate) cadence: HaWorkerCadence,
+pub(crate) struct HaRuntimeCtx<'a> {
+    pub(crate) cfg: &'a RuntimeConfigV2,
+    pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
     pub(crate) state_channel: HaStateChannel,
     pub(crate) observed: HaObservedState,
     pub(crate) control: HaControlPlane,
     pub(crate) identity: NodeIdentity,
-}
-
-pub(crate) struct HaWorkerCadence {
-    pub(crate) poll_interval: Duration,
-    pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
 }
 
 pub(crate) struct HaStateChannel {
@@ -44,7 +38,6 @@ pub(crate) struct HaStateChannel {
 }
 
 pub(crate) struct HaObservedState {
-    pub(crate) config: StateSubscriber<RuntimeConfig>,
     pub(crate) pg: StateSubscriber<PgInfoState>,
     pub(crate) dcs: StateSubscriber<DcsSnapshot>,
     pub(crate) process: StateSubscriber<ProcessState>,

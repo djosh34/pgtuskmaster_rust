@@ -1,11 +1,11 @@
-use std::{path::Path, time::Duration};
+use std::path::Path;
 
 use thiserror::Error;
 
 use crate::{
-    config::{load_runtime_config, validate_runtime_config, ConfigError, RuntimeConfig},
-    process::state::ProcessRuntimePlan,
-    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName},
+    config_v2::{load_runtime_config, ConfigErrorV2, RuntimeConfigV2},
+    process::state::ensure_start_paths,
+    state::NodeIdentity,
 };
 
 use super::log_event::RuntimeLogEvent;
@@ -13,7 +13,7 @@ use super::log_event::RuntimeLogEvent;
 #[derive(Debug, Error)]
 pub enum RuntimeError {
     #[error("config error: {0}")]
-    Config(#[from] ConfigError),
+    Config(#[from] ConfigErrorV2),
     #[error("startup planning failed: {0}")]
     StartupPlanning(String),
     #[error("startup execution failed: {0}")]
@@ -34,70 +34,63 @@ pub async fn run_node_from_config_path(path: &Path) -> Result<(), RuntimeError> 
     run_node_from_config(cfg).await
 }
 
-pub async fn run_node_from_config(cfg: RuntimeConfig) -> Result<(), RuntimeError> {
-    let logging = crate::logging::bootstrap(&cfg).map_err(|err| {
+pub(crate) async fn run_node_from_config(cfg: RuntimeConfigV2) -> Result<(), RuntimeError> {
+    let cfg = Box::leak(Box::new(cfg));
+    let logging = crate::logging::bootstrap(cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("logging bootstrap failed: {err}"))
     })?;
     let log = logging.sender.clone();
     let worker = logging.worker;
     let startup_run_id = format!(
         "{}-{}",
-        cfg.cluster.member_id,
+        cfg.member_id.as_str(),
         crate::logging::system_now_unix_millis()
     );
     log.send(RuntimeLogEvent::StartupEntered {
         startup_run_id: startup_run_id.to_string(),
-        logging_level: cfg.logging.level,
+        logging_level: runtime_log_level(&cfg.logging.level).to_string(),
     })
     .map_err(|err| {
         RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
     })?;
 
-    let process_plan = ProcessRuntimePlan::from_config(&cfg);
-    process_plan.ensure_start_paths().map_err(|err| {
+    ensure_start_paths(cfg).map_err(|err| {
         RuntimeError::StartupExecution(format!("process start path preparation failed: {err}"))
     })?;
 
-    run_workers(cfg, process_plan, log, worker).await
+    run_workers(cfg, log, worker).await
 }
 
 async fn run_workers(
-    cfg: RuntimeConfig,
-    process_plan: ProcessRuntimePlan,
+    cfg: &'static RuntimeConfigV2,
     log: crate::logging::LogSender,
     log_worker: crate::logging::LogWorker,
 ) -> Result<(), RuntimeError> {
-    let (_cfg_publisher, cfg_subscriber) = new_state_channel(cfg.clone());
     let identity = NodeIdentity {
-        cluster_name: ClusterName(cfg.cluster.name.clone()),
-        scope: ScopeName(cfg.cluster.scope.clone()),
-        member_id: MemberId(cfg.cluster.member_id.clone()),
+        cluster_name: cfg.cluster_name.clone(),
+        scope: cfg.scope.clone(),
+        member_id: cfg.member_id.clone(),
     };
-    let worker_poll_interval = Duration::from_millis(cfg.ha.loop_interval_ms);
 
-    let pginfo =
-        crate::pginfo::startup::bootstrap(identity.clone(), &cfg, &process_plan, log.clone());
+    let pginfo = crate::pginfo::startup::bootstrap(identity.clone(), cfg, log.clone());
 
     let (dcs_state, dcs_handle, dcs_worker) =
-        crate::dcs::bootstrap(identity.clone(), &cfg, pginfo.state.clone(), log.clone())
+        crate::dcs::bootstrap(identity.clone(), cfg, pginfo.state.clone(), log.clone())
             .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
 
     let process = crate::process::startup::bootstrap(
         identity.clone(),
-        &cfg,
+        cfg,
         crate::process::state::ProcessObservedState {
-            runtime_config: cfg_subscriber.clone(),
             dcs: dcs_state.clone(),
         },
-        process_plan,
         log.clone(),
     );
 
     let ha = crate::ha::startup::bootstrap(
         identity.clone(),
-        worker_poll_interval,
+        cfg,
         crate::ha::state::HaObservedState {
-            config: cfg_subscriber.clone(),
             pg: pginfo.state.clone(),
             dcs: dcs_state.clone(),
             process: process.state.clone(),
@@ -110,7 +103,7 @@ async fn run_workers(
 
     let api = crate::api::startup::bootstrap(
         identity,
-        cfg_subscriber,
+        cfg,
         dcs_handle.clone(),
         crate::api::worker::ApiObservedState::Live {
             pg: pginfo.state.clone(),
@@ -127,10 +120,7 @@ async fn run_workers(
         crate::pginfo::startup::run(pginfo.worker),
         crate::dcs::run(dcs_worker),
         crate::process::startup::run(process.worker),
-        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
-            cfg.clone(),
-            log.clone(),
-        )),
+        crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(cfg, log.clone())),
         crate::ha::worker::run(ha.worker),
         crate::api::startup::run(api),
     );
@@ -143,4 +133,15 @@ async fn run_workers(
     api_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;
 
     Ok(())
+}
+
+fn runtime_log_level(level: &crate::config_v2::types::LogLevel) -> &'static str {
+    match level {
+        crate::config_v2::types::LogLevel::Trace => "trace",
+        crate::config_v2::types::LogLevel::Debug => "debug",
+        crate::config_v2::types::LogLevel::Info => "info",
+        crate::config_v2::types::LogLevel::Warn => "warn",
+        crate::config_v2::types::LogLevel::Error => "error",
+        crate::config_v2::types::LogLevel::Fatal => "fatal",
+    }
 }

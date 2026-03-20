@@ -1,7 +1,7 @@
-## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>not_started</status> <passes>false</passes>
+## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>in_progress</status> <passes>true</passes>
 
 <description>
-**Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to stop vague “migrate to RuntimeConfigV2” work and replace it with one strict invasive loop:
+**Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to only depend on config_v2 package and 0 on config package, and LARGE SCALE CODE REDUCTION/NESTED STRUCT COLLAPSE
 
 1. find one root-level place that first uses `cfg`
 2. change that root to `RuntimeConfigV2`
@@ -13,6 +13,18 @@
 8. next iteration continues deeper
 
 This task is a playbook task for the rest of the story. It does not replace the package tasks; it defines the algorithm they must follow.
+
+
+skill .agents/skills/improve-code-boundaries shows what we mean with code reduction
+
+
+PO Message:
+
+Great work till, now. However, do make sure:
+
+- Only Duration fields remain, and never convert them back into ms unless the call made is to 3rd party. That means in the whole usage in our code, must stay Duration until it really can't be
+- I see an concerning amount of code increase instead of decrease, really aim to eliminate Structs e.g. 'DcsWorkerInputs', since they are all not essential in the end. Really move out those non-config fields and flatten the structs and REMOVING all config fields in general and let them access cfg directly
+- A concerning lack of removal of unneeded structs. Really work on deleting nested structs, flattening them, removing cfg values and refer to cfg directly
 
 **Core rule from user discussion:**
 - the daemon keeps one static shared `cfg: &RuntimeConfigV2`
@@ -105,7 +117,7 @@ struct DcsWorkerInputs {
     endpoints: Vec<DcsEndpoint>,
     client: DcsClientConfig,
     poll_interval: Duration,
-    member_ttl_ms: u64,
+    member_ttl_ms: u64, // Still wrong, because must be Duration
     advertised_postgres: PgEndpoint,
     pg: StateSubscriber<PgInfoState>,
     publisher: StatePublisher<DcsSnapshot>,
@@ -180,9 +192,9 @@ impl<'a> DcsWorker<'a> {
     ) -> Self {
         Self {
             cfg,
-            inputs: DcsWorkerInputs {
-                keys: DcsKeySpace::new(identity.scope.as_str()),
-                identity,
+            inputs: DcsWorkerInputs { // not needed, is in between state
+                keys: DcsKeySpace::new(identity.scope.as_str()), // this is also bad and future work, they could just get it directly from cfg
+                identity, // same here
                 pg,
                 publisher,
                 command_inbox,
@@ -228,8 +240,8 @@ That means if iteration 1 introduces `cfg` but leaves it hidden behind another w
 // src/dcs/worker.rs
 pub(crate) struct DcsWorker<'a> {
     cfg: &'a RuntimeConfigV2,
-    identity: NodeIdentity,
-    keys: DcsKeySpace,
+    identity: NodeIdentity, // same here, must refer to cfg
+    keys: DcsKeySpace,// same here, must refer to cfg
     pg: StateSubscriber<PgInfoState>,
     publisher: StatePublisher<DcsSnapshot>,
     command_inbox: DcsCommandInbox,
@@ -593,3 +605,147 @@ pub(crate) fn materialize(
 - [ ] `make lint` — passes cleanly
 - [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+## Current tree findings for next iteration (2026-03-20 16:49)
+
+- Flattening `RuntimeConfigV2.node: NodeIdentity` is still the correct first type correction and must remain step zero.
+- The real root is still `src/runtime/node.rs`, not `src/logging/core/runtime.rs::bootstrap` in isolation. That runtime root already owns config-v2 and immediately fans it into logging, pginfo, dcs, process, ha, api, and postgres-ingest.
+- The previous handoff was still too permissive about config subscribers. The task's own core rule says cfg is static, shared once, never updated dynamically, and must not be cloned into runtime state. Therefore `new_state_channel(cfg.clone())` and every `StateSubscriber<RuntimeConfig>` / `StateSubscriber<RuntimeConfigV2>` corridor are design mistakes, not valid intermediate targets.
+- This is the combined smell from improve-code-boundaries:
+  - wrong config-ingestion boundary: old `crate::config::*` shapes are still escaping past config-v2
+  - wrong bootstrap boundary: `runtime/node.rs` is hand-carrying config mirrors and module-private startup details
+- Do not "convert the subscriber to config-v2". Delete the config subscriber corridor itself. If a long-lived worker needs config, that worker root must hold the single shared cfg reference, not a cloned channel state.
+- The one place where lifetime pressure is expected is the API server/router state. If a plain stack borrow is not sufficient there, make the daemon root own one long-lived shared cfg reference and pass that exact reference everywhere. Do not reintroduce clones, `Arc<RuntimeConfigV2>`, or subscriber wrappers as a workaround.
+- The first execution patch has now been applied and compiled far enough to prove the root plan is directionally right: `RuntimeConfigV2.node` was flattened, `runtime/node.rs` stopped creating a config subscriber, and `logging::bootstrap` moved to config-v2. The next blockers are not at the root anymore; they are the nested legacy helper/type corridors that were still under-specified below.
+
+## Discovery judgment for the real next root
+
+### Type-first correction: `RuntimeConfigV2`
+
+- `node`: cfg-derived wrapper, must be removed
+- `cluster_name`: static config field, may stay directly on `RuntimeConfigV2`
+- `scope`: static config field, may stay directly on `RuntimeConfigV2`
+- `member_id`: static config field, may stay directly on `RuntimeConfigV2`
+
+### Root corridor: `src/runtime/node.rs` immediate startup graph
+
+- `logging::bootstrap(cfg)`: direct config read, must move to `RuntimeConfigV2`
+- `ProcessRuntimePlan::from_config(cfg)`: cfg-derived runtime mirror root, must move to config-v2 and stay under active reduction
+- `pginfo::startup::bootstrap(identity, cfg, ...)`: direct static config read, must move to `RuntimeConfigV2`, and pginfo must not stay coupled to `ProcessRuntimePlan`
+- `dcs::bootstrap(identity, cfg, ...)`: direct static config read, must move to `RuntimeConfigV2`
+- `process::startup::bootstrap(identity, cfg, observed, ...)`: root bootstrap boundary, must move to `RuntimeConfigV2`
+- `ha::startup::bootstrap(...)`: must stop receiving `HaObservedState.config`; HA should read the shared cfg directly from its own root context
+- `api::startup::bootstrap(...)`: must stop receiving `runtime_config` subscribers; API should read the shared cfg directly from its own root context
+- `logging::postgres_ingest::{build_ctx, PostgresIngestWorkerCtx}`: must stop owning a cloned config object and read from the shared cfg directly
+- `new_state_channel(cfg.clone())`: cfg-derived dynamic wrapper, must be removed entirely
+
+### Shared cfg lifetime strategy for the next execution pass
+
+- `run_workers` must keep owning the single `RuntimeConfigV2` value for the daemon run and pass `&cfg` into each startup/bootstrap call in this corridor.
+- The touched worker/context roots in this pass must become lifetime-parameterized and store `cfg: &'a RuntimeConfigV2` directly instead of cloning config, wrapping it in `Arc`, or hiding it behind subscribers.
+- One local `NodeIdentity` value may still be constructed once in `runtime/node.rs` from `cfg.cluster_name`, `cfg.scope`, and `cfg.member_id` for callsites that still truly require identity as a runtime edge type during this iteration.
+- That local `NodeIdentity` is not permission to keep identity embedded inside `RuntimeConfigV2`, to rebuild `RuntimeConfig`, or to pass identity/config through channels or mirror structs.
+
+### Nested types already proven dirty
+
+- `ProcessRuntimePlan` is not a clean runtime type yet; it clones paths, port, usernames, auth, ssl mode, root cert path, and timeout values directly from cfg. Those are cfg-derived and must remain under active inspection during the next execution slice.
+- `ProcessRuntimePlan` currently has no legitimate runtime-owned fields at all; it is a startup-wide cfg snapshot. Do not preserve it under a slimmer shape just to keep `from_config` alive. Move path preparation and other static reads onto direct config-v2 access, and delete the type entirely if no true runtime state remains.
+- `ProcessWorkerCtx.config: ProcessConfig` is an old-config subtree stored in runtime state. It must be removed, not translated into a new process-config mirror. Read binaries and timeouts from `ctx.cfg.binaries` and `ctx.cfg.timing` instead.
+- `ProcessRuntime.capture_subprocess_output: bool` is cfg-derived runtime storage and must be removed. Read it from `ctx.cfg.logging.capture_subprocess_output`.
+- `ProcessObservedState.runtime_config` and `ProcessObservedSnapshot.runtime_config` are config mirrors in runtime state and must not survive the process corridor.
+- `ProcessCluster::prepare(config, capture_output)`, `ExternalToolLowerer::build_command(config, ...)`, `timeout_for_kind(..., config)`, and `resolve_process_binary(config, PostgresBinaryName)` are the same wrong boundary expressed as helper parameters. Once `ProcessWorkerCtx` owns `cfg: &RuntimeConfigV2`, those helpers must stop accepting `ProcessConfig`/`PostgresBinaryName`-driven config leaves and read `ctx.cfg.binaries`, `ctx.cfg.timing`, and `ctx.cfg.logging.capture_subprocess_output` directly or through a direct config-v2 borrow.
+- `PgInfoWorkerCtx.probe_conninfo` is a config mirror chain: socket dir, port, superuser name, dbname, tls mode, and other connection fields all come from cfg or cfg-derived defaults. It must be removed, and pginfo should read those fields from its shared cfg root instead of from `ProcessRuntimePlan`.
+- `PgInfoCadence.poll_interval` is cfg-derived static timing and must be removed. Pginfo should read `ctx.cfg.timing.ha_loop_interval` directly.
+- `HaObservedState.config` is a fake dynamic config observer and must be removed. `ha::worker::run` must stop selecting on config changes, and HA logic must read lease/data-dir/static settings from its shared cfg root.
+- `HaWorkerCadence.poll_interval` is cfg-derived static timing and must be removed. HA should read `ctx.cfg.timing.ha_loop_interval` directly.
+- `ApiRuntimeCtx.runtime_config` is a cfg-derived subscriber boundary and must be removed. Resolve auth, bind, transport, and certificate reload behavior from config-v2 without rebuilding old config types.
+- `ApiRuntimeCtx.bind` and `ApiRuntimeCtx.auth` are also cfg-derived mirrors once `cfg` is available on the API root. They must not survive as duplicated static state.
+- `ApiReloadCertificatesHandle` and API transport/auth helpers currently read old config shapes. When moved to config-v2, delete adapters rather than rebuilding `crate::config::*` values.
+- `PostgresIngestWorkerCtx.cfg` is a cloned legacy config root and must be removed. `PostgresIngestWorkerState::new` and the ingest loop must read config-v2 logging fields directly.
+- `dcs::worker::DcsWorkerInputs` is already proven dirty by the earlier example corridor. Once `dcs::bootstrap` flips to config-v2/shared-cfg, do not keep endpoints/client/poll/member-ttl/advertised-postgres mirrored on the worker.
+- `process::jobs::{BootstrapSpec.superuser, MandatoryRoleSourceConn.auth, ProcessEnvValue::Secret}` are still carrying old `crate::config` types (`PostgresRoleName`, `RoleAuthConfig`, `SecretSource`). Those are not runtime state; they are static config/auth material and must be collapsed to config-v2 primitives (`String`, `Secret`, and direct cfg reads) rather than translated through old config DTOs.
+- `postgres_managed::materialize_managed_postgres_config` and its TLS/auth helpers still accept `crate::config::RuntimeConfig` / `TlsServerConfig` / `RoleAuthConfig`-shaped inputs. The managed-postgres materialization boundary must move to config-v2 directly; do not rebuild old config to feed it.
+- `tls::{build_api_server_transport, build_api_server_config}` still depend on old `ApiTransportConfig` / `ApiTlsConfig`. Those helpers must move to `config_v2::types::{ApiTransport, TlsConfig}` directly.
+- `dcs::worker::EtcdRuntime::connect_options` still depends on old `DcsClientConfig`, `DcsAuthConfig`, `DcsTlsConfig`, and inline-or-path resolvers. Once the worker owns `&RuntimeConfigV2`, this helper must read `cfg.dcs` directly and use config-v2 `Secret`/`TlsConfig` values instead.
+- `logging::postgres_ingest::cleanup_log_dir` still takes an old `LogCleanupConfig` subtree. Once ingest owns `&RuntimeConfigV2`, cleanup must read the v2 logging retention fields directly or through a small v2-local shape, not through `crate::config`.
+- Freshly proven design gap from execution: `RuntimeConfigV2` currently discarded static config that the remaining process corridor still legitimately needs. `postgres_roles::reconcile_managed_roles` needs `postgres.local_database`, and the managed-postgres materialization boundary still needs the authoritative `postgres.access.hba` / `postgres.access.ident` contents. Those values existed in the raw/private schema or legacy config, but not on `config_v2::types::RuntimeConfigV2`, so the direct-cfg reduction could not finish correctly until the v2 type design was corrected first.
+- The correct fix is to extend the existing `config_v2::types::PostgresConfig`, not invent a new adapter. Keep the validated runtime shape flat by adding `local_database`, `pg_hba_contents`, and `pg_ident_contents` directly onto `PostgresConfig`.
+- `postgres.local_database` must be validated as non-empty during config-v2 ingestion and then carried forward as a plain `String`.
+- `postgres.access.{hba,ident}` are ingestion concerns, not runtime DTOs. Resolve inline-or-path to authoritative file contents during config-v2 parsing and store those contents on `PostgresConfig`; do not leak `PathOrInline`/`InlineOrPath` or create a `PostgresAccessConfigV2`.
+- Freshly proven design gap from ultra-long execution after the earlier parser fixes: the v2 binary shape is still incomplete. HA fixture runtime configs legitimately use `process.binaries.overrides.postgres` and `process.binaries.overrides.psql` wrapper paths, but `config_v2::types::BinariesConfig` currently drops them and `src/config_v2/parser/load_config.rs` rejects them as unsupported. That means the process/tool/runtime corridor is not actually ready to be fully v2-only yet.
+- This is the same config-boundary smell as the earlier postgres field gap: the fix is to extend the existing `config_v2::types::BinariesConfig` with the still-legitimate runtime binary paths and move remaining direct reads onto that shared v2 type. Do not reintroduce `ProcessConfig`, do not invent `ProcessConfigV2`, and do not keep the rejection in the parser while runtime/bootstrap code still materially depends on those binaries.
+- The concrete readers are already proven: the HA materialized runtime configs set both wrapper paths, `logging::postgres_ingest` still needs `psql` in its process/log-ingest integration corridor, and the process/tool runtime still needs the authoritative `postgres` path. Those must become direct `cfg.binaries.{postgres,psql}` reads during execution instead of leaking back through legacy binary-resolution helpers.
+- The operator-side config_v2 type graph is now corrected first: `OperatorConfigV2` carries `pgtm.api.expected_transport`, and the operator loader must preserve that field on the shared validated shape instead of rejecting it.
+- Keep one shared `OperatorConfigV2` root for pgtm. Do not rebuild legacy `PgtmConfig` adapters or add another mirror DTO just to carry API transport expectations.
+- Freshly proven design gap from the repaired long-suite execution is now corrected in the shared type graph: `config_v2::types::PostgresConfig` must own one validated `source_client_tls` leaf for replica-source conninfo, and `RoleConfig` must stay reduced to credentials only.
+- `src/config_v2/parser/load_config.rs` and `src/dev_support/runtime_config_v2.rs` must both map the raw/legacy `postgres.rewind.transport` input directly onto that shared `cfg.postgres.source_client_tls` field, including the CA path, instead of smearing transport state onto per-role config or discarding it.
+- `process::source::source_from_member` must read `cfg.postgres.source_client_tls` directly so `pg_basebackup` and `pg_rewind` share the authoritative client TLS settings without rebuilding config wrappers or abusing the server-side `TlsConfig` shape.
+
+## Execution order for the next turn
+
+1. Delete `RuntimeConfigV2.node` and promote `cluster_name`, `scope`, and `member_id` onto `RuntimeConfigV2` using the existing `ClusterName`, `ScopeName`, and `MemberId` wrappers.
+2. Update `src/config_v2/parser/load_config.rs` and the immediate `runtime/node.rs` reads to match the flattened root. Do not add any helper that reconstructs `NodeIdentity` inside `RuntimeConfigV2`.
+3. Use the corrected v2 postgres fields directly in the remaining runtime reductions: `cfg.postgres.local_database`, `cfg.postgres.pg_hba_contents`, `cfg.postgres.pg_ident_contents`, and `cfg.postgres.source_client_tls`. Do not rebuild old config or recreate source-world access enums to reach them.
+4. Keep `run_workers` as the one owner of the runtime config value and pass `&cfg` into the full startup graph. The touched runtime contexts in this pass must borrow the shared cfg with lifetimes; do not solve this with clones, `Arc`, or subscribers. If a callsite still needs identity, construct one local `NodeIdentity` once from the flattened cfg root in `runtime/node.rs`.
+5. Delete the config-subscriber corridor from `src/runtime/node.rs`. Do not create `new_state_channel(cfg.clone())`. Every direct startup callee reached from `runtime/node.rs` must instead take the shared config-v2 root directly.
+6. In the same runtime-root pass, convert every direct callee listed above from `crate::config::RuntimeConfig` to config-v2/shared-cfg. Do not leave a mixed v1/v2 startup graph, and do not leave some modules on subscribers while others use direct cfg.
+7. Accept compiler errors and inspect each nested type reached from that pass. Remove cfg-derived stored fields instead of recreating them behind wrappers.
+8. The mandatory nested reductions in that same pass are:
+   - `ProcessRuntimePlan`
+   - `ProcessWorkerCtx.config`
+   - `ProcessRuntime.capture_subprocess_output`
+   - `ProcessObservedState.runtime_config`
+   - `ProcessObservedSnapshot.runtime_config`
+   - `ProcessCluster::prepare(config, capture_output)`
+   - `ExternalToolLowerer::{build_command, resolve_process_binary}`
+   - `process::worker::timeout_for_kind(..., config)`
+   - `PgInfoWorkerCtx.probe_conninfo`
+   - `PgInfoCadence.poll_interval`
+   - `HaObservedState.config`
+   - `HaWorkerCadence.poll_interval`
+   - `ApiRuntimeCtx.runtime_config`
+   - `ApiRuntimeCtx.bind`
+   - `ApiRuntimeCtx.auth`
+   - `PostgresIngestWorkerCtx.cfg`
+   - `process::jobs::{BootstrapSpec.superuser, MandatoryRoleSourceConn.auth, ProcessEnvValue::Secret}`
+   - `postgres_managed::materialize_managed_postgres_config` and its TLS/auth helpers
+   - `tls::{build_api_server_transport, build_api_server_config}`
+   - `dcs::worker::EtcdRuntime::connect_options`
+   - `logging::postgres_ingest::cleanup_log_dir`'s old-config cleanup shape
+   - the already-documented `dcs::worker::DcsWorkerInputs` static cfg fields once that corridor is touched
+9. The v2 binary type graph is now corrected first:
+   - `config_v2::types::BinariesConfig` must stay as the one shared validated binary shape, including `postgres` and `psql`
+   - `src/config_v2/parser/load_config.rs` must keep ingesting those paths directly from `process.binaries.overrides`
+   - the next execution pass must revisit the process/tool/HA/log-ingest corridors that still depend on those binaries and replace old binary-resolution helpers with direct `ctx.cfg.binaries` reads
+   - if a caller still wants `PostgresBinaryName` or `cfg.process.binaries.resolve_binary_path(...)`, that boundary has not been reduced yet
+10. With the operator-side config_v2 shape corrected, keep execution on the shared operator root:
+   - use `OperatorConfigV2.expected_transport` if a pgtm/API boundary still needs the transport expectation
+   - do not reintroduce legacy `PgtmConfig` adapters or a separate mirror DTO just to carry this field
+11. If execution pressure tempts you to rebuild old `RuntimeConfig`, introduce `StateSubscriber<RuntimeConfigV2>`, invent a new mirror like `ProcessConfigV2`, or recreate raw access/auth DTOs under v2 names, stop immediately, rewrite this section again, and leave the tail marker as `TO BE VERIFIED`.
+12. If another helper proves it still needs static config that is genuinely absent from `RuntimeConfigV2` or `OperatorConfigV2`, switch back to `TO BE VERIFIED` immediately and correct the shared v2 type graph before continuing.
+
+## Expected compiler errors after this design is executed
+
+- `cfg.node.*` no longer exists after the root flattening
+- `new_state_channel(cfg.clone())` and all subscriber-based config fields no longer type-check
+- direct signature mismatches on `bootstrap`, `build_ctx`, and `from_config`
+- old logging, HA, API, postgres-ingest, DCS, and process field paths no longer exist once direct config-v2 reads replace them
+- `ProcessConfig`, `RuntimeConfig`, `PostgresRoleName`, `RoleAuthConfig`, `SecretSource`, `ApiTransportConfig`, `ApiTlsConfig`, `DcsClientConfig`, and other old config types continue to appear inside runtime contexts and helper signatures until the nested reductions are finished
+- callers that still hard-code `"postgres"` or still read old `cfg.postgres.access.*` / old auth DTOs will fail once their boundaries move to direct config-v2 reads
+
+## Correct fix direction
+
+- read `cfg.cluster_name`, `cfg.scope`, and `cfg.member_id` directly
+- read `cfg.logging.stderr_enabled`, `cfg.logging.file_enabled`, `cfg.logging.file_path`, and `cfg.logging.file_mode` directly
+- read other static settings from `cfg.postgres`, `cfg.api`, `cfg.dcs`, `cfg.logging`, `cfg.binaries`, and `cfg.timing` directly
+- use `cfg.postgres.local_database`, `cfg.postgres.pg_hba_contents`, and `cfg.postgres.pg_ident_contents` as the source of truth for managed-role reconciliation and managed-postgres materialization
+- if `ProcessRuntimePlan` becomes empty after removing cfg mirrors, delete it instead of renaming it
+- keep one shared cfg root per daemon runtime, not cloned subscriber state
+- do not add bridge helpers between `crate::config` and `crate::config_v2`
+- do not reintroduce a config wrapper like `cfg.identity`, `cfg.static_node`, a rebuilt `RuntimeConfig`, or a config channel/subscriber façade
+- do not invent new mirror types such as `ProcessConfigV2`; if a field is static config, delete it from runtime state and read from `self.cfg`
+- do not keep old config leaf DTOs around under new names either; if a process/API/DCS helper still wants `RoleAuthConfig`, `SecretSource`, `ApiTlsConfig`, or `DcsClientConfig`, that helper boundary is part of the active reduction and must move to config-v2
+- do not create a new `PostgresAccessConfigV2`, do not leak `PathOrInline`/`InlineOrPath` out of config-v2 parsing, and do not work around missing fields by hard-coding defaults like `"postgres"` for the local database
+- do not reintroduce `process.binaries` adapter helpers now that `cfg.binaries.{postgres,psql,pg_ctl,pg_rewind,initdb,pg_basebackup}` is the shared validated shape
+
+NOW EXECUTE

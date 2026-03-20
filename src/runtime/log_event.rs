@@ -13,6 +13,6 @@ pub(crate) enum RuntimeLogEvent {
         #[log(key = "runtime.startup_run_id")]
         startup_run_id: String,
         #[log(key = "logging.level")]
-        logging_level: crate::config::LogLevel,
+        logging_level: String,
     },
 }

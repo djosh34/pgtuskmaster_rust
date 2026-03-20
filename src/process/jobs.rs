@@ -4,7 +4,7 @@ use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config::{resolve_secret_string, PostgresRoleName, RoleAuthConfig, SecretSource};
+use crate::config_v2::types::Secret;
 use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, MemberId, UnixMillis};
 
@@ -48,7 +48,7 @@ pub enum PostgresStartIntent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BootstrapSpec {
     pub(crate) data_dir: PathBuf,
-    pub(crate) superuser: PostgresRoleName,
+    pub(crate) superuser: String,
     pub(crate) timeout_ms: Option<u64>,
 }
 
@@ -62,7 +62,7 @@ pub(crate) enum MandatorySourceRole {
 pub(crate) struct MandatoryRoleSourceConn {
     pub(crate) role: MandatorySourceRole,
     pub(crate) conninfo: PgConnInfo,
-    pub(crate) auth: RoleAuthConfig,
+    pub(crate) auth: Secret,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -178,13 +178,21 @@ pub(crate) struct ProcessEnvVar {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ProcessEnvValue {
-    Secret(SecretSource),
+    Secret(Secret),
 }
 
 impl ProcessEnvValue {
     pub(crate) fn resolve_string_for_key(&self, key: &str) -> Result<String, ProcessError> {
         match self {
-            Self::Secret(secret) => resolve_secret_source_string(key, secret),
+            Self::Secret(secret) => {
+                if key.trim().is_empty() {
+                    return Err(ProcessError::EnvSecretResolutionFailed {
+                        key: key.to_string(),
+                        message: "environment key must not be empty".to_string(),
+                    });
+                }
+                Ok(secret.as_str().to_string())
+            }
         }
     }
 }
@@ -247,11 +255,4 @@ impl ProcessError {
             ProcessExit::Failure { code } => Self::EarlyExit { code },
         }
     }
-}
-
-fn resolve_secret_source_string(key: &str, secret: &SecretSource) -> Result<String, ProcessError> {
-    resolve_secret_string(key, secret).map_err(|err| ProcessError::EnvSecretResolutionFailed {
-        key: key.to_string(),
-        message: err.to_string(),
-    })
 }

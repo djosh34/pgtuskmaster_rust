@@ -12,6 +12,7 @@ pub mod pg16;
 pub mod ports;
 pub mod provenance;
 pub mod runtime_config;
+pub mod runtime_config_v2;
 pub mod signals;
 pub mod tls;
 

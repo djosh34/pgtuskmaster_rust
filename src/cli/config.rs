@@ -4,8 +4,8 @@ use crate::{
         client::{CliApiClientConfig, CliAuthConfig, CliTlsConfig},
         error::CliError,
     },
-    config::{resolve_inline_or_path_bytes, resolve_secret_string, InlineOrPath, SecretSource},
-    config_v2::{load_operator_config, OperatorConfigV2},
+    config::SecretSource,
+    config_v2::{load_operator_config, OperatorConfigV2, PgtmApiTransportExpectation},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -64,8 +64,10 @@ fn resolve_api_url(
     config: Option<&OperatorConfigV2>,
 ) -> Result<reqwest::Url, CliError> {
     if let Some(raw) = override_base_url {
-        return reqwest::Url::parse(raw.trim())
-            .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")));
+        let url = reqwest::Url::parse(raw.trim())
+            .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
+        validate_expected_transport(&url, config)?;
+        return Ok(url);
     }
 
     let Some(config) = config else {
@@ -74,11 +76,44 @@ fn resolve_api_url(
         ));
     };
 
-    config.api_base_url.clone().ok_or_else(|| {
+    let base_url = config.api_base_url.clone().ok_or_else(|| {
         CliError::Config(
             "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
         )
-    })
+    })?;
+
+    let url = reqwest::Url::parse(base_url.as_str())
+        .map_err(|err| CliError::Config(format!("invalid `api.base_url` in operator config: {err}")))?;
+    validate_expected_transport(&url, Some(config))?;
+    Ok(url)
+}
+
+fn validate_expected_transport(
+    url: &reqwest::Url,
+    config: Option<&OperatorConfigV2>,
+) -> Result<(), CliError> {
+    let Some(expected_transport) = config.and_then(|cfg| cfg.expected_transport) else {
+        return Ok(());
+    };
+
+    let scheme_matches = match expected_transport {
+        PgtmApiTransportExpectation::Http => url.scheme() == "http",
+        PgtmApiTransportExpectation::Https => url.scheme() == "https",
+    };
+
+    if scheme_matches {
+        return Ok(());
+    }
+
+    let expected_scheme = match expected_transport {
+        PgtmApiTransportExpectation::Http => "http",
+        PgtmApiTransportExpectation::Https => "https",
+    };
+
+    Err(CliError::Config(format!(
+        "operator config expects `{expected_scheme}` API transport, but resolved base URL uses `{}`",
+        url.scheme()
+    )))
 }
 
 fn resolve_config_auth(
@@ -89,8 +124,18 @@ fn resolve_config_auth(
     };
 
     Ok((
-        resolve_optional_secret("api.auth.read_token", config.api_auth.read_token.as_ref())?,
-        resolve_optional_secret("api.auth.admin_token", config.api_auth.admin_token.as_ref())?,
+        config
+            .api_auth
+            .read_token
+            .as_ref()
+            .map(|token| token.as_str().to_string())
+            .and_then(|token| normalize_optional_token(Some(token.as_str()))),
+        config
+            .api_auth
+            .admin_token
+            .as_ref()
+            .map(|token| token.as_str().to_string())
+            .and_then(|token| normalize_optional_token(Some(token.as_str()))),
         config.api_auth_enabled(),
     ))
 }
@@ -102,52 +147,19 @@ fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> Result<CliTlsConfig,
     let tls = &config.client_tls;
 
     Ok(CliTlsConfig {
-        ca_cert_pem: tls
-            .ca_cert
-            .as_ref()
-            .map(|source| resolve_inline_or_path_bytes("api.tls.ca_cert", source))
-            .transpose()
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        client_cert_pem: tls
-            .identity
-            .as_ref()
-            .map(|identity| resolve_inline_or_path_bytes("api.tls.identity.cert", &identity.cert))
-            .transpose()
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        client_key_pem: tls
-            .identity
-            .as_ref()
-            .map(|identity| resolve_secret_string("api.tls.identity.key", &identity.key))
-            .transpose()
-            .map(|result| result.map(String::into_bytes))
-            .map_err(|err| CliError::Config(err.to_string()))?,
-        ca_cert_path: tls
-            .ca_cert
-            .as_ref()
-            .and_then(InlineOrPath::as_path)
-            .map(|path| path.to_path_buf()),
+        ca_cert_pem: None,
+        client_cert_pem: None,
+        client_key_pem: None,
+        ca_cert_path: tls.ca_cert.clone(),
         client_cert_path: tls
             .identity
             .as_ref()
-            .and_then(|identity| identity.cert.as_path())
-            .map(|path| path.to_path_buf()),
+            .map(|identity| identity.cert.clone()),
         client_key_path: tls
             .identity
             .as_ref()
-            .and_then(|identity| identity.key.as_path())
-            .map(|path| path.to_path_buf()),
+            .map(|identity| identity.key.clone()),
     })
-}
-
-fn resolve_optional_secret(
-    field: &str,
-    value: Option<&crate::config::SecretSource>,
-) -> Result<Option<String>, CliError> {
-    value
-        .map(|source| resolve_secret_string(field, source))
-        .transpose()
-        .map(|value| value.and_then(|token| normalize_optional_token(Some(token.as_str()))))
-        .map_err(|err| CliError::Config(err.to_string()))
 }
 
 fn normalize_optional_token(value: Option<&str>) -> Option<String> {
@@ -221,22 +233,30 @@ mod tests {
 
     #[test]
     fn resolve_context_loads_tokens_and_tls_from_config() -> Result<(), String> {
-        let path = write_temp_config(
+        let ca_path = std::env::temp_dir().join(format!(
+            "pgtm-api-ca-{}-{}.pem",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| err.to_string())?
+                .as_nanos()
+        ));
+        std::fs::write(&ca_path, "ca-cert").map_err(|err| err.to_string())?;
+        let path = write_temp_config(format!(
             r##"
 [api]
 base_url = "https://127.0.0.1:8443"
 
 [api.auth]
 type = "role_tokens"
-
-[api.auth.tokens]
-read_token = { type = "string", value = "read-token" }
-admin_token = { type = "string", value = "admin-token" }
+read_token = {{ type = "string", value = "read-token" }}
+admin_token = {{ type = "string", value = "admin-token" }}
 
 [api.tls]
-ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n" }
+ca_cert = {{ path = "{}" }}
 "##,
-        )?;
+            ca_path.display()
+        ))?;
         let cli = Cli {
             config: Some(path.clone()),
             base_url: None,
@@ -250,24 +270,27 @@ ca_cert = { content = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE--
         };
         let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
         let _ = std::fs::remove_file(path);
-        let read_token = crate::config::resolve_secret_string(
-            "api.auth.read_token",
-            &ctx.api_client.auth.read_token,
-        )
-        .map_err(|err| err.to_string())?;
+        let _ = std::fs::remove_file(ca_path);
+        let read_token = ctx
+            .api_client
+            .auth
+            .read_token
+            .as_string()
+            .ok_or_else(|| "read token missing".to_string())?;
         if read_token != "read-token" {
             return Err("read token did not resolve".to_string());
         }
-        let admin_token = crate::config::resolve_secret_string(
-            "api.auth.admin_token",
-            &ctx.api_client.auth.admin_token,
-        )
-        .map_err(|err| err.to_string())?;
+        let admin_token = ctx
+            .api_client
+            .auth
+            .admin_token
+            .as_string()
+            .ok_or_else(|| "admin token missing".to_string())?;
         if admin_token != "admin-token" {
             return Err("admin token did not resolve".to_string());
         }
-        if ctx.api_client.tls.ca_cert_pem.is_none() {
-            return Err("ca cert did not resolve".to_string());
+        if ctx.api_client.tls.ca_cert_path.is_none() {
+            return Err("ca cert path did not resolve".to_string());
         }
         Ok(())
     }
@@ -343,6 +366,42 @@ identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }
             return Err("expected postgres client key path to be preserved".to_string());
         }
         Ok(())
+    }
+
+    #[test]
+    fn resolve_context_rejects_base_url_that_violates_expected_transport() -> Result<(), String> {
+        let path = write_temp_config(
+            r#"
+[api]
+base_url = "http://127.0.0.1:8443"
+expected_transport = "https"
+"#,
+        )?;
+        let cli = Cli {
+            config: Some(path.clone()),
+            base_url: None,
+            read_token: None,
+            admin_token: None,
+            timeout_ms: 5_000,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
+        };
+
+        let err = resolve_operator_context(&cli);
+        let _ = std::fs::remove_file(path);
+
+        match err {
+            Err(err) if err
+                .to_string()
+                .contains("expects `https` API transport") =>
+            {
+                Ok(())
+            }
+            Err(err) => Err(format!("unexpected error: {err}")),
+            Ok(_) => Err("expected transport mismatch failure".to_string()),
+        }
     }
 
     fn write_temp_config(contents: impl AsRef<str>) -> Result<PathBuf, String> {

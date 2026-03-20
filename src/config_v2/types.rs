@@ -3,7 +3,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 use thiserror::Error;
-use crate::state::NodeIdentity;
+use crate::pginfo::conninfo::PgClientTls;
+use crate::state::{ClusterName, MemberId, ScopeName};
 
 #[derive(Debug, Error)]
 pub enum ConfigErrorV2 {
@@ -28,15 +29,15 @@ pub enum ConfigErrorV2 {
 
 #[derive(Clone, Debug)]
 pub(crate) struct RuntimeConfigV2 {
-    pub node: NodeIdentity,
+    pub cluster_name: ClusterName,
+    pub scope: ScopeName,
+    pub member_id: MemberId,
     pub postgres: PostgresConfig,
     pub dcs: DcsConfig,
     pub timing: TimingConfig,
     pub binaries: BinariesConfig,
-    pub working_root: PathBuf,
     pub logging: LoggingConfig,
     pub api: ApiConfig,
-    pub debug_enabled: bool,
 }
 
 
@@ -47,7 +48,7 @@ pub(crate) struct TlsConfig {
     pub ca_cert: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Secret(String);
 
 impl Secret {
@@ -71,11 +72,15 @@ pub(crate) struct PostgresConfig {
     pub listen_port: u16,
     pub advertise_port: u16,
     pub connect_timeout: Duration,
+    pub local_database: String,
+    pub source_client_tls: PgClientTls,
     pub superuser: RoleConfig,
     pub replicator: RoleConfig,
     pub rewinder: RoleConfig,
     pub pg_hba_file: PathBuf,
     pub pg_ident_file: PathBuf,
+    pub pg_hba_contents: String,
+    pub pg_ident_contents: String,
     pub extra_gucs: BTreeMap<String, String>,
     pub tls: Option<TlsConfig>,
 }
@@ -84,18 +89,6 @@ pub(crate) struct PostgresConfig {
 pub(crate) struct RoleConfig {
     pub username: String,
     pub password: Secret,
-    pub ssl_mode: PgSslMode,
-    pub tls: Option<TlsConfig>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum PgSslMode {
-    Disable,
-    Allow,
-    Prefer,
-    Require,
-    VerifyCa,
-    VerifyFull,
 }
 
 // === DCS CONFIG ===
@@ -113,10 +106,6 @@ pub(crate) struct DcsEndpoint(String);
 impl DcsEndpoint {
     pub fn new(url: String) -> Self {
         Self(url)
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
     }
 }
 
@@ -222,22 +211,35 @@ pub(crate) enum ApiAuth {
 
 // === OPERATOR CONFIG ===
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PgtmApiTransportExpectation {
+    Http,
+    Https,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct OperatorConfigV2 {
-    pub node: NodeIdentity,
-    pub api_base_url: String,
-    pub api_client_tls: Option<TlsConfig>,
-    pub api_client_auth: Option<ApiClientTokens>,
-    pub postgres_connection_override: Option<PostgresConnectionOverride>,
+    pub api_base_url: Option<String>,
+    pub expected_transport: Option<PgtmApiTransportExpectation>,
+    pub api_resolve_to: Option<SocketAddr>,
+    pub client_tls: OperatorClientTlsConfig,
+    pub api_auth: ApiClientTokens,
 }
 
+impl OperatorConfigV2 {
+    pub fn api_auth_enabled(&self) -> bool {
+        self.api_auth.read_token.is_some() || self.api_auth.admin_token.is_some()
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OperatorClientTlsConfig {
+    pub ca_cert: Option<PathBuf>,
+    pub identity: Option<TlsConfig>,
+}
+
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ApiClientTokens {
-    pub read_token: Secret,
-    pub admin_token: Secret,
+    pub read_token: Option<Secret>,
+    pub admin_token: Option<Secret>,
 }
-
-pub(crate) struct PostgresConnectionOverride {
-    pub host: String,
-    pub port: u16,
-    pub client_tls: Option<TlsConfig>,
-}
-

@@ -1,10 +1,10 @@
 use crate::{
-    config::RuntimeConfig,
+    config_v2::RuntimeConfigV2,
     postgres_managed::{materialize_managed_postgres_config, ManagedPostgresConfig},
     postgres_managed_conf::ManagedPostgresStartIntent,
     process::{
         planner::{ClusterProcessPlan, DesiredManagedPostgresSession},
-        state::ProcessRuntimePlan,
+        state::ensure_start_paths,
     },
 };
 
@@ -19,13 +19,12 @@ pub(crate) struct ManagedPostgresSessionMaterializer;
 impl ManagedPostgresSessionMaterializer {
     pub(crate) fn materialize(
         &self,
-        runtime_config: &RuntimeConfig,
-        runtime: &ProcessRuntimePlan,
+        cfg: &RuntimeConfigV2,
         plan: &ClusterProcessPlan,
     ) -> Result<Option<PreparedManagedPostgresSession>, crate::process::jobs::ProcessError> {
         match plan {
             ClusterProcessPlan::StartManagedPostgres(start) => {
-                runtime.ensure_start_paths()?;
+                ensure_start_paths(cfg)?;
                 let start_intent = match start.desired_session.clone() {
                     DesiredManagedPostgresSession::Primary => ManagedPostgresStartIntent::primary(),
                     DesiredManagedPostgresSession::DetachedStandby => {
@@ -38,7 +37,7 @@ impl ManagedPostgresSessionMaterializer {
                         )
                     }
                 };
-                let config = materialize_managed_postgres_config(runtime_config, &start_intent)
+                let config = materialize_managed_postgres_config(cfg, &start_intent)
                     .map_err(|err| {
                         crate::process::jobs::ProcessError::InvalidSpec(format!(
                             "materialize managed postgres config failed: {err}"
@@ -72,7 +71,6 @@ mod tests {
                 ClusterProcessPlan, DesiredManagedPostgresSession, ManagedStartPlan,
                 ReplicaFollowPlan,
             },
-            state::ProcessRuntimePlan,
         },
         state::PgEndpoint,
     };
@@ -105,7 +103,7 @@ mod tests {
         let root = unique_test_dir("follow")?;
         let data_dir = root.join("data");
         let runtime_config = sample_runtime_config(data_dir.clone());
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let source = MandatoryRoleSourceConn {
             role: MandatorySourceRole::Replicator,
             conninfo: crate::pginfo::state::PgConnInfo {
@@ -123,7 +121,7 @@ mod tests {
                     client_key: None,
                 },
             },
-            auth: runtime.replica_access.roles.replicator.auth.clone(),
+            auth: cfg.postgres.replicator.password.clone(),
         };
         let plan = ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
             mode: crate::process::jobs::PostgresStartMode::Replica,
@@ -134,7 +132,7 @@ mod tests {
         });
 
         let prepared = ManagedPostgresSessionMaterializer
-            .materialize(&runtime_config, &runtime, &plan)
+            .materialize(&cfg, &plan)
             .map_err(|err| format!("materialize follow session failed: {err}"))?
             .ok_or_else(|| "expected prepared managed session".to_string())?;
 
@@ -170,15 +168,15 @@ mod tests {
     fn materialize_skips_non_start_plans() -> Result<(), String> {
         let root = unique_test_dir("skip-non-start")?;
         let runtime_config = sample_runtime_config(root.join("data"));
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
         let plan = ClusterProcessPlan::Promote(crate::process::jobs::PromoteSpec {
-            data_dir: runtime_config.postgres.paths.data_dir.clone(),
+            data_dir: cfg.postgres.data_dir.clone(),
             wait_seconds: None,
             timeout_ms: None,
         });
 
         let prepared = ManagedPostgresSessionMaterializer
-            .materialize(&runtime_config, &runtime, &plan)
+            .materialize(&cfg, &plan)
             .map_err(|err| format!("materialize non-start plan failed: {err}"))?;
         if prepared.is_some() {
             return Err("non-start plan should not materialize managed session".to_string());

@@ -1,15 +1,10 @@
 use thiserror::Error;
 
 use crate::{
+    config_v2::RuntimeConfigV2,
     dcs::DcsMemberState,
-    pginfo::{
-        conninfo::PgClientTls,
-        state::{PgConnInfo, PgInfoState},
-    },
-    process::{
-        jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
-        state::ProcessRuntimePlan,
-    },
+    pginfo::state::{PgConnInfo, PgInfoState},
+    process::jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
     state::MemberId,
 };
 
@@ -25,7 +20,7 @@ pub(crate) enum SourceMaterializationError {
 
 pub(crate) fn source_from_member(
     self_id: &MemberId,
-    runtime: &ProcessRuntimePlan,
+    cfg: &RuntimeConfigV2,
     member_id: &MemberId,
     member: &DcsMemberState,
     role: MandatorySourceRole,
@@ -48,41 +43,39 @@ pub(crate) fn source_from_member(
         });
     }
 
-    let credential = match &role {
-        MandatorySourceRole::Replicator => &runtime.replica_access.roles.replicator,
-        MandatorySourceRole::Rewinder => &runtime.replica_access.roles.rewinder,
+    let credential = match role {
+        MandatorySourceRole::Replicator => &cfg.postgres.replicator,
+        MandatorySourceRole::Rewinder => &cfg.postgres.rewinder,
     };
     Ok(MandatoryRoleSourceConn {
         role,
         conninfo: PgConnInfo {
             endpoint: member.postgres_target().clone(),
             hostaddr: None,
-            user: credential.username.as_str().to_owned(),
-            dbname: runtime.replica_access.dbname.clone(),
+            user: credential.username.clone(),
+            dbname: cfg.postgres.local_database.clone(),
             application_name: None,
-            connect_timeout_s: Some(runtime.replica_access.connect_timeout_s),
+            connect_timeout_s: Some(
+                u32::try_from(cfg.postgres.connect_timeout.as_secs()).unwrap_or(u32::MAX),
+            ),
             options: None,
-            tls: PgClientTls {
-                mode: runtime.replica_access.ssl_mode,
-                root_cert: runtime.replica_access.ssl_root_cert.clone(),
-                client_cert: None,
-                client_key: None,
-            },
+            tls: cfg.postgres.source_client_tls.clone(),
         },
-        auth: credential.auth.clone(),
+        auth: credential.password.clone(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
+        config::{InlineOrPath, PostgresClientTransportConfig},
         dcs::DcsMemberState,
         dev_support::runtime_config::RuntimeConfigBuilder,
+        pginfo::conninfo::PgSslMode,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
             jobs::MandatorySourceRole,
             source::{source_from_member, SourceMaterializationError},
-            state::ProcessRuntimePlan,
         },
         state::{MemberId, PgEndpoint, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
     };
@@ -114,14 +107,15 @@ mod tests {
 
     #[test]
     fn source_from_member_selects_role_specific_credentials() -> Result<(), String> {
-        let runtime_config = RuntimeConfigBuilder::new().build();
-        let runtime = ProcessRuntimePlan::from_config(&runtime_config);
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
+            RuntimeConfigBuilder::new().build(),
+        )?;
         let member_id = MemberId("node-b".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
         let replicator = source_from_member(
             &MemberId("node-a".to_string()),
-            &runtime,
+            &cfg,
             &member_id,
             &member,
             MandatorySourceRole::Replicator,
@@ -129,7 +123,7 @@ mod tests {
         .map_err(|err| err.to_string())?;
         let rewinder = source_from_member(
             &MemberId("node-a".to_string()),
-            &runtime,
+            &cfg,
             &member_id,
             &member,
             MandatorySourceRole::Rewinder,
@@ -137,52 +131,79 @@ mod tests {
         .map_err(|err| err.to_string())?;
 
         assert_eq!(replicator.role, MandatorySourceRole::Replicator);
-        assert_eq!(
-            replicator.conninfo.user,
-            runtime
-                .replica_access
-                .roles
-                .replicator
-                .username
-                .as_str()
-                .to_string()
-        );
+        assert_eq!(replicator.conninfo.user, cfg.postgres.replicator.username);
         assert_eq!(
             replicator.conninfo.connect_timeout_s,
-            Some(runtime.replica_access.connect_timeout_s)
+            Some(u32::try_from(cfg.postgres.connect_timeout.as_secs()).unwrap_or(u32::MAX))
         );
-        assert_eq!(
-            replicator.auth,
-            runtime.replica_access.roles.replicator.auth.clone()
-        );
+        assert_eq!(replicator.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(replicator.auth, cfg.postgres.replicator.password.clone());
 
         assert_eq!(rewinder.role, MandatorySourceRole::Rewinder);
+        assert_eq!(rewinder.conninfo.user, cfg.postgres.rewinder.username);
+        assert_eq!(rewinder.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(rewinder.auth, cfg.postgres.rewinder.password.clone());
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_uses_shared_source_client_tls_for_all_roles() -> Result<(), String> {
+        let legacy = RuntimeConfigBuilder::new()
+            .transform_postgres(|postgres| crate::config::PostgresConfig {
+                rewind: crate::config::PostgresRewindConfig {
+                    transport: PostgresClientTransportConfig {
+                        ssl_mode: PgSslMode::VerifyFull,
+                        ca_cert: Some(InlineOrPath::PathConfig {
+                            path: "/tmp/pgtm/source-ca.crt".into(),
+                        }),
+                    },
+                    ..postgres.rewind
+                },
+                ..postgres
+            })
+            .build();
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(legacy)?;
+        let member_id = MemberId("node-b".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        let replicator = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Replicator,
+        )
+        .map_err(|err| err.to_string())?;
+        let rewinder = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Rewinder,
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(cfg.postgres.source_client_tls.mode, PgSslMode::VerifyFull);
         assert_eq!(
-            rewinder.conninfo.user,
-            runtime
-                .replica_access
-                .roles
-                .rewinder
-                .username
-                .as_str()
-                .to_string()
+            cfg.postgres.source_client_tls.root_cert,
+            Some("/tmp/pgtm/source-ca.crt".into())
         );
-        assert_eq!(
-            rewinder.auth,
-            runtime.replica_access.roles.rewinder.auth.clone()
-        );
+        assert_eq!(replicator.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(rewinder.conninfo.tls, cfg.postgres.source_client_tls);
         Ok(())
     }
 
     #[test]
     fn source_from_member_rejects_self_target() -> Result<(), String> {
-        let runtime = ProcessRuntimePlan::from_config(&RuntimeConfigBuilder::new().build());
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
+            RuntimeConfigBuilder::new().build(),
+        )?;
         let member_id = MemberId("node-a".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
         let err = source_from_member(
             &member_id,
-            &runtime,
+            &cfg,
             &member_id,
             &member,
             MandatorySourceRole::Replicator,

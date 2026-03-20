@@ -1,16 +1,17 @@
-use std::{fs, path::PathBuf, time::Duration};
+use std::{fs, time::Duration};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::{
-    config::{PostgresRoleName, PostgresRoleSlots, ProcessConfig, RoleAuthConfig, RuntimeConfig},
+    config_v2::RuntimeConfigV2,
     dcs::DcsSnapshot,
     logging::LogSender,
-    pginfo::state::{PgInfoState, PgSslMode},
+    pginfo::state::PgInfoState,
     postgres_managed_conf::ManagedRecoverySignal,
     state::{
-        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
+        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError,
+        WorkerStatus,
     },
 };
 
@@ -88,48 +89,11 @@ pub(crate) struct ActiveRuntime {
     pub(crate) job_kind: ProcessJobKind,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedPostgresPaths {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) socket_dir: PathBuf,
-    pub(crate) log_file: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedPostgresRuntime {
-    pub(crate) paths: ManagedPostgresPaths,
-    pub(crate) port: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MandatoryPostgresRoleCredential {
-    pub(crate) username: PostgresRoleName,
-    pub(crate) auth: RoleAuthConfig,
-}
-
-pub(crate) type MandatoryPostgresRuntimeRoles = PostgresRoleSlots<MandatoryPostgresRoleCredential>;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReplicaAccessRuntime {
-    pub(crate) roles: MandatoryPostgresRuntimeRoles,
-    pub(crate) dbname: String,
-    pub(crate) ssl_mode: PgSslMode,
-    pub(crate) ssl_root_cert: Option<PathBuf>,
-    pub(crate) connect_timeout_s: u32,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ProcessRuntimePlan {
-    pub(crate) postgres: ManagedPostgresRuntime,
-    pub(crate) replica_access: ReplicaAccessRuntime,
-}
-
-pub(crate) struct ProcessWorkerCtx {
+pub(crate) struct ProcessWorkerCtx<'a> {
+    pub(crate) cfg: &'a RuntimeConfigV2,
     pub(crate) cadence: ProcessCadence,
-    pub(crate) config: ProcessConfig,
     pub(crate) identity: NodeIdentity,
     pub(crate) observed: ProcessObservedState,
-    pub(crate) plan: ProcessRuntimePlan,
     pub(crate) state_channel: ProcessStateChannel,
     pub(crate) control: ProcessControlPlane,
     pub(crate) runtime: ProcessRuntime,
@@ -142,13 +106,11 @@ pub(crate) struct ProcessCadence {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedState {
-    pub(crate) runtime_config: StateSubscriber<RuntimeConfig>,
     pub(crate) dcs: StateSubscriber<DcsSnapshot>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProcessObservedSnapshot {
-    pub(crate) runtime_config: RuntimeConfig,
     pub(crate) dcs: DcsSnapshot,
     pub(crate) managed_recovery_state: ManagedRecoverySignal,
 }
@@ -167,101 +129,75 @@ pub(crate) struct ProcessControlPlane {
 
 pub(crate) struct ProcessRuntime {
     pub(crate) log: LogSender,
-    pub(crate) capture_subprocess_output: bool,
     pub(crate) command_runner: Box<dyn ProcessCommandRunner>,
 }
 
-impl ProcessRuntimePlan {
-    pub(crate) fn from_config(cfg: &RuntimeConfig) -> Self {
-        Self {
-            postgres: ManagedPostgresRuntime {
-                paths: ManagedPostgresPaths {
-                    data_dir: cfg.postgres.paths.data_dir.clone(),
-                    socket_dir: cfg.postgres_socket_dir(),
-                    log_file: cfg.postgres_log_file(),
-                },
-                port: cfg.postgres.network.listen_port,
-            },
-            replica_access: ReplicaAccessRuntime {
-                roles: MandatoryPostgresRuntimeRoles {
-                    superuser: MandatoryPostgresRoleCredential {
-                        username: cfg.postgres.roles.mandatory.superuser.username.clone(),
-                        auth: cfg.postgres.roles.mandatory.superuser.auth.clone(),
-                    },
-                    replicator: MandatoryPostgresRoleCredential {
-                        username: cfg.postgres.roles.mandatory.replicator.username.clone(),
-                        auth: cfg.postgres.roles.mandatory.replicator.auth.clone(),
-                    },
-                    rewinder: MandatoryPostgresRoleCredential {
-                        username: cfg.postgres.roles.mandatory.rewinder.username.clone(),
-                        auth: cfg.postgres.roles.mandatory.rewinder.auth.clone(),
-                    },
-                },
-                dbname: cfg.postgres.rewind.database.clone(),
-                ssl_mode: cfg.postgres.rewind.transport.ssl_mode,
-                ssl_root_cert: cfg
-                    .postgres
-                    .rewind
-                    .transport
-                    .ca_cert
-                    .as_ref()
-                    .and_then(crate::config::InlineOrPath::as_path)
-                    .map(|path| path.to_path_buf()),
-                connect_timeout_s: cfg.postgres.connect_timeout_s,
-            },
+pub(crate) fn ensure_start_paths(cfg: &RuntimeConfigV2) -> Result<(), ProcessError> {
+    for (field, path) in [
+        ("process.binaries.overrides.postgres", &cfg.binaries.postgres),
+        ("process.binaries.overrides.pg_ctl", &cfg.binaries.pg_ctl),
+        ("process.binaries.overrides.initdb", &cfg.binaries.initdb),
+        ("process.binaries.overrides.pg_rewind", &cfg.binaries.pg_rewind),
+        (
+            "process.binaries.overrides.pg_basebackup",
+            &cfg.binaries.pg_basebackup,
+        ),
+        ("process.binaries.overrides.psql", &cfg.binaries.psql),
+    ] {
+        if !path.is_absolute() {
+            return Err(ProcessError::InvalidSpec(format!(
+                "{field} must be an absolute path, got `{}`",
+                path.display()
+            )));
         }
     }
-}
 
-impl ProcessRuntimePlan {
-    pub(crate) fn ensure_start_paths(&self) -> Result<(), ProcessError> {
-        let data_dir = &self.postgres.paths.data_dir;
-        if let Some(parent) = data_dir.parent() {
-            fs::create_dir_all(parent).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "failed to create postgres data dir parent `{}`: {err}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        fs::create_dir_all(data_dir).map_err(|err| {
+    let data_dir = &cfg.postgres.data_dir;
+    if let Some(parent) = data_dir.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
             ProcessError::InvalidSpec(format!(
-                "failed to create postgres data dir `{}`: {err}",
+                "failed to create postgres data dir parent `{}`: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    fs::create_dir_all(data_dir).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "failed to create postgres data dir `{}`: {err}",
+            data_dir.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            ProcessError::InvalidSpec(format!(
+                "failed to set postgres data dir permissions on `{}`: {err}",
                 data_dir.display()
             ))
         })?;
+    }
 
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
+    fs::create_dir_all(&cfg.postgres.socket_dir).map_err(|err| {
+        ProcessError::InvalidSpec(format!(
+            "failed to create postgres socket dir `{}`: {err}",
+            cfg.postgres.socket_dir.display()
+        ))
+    })?;
 
-            fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "failed to set postgres data dir permissions on `{}`: {err}",
-                    data_dir.display()
-                ))
-            })?;
-        }
-
-        fs::create_dir_all(&self.postgres.paths.socket_dir).map_err(|err| {
+    if let Some(log_parent) = cfg.postgres.log_file.parent() {
+        fs::create_dir_all(log_parent).map_err(|err| {
             ProcessError::InvalidSpec(format!(
-                "failed to create postgres socket dir `{}`: {err}",
-                self.postgres.paths.socket_dir.display()
+                "failed to create postgres log dir `{}`: {err}",
+                log_parent.display()
             ))
         })?;
-
-        if let Some(log_parent) = self.postgres.paths.log_file.parent() {
-            fs::create_dir_all(log_parent).map_err(|err| {
-                ProcessError::InvalidSpec(format!(
-                    "failed to create postgres log dir `{}`: {err}",
-                    log_parent.display()
-                ))
-            })?;
-        }
-
-        Ok(())
     }
+
+    Ok(())
 }
 
 impl ProcessState {

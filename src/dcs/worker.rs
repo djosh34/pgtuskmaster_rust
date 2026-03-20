@@ -10,10 +10,7 @@ use thiserror::Error;
 use tokio::time::{Instant, MissedTickBehavior};
 
 use crate::{
-    config::{
-        resolve_inline_or_path_bytes, resolve_secret_string, DcsAuthConfig, DcsClientConfig,
-        DcsEndpoint, DcsTlsConfig,
-    },
+    config_v2::{types::{DcsEndpoint, TlsConfig}, RuntimeConfigV2},
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
@@ -46,24 +43,16 @@ pub(crate) enum DcsError {
     LeaderLeaseExpired(String),
 }
 
-pub(crate) struct DcsWorker {
-    inputs: DcsWorkerInputs,
-    cluster: DcsClusterState,
-    session: Option<ConnectedSession>,
-}
-
-struct DcsWorkerInputs {
+pub(crate) struct DcsWorker<'a> {
+    cfg: &'a RuntimeConfigV2,
     identity: NodeIdentity,
     keys: DcsKeySpace,
-    endpoints: Vec<DcsEndpoint>,
-    client: DcsClientConfig,
-    poll_interval: Duration,
-    member_ttl_ms: u64,
-    advertised_postgres: PgEndpoint,
     pg: StateSubscriber<PgInfoState>,
     publisher: StatePublisher<DcsSnapshot>,
     command_inbox: DcsCommandInbox,
     log: LogSender,
+    cluster: DcsClusterState,
+    session: Option<ConnectedSession>,
 }
 
 struct DcsClusterState {
@@ -119,38 +108,27 @@ struct KeyValueWrite {
 
 struct EtcdRuntime;
 
-pub(crate) async fn run(worker: DcsWorker) -> Result<(), WorkerError> {
+pub(crate) async fn run(worker: DcsWorker<'_>) -> Result<(), WorkerError> {
     worker.run().await
 }
 
-impl DcsWorker {
-    #[allow(clippy::too_many_arguments)]
+impl<'a> DcsWorker<'a> {
     pub(crate) fn new(
+        cfg: &'a RuntimeConfigV2,
         identity: NodeIdentity,
-        endpoints: Vec<DcsEndpoint>,
-        client: DcsClientConfig,
-        poll_interval: Duration,
-        member_ttl_ms: u64,
-        advertised_postgres: PgEndpoint,
         pg: StateSubscriber<PgInfoState>,
         publisher: StatePublisher<DcsSnapshot>,
         command_inbox: DcsCommandInbox,
         log: LogSender,
     ) -> Self {
         Self {
-            inputs: DcsWorkerInputs {
-                keys: DcsKeySpace::new(identity.scope.as_str()),
-                identity,
-                endpoints,
-                client,
-                poll_interval,
-                member_ttl_ms,
-                advertised_postgres,
-                pg,
-                publisher,
-                command_inbox,
-                log,
-            },
+            cfg,
+            keys: DcsKeySpace::new(identity.scope.as_str()),
+            identity,
+            pg,
+            publisher,
+            command_inbox,
+            log,
             cluster: DcsClusterState::new(),
             session: None,
         }
@@ -158,7 +136,7 @@ impl DcsWorker {
 
     async fn run(mut self) -> Result<(), WorkerError> {
         let mut reconnect_at = Instant::now();
-        let mut tick = tokio::time::interval(self.inputs.poll_interval);
+        let mut tick = tokio::time::interval(self.cfg.timing.ha_loop_interval);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.publish_current_view(false)?;
 
@@ -180,8 +158,8 @@ impl DcsWorker {
                         .map(|lease| lease.next_keepalive_at)
                 });
                 let step = {
-                    let pg = &mut self.inputs.pg;
-                    let command_inbox = &mut self.inputs.command_inbox;
+                    let pg = &mut self.pg;
+                    let command_inbox = &mut self.command_inbox;
                     let Some(session) = self.session.as_mut() else {
                         return Err(WorkerError::Message(
                             "dcs session disappeared during connected step".to_string(),
@@ -213,7 +191,10 @@ impl DcsWorker {
 
                 let outcome = match step {
                     ConnectedStep::Tick | ConnectedStep::PgChanged => {
-                        let pg_snapshot = self.inputs.pg.latest();
+                        let pg_snapshot = self.pg.latest();
+                        let advertised_postgres = advertised_postgres(self.cfg).map_err(|err| {
+                            WorkerError::Message(format!("dcs advertised postgres invalid: {err}"))
+                        })?;
                         let Some(session) = self.session.as_mut() else {
                             return Err(WorkerError::Message(
                                 "dcs session disappeared during connected step".to_string(),
@@ -221,10 +202,10 @@ impl DcsWorker {
                         };
                         session
                             .sync_local_member(
-                                &self.inputs.identity,
-                                &self.inputs.keys,
-                                &self.inputs.advertised_postgres,
-                                self.inputs.member_ttl_ms,
+                                &self.identity,
+                                &self.keys,
+                                &advertised_postgres,
+                                lease_ttl_ms(self.cfg),
                                 &pg_snapshot,
                                 &mut self.cluster,
                             )
@@ -238,9 +219,9 @@ impl DcsWorker {
                         };
                         session
                             .apply_command(
-                                &self.inputs.identity,
-                                &self.inputs.keys,
-                                self.inputs.member_ttl_ms,
+                                &self.identity,
+                                &self.keys,
+                                lease_ttl_ms(self.cfg),
                                 command,
                                 &mut self.cluster,
                             )
@@ -252,7 +233,7 @@ impl DcsWorker {
                                 "dcs session disappeared during connected step".to_string(),
                             ));
                         };
-                        session.apply_watch(&self.inputs.keys, &mut self.cluster, response)
+                        session.apply_watch(&self.keys, &mut self.cluster, response)
                     }
                     ConnectedStep::Watch(Ok(None)) => {
                         Err(DcsError::Io("etcd watch stream closed".to_string()))
@@ -304,8 +285,8 @@ impl DcsWorker {
             }
 
             let step = {
-                let pg = &mut self.inputs.pg;
-                let command_inbox = &mut self.inputs.command_inbox;
+                let pg = &mut self.pg;
+                let command_inbox = &mut self.command_inbox;
                 tokio::select! {
                     _ = tokio::time::sleep_until(reconnect_at) => DisconnectedStep::Reconnect,
                     _ = tick.tick() => DisconnectedStep::Tick,
@@ -321,7 +302,10 @@ impl DcsWorker {
                 DisconnectedStep::Reconnect => match self.connect_session().await {
                     Ok(session) => {
                         self.session = Some(session);
-                        let pg_snapshot = self.inputs.pg.latest();
+                        let pg_snapshot = self.pg.latest();
+                        let advertised_postgres = advertised_postgres(self.cfg).map_err(|err| {
+                            WorkerError::Message(format!("dcs advertised postgres invalid: {err}"))
+                        })?;
                         let Some(session) = self.session.as_mut() else {
                             return Err(WorkerError::Message(
                                 "dcs session missing after successful connect".to_string(),
@@ -329,10 +313,10 @@ impl DcsWorker {
                         };
                         let outcome = session
                             .sync_local_member(
-                                &self.inputs.identity,
-                                &self.inputs.keys,
-                                &self.inputs.advertised_postgres,
-                                self.inputs.member_ttl_ms,
+                                &self.identity,
+                                &self.keys,
+                                &advertised_postgres,
+                                lease_ttl_ms(self.cfg),
                                 &pg_snapshot,
                                 &mut self.cluster,
                             )
@@ -366,9 +350,9 @@ impl DcsWorker {
 
     async fn connect_session(&mut self) -> Result<ConnectedSession, DcsError> {
         ConnectedSession::connect(
-            &self.inputs.endpoints,
-            &self.inputs.client,
-            &self.inputs.keys,
+            &self.cfg.dcs.endpoints,
+            self.cfg,
+            &self.keys,
             &mut self.cluster,
         )
         .await
@@ -380,20 +364,19 @@ impl DcsWorker {
         };
         session.leader_lease = None;
         self.cluster.leadership = None;
-        self.inputs
-            .log
+        self.log
             .send(DcsLogEvent::LeaderLeaseExpired { cause })
             .map_err(|log_err| {
                 DcsError::Io(format!("dcs lease-expiry log emit failed: {log_err}"))
             })?;
         session
-            .restore_snapshot(&self.inputs.keys, &mut self.cluster)
+            .restore_snapshot(&self.keys, &mut self.cluster)
             .await?;
         Ok(())
     }
 
     fn log_failure(&self, phase: FailurePhase, err: &DcsError) -> Result<(), WorkerError> {
-        self.inputs.log.send(phase.event(err)).map_err(|log_err| {
+        self.log.send(phase.event(err)).map_err(|log_err| {
             WorkerError::Message(format!("dcs failure log emit failed: {log_err}"))
         })
     }
@@ -401,7 +384,7 @@ impl DcsWorker {
     fn publish_current_view(&mut self, etcd_reachable: bool) -> Result<(), WorkerError> {
         let next = current_snapshot(
             etcd_reachable,
-            &self.inputs.identity.member_id,
+            &self.identity.member_id,
             &self.cluster.leadership,
             &self.cluster.switchover,
             &self.cluster.members,
@@ -410,8 +393,7 @@ impl DcsWorker {
         if self.cluster.last_emitted_authority != Some(next_authority) {
             let previous = self.cluster.last_emitted_authority;
             self.cluster.last_emitted_authority = Some(next_authority);
-            self.inputs
-                .log
+            self.log
                 .send(DcsLogEvent::CoordinationModeTransition {
                     previous: previous.map(|authority| authority.to_string()),
                     next: next_authority.to_string(),
@@ -420,8 +402,7 @@ impl DcsWorker {
                     WorkerError::Message(format!("dcs coordination mode log emit failed: {err}"))
                 })?;
         }
-        self.inputs
-            .publisher
+        self.publisher
             .publish(next)
             .map_err(|err| WorkerError::Message(format!("dcs publish failed: {err}")))
     }
@@ -447,7 +428,7 @@ impl DcsClusterState {
 impl ConnectedSession {
     async fn connect(
         endpoints: &[DcsEndpoint],
-        client_cfg: &DcsClientConfig,
+        cfg: &RuntimeConfigV2,
         keys: &DcsKeySpace,
         cluster: &mut DcsClusterState,
     ) -> Result<Self, DcsError> {
@@ -455,7 +436,7 @@ impl ConnectedSession {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
-        let options = EtcdRuntime::connect_options(client_cfg)?;
+        let options = EtcdRuntime::connect_options(cfg)?;
         let mut client =
             EtcdRuntime::timeout("etcd connect", Client::connect(endpoints, options)).await?;
         let revision = Self::restore_snapshot_from_client(&mut client, keys, cluster).await?;
@@ -964,39 +945,25 @@ impl EtcdRuntime {
         Duration::from_secs(std::cmp::max(1, ttl_seconds as u64 / 3))
     }
 
-    fn connect_options(client: &DcsClientConfig) -> Result<Option<ConnectOptions>, DcsError> {
+    fn connect_options(cfg: &RuntimeConfigV2) -> Result<Option<ConnectOptions>, DcsError> {
         let mut options = ConnectOptions::new();
         let mut configured = false;
 
-        if let DcsAuthConfig::Basic { username, password } = &client.auth {
-            let resolved = resolve_secret_string("dcs.client.auth.password", password)
-                .map_err(|err| DcsError::Io(err.to_string()))?;
-            options = options.with_user(username.clone(), resolved);
+        if let Some(auth) = cfg.dcs.auth.as_ref() {
+            options = options.with_user(auth.username.clone(), auth.password.as_str().to_string());
             configured = true;
         }
 
-        if let DcsTlsConfig::Enabled {
-            ca_cert,
-            identity,
-            server_name,
-        } = &client.tls
-        {
+        if let Some(tls_cfg) = cfg.dcs.tls.as_ref() {
             let mut tls = TlsOptions::new();
-            if let Some(ca_cert) = ca_cert.as_ref() {
-                let pem = resolve_inline_or_path_bytes("dcs.client.tls.ca_cert", ca_cert)
-                    .map_err(|err| DcsError::Io(err.to_string()))?;
+            if let Some(ca_cert) = tls_cfg.ca_cert.as_ref() {
+                let pem = read_tls_file(ca_cert)?;
                 tls = tls.ca_certificate(Certificate::from_pem(pem));
             }
-            if let Some(identity) = identity.as_ref() {
-                let cert_pem =
-                    resolve_inline_or_path_bytes("dcs.client.tls.identity.cert", &identity.cert)
-                        .map_err(|err| DcsError::Io(err.to_string()))?;
-                let key_pem = resolve_secret_string("dcs.client.tls.identity.key", &identity.key)
-                    .map_err(|err| DcsError::Io(err.to_string()))?;
-                tls = tls.identity(Identity::from_pem(cert_pem, key_pem.into_bytes()));
-            }
-            if let Some(server_name) = server_name.as_ref() {
-                tls = tls.domain_name(server_name.clone());
+            if tls_identity_enabled(tls_cfg) {
+                let cert_pem = read_tls_file(&tls_cfg.cert)?;
+                let key_pem = read_tls_file(&tls_cfg.key)?;
+                tls = tls.identity(Identity::from_pem(cert_pem, key_pem));
             }
             options = options.with_tls(tls);
             configured = true;
@@ -1015,4 +982,22 @@ impl EtcdRuntime {
             Err(err) => Err(DcsError::Io(format!("{operation} timed out: {err}"))),
         }
     }
+}
+
+fn lease_ttl_ms(cfg: &RuntimeConfigV2) -> u64 {
+    u64::try_from(cfg.timing.ha_lease_ttl.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn advertised_postgres(cfg: &RuntimeConfigV2) -> Result<PgEndpoint, DcsError> {
+    PgEndpoint::tcp(cfg.postgres.listen_host.clone(), cfg.postgres.advertise_port)
+        .map_err(DcsError::Io)
+}
+
+fn read_tls_file(path: &std::path::Path) -> Result<Vec<u8>, DcsError> {
+    std::fs::read(path)
+        .map_err(|err| DcsError::Io(format!("read tls file `{}` failed: {err}", path.display())))
+}
+
+fn tls_identity_enabled(tls: &TlsConfig) -> bool {
+    !tls.cert.as_os_str().is_empty() && !tls.key.as_os_str().is_empty()
 }

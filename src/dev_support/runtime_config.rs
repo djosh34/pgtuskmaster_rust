@@ -602,6 +602,7 @@ mod tests {
         let cfg = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir.clone())
             .build();
+        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?;
 
         materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
             .map_err(|err| format!("materialize managed config failed: {err}"))?;

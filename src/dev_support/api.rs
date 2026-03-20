@@ -9,7 +9,7 @@ use crate::{
     logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::state::ProcessState,
-    state::{new_state_channel, ClusterName, MemberId, NodeIdentity, ScopeName, WorkerStatus},
+    state::{new_state_channel, NodeIdentity, WorkerStatus},
 };
 
 use super::HarnessError;
@@ -39,14 +39,17 @@ fn build_test_router_with_state(
     cfg: RuntimeConfig,
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
-    let (_cfg_publisher, runtime_config) = new_state_channel(cfg.clone());
+    let cfg = Box::leak(Box::new(
+        crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
+            .map_err(HarnessError::InvalidInput)?,
+    ));
     let runtime = crate::api::startup::bootstrap(
         NodeIdentity {
-            cluster_name: ClusterName(cfg.cluster.name.clone()),
-            scope: ScopeName(cfg.cluster.scope.clone()),
-            member_id: MemberId(cfg.cluster.member_id.clone()),
+            cluster_name: cfg.cluster_name.clone(),
+            scope: cfg.scope.clone(),
+            member_id: cfg.member_id.clone(),
         },
-        runtime_config,
+        cfg,
         crate::dcs::DcsHandle::closed(),
         observed,
         LogSender::disabled(),
