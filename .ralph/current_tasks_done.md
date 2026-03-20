@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 08:16:28 PM CET 2026
+Generated: Fri Mar 20 08:26:48 PM CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -9,6 +9,17 @@ Generated: Fri Mar 20 08:16:28 PM CET 2026
 
 <description>
 The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key paths, but `src/cli/client.rs` only consumes the inline PEM byte fields and silently ignores the file-backed fields populated by operator config loading.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/config-v2-missing-managed-postgres-and-local-database-fields.md`
+
+```
+## Bug: Config V2 Drops Managed Postgres Inputs Needed By Process Reduction <status>completed</status> <passes>true</passes>
+
+<description>
+The direct-cfg reduction for the daemon runtime cannot finish correctly because `RuntimeConfigV2` currently drops static config that surviving startup/process helpers still need.
 ```
 
 ==============

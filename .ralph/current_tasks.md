@@ -1,6 +1,17 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 08:16:28 PM CET 2026
+Generated: Fri Mar 20 08:26:48 PM CET 2026
+
+# Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-leak-managed-postgres-processes.md`
+
+```
+## Bug: Api Worker Reload Certificates Tests Leak Managed Postgres Processes <status>not_started</status> <passes>false</passes>
+
+<description>
+`make test` currently exits zero, but nextest reports five leaky tests in `api::worker::tests::reload_certificates_*`:
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/config-v2-binaries-drop-postgres-and-psql-needed-by-ha-fixtures.md`
 
@@ -42,17 +53,6 @@ Ultra-long HA scenarios now progress past seed-primary bootstrap, but replica st
 
 <description>
 `make test-long` currently fails in all 16 ultra-long HA scenarios during seed-primary bootstrap. The harness waits for the bootstrap primary, but `pgtm status` exits with a transport error while requesting `https://node-b:<port>/state`.
-```
-
-==============
-
-# Task `.ralph/tasks/bugs/config-v2-missing-managed-postgres-and-local-database-fields.md`
-
-```
-## Bug: Config V2 Drops Managed Postgres Inputs Needed By Process Reduction <status>not_started</status> <passes>false</passes>
-
-<description>
-The direct-cfg reduction for the daemon runtime cannot finish correctly because `RuntimeConfigV2` currently drops static config that surviving startup/process helpers still need.
 ```
 
 ==============

@@ -346,3 +346,4 @@ NONE
 .ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md
 .ralph/tasks/bugs/config-v2-operator-config-rejects-expected-transport-needed-by-ha-harness.md
 .ralph/tasks/bugs/write-convergence-healthy-check-still-flakes-in-make-test.md
+.ralph/tasks/bugs/config-v2-missing-managed-postgres-and-local-database-fields.md
