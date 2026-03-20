@@ -1,6 +1,17 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 07:29:11 PM CET 2026
+Generated: Fri Mar 20 07:38:50 PM CET 2026
+
+# Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
+
+```
+## Bug: CLI client drops file-backed API TLS material <status>completed</status> <passes>true</passes>
+
+<description>
+The CLI API client accepts `CliTlsConfig` with CA/client certificate/client key paths, but `src/cli/client.rs` only consumes the inline PEM byte fields and silently ignores the file-backed fields populated by operator config loading.
+```
+
+==============
 
 # Task `.ralph/tasks/bugs/healthy-write-convergence-overselects-recovering-members.md`
 
