@@ -9,8 +9,8 @@ use reqwest::Url;
 use super::{
     load_config::{
         normalize_optional_string, parse_error, read_config_file, resolve_path_only,
-        resolve_secret_optional, resolve_secret_path, take_token_sources, token_auth_mode,
-        validate_non_empty, validation_error, TokenAuthMode,
+        resolve_secret_optional, take_token_sources, token_auth_mode, validate_non_empty,
+        validation_error, TokenAuthMode,
     },
     private_schema as raw,
 };
@@ -131,7 +131,7 @@ fn map_operator_client_tls(
             .map(|identity| {
                 Ok(TlsConfig {
                     cert: resolve_path_only(operator_cert_field(field_prefix), identity.cert)?,
-                    key: resolve_secret_path(operator_key_field(field_prefix), identity.key)?,
+                    key: resolve_path_only(operator_key_field(field_prefix), identity.key)?,
                     ca_cert: None,
                 })
             })
@@ -219,7 +219,7 @@ fn operator_key_field(field_prefix: &'static str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::load_operator_config;
-    use crate::config_v2::PgtmApiTransportExpectation;
+    use crate::config_v2::{ConfigErrorV2, PgtmApiTransportExpectation};
     use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 
     #[test]
@@ -334,6 +334,29 @@ resolve_to = "127.0.0.1:18443"
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_rejects_non_path_tls_identity_sources_at_parse_boundary(
+    ) -> Result<(), String> {
+        let path = write_temp_config(
+            r#"
+[api]
+base_url = "https://127.0.0.1:8443"
+
+[api.tls]
+identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }
+"#,
+        )?;
+
+        let result = load_operator_config(path.as_path());
+        let _ = std::fs::remove_file(path);
+
+        match result {
+            Err(ConfigErrorV2::Parse { .. }) => Ok(()),
+            Err(err) => Err(format!("expected parse error, got {err}")),
+            Ok(_) => Err("expected non-path TLS identity rejection".to_string()),
+        }
     }
 
     fn write_temp_config(contents: &str) -> Result<PathBuf, String> {

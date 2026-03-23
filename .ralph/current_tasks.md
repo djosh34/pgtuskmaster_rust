@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 24 12:15:55 AM CET 2026
+Generated: Tue Mar 24 12:56:59 AM CET 2026
 
 # Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md`
 
@@ -13,18 +13,6 @@ Generated: Tue Mar 24 12:15:55 AM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/04-eliminate-tls-bytes.md`
-
-```
-## Task: Eliminate TLS bytes <status>not_started</status> <passes>false</passes>
-
-<description>
-Someone previously had this crazy idea to store bytes within the config struct. This causes a crazy amount of issues.
-I don't want that at all. I don't want tls bytes to be inside the config struct, nor i ever want them to be written somewhere else.
-```
-
-==============
-
 # Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md`
 
 ```
@@ -33,5 +21,17 @@ I don't want that at all. I don't want tls bytes to be inside the config struct,
 Your only goal is to reduce code and clean up the codebase.
 
 use just-reduce-code skill
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/11-task-qa-the-shipped-docker-compose-up-operator-walkthrough.md`
+
+```
+## Task: QA The Shipped `docker compose up` Operator Walkthrough <status>not_started</status> <passes>false</passes>
+
+<priority>low</priority>
+
+<description>
 ```
 

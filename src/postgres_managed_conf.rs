@@ -11,7 +11,7 @@ pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
 pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
 # This file is managed by pgtuskmaster.\n\
 # Backup-era archive and restore settings have been removed.\n\
-# Production TLS material must be supplied by the operator; pgtuskmaster only copies managed runtime files.\n";
+# Production TLS material must be supplied by the operator as direct file paths.\n";
 pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
 pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
 const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
@@ -350,9 +350,9 @@ mod tests {
             hba_file: PathBuf::from("/var/lib/postgresql/data/pgtm.pg_hba.conf"),
             ident_file: PathBuf::from("/var/lib/postgresql/data/pgtm.pg_ident.conf"),
             tls: ManagedPostgresTlsConfig::Enabled {
-                cert_file: PathBuf::from("/var/lib/postgresql/data/pgtm.server.crt"),
-                key_file: PathBuf::from("/var/lib/postgresql/data/pgtm.server.key"),
-                ca_file: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
+                cert_file: PathBuf::from("/etc/pgtuskmaster/tls/server.crt"),
+                key_file: PathBuf::from("/etc/pgtuskmaster/tls/server.key"),
+                ca_file: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
             },
             start_intent: ManagedPostgresStartIntent::replica(
                 PgConnInfo {
@@ -365,7 +365,7 @@ mod tests {
                     options: Some("-c wal_receiver_status_interval=5s".to_string()),
                     tls: PgClientTls {
                         mode: PgSslMode::Require,
-                        root_cert: Some(PathBuf::from("/var/lib/postgresql/data/pgtm.ca.crt")),
+                        root_cert: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
                         client_cert: None,
                         client_key: None,
                     },
@@ -466,7 +466,7 @@ mod tests {
             ));
         }
         if !rendered.contains(
-            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require sslrootcert=/var/lib/postgresql/data/pgtm.ca.crt options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
+            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require sslrootcert=/etc/pgtuskmaster/tls/client-ca.crt options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
         ) {
             return Err(format!(
                 "missing quoted primary_conninfo in rendered conf: {rendered}"

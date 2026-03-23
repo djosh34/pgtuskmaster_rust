@@ -1,18 +1,19 @@
 use crate::{
     cli::{
         args::Cli,
-        client::{CliApiClientConfig, CliAuthConfig, CliTlsConfig},
+        client::{CliApiClientConfig, CliAuthConfig},
         error::CliError,
     },
     config_v2::{
-        load_operator_config, OperatorApiEndpoint, OperatorConfigV2, PgtmApiTransportExpectation,
+        load_operator_config, types::OperatorClientTlsConfig, OperatorApiEndpoint,
+        OperatorConfigV2, PgtmApiTransportExpectation,
     },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OperatorContext {
     pub(crate) api_client: CliApiClientConfig,
-    pub(crate) postgres_client_tls: CliTlsConfig,
+    pub(crate) postgres_client_tls: OperatorClientTlsConfig,
     pub(crate) api_auth_enabled: bool,
 }
 
@@ -37,11 +38,11 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
     let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or(config_admin_token);
 
     let api_client_tls = if base_url.scheme() == "https" {
-        resolve_client_tls(config)?
+        resolve_client_tls(config)
     } else {
-        CliTlsConfig::default()
+        OperatorClientTlsConfig::default()
     };
-    let postgres_client_tls = resolve_client_tls(config)?;
+    let postgres_client_tls = resolve_client_tls(config);
 
     Ok(OperatorContext {
         api_client: CliApiClientConfig {
@@ -128,20 +129,10 @@ fn resolve_config_auth(
     ))
 }
 
-fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> Result<CliTlsConfig, CliError> {
-    let Some(config) = config else {
-        return Ok(CliTlsConfig::default());
-    };
-    let tls = &config.client_tls;
-
-    Ok(CliTlsConfig {
-        ca_cert_pem: None,
-        client_cert_pem: None,
-        client_key_pem: None,
-        ca_cert_path: tls.ca_cert.clone(),
-        client_cert_path: tls.identity.as_ref().map(|identity| identity.cert.clone()),
-        client_key_path: tls.identity.as_ref().map(|identity| identity.key.clone()),
-    })
+fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> OperatorClientTlsConfig {
+    config
+        .map(|config| config.client_tls.clone())
+        .unwrap_or_default()
 }
 
 fn normalize_optional_token(value: Option<&str>) -> Option<String> {
@@ -310,7 +301,7 @@ ca_cert = {{ path = "{}" }}
         if admin_token != "admin-token" {
             return Err("admin token did not resolve".to_string());
         }
-        if ctx.api_client.tls.ca_cert_path.is_none() {
+        if ctx.api_client.tls.ca_cert.is_none() {
             return Err("ca cert path did not resolve".to_string());
         }
         Ok(())
@@ -353,7 +344,7 @@ base_url = "https://127.0.0.1:8443"
 
 [api.tls]
 ca_cert = {{ path = "{}" }}
-identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
 "#,
             ca_path.display(),
             identity_cert_path.display(),
@@ -377,13 +368,25 @@ identity = {{ cert = {{ path = "{}" }}, key = {{ type = "file", path = "{}" }} }
         let _ = std::fs::remove_file(identity_cert_path);
         let _ = std::fs::remove_file(identity_key_path);
 
-        if ctx.postgres_client_tls.ca_cert_path.is_none() {
+        if ctx.postgres_client_tls.ca_cert.is_none() {
             return Err("expected postgres CA path to be preserved".to_string());
         }
-        if ctx.postgres_client_tls.client_cert_path.is_none() {
+        if ctx
+            .postgres_client_tls
+            .identity
+            .as_ref()
+            .map(|tls| &tls.cert)
+            .is_none()
+        {
             return Err("expected postgres client cert path to be preserved".to_string());
         }
-        if ctx.postgres_client_tls.client_key_path.is_none() {
+        if ctx
+            .postgres_client_tls
+            .identity
+            .as_ref()
+            .map(|tls| &tls.key)
+            .is_none()
+        {
             return Err("expected postgres client key path to be preserved".to_string());
         }
         Ok(())
@@ -493,7 +496,7 @@ resolve_to = "127.0.0.1:{port}"
 
 [api.tls]
 ca_cert = {{ path = "{ca_path}" }}
-identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ type = "file", path = "{client_key_path}" }} }}
+identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ path = "{client_key_path}" }} }}
 "#,
             port = listen_addr.port(),
             ca_path = ca_cert.display(),

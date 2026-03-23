@@ -396,30 +396,17 @@ pub(super) fn resolve_secret_required(
     Ok(Secret::new(value))
 }
 
-pub(super) fn resolve_secret_path(
-    field: &'static str,
-    source: raw::SecretSource,
-) -> Result<PathBuf, ConfigErrorV2> {
-    match source {
-        raw::SecretSource::PathConfig { path } => Ok(path),
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::File { path }) => Ok(path),
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::None) => {
-            Err(validation_error(field, "must be path-backed"))
-        }
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::Env { .. })
-        | raw::SecretSource::Tagged(raw::TaggedSecretSource::String { .. }) => {
-            Err(validation_error(field, "must be path-backed"))
-        }
-    }
-}
-
 pub(super) fn resolve_path_only(
     field: &'static str,
-    source: raw::PathOrInline,
+    source: raw::PathSource,
 ) -> Result<PathBuf, ConfigErrorV2> {
     match source {
-        raw::PathOrInline::Path(path) | raw::PathOrInline::PathConfig { path } => Ok(path),
-        raw::PathOrInline::Inline { .. } => Err(validation_error(field, "must be path-backed")),
+        raw::PathSource::Path(path) | raw::PathSource::PathConfig { path } => {
+            if path.as_os_str().is_empty() {
+                return Err(validation_error(field, "must not be empty"));
+            }
+            Ok(path)
+        }
     }
 }
 
@@ -538,7 +525,7 @@ fn map_dcs_tls(tls: raw::DcsTlsConfig) -> Result<Option<TlsConfig>, ConfigErrorV
             };
             Ok(Some(TlsConfig {
                 cert: resolve_path_only("dcs.client.tls.identity.cert", identity.cert)?,
-                key: resolve_secret_path("dcs.client.tls.identity.key", identity.key)?,
+                key: resolve_path_only("dcs.client.tls.identity.key", identity.key)?,
                 ca_cert: ca_cert
                     .map(|ca_cert| resolve_path_only("dcs.client.tls.ca_cert", ca_cert))
                     .transpose()?,
@@ -795,8 +782,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::load_runtime_config;
-    use crate::pginfo::conninfo::PgSslMode;
+    use super::{load_runtime_config, validate_runtime_document};
+    use crate::{config_v2::ConfigErrorV2, pginfo::conninfo::PgSslMode};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -872,6 +859,59 @@ psql = "/bin/true"
         assert_eq!(config.postgres.replicator.username, "replicator");
         assert_eq!(config.postgres.rewinder.username, "rewinder");
         Ok(())
+    }
+
+    #[test]
+    fn validate_runtime_document_rejects_inline_postgres_tls_sources_at_parse_boundary(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("runtime-config-v2-inline-tls")?;
+        fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+        let config_path = root.join("runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[cluster]
+name = "cluster-a"
+scope = "scope-a"
+member_id = "node-a"
+
+[postgres.paths]
+data_dir = "{}"
+
+[postgres.tls]
+mode = "enabled"
+identity = {{ cert_chain = {{ content = "CERT" }}, private_key = {{ content = "KEY" }} }}
+
+[postgres.roles.mandatory.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
+
+[postgres.roles.mandatory.replicator]
+username = "replicator"
+auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
+
+[postgres.roles.mandatory.rewinder]
+username = "rewinder"
+auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
+
+[postgres.access]
+hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+ident = {{ content = "" }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+"#,
+                root.join("data").display(),
+            ),
+        )
+        .map_err(|err| err.to_string())?;
+
+        match validate_runtime_document(config_path.as_path()) {
+            Err(ConfigErrorV2::Parse { .. }) => Ok(()),
+            Err(err) => Err(format!("expected parse error, got {err}")),
+            Ok(()) => Err("expected inline TLS parse rejection".to_string()),
+        }
     }
 
     fn unique_test_dir(label: &str) -> Result<PathBuf, String> {

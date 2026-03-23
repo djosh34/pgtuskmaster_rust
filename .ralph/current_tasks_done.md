@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 12:15:55 AM CET 2026
+Generated: Tue Mar 24 12:56:59 AM CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
@@ -68,6 +68,18 @@ Inside dirs:
 <description>
 Migrate the final code to src/config_v2, while not making ANYTHING new public inside src/config_v2/parser
 All validation, in ALL code (must verify this), but only be done once, and that must be done only inside src/config_v2/parser.
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/04-eliminate-tls-bytes.md`
+
+```
+## Task: Eliminate TLS bytes <status>completed</status> <passes>true</passes>
+
+<description>
+Someone previously had this crazy idea to store bytes within the config struct. This causes a crazy amount of issues.
+I don't want that at all. I don't want tls bytes to be inside the config struct, nor i ever want them to be written somewhere else.
 ```
 
 ==============

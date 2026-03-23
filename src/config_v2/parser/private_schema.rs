@@ -50,6 +50,13 @@ pub(super) enum PathOrInline {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(untagged)]
+pub(super) enum PathSource {
+    Path(PathBuf),
+    PathConfig { path: PathBuf },
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
 pub(super) enum SecretSource {
     Tagged(TaggedSecretSource),
     PathConfig { path: PathBuf },
@@ -74,21 +81,21 @@ pub(super) enum ClientCertificateMode {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsServerIdentityConfig {
-    pub cert_chain: PathOrInline,
-    pub private_key: PathOrInline,
+    pub cert_chain: PathSource,
+    pub private_key: PathSource,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsClientIdentityConfig {
-    pub cert: PathOrInline,
-    pub key: SecretSource,
+    pub cert: PathSource,
+    pub key: PathSource,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsClientAuthConfig {
-    pub client_ca: PathOrInline,
+    pub client_ca: PathSource,
     pub client_certificate: ClientCertificateMode,
 }
 
@@ -109,10 +116,10 @@ pub(super) enum ApiClientAuthConfig {
     #[default]
     Disabled,
     Optional {
-        client_ca: PathOrInline,
+        client_ca: PathSource,
     },
     Required {
-        client_ca: PathOrInline,
+        client_ca: PathSource,
         #[serde(default)]
         allowed_common_names: Vec<String>,
     },
@@ -240,7 +247,7 @@ impl Default for PostgresRewindConfig {
 pub(super) struct PostgresClientTransportConfig {
     #[serde(default = "default_pg_ssl_mode")]
     pub ssl_mode: PgSslMode,
-    pub ca_cert: Option<PathOrInline>,
+    pub ca_cert: Option<PathSource>,
 }
 
 impl Default for PostgresClientTransportConfig {
@@ -323,7 +330,7 @@ pub(super) enum DcsTlsConfig {
     #[default]
     Disabled,
     Enabled {
-        ca_cert: Option<PathOrInline>,
+        ca_cert: Option<PathSource>,
         identity: Option<TlsClientIdentityConfig>,
         server_name: Option<String>,
     },
@@ -607,7 +614,7 @@ pub(super) struct OperatorPostgresConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorClientTlsConfig {
-    pub ca_cert: Option<PathOrInline>,
+    pub ca_cert: Option<PathSource>,
     pub identity: Option<TlsClientIdentityConfig>,
 }
 

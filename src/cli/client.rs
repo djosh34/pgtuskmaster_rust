@@ -1,4 +1,4 @@
-use std::{fs, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{fs, net::SocketAddr, time::Duration};
 
 use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
@@ -7,32 +7,23 @@ use serde::Serialize;
 pub(crate) use crate::api::{AcceptedResponse, NodeState as NodeStateResponse};
 use crate::{
     cli::error::CliError,
+    config_v2::types::OperatorClientTlsConfig,
     state::{MemberId, SwitchoverState},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CliAuthConfig {
-    pub read_token: Option<String>,
-    pub admin_token: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CliTlsConfig {
-    pub ca_cert_pem: Option<Vec<u8>>,
-    pub client_cert_pem: Option<Vec<u8>>,
-    pub client_key_pem: Option<Vec<u8>>,
-    pub ca_cert_path: Option<PathBuf>,
-    pub client_cert_path: Option<PathBuf>,
-    pub client_key_path: Option<PathBuf>,
+pub(crate) struct CliAuthConfig {
+    pub(crate) read_token: Option<String>,
+    pub(crate) admin_token: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CliApiClientConfig {
-    pub base_url: Url,
-    pub timeout_ms: u64,
-    pub auth: CliAuthConfig,
-    pub tls: CliTlsConfig,
-    pub resolve_to: Option<SocketAddr>,
+pub(crate) struct CliApiClientConfig {
+    pub(crate) base_url: Url,
+    pub(crate) timeout_ms: u64,
+    pub(crate) auth: CliAuthConfig,
+    pub(crate) tls: OperatorClientTlsConfig,
+    pub(crate) resolve_to: Option<SocketAddr>,
 }
 
 #[derive(Clone, Debug)]
@@ -52,7 +43,7 @@ enum AuthRole {
 type SwitchoverRequestInput = SwitchoverState;
 
 impl CliApiClient {
-    pub fn from_config(config: CliApiClientConfig) -> Result<Self, CliError> {
+    pub(crate) fn from_config(config: CliApiClientConfig) -> Result<Self, CliError> {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .pool_max_idle_per_host(0);
@@ -85,7 +76,7 @@ impl CliApiClient {
             .await
     }
 
-    pub async fn delete_switchover(&self) -> Result<AcceptedResponse, CliError> {
+    pub(crate) async fn delete_switchover(&self) -> Result<AcceptedResponse, CliError> {
         self.send_json_no_body(
             Method::DELETE,
             "/switchover",
@@ -95,7 +86,7 @@ impl CliApiClient {
         .await
     }
 
-    pub async fn post_switchover(
+    pub(crate) async fn post_switchover(
         &self,
         switchover_to: Option<String>,
     ) -> Result<AcceptedResponse, CliError> {
@@ -113,7 +104,7 @@ impl CliApiClient {
         .await
     }
 
-    pub fn base_url(&self) -> &Url {
+    pub(crate) fn base_url(&self) -> &Url {
         &self.base_url
     }
 
@@ -198,66 +189,42 @@ impl CliApiClient {
 
 fn apply_tls_config(
     builder: reqwest::ClientBuilder,
-    config: &CliTlsConfig,
+    config: &OperatorClientTlsConfig,
 ) -> Result<reqwest::ClientBuilder, CliError> {
-    let ca_cert_pem = read_optional_tls_bytes(
-        "api.tls.ca_cert",
-        config.ca_cert_pem.as_deref(),
-        config.ca_cert_path.as_deref(),
-    )?;
-    let builder = if let Some(ca_cert_pem) = ca_cert_pem.as_deref() {
-        let certificate = reqwest::Certificate::from_pem(ca_cert_pem)
+    let builder = if let Some(ca_cert_path) = config.ca_cert.as_ref() {
+        let ca_cert_bytes = read_tls_bytes("api.tls.ca_cert", ca_cert_path.as_path())?;
+        let certificate = reqwest::Certificate::from_pem(ca_cert_bytes.as_slice())
             .map_err(|err| CliError::RequestBuild(format!("parse CA certificate failed: {err}")))?;
         builder.add_root_certificate(certificate)
     } else {
         builder
     };
 
-    let client_cert_pem = read_optional_tls_bytes(
-        "api.tls.identity.cert",
-        config.client_cert_pem.as_deref(),
-        config.client_cert_path.as_deref(),
-    )?;
-    let client_key_pem = read_optional_tls_bytes(
-        "api.tls.identity.key",
-        config.client_key_pem.as_deref(),
-        config.client_key_path.as_deref(),
-    )?;
-
-    if client_cert_pem.is_none() && client_key_pem.is_none() {
+    let Some(identity) = config.identity.as_ref() else {
         return Ok(builder);
-    }
+    };
 
-    let client_cert_pem = client_cert_pem
-        .as_ref()
-        .ok_or_else(|| CliError::RequestBuild("client certificate missing".to_string()))?;
-    let client_key_pem = client_key_pem
-        .as_ref()
-        .ok_or_else(|| CliError::RequestBuild("client key missing".to_string()))?;
-    let mut client_identity_pem =
-        Vec::with_capacity(client_cert_pem.len().saturating_add(client_key_pem.len()));
-    client_identity_pem.extend_from_slice(client_cert_pem);
-    client_identity_pem.extend_from_slice(client_key_pem);
+    let client_cert_bytes = read_tls_bytes("api.tls.identity.cert", identity.cert.as_path())?;
+    let client_key_bytes = read_tls_bytes("api.tls.identity.key", identity.key.as_path())?;
+    let mut client_identity_pem = Vec::with_capacity(
+        client_cert_bytes
+            .len()
+            .saturating_add(client_key_bytes.len()),
+    );
+    client_identity_pem.extend_from_slice(client_cert_bytes.as_slice());
+    client_identity_pem.extend_from_slice(client_key_bytes.as_slice());
     let identity = reqwest::Identity::from_pem(&client_identity_pem)
         .map_err(|err| CliError::RequestBuild(format!("parse client identity failed: {err}")))?;
     Ok(builder.identity(identity))
 }
 
-fn read_optional_tls_bytes(
-    field: &str,
-    inline_pem: Option<&[u8]>,
-    path: Option<&std::path::Path>,
-) -> Result<Option<Vec<u8>>, CliError> {
-    match (inline_pem, path) {
-        (Some(bytes), _) => Ok(Some(bytes.to_vec())),
-        (None, Some(path)) => fs::read(path).map(Some).map_err(|err| {
-            CliError::RequestBuild(format!(
-                "read {field} from {} failed: {err}",
-                path.display()
-            ))
-        }),
-        (None, None) => Ok(None),
-    }
+fn read_tls_bytes(field: &str, path: &std::path::Path) -> Result<Vec<u8>, CliError> {
+    fs::read(path).map_err(|err| {
+        CliError::RequestBuild(format!(
+            "read {field} from {} failed: {err}",
+            path.display()
+        ))
+    })
 }
 
 async fn read_json_response<T>(
@@ -302,9 +269,10 @@ mod tests {
     use reqwest::{Method, StatusCode, Url};
     use serde_json::{json, Value};
 
-    use super::{AuthRole, CliApiClient, CliApiClientConfig, CliTlsConfig};
+    use super::{AuthRole, CliApiClient, CliApiClientConfig};
     use crate::{
         cli::client::CliAuthConfig,
+        config_v2::types::{OperatorClientTlsConfig, TlsConfig},
         dev_support::tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
     };
 
@@ -349,13 +317,13 @@ mod tests {
             fixture.trusted_client.key_pem.as_str(),
         )?;
 
-        let tls = CliTlsConfig {
-            ca_cert_pem: None,
-            client_cert_pem: None,
-            client_key_pem: None,
-            ca_cert_path: Some(ca_cert),
-            client_cert_path: Some(client_cert),
-            client_key_path: Some(client_key),
+        let tls = OperatorClientTlsConfig {
+            ca_cert: Some(ca_cert),
+            identity: Some(TlsConfig {
+                cert: client_cert,
+                key: client_key,
+                ca_cert: None,
+            }),
         };
 
         let server_config = build_server_config_with_client_auth(

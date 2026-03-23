@@ -25,9 +25,6 @@ pub(crate) struct ManagedPostgresConfig {
     pub(crate) hba_path: PathBuf,
     pub(crate) ident_path: PathBuf,
     pub(crate) standby_passfile_path: Option<PathBuf>,
-    pub(crate) tls_cert_path: Option<PathBuf>,
-    pub(crate) tls_key_path: Option<PathBuf>,
-    pub(crate) tls_client_ca_path: Option<PathBuf>,
     pub(crate) standby_signal_path: PathBuf,
     pub(crate) recovery_signal_path: PathBuf,
     pub(crate) postgresql_auto_conf_path: PathBuf,
@@ -83,7 +80,7 @@ pub(crate) fn materialize_managed_postgres_config(
         Some(0o644),
     )?;
 
-    let tls_files = materialize_tls_files(cfg)?;
+    let managed_tls_config = managed_tls_config(cfg)?;
     let standby_passfile_path = materialize_managed_standby_passfile(
         cfg,
         start_intent,
@@ -95,7 +92,7 @@ pub(crate) fn materialize_managed_postgres_config(
         unix_socket_directories: cfg.postgres.socket_dir.clone(),
         hba_file: managed_hba.clone(),
         ident_file: managed_ident.clone(),
-        tls: tls_files.managed_tls_config.clone(),
+        tls: managed_tls_config,
         start_intent: start_intent.clone(),
         extra_gucs: cfg.postgres.extra_gucs.clone(),
     };
@@ -120,9 +117,6 @@ pub(crate) fn materialize_managed_postgres_config(
         hba_path: managed_hba,
         ident_path: managed_ident,
         standby_passfile_path,
-        tls_cert_path: tls_files.cert_path,
-        tls_key_path: tls_files.key_path,
-        tls_client_ca_path: tls_files.client_ca_path,
         standby_signal_path: standby_signal,
         recovery_signal_path: recovery_signal,
         postgresql_auto_conf_path: postgresql_auto_conf,
@@ -136,62 +130,52 @@ pub(crate) fn inspect_managed_recovery_state(
     existing_recovery_signal(data_dir).map(|state| state.unwrap_or(ManagedRecoverySignal::None))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct MaterializedTlsFiles {
-    managed_tls_config: ManagedPostgresTlsConfig,
-    cert_path: Option<PathBuf>,
-    key_path: Option<PathBuf>,
-    client_ca_path: Option<PathBuf>,
+fn managed_tls_config(
+    cfg: &RuntimeConfigV2,
+) -> Result<ManagedPostgresTlsConfig, ManagedPostgresError> {
+    match &cfg.postgres.tls {
+        None => Ok(ManagedPostgresTlsConfig::Disabled),
+        Some(tls) => Ok(ManagedPostgresTlsConfig::Enabled {
+            cert_file: resolve_existing_configured_file(
+                "postgres.tls.identity.cert_chain",
+                tls.cert.as_path(),
+            )?,
+            key_file: resolve_existing_configured_file(
+                "postgres.tls.identity.private_key",
+                tls.key.as_path(),
+            )?,
+            ca_file: tls
+                .ca_cert
+                .as_ref()
+                .map(|path| {
+                    resolve_existing_configured_file(
+                        "postgres.tls.client_auth.client_ca",
+                        path.as_path(),
+                    )
+                })
+                .transpose()?,
+        }),
+    }
 }
 
-fn materialize_tls_files(
-    cfg: &RuntimeConfigV2,
-) -> Result<MaterializedTlsFiles, ManagedPostgresError> {
-    match &cfg.postgres.tls {
-        None => Ok(MaterializedTlsFiles {
-            managed_tls_config: ManagedPostgresTlsConfig::Disabled,
-            cert_path: None,
-            key_path: None,
-            client_ca_path: None,
+fn resolve_existing_configured_file(
+    field: &str,
+    path: &Path,
+) -> Result<PathBuf, ManagedPostgresError> {
+    let path = absolutize_path(path)?;
+    match fs::metadata(&path) {
+        Ok(metadata) if metadata.is_file() => Ok(path),
+        Ok(_) => Err(ManagedPostgresError::InvalidConfig {
+            message: format!("{field} must point to a file: {}", path.display()),
         }),
-        Some(tls) => {
-            let cert_pem = std::fs::read(&tls.cert).map_err(|err| ManagedPostgresError::Io {
-                message: format!("read {} failed: {err}", tls.cert.display()),
-            })?;
-            let key_pem = std::fs::read(&tls.key).map_err(|err| ManagedPostgresError::Io {
-                message: format!("read {} failed: {err}", tls.key.display()),
-            })?;
-
-            let managed_cert = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.crt"))?;
-            let managed_key = absolutize_path(&cfg.postgres.data_dir.join("pgtm.server.key"))?;
-
-            // Production TLS credentials are operator-supplied; pgtuskmaster only copies them
-            // into managed runtime files under PGDATA before PostgreSQL starts.
-            write_atomic(&managed_cert, cert_pem.as_slice(), Some(0o644))?;
-            write_atomic(&managed_key, key_pem.as_slice(), Some(0o600))?;
-
-            let client_ca_path = if let Some(client_ca) = tls.ca_cert.as_ref() {
-                let ca_pem = std::fs::read(client_ca).map_err(|err| ManagedPostgresError::Io {
-                    message: format!("read {} failed: {err}", client_ca.display()),
-                })?;
-                let managed_ca = absolutize_path(&cfg.postgres.data_dir.join("pgtm.ca.crt"))?;
-                write_atomic(&managed_ca, ca_pem.as_slice(), Some(0o644))?;
-                Some(managed_ca)
-            } else {
-                None
-            };
-
-            Ok(MaterializedTlsFiles {
-                managed_tls_config: ManagedPostgresTlsConfig::Enabled {
-                    cert_file: managed_cert.clone(),
-                    key_file: managed_key.clone(),
-                    ca_file: client_ca_path.clone(),
-                },
-                cert_path: Some(managed_cert),
-                key_path: Some(managed_key),
-                client_ca_path,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            Err(ManagedPostgresError::InvalidConfig {
+                message: format!("{field} points to a missing file: {}", path.display()),
             })
         }
+        Err(err) => Err(ManagedPostgresError::Io {
+            message: format!("failed to stat {}: {err}", path.display()),
+        }),
     }
 }
 
@@ -819,51 +803,72 @@ mod tests {
     }
 
     #[test]
-    fn materialize_managed_postgres_config_writes_managed_tls_files_for_user_supplied_identity(
+    fn materialize_managed_postgres_config_reuses_configured_tls_paths_without_copying(
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("tls");
         let mut cfg = sample_runtime_config(data_dir.clone());
         let source_tls_dir = data_dir.join("source-tls");
-        fs::create_dir_all(&source_tls_dir)
-            .map_err(|err| format!("create source tls dir {} failed: {err}", source_tls_dir.display()))?;
+        fs::create_dir_all(&source_tls_dir).map_err(|err| {
+            format!(
+                "create source tls dir {} failed: {err}",
+                source_tls_dir.display()
+            )
+        })?;
         let cert = source_tls_dir.join("server.crt");
         let key = source_tls_dir.join("server.key");
         let ca_cert = source_tls_dir.join("client-ca.crt");
         fs::write(&cert, "CERT")
             .map_err(|err| format!("write {} failed: {err}", cert.display()))?;
-        fs::write(&key, "KEY")
-            .map_err(|err| format!("write {} failed: {err}", key.display()))?;
+        fs::write(&key, "KEY").map_err(|err| format!("write {} failed: {err}", key.display()))?;
         fs::write(&ca_cert, "CA")
             .map_err(|err| format!("write {} failed: {err}", ca_cert.display()))?;
         cfg.postgres.tls = Some(crate::config_v2::types::TlsConfig {
-            cert,
-            key,
-            ca_cert: Some(ca_cert),
+            cert: cert.clone(),
+            key: key.clone(),
+            ca_cert: Some(ca_cert.clone()),
         });
         let cfg = runtime_config_v2(cfg)?;
 
         let managed =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
                 .map_err(|err| format!("materialize managed config failed: {err}"))?;
+        let managed_conf = fs::read_to_string(&managed.postgresql_conf_path).map_err(|err| {
+            format!(
+                "read managed postgresql conf {} failed: {err}",
+                managed.postgresql_conf_path.display()
+            )
+        })?;
 
-        let cert = managed
-            .tls_cert_path
-            .ok_or_else(|| "missing managed cert path".to_string())?;
-        let key = managed
-            .tls_key_path
-            .ok_or_else(|| "missing managed key path".to_string())?;
-        let ca = managed
-            .tls_client_ca_path
-            .ok_or_else(|| "missing managed ca path".to_string())?;
-
-        if fs::read_to_string(&cert).map_err(|err| err.to_string())? != "CERT" {
-            return Err(format!("unexpected cert contents at {}", cert.display()));
+        if !managed_conf.contains(cert.display().to_string().as_str()) {
+            return Err(format!(
+                "managed config should reference configured cert path {}, got {managed_conf}",
+                cert.display()
+            ));
         }
-        if fs::read_to_string(&key).map_err(|err| err.to_string())? != "KEY" {
-            return Err(format!("unexpected key contents at {}", key.display()));
+        if !managed_conf.contains(key.display().to_string().as_str()) {
+            return Err(format!(
+                "managed config should reference configured key path {}, got {managed_conf}",
+                key.display()
+            ));
         }
-        if fs::read_to_string(&ca).map_err(|err| err.to_string())? != "CA" {
-            return Err(format!("unexpected ca contents at {}", ca.display()));
+        if !managed_conf.contains(ca_cert.display().to_string().as_str()) {
+            return Err(format!(
+                "managed config should reference configured CA path {}, got {managed_conf}",
+                ca_cert.display()
+            ));
+        }
+        for forbidden in [
+            format!("{}.server.crt", "pgtm"),
+            format!("{}.server.key", "pgtm"),
+            format!("{}.ca.crt", "pgtm"),
+        ] {
+            let copied_path = data_dir.join(forbidden);
+            if copied_path.exists() {
+                return Err(format!(
+                    "managed config must not copy TLS material to {}",
+                    copied_path.display()
+                ));
+            }
         }
 
         fs::remove_dir_all(&data_dir)

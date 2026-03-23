@@ -1,13 +1,13 @@
 use crate::{
     api::authoritative_primary_member,
     cli::{
-        args::ConnectionOptions, client::CliTlsConfig, config::OperatorContext, error::CliError,
-        status::fetch_seed_state,
+        args::ConnectionOptions, config::OperatorContext, error::CliError, status::fetch_seed_state,
     },
     command::{
         CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionTargetDto,
         StateProjectionDto,
     },
+    config_v2::types::OperatorClientTlsConfig,
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
         state::PgConnInfo,
@@ -50,7 +50,7 @@ pub(crate) async fn run_primary(
                 application_name: None,
                 connect_timeout_s: None,
                 options: None,
-                tls: build_connection_tls(&context.postgres_client_tls, options.tls)?,
+                tls: build_connection_tls(&context.postgres_client_tls, options.tls),
             },
         }],
     };
@@ -62,7 +62,7 @@ pub(crate) async fn run_replicas(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let connection_tls = build_connection_tls(&context.postgres_client_tls, options.tls)?;
+    let connection_tls = build_connection_tls(&context.postgres_client_tls, options.tls);
     let targets = state
         .dcs
         .members()
@@ -106,51 +106,20 @@ pub(crate) async fn run_replicas(
     CommandOutputDto::Replicas { output: view }.render(options.json)
 }
 
-fn build_connection_tls(tls: &CliTlsConfig, emit_tls: bool) -> Result<PgClientTls, CliError> {
+fn build_connection_tls(tls: &OperatorClientTlsConfig, emit_tls: bool) -> PgClientTls {
     if !emit_tls {
-        return Ok(PgClientTls {
+        return PgClientTls {
             mode: PgSslMode::Disable,
             root_cert: None,
             client_cert: None,
             client_key: None,
-        });
+        };
     }
 
-    let root_cert = match (tls.ca_cert_pem.as_ref(), tls.ca_cert_path.clone()) {
-        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
-        (Some(_), None) => {
-            return Err(CliError::Resolution(
-                "`--tls` cannot render pgtm postgres client CA certificate because the effective config is not path-backed"
-                    .to_string(),
-            ))
-        }
-        (None, None) => None,
-    };
-    let client_cert = match (tls.client_cert_pem.as_ref(), tls.client_cert_path.clone()) {
-        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
-        (Some(_), None) => {
-            return Err(CliError::Resolution(
-                "`--tls` cannot render pgtm postgres client certificate because the effective config is not path-backed"
-                    .to_string(),
-            ))
-        }
-        (None, None) => None,
-    };
-    let client_key = match (tls.client_key_pem.as_ref(), tls.client_key_path.clone()) {
-        (Some(_), Some(path)) | (None, Some(path)) => Some(path),
-        (Some(_), None) => {
-            return Err(CliError::Resolution(
-                "`--tls` cannot render pgtm postgres client key because the effective config is not path-backed"
-                    .to_string(),
-            ))
-        }
-        (None, None) => None,
-    };
-
-    Ok(PgClientTls {
+    PgClientTls {
         mode: PgSslMode::VerifyFull,
-        root_cert,
-        client_cert,
-        client_key,
-    })
+        root_cert: tls.ca_cert.clone(),
+        client_cert: tls.identity.as_ref().map(|identity| identity.cert.clone()),
+        client_key: tls.identity.as_ref().map(|identity| identity.key.clone()),
+    }
 }

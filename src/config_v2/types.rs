@@ -41,7 +41,7 @@ pub(crate) struct RuntimeConfigV2 {
     pub api: ApiConfig,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct TlsConfig {
     pub cert: PathBuf,
     pub key: PathBuf,
@@ -250,7 +250,7 @@ impl OperatorConfigV2 {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct OperatorClientTlsConfig {
     pub ca_cert: Option<PathBuf>,
     pub identity: Option<TlsConfig>,
