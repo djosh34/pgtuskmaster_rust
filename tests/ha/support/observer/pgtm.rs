@@ -8,11 +8,6 @@ use std::{
 use pgtuskmaster_rust::{
     api::NodeState,
     command::CommandOutputDto,
-    config::{
-        InlineOrPath, PgtmApiAuthConfig, PgtmApiConfig, PgtmApiTransportExpectation,
-        PgtmClientTlsConfig, PgtmConfig, PgtmPostgresConfig, RoleTokens, SecretSource,
-        TlsClientIdentityConfig,
-    },
     pginfo::{
         conninfo::PgClientTls,
         state::{PgConnInfo, PgSslMode},
@@ -244,12 +239,15 @@ impl PgtmObserver {
             observer_cert_path.as_path(),
             observer_key_path.as_path(),
         );
-        let rendered = toml::to_string(&config).map_err(|source| {
+        pgtuskmaster_test_support::runtime_config::validate_operator_config_contents(
+            config.as_str(),
+        )
+        .map_err(|source| {
             HarnessError::message(format!(
-                "serializing observer config for `{member}` failed: {source}"
+                "rendered observer config for `{member}` failed validation: {source}"
             ))
         })?;
-        fs::write(config_path.as_path(), rendered).map_err(|source| HarnessError::Io {
+        fs::write(config_path.as_path(), config).map_err(|source| HarnessError::Io {
             path: config_path.clone(),
             source,
         })?;
@@ -300,50 +298,83 @@ fn build_host_observer_config(
     admin_token_path: &Path,
     observer_cert_path: &Path,
     observer_key_path: &Path,
-) -> PgtmConfig {
-    let tls = PgtmClientTlsConfig {
-        ca_cert: Some(InlineOrPath::PathConfig {
-            path: ca_cert_path.to_path_buf(),
-        }),
-        identity: Some(TlsClientIdentityConfig {
-            cert: InlineOrPath::PathConfig {
-                path: observer_cert_path.to_path_buf(),
-            },
-            key: SecretSource::File {
-                path: observer_key_path.to_path_buf(),
-            },
-        }),
-    };
-    PgtmConfig {
-        api: PgtmApiConfig {
-            base_url: Some(format!(
-                "https://{}:{}",
-                member.service_name(),
-                resolve_to.port()
-            )),
-            advertised_url: None,
-            expected_transport: Some(PgtmApiTransportExpectation::Https),
-            resolve_to: Some(resolve_to),
-            auth: PgtmApiAuthConfig::RoleTokens(RoleTokens {
-                read_token: SecretSource::File {
-                    path: read_token_path.to_path_buf(),
-                },
-                admin_token: SecretSource::File {
-                    path: admin_token_path.to_path_buf(),
-                },
-            }),
-            tls: tls.clone(),
-        },
-        postgres: PgtmPostgresConfig { tls },
-    }
+) -> String {
+    let base_url = format!("https://{}:{}", member.service_name(), resolve_to.port());
+    let resolve_to = resolve_to.to_string();
+    let ca_cert = path_source(ca_cert_path);
+    let read_token = path_source(read_token_path);
+    let admin_token = path_source(admin_token_path);
+    let observer_cert = path_source(observer_cert_path);
+    let observer_key = path_source(observer_key_path);
+    format!(
+        r#"[api]
+base_url = {base_url}
+expected_transport = "https"
+resolve_to = {resolve_to}
+
+[api.auth]
+type = "role_tokens"
+read_token = {read_token}
+admin_token = {admin_token}
+
+[api.tls]
+ca_cert = {ca_cert}
+
+[api.tls.identity]
+cert = {observer_cert}
+key = {observer_key}
+
+[postgres.tls]
+ca_cert = {ca_cert}
+
+[postgres.tls.identity]
+cert = {observer_cert}
+key = {observer_key}
+"#,
+        base_url = toml_string(base_url.as_str()),
+        resolve_to = toml_string(resolve_to.as_str()),
+        read_token = read_token,
+        admin_token = admin_token,
+        ca_cert = ca_cert,
+        observer_cert = observer_cert,
+        observer_key = observer_key,
+    )
+}
+
+fn path_source(path: &Path) -> String {
+    format!(
+        "{{ path = {} }}",
+        toml_string(path.display().to_string().as_str())
+    )
+}
+
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::{build_host_observer_config, host_postgres_conninfo};
     use crate::support::topology::ClusterMember;
-    use pgtuskmaster_rust::config::PgtmConfig;
-    use std::{net::SocketAddr, path::Path};
+    use std::{
+        fs,
+        net::SocketAddr,
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| err.to_string())?
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-observer-{label}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        Ok(dir)
+    }
 
     #[test]
     fn host_postgres_conninfo_renders_tls_paths() -> Result<(), String> {
@@ -366,19 +397,40 @@ mod tests {
 
     #[test]
     fn host_observer_config_round_trips_through_toml() -> Result<(), String> {
-        let config = build_host_observer_config(
+        let dir = unique_test_dir("round-trip")?;
+        let ca_path = dir.join("ca bundle.pem");
+        let read_token_path = dir.join("read token");
+        let admin_token_path = dir.join("admin token");
+        let observer_cert_path = dir.join("observer cert.pem");
+        let observer_key_path = dir.join("observer key.pem");
+        for path in [
+            &ca_path,
+            &read_token_path,
+            &admin_token_path,
+            &observer_cert_path,
+            &observer_key_path,
+        ] {
+            fs::write(path, "placeholder").map_err(|err| err.to_string())?;
+        }
+        let rendered = build_host_observer_config(
             ClusterMember::NodeB,
             SocketAddr::from(([127, 0, 0, 1], 18443)),
-            Path::new("/tmp/ca bundle.pem"),
-            Path::new("/tmp/read token"),
-            Path::new("/tmp/admin token"),
-            Path::new("/tmp/observer cert.pem"),
-            Path::new("/tmp/observer key.pem"),
+            ca_path.as_path(),
+            read_token_path.as_path(),
+            admin_token_path.as_path(),
+            observer_cert_path.as_path(),
+            observer_key_path.as_path(),
         );
-        let rendered = toml::to_string(&config).map_err(|err| err.to_string())?;
-        let reparsed =
-            toml::from_str::<PgtmConfig>(rendered.as_str()).map_err(|err| err.to_string())?;
-        assert_eq!(reparsed, config);
+        pgtuskmaster_test_support::runtime_config::validate_operator_config_contents(
+            rendered.as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+        assert!(rendered.contains(r#"base_url = "https://node-b:18443""#));
+        assert!(rendered.contains(r#"resolve_to = "127.0.0.1:18443""#));
+        assert!(rendered.contains(r#"type = "role_tokens""#));
+        assert!(rendered.contains(read_token_path.display().to_string().as_str()));
+        assert!(rendered.contains(observer_key_path.display().to_string().as_str()));
+        let _ = fs::remove_dir_all(dir);
         Ok(())
     }
 }

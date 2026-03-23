@@ -7,11 +7,14 @@ use serde::Serialize;
 pub(crate) use crate::api::{AcceptedResponse, NodeState as NodeStateResponse};
 use crate::{
     cli::error::CliError,
-    config::{RoleTokens, SecretSource},
     state::{MemberId, SwitchoverState},
 };
 
-pub type CliAuthConfig = RoleTokens;
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CliAuthConfig {
+    pub read_token: Option<String>,
+    pub admin_token: Option<String>,
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CliTlsConfig {
@@ -72,8 +75,8 @@ impl CliApiClient {
         Ok(Self {
             base_url: config.base_url,
             http,
-            read_token: normalize_token(&config.auth.read_token),
-            admin_token: normalize_token(&config.auth.admin_token),
+            read_token: normalize_token(config.auth.read_token.as_deref()),
+            admin_token: normalize_token(config.auth.admin_token.as_deref()),
         })
     }
 
@@ -280,8 +283,8 @@ where
     serde_json::from_str(&body).map_err(CliError::Decode)
 }
 
-fn normalize_token(raw: &SecretSource) -> Option<String> {
-    raw.as_string().and_then(|value| {
+fn normalize_token(raw: Option<&str>) -> Option<String> {
+    raw.and_then(|value| {
         let trimmed = value.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     })
@@ -302,7 +305,6 @@ mod tests {
     use super::{AuthRole, CliApiClient, CliApiClientConfig, CliTlsConfig};
     use crate::{
         cli::client::CliAuthConfig,
-        config::SecretSource,
         dev_support::tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
     };
 
@@ -383,8 +385,8 @@ mod tests {
                 .map_err(|err| format!("build test url failed: {err}"))?,
             timeout_ms: 5_000,
             auth: CliAuthConfig {
-                read_token: SecretSource::None,
-                admin_token: SecretSource::None,
+                read_token: None,
+                admin_token: None,
             },
             tls,
             resolve_to: None,

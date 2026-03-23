@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Mon Mar 23 11:11:12 PM CET 2026
+Generated: Tue Mar 24 12:15:55 AM CET 2026
 
 # Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md`
 
@@ -9,18 +9,6 @@ Generated: Mon Mar 23 11:11:12 PM CET 2026
 
 <description>
 **Goal:** Create the first concrete execution task for the config-v2 direct-cfg collapse story. The higher-order goal is to start the migration by making `src/config_v2/parser/private_schema.rs` the only TOML-parsable config shape, adding parse functions in the config-v2 loaders, and switching `src/runtime/node.rs` to root itself in `RuntimeConfigV2` only. This task intentionally does not finish the downstream migration. It must stop at the first compile-failing handoff once the remaining failures are only due to the old `src/config/` corridor that later tasks in this story will delete.
-```
-
-==============
-
-# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/03-delete-old-config.md`
-
-```
-## Task: Delete `src/config/` And Prove Zero Config Dependencies Remain <status>not_started</status> <passes>false</passes>
-
-<description>
-Migrate the final code to src/config_v2, while not making ANYTHING new public inside src/config_v2/parser
-All validation, in ALL code (must verify this), but only be done once, and that must be done only inside src/config_v2/parser.
 ```
 
 ==============

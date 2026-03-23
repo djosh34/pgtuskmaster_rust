@@ -52,7 +52,7 @@ The lowerer validates all input paths and endpoint values, ensuring that missing
 
 The worker in `src/process/worker.rs` remains responsible for admission control, preflight checks, job lifecycle management, timeout enforcement, and state publication. When a `ProcessIntentRequest` arrives, the worker first checks if it is idle. If busy, it records a rejection and logs a worker event. If idle, it checks for a start-postgres noop condition: when PostgreSQL is already running for the configured data directory and port, the worker transitions directly to idle with a success outcome and does not spawn a subprocess.
 
-For actual work, the worker calls `ProcessCluster::production_from_ctx()` to create a typed `ProcessObservedSnapshot` that bundles the latest `RuntimeConfig`, `DcsView`, and `ManagedRecoverySignal`. It then calls `cluster.prepare()`, which runs the three-stage pipeline. Any stage failure becomes a `ProcessPreparationError` with a stage label—"planning", "managed session materialization", or "external tool lowering"—and the worker logs the specific stage that failed.
+For actual work, the worker calls `ProcessCluster::production_from_ctx()` to create a typed `ProcessObservedSnapshot` that bundles the latest validated runtime configuration, `DcsView`, and `ManagedRecoverySignal`. It then calls `cluster.prepare()`, which runs the three-stage pipeline. Any stage failure becomes a `ProcessPreparationError` with a stage label, either "planning", "managed session materialization", or "external tool lowering", and the worker logs the specific stage that failed.
 
 ## Error Attribution and Observability
 

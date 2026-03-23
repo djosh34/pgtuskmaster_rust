@@ -502,10 +502,7 @@ mod tests {
     use tokio_postgres::NoTls;
 
     use crate::{
-        config::{
-            ClientCertificateMode, HaConfig, InlineOrPath, ProcessConfig, ProcessTimeoutsConfig,
-            RuntimeConfig, TlsServerConfig,
-        },
+        config_v2::types::TimingConfig,
         dev_support::{
             binaries::require_pg16_bin_for_real_tests,
             namespace::NamespaceGuard,
@@ -826,22 +823,23 @@ mod tests {
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("tls");
         let mut cfg = sample_runtime_config(data_dir.clone());
-        cfg.postgres.tls = TlsServerConfig::Enabled {
-            identity: crate::config::TlsServerIdentityConfig {
-                cert_chain: InlineOrPath::Inline {
-                    content: "CERT".to_string(),
-                },
-                private_key: InlineOrPath::Inline {
-                    content: "KEY".to_string(),
-                },
-            },
-            client_auth: Some(crate::config::TlsClientAuthConfig {
-                client_ca: InlineOrPath::Inline {
-                    content: "CA".to_string(),
-                },
-                client_certificate: ClientCertificateMode::Required,
-            }),
-        };
+        let source_tls_dir = data_dir.join("source-tls");
+        fs::create_dir_all(&source_tls_dir)
+            .map_err(|err| format!("create source tls dir {} failed: {err}", source_tls_dir.display()))?;
+        let cert = source_tls_dir.join("server.crt");
+        let key = source_tls_dir.join("server.key");
+        let ca_cert = source_tls_dir.join("client-ca.crt");
+        fs::write(&cert, "CERT")
+            .map_err(|err| format!("write {} failed: {err}", cert.display()))?;
+        fs::write(&key, "KEY")
+            .map_err(|err| format!("write {} failed: {err}", key.display()))?;
+        fs::write(&ca_cert, "CA")
+            .map_err(|err| format!("write {} failed: {err}", ca_cert.display()))?;
+        cfg.postgres.tls = Some(crate::config_v2::types::TlsConfig {
+            cert,
+            key,
+            ca_cert: Some(ca_cert),
+        });
         let cfg = runtime_config_v2(cfg)?;
 
         let managed =
@@ -972,18 +970,16 @@ mod tests {
             drop(replica_reservation);
 
             let mut runtime_config = sample_runtime_config(replica_data.clone());
-            runtime_config.postgres.network.listen_port = replica_port;
-            runtime_config.postgres.paths.socket_dir = Some(replica_socket.clone());
-            runtime_config.postgres.paths.log_file =
-                Some(replica_logs.join("managed-postgres.log"));
-            runtime_config.postgres.access.hba = InlineOrPath::Inline {
-                content: concat!(
-                    "local all all trust\n",
-                    "host all all 127.0.0.1/32 trust\n",
-                    "host replication all 127.0.0.1/32 trust\n",
-                )
-                .to_string(),
-            };
+            runtime_config.postgres.listen_port = replica_port;
+            runtime_config.postgres.advertise_port = replica_port;
+            runtime_config.postgres.socket_dir = replica_socket.clone();
+            runtime_config.postgres.log_file = replica_logs.join("managed-postgres.log");
+            runtime_config.postgres.pg_hba_contents = concat!(
+                "local all all trust\n",
+                "host all all 127.0.0.1/32 trust\n",
+                "host replication all 127.0.0.1/32 trust\n",
+            )
+            .to_string();
             let runtime_config = runtime_config_v2(runtime_config).map_err(real_test_error)?;
 
             let managed = materialize_managed_postgres_config(
@@ -1232,28 +1228,25 @@ mod tests {
         ))
     }
 
-    fn sample_runtime_config(data_dir: PathBuf) -> RuntimeConfig {
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
         crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .with_dcs_scope("cluster-a")
-            .with_ha(HaConfig {
-                loop_interval_ms: 500,
-                lease_ttl_ms: 5_000,
+            .with_timing(TimingConfig {
+                ha_loop_interval: Duration::from_millis(500),
+                ha_lease_ttl: Duration::from_secs(5),
+                bootstrap_timeout: Duration::from_secs(30),
+                pg_rewind_timeout: Duration::from_secs(30),
+                fencing_timeout: Duration::from_secs(10),
             })
-            .with_process(ProcessConfig {
-                timeouts: ProcessTimeoutsConfig {
-                    pg_rewind_ms: 30_000,
-                    bootstrap_ms: 30_000,
-                    fencing_ms: 10_000,
-                },
-                working_root: std::path::PathBuf::from("/tmp/pgtuskmaster"),
-                binaries: crate::dev_support::runtime_config::sample_binary_paths(),
-            })
+            .with_binaries(crate::dev_support::runtime_config::sample_binary_paths())
             .build()
     }
 
-    fn runtime_config_v2(cfg: RuntimeConfig) -> Result<crate::config_v2::RuntimeConfigV2, String> {
-        crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
+    fn runtime_config_v2(
+        cfg: crate::config_v2::RuntimeConfigV2,
+    ) -> Result<crate::config_v2::RuntimeConfigV2, String> {
+        Ok(cfg)
     }
 
     fn sample_replica_conninfo() -> Result<PgConnInfo, String> {

@@ -1,18 +1,12 @@
 use thiserror::Error;
 use tokio_postgres::NoTls;
 
-use crate::config::{
-    resolve_secret_string, PostgresRoleName, PostgresRolePrivilege, PostgresRoleSlots,
-    RoleAuthConfig, SecretSource,
-};
 use crate::config_v2::RuntimeConfigV2;
 
 #[derive(Debug, Error)]
 pub(crate) enum RoleProvisionError {
     #[error("connect local postgres for managed role reconciliation failed: {0}")]
     Connect(String),
-    #[error("render managed role reconciliation sql failed: {0}")]
-    RenderSql(String),
     #[error("reconcile managed postgres roles failed: {0}")]
     BatchExecute(String),
     #[error("managed role reconciliation connection join failed: {0}")]
@@ -23,17 +17,14 @@ pub(crate) enum RoleProvisionError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct DesiredManagedRoleSet {
-    pub(crate) mandatory: MandatoryManagedRoleSet,
+    pub(crate) mandatory: [ManagedRoleSpec; 3],
 }
-
-pub(crate) type MandatoryManagedRoleSet = PostgresRoleSlots<ManagedRoleSpec>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedRoleSpec {
     pub(crate) identity: MandatoryManagedRole,
-    pub(crate) username: PostgresRoleName,
-    pub(crate) privilege: PostgresRolePrivilege,
-    pub(crate) auth: RoleAuthConfig,
+    pub(crate) username: String,
+    pub(crate) password: String,
     pub(crate) grants: Vec<ManagedRoleGrant>,
 }
 
@@ -56,11 +47,11 @@ impl DesiredManagedRoleSet {
 }
 
 impl MandatoryManagedRole {
-    fn config_key(self) -> &'static str {
+    fn attributes(self) -> &'static str {
         match self {
-            Self::Superuser => "superuser",
-            Self::Replicator => "replicator",
-            Self::Rewinder => "rewinder",
+            Self::Superuser => "LOGIN SUPERUSER NOREPLICATION",
+            Self::Replicator => "LOGIN REPLICATION NOSUPERUSER",
+            Self::Rewinder => "LOGIN NOSUPERUSER NOREPLICATION",
         }
     }
 }
@@ -99,29 +90,26 @@ pub(crate) fn render_managed_role_reconciliation_sql_v2(
     cfg: &RuntimeConfigV2,
 ) -> Result<String, RoleProvisionError> {
     let desired = DesiredManagedRoleSet {
-        mandatory: MandatoryManagedRoleSet {
-            superuser: v2_managed_role(
+        mandatory: [
+            v2_managed_role(
                 MandatoryManagedRole::Superuser,
                 &cfg.postgres.superuser.username,
-                PostgresRolePrivilege::Superuser,
                 &cfg.postgres.superuser.password,
                 Vec::new(),
             ),
-            replicator: v2_managed_role(
+            v2_managed_role(
                 MandatoryManagedRole::Replicator,
                 &cfg.postgres.replicator.username,
-                PostgresRolePrivilege::Replication,
                 &cfg.postgres.replicator.password,
                 Vec::new(),
             ),
-            rewinder: v2_managed_role(
+            v2_managed_role(
                 MandatoryManagedRole::Rewinder,
                 &cfg.postgres.rewinder.username,
-                PostgresRolePrivilege::Login,
                 &cfg.postgres.rewinder.password,
                 vec![ManagedRoleGrant::RewindFunctionExecute],
             ),
-        },
+        ],
     };
     render_managed_role_reconciliation_sql_for_set(&desired)
 }
@@ -132,7 +120,7 @@ fn render_managed_role_reconciliation_sql_for_set(
     let provision_blocks = desired
         .all_roles()
         .map(render_protected_role_provision_block)
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect::<Vec<_>>();
     let grant_blocks = desired
         .all_roles()
         .map(render_role_grant_reconciliation_block)
@@ -149,32 +137,24 @@ fn render_managed_role_reconciliation_sql_for_set(
 fn v2_managed_role(
     identity: MandatoryManagedRole,
     username: &str,
-    privilege: PostgresRolePrivilege,
     password: &crate::config_v2::types::Secret,
     grants: Vec<ManagedRoleGrant>,
 ) -> ManagedRoleSpec {
     ManagedRoleSpec {
         identity,
-        username: PostgresRoleName(username.to_string()),
-        privilege,
-        auth: RoleAuthConfig::Password {
-            password: SecretSource::String {
-                value: password.as_str().to_string(),
-            },
-        },
+        username: username.to_string(),
+        password: password.as_str().to_string(),
         grants,
     }
 }
 
-fn render_protected_role_provision_block(
-    spec: &ManagedRoleSpec,
-) -> Result<String, RoleProvisionError> {
+fn render_protected_role_provision_block(spec: &ManagedRoleSpec) -> String {
     let username_literal = sql_literal(spec.username.as_str());
-    let attributes = render_role_attributes(spec.privilege);
-    let password_literal = resolve_role_password_literal(spec)?;
-    Ok(format!(
+    let attributes = spec.identity.attributes();
+    let password_literal = sql_literal(spec.password.as_str());
+    format!(
         "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {username_literal}) THEN\n    EXECUTE format('CREATE ROLE %I', {username_literal});\n  END IF;\n  EXECUTE format('ALTER ROLE %I WITH {attributes} PASSWORD %L', {username_literal}, {password_literal});\nEND\n$$;"
-    ))
+    )
 }
 
 fn sql_literal(value: &str) -> String {
@@ -214,26 +194,6 @@ fn render_rewinder_grants_sql(username: &str) -> String {
         ";",
     ]
     .concat()
-}
-
-fn resolve_role_password_literal(spec: &ManagedRoleSpec) -> Result<String, RoleProvisionError> {
-    let field = format!(
-        "postgres.roles.mandatory.{}.auth.password",
-        spec.identity.config_key()
-    );
-    match &spec.auth {
-        RoleAuthConfig::Password { password } => resolve_secret_string(field.as_str(), password)
-            .map(|resolved| sql_literal(resolved.as_str()))
-            .map_err(|err| RoleProvisionError::RenderSql(err.to_string())),
-    }
-}
-
-fn render_role_attributes(privilege: PostgresRolePrivilege) -> &'static str {
-    match privilege {
-        PostgresRolePrivilege::Login => "LOGIN NOSUPERUSER NOREPLICATION",
-        PostgresRolePrivilege::Replication => "LOGIN REPLICATION NOSUPERUSER",
-        PostgresRolePrivilege::Superuser => "LOGIN SUPERUSER NOREPLICATION",
-    }
 }
 
 #[cfg(test)]

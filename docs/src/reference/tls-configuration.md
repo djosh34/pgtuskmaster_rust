@@ -37,128 +37,92 @@ flowchart LR
     end
 ```
 
-## Shared Building Blocks
+## Shared Value Forms
 
-### InlineOrPath
+### Path-backed and Inline Material
 
-Certificate material may be provided via filesystem path or inline content.
+Certificate and CA fields accept either a filesystem path or inline PEM content.
 
-```text
-pub enum InlineOrPath {
-    Path(PathBuf),
-    PathConfig { path: PathBuf },
-    Inline { content: String },
-}
+```toml
+cert_chain = "/etc/pgtuskmaster/tls/server-chain.pem"
+cert_chain = { path = "/etc/pgtuskmaster/tls/server-chain.pem" }
+cert_chain = { content = "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----" }
 ```
 
-### SecretSource
+### Secret-backed Material
 
-Secrets may be sourced from environment, files, or direct strings.
+Secret fields such as private keys and API tokens accept these encodings:
 
-```text
-pub enum SecretSource {
-    None,
-    Env { env: String },
-    File { path: PathBuf },
-    String { value: String },
-}
+```toml
+key = { path = "/run/secrets/api-key.pem" }
+key = { type = "file", path = "/run/secrets/api-key.pem" }
+key = { type = "env", env = "PGTM_API_KEY" }
+key = { type = "string", value = "inline-secret" }
 ```
 
 ## Server Identity Configuration
 
 ### API Server Identity
 
-```text
-pub struct ApiTlsConfig {
-    pub identity: TlsServerIdentityConfig,
-    pub client_auth: ApiClientAuthConfig,
-}
-
-pub struct TlsServerIdentityConfig {
-    pub cert_chain: InlineOrPath,
-    pub private_key: InlineOrPath,
-}
+```toml
+[api]
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } } } }
 ```
 
 ### PostgreSQL Server Identity
 
-```text
-pub enum TlsServerConfig {
-    Disabled,
-    Enabled {
-        identity: TlsServerIdentityConfig,
-        client_auth: Option<TlsClientAuthConfig>,
-    },
-}
+```toml
+[postgres]
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } } }
 ```
 
 ## Client Identity Configuration
 
 ### Operator API and PostgreSQL Client Identity
 
-```text
-pub struct PgtmClientTlsConfig {
-    pub ca_cert: Option<InlineOrPath>,
-    pub identity: Option<TlsClientIdentityConfig>,
-}
+```toml
+[api.tls]
+ca_cert = { path = "/etc/pgtuskmaster/tls/ca.pem" }
 
-pub struct TlsClientIdentityConfig {
-    pub cert: InlineOrPath,
-    pub key: SecretSource,
-}
+[api.tls.identity]
+cert = { path = "/etc/pgtuskmaster/tls/client.crt" }
+key = { type = "file", path = "/run/secrets/client-key.pem" }
 ```
 
 ### DCS Client Identity
 
-```text
-pub enum DcsTlsConfig {
-    Disabled,
-    Enabled {
-        ca_cert: Option<InlineOrPath>,
-        identity: Option<TlsClientIdentityConfig>,
-        server_name: Option<String>,
-    },
-}
+```toml
+[dcs.client]
+tls = { mode = "enabled", ca_cert = { path = "/etc/pgtuskmaster/tls/etcd-ca.pem" }, identity = { cert = { path = "/etc/pgtuskmaster/tls/etcd-client.crt" }, key = { type = "file", path = "/run/secrets/etcd-client.key" } }, server_name = "etcd.internal" }
 ```
 
 ## Client Authentication Configuration
 
 ### API Server Client Authentication
 
-```text
-pub enum ApiClientAuthConfig {
-    Disabled,
-    Optional { client_ca: InlineOrPath },
-    Required {
-        client_ca: InlineOrPath,
-        allowed_common_names: Vec<ClientCommonName>,
-    },
-}
+```toml
+[api]
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_certificate = "optional", client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" } } } }
+
+[api]
+transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_certificate = "required", client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, allowed_common_names = ["operator-a"] } } }
 ```
 
 ### PostgreSQL Server Client Authentication
 
-```text
-pub struct TlsClientAuthConfig {
-    pub client_ca: InlineOrPath,
-    pub client_certificate: ClientCertificateMode,
-}
-
-pub enum ClientCertificateMode {
-    Optional,
-    Required,
-}
+```toml
+[postgres]
+tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/postgres-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/postgres-key.pem" } }, client_auth = { client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, client_certificate = "required" } }
 ```
 
 ## Additional Client Transport Configuration
 
 ### PostgreSQL Rewind Transport
 
-```text
-pub struct PostgresClientTransportConfig {
-    pub ssl_mode: PgSslMode,
-    pub ca_cert: Option<InlineOrPath>,
-}
+```toml
+[postgres.rewind.transport]
+ssl_mode = "verify_full"
+ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" }
 ```
 
 `PgSslMode` supports these values:
@@ -176,22 +140,7 @@ The configuration parser enforces this TLS-specific validation:
 
 - If any DCS endpoint uses the `https` scheme, `dcs.client.tls` must not be `Disabled`.
 
-```text
-if cfg
-    .dcs
-    .endpoints
-    .iter()
-    .any(|endpoint| matches!(endpoint.scheme(), crate::config::DcsEndpointScheme::Https))
-    && matches!(cfg.dcs.client.tls, DcsTlsConfig::Disabled)
-{
-    return Err(ConfigError::Validation {
-        field: "dcs.client.tls",
-        message: "https DCS endpoints require `dcs.client.tls` to be configured".to_string(),
-    });
-}
-```
-
-Beyond that rule, `src/config/parser.rs` does not currently add additional TLS-specific cross-field validation. The schema shapes still constrain which fields can appear together, but parse-time checks do not currently enforce certificate existence, `verify-full` CA requirements, or broader TLS completeness rules.
+Beyond that rule, the parser enforces path-only requirements where runtime components need concrete files, plus the transport-specific invariants described in the runtime and operator config references.
 
 ## Example Certificate Paths
 

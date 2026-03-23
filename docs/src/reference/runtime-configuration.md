@@ -2,7 +2,7 @@
 
 This document describes the current runtime TOML schema for `pgtuskmaster`.
 
-The runtime loads directly into typed config structs with `serde`. Ordinary defaults live on the real schema, and only cross-field or domain invariants are validated afterward.
+The runtime parser owns validation. It reads TOML into internal schema types, applies defaults, resolves supported path and secret encodings, and returns a fully validated runtime config.
 
 ## Top-level sections
 
@@ -177,9 +177,9 @@ The optional `extra` block adds operator-managed PostgreSQL roles keyed by logic
 Only password auth is supported:
 
 ```toml
-auth = { type = "password", password = { content = "inline-secret" } }
+auth = { type = "password", password = { type = "string", value = "inline-secret" } }
 auth = { type = "password", password = { path = "/run/secrets/password-file" } }
-auth = { type = "password", password = { env = "PASSWORD_ENV_VAR" } }
+auth = { type = "password", password = { type = "env", env = "PASSWORD_ENV_VAR" } }
 ```
 
 Every managed PostgreSQL role must have a unique username. Validation rejects duplicate usernames across the mandatory and extra role sets.
@@ -338,7 +338,7 @@ auth = { type = "disabled" }
 [api]
 listen_addr = "0.0.0.0:8443"
 transport = { transport = "https", tls = { identity = { cert_chain = { path = "/etc/pgtuskmaster/tls/api-chain.pem" }, private_key = { path = "/etc/pgtuskmaster/tls/api-key.pem" } }, client_auth = { client_certificate = "required", client_ca = { path = "/etc/pgtuskmaster/tls/client-ca.pem" }, allowed_common_names = ["operator-a"] } } }
-auth = { type = "role_tokens", read_token = { env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } }
+auth = { type = "role_tokens", read_token = { type = "env", env = "PGTM_READ_TOKEN" }, admin_token = { path = "/run/secrets/admin-token" } }
 ```
 
 ### Transport
@@ -378,7 +378,6 @@ The runtime may include an operator-facing `pgtm` block, and `pgtm` can also loa
 ```toml
 [pgtm.api]
 base_url = "https://db-a.example.com:8443"
-advertised_url = "https://db-a.example.com:8443"
 expected_transport = "https"
 auth = { type = "role_tokens", read_token = { path = "/run/secrets/api-read-token" }, admin_token = { path = "/run/secrets/api-admin-token" } }
 tls = { ca_cert = { path = "/etc/pgtm/api-ca.pem" } }
@@ -391,7 +390,6 @@ identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pg
 ### Meaning
 
 - `pgtm.api.base_url`: operator-reachable API URL
-- `pgtm.api.advertised_url`: optional runtime-advertised API URL
 - `pgtm.api.expected_transport`: optional client-side check for `http` or `https`
 - `pgtm.api.auth`: operator token config
 - `pgtm.api.tls`: API client TLS material
@@ -406,23 +404,26 @@ enabled = false
 
 `debug.enabled` defaults to `false`.
 
-## Inline, path, and secret sources
+## Inline, path, and secret encodings
 
-Many config fields use one of these encodings:
+Path-backed fields accept:
 
 ```toml
-# Path forms
 key = "/absolute/path"
 key = { path = "/absolute/path" }
-
-# Inline form
 key = { content = "inline value" }
-
-# Secret env form
-key = { env = "ENV_VAR_NAME" }
 ```
 
-`SecretSource` fields support the env-backed form. Inline secret contents are redacted in debug output.
+Secret-backed fields accept:
+
+```toml
+key = { path = "/run/secrets/value" }
+key = { type = "file", path = "/run/secrets/value" }
+key = { type = "env", env = "ENV_VAR_NAME" }
+key = { type = "string", value = "inline-secret" }
+```
+
+Inline secret values are redacted in debug output.
 
 ## Validation notes
 

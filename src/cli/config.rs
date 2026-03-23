@@ -4,7 +4,6 @@ use crate::{
         client::{CliApiClientConfig, CliAuthConfig, CliTlsConfig},
         error::CliError,
     },
-    config::SecretSource,
     config_v2::{
         load_operator_config, OperatorApiEndpoint, OperatorConfigV2, PgtmApiTransportExpectation,
     },
@@ -49,14 +48,8 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
             base_url,
             timeout_ms: cli.timeout_ms,
             auth: CliAuthConfig {
-                read_token: match read_token {
-                    Some(value) => SecretSource::String { value },
-                    None => SecretSource::None,
-                },
-                admin_token: match admin_token {
-                    Some(value) => SecretSource::String { value },
-                    None => SecretSource::None,
-                },
+                read_token,
+                admin_token,
             },
             tls: api_client_tls,
             resolve_to: api.resolve_to,
@@ -166,7 +159,7 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
 mod tests {
     use std::{
         path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
+        time::{Duration, SystemTime, UNIX_EPOCH},
     };
 
     use axum::{routing::get, Json, Router};
@@ -301,7 +294,8 @@ ca_cert = {{ path = "{}" }}
             .api_client
             .auth
             .read_token
-            .as_string()
+            .as_deref()
+            .map(str::to_string)
             .ok_or_else(|| "read token missing".to_string())?;
         if read_token != "read-token" {
             return Err("read token did not resolve".to_string());
@@ -310,7 +304,8 @@ ca_cert = {{ path = "{}" }}
             .api_client
             .auth
             .admin_token
-            .as_string()
+            .as_deref()
+            .map(str::to_string)
             .ok_or_else(|| "admin token missing".to_string())?;
         if admin_token != "admin-token" {
             return Err("admin token did not resolve".to_string());
@@ -519,7 +514,18 @@ identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ type = "file", 
 
         let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
         let client = CliApiClient::from_config(ctx.api_client).map_err(|err| err.to_string())?;
-        let state = client.get_state().await.map_err(|err| err.to_string())?;
+        let state = {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                match client.get_state().await {
+                    Ok(state) => break state,
+                    Err(_) if tokio::time::Instant::now() < deadline => {
+                        tokio::time::sleep(Duration::from_millis(25)).await;
+                    }
+                    Err(err) => return Err(err.to_string()),
+                }
+            }
+        };
 
         server.abort();
         let _ = server.await;

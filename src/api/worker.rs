@@ -402,7 +402,6 @@ mod tests {
 
     use crate::{
         api::{ApiCertificateReloadStep, PostgresReloadSignal, ReloadCertificatesResponse},
-        config::{ApiAuthConfig, ApiRoleTokensConfig, SecretSource},
         config_v2::{
             types::{ApiTransport, TlsConfig},
             RuntimeConfigV2,
@@ -490,22 +489,14 @@ mod tests {
 
     fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
-            RuntimeConfigBuilder::new()
-                .with_postgres_data_dir(&data_dir)
-                .transform_api(|api| crate::config::ApiConfig {
-                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                        read_token: SecretSource::String {
-                            value: "read-secret".to_string(),
-                        },
-                        admin_token: SecretSource::String {
-                            value: "admin-secret".to_string(),
-                        },
-                    }),
-                    ..api
-                })
-                .build(),
+        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
+            Some("read-secret"),
+            Some("admin-secret"),
         )?;
+        let mut cfg = RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
+            .with_api_auth(auth)
+            .build();
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(
                 data_dir.as_path(),
@@ -520,22 +511,14 @@ mod tests {
     }
 
     fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let mut cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
-            RuntimeConfigBuilder::new()
-                .with_postgres_data_dir(&data_dir)
-                .transform_api(|api| crate::config::ApiConfig {
-                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                        read_token: SecretSource::String {
-                            value: "read-secret".to_string(),
-                        },
-                        admin_token: SecretSource::String {
-                            value: "admin-secret".to_string(),
-                        },
-                    }),
-                    ..api
-                })
-                .build(),
+        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
+            Some("read-secret"),
+            Some("admin-secret"),
         )?;
+        let mut cfg = RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(&data_dir)
+            .with_api_auth(auth)
+            .build();
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(data_dir.as_path(), "not a certificate", "not a key")?,
             client_ca: None,
@@ -546,22 +529,14 @@ mod tests {
     }
 
     fn sample_http_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
-            RuntimeConfigBuilder::new()
-                .with_postgres_data_dir(data_dir)
-                .transform_api(|api| crate::config::ApiConfig {
-                    auth: ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-                        read_token: SecretSource::String {
-                            value: "read-secret".to_string(),
-                        },
-                        admin_token: SecretSource::String {
-                            value: "admin-secret".to_string(),
-                        },
-                    }),
-                    ..api
-                })
-                .build(),
-        )
+        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
+            Some("read-secret"),
+            Some("admin-secret"),
+        )?;
+        Ok(RuntimeConfigBuilder::new()
+            .with_postgres_data_dir(data_dir)
+            .with_api_auth(auth)
+            .build())
     }
 
     fn build_test_app(cfg: RuntimeConfigV2) -> Result<Router, String> {

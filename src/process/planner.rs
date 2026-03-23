@@ -226,7 +226,7 @@ mod tests {
         }
     }
 
-    fn sample_runtime(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+    fn sample_runtime(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
         RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .build()
@@ -270,9 +270,7 @@ mod tests {
     #[test]
     fn planner_maps_process_intents_to_expected_plan_variants() -> Result<(), String> {
         let root = unique_test_dir("intent-variants")?;
-        let runtime_config = sample_runtime(root.join("data"));
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,
@@ -344,9 +342,7 @@ mod tests {
     #[test]
     fn planner_rejects_primary_start_with_existing_managed_replica_state() -> Result<(), String> {
         let root = unique_test_dir("primary-reject")?;
-        let runtime_config = sample_runtime(root.join("data"));
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime(root.join("data"));
         let snapshot = observed_snapshot(DcsSnapshot::starting(), ManagedRecoverySignal::Standby);
         let planner = ProcessIntentPlanner;
         let error = planner
@@ -369,9 +365,7 @@ mod tests {
     #[test]
     fn planner_uses_distinct_source_roles_for_basebackup_and_rewind() -> Result<(), String> {
         let root = unique_test_dir("source-roles")?;
-        let runtime_config = sample_runtime(root.join("data"));
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,

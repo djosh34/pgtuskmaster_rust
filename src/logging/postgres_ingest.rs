@@ -5,7 +5,6 @@ use std::time::{Duration, SystemTime};
 use pgtm_log_derive::LoggableEvent;
 use serde_json::Value;
 
-use crate::config::LogCleanupConfig;
 use crate::config_v2::RuntimeConfigV2;
 use crate::logging::{LogProducer, LogSender, LogSeverity, LogTransport};
 use crate::state::WorkerError;
@@ -411,16 +410,9 @@ async fn step_once(
 
             match cleanup_log_dir(
                 dir,
-                &LogCleanupConfig {
-                    enabled: ctx.cfg.logging.postgres_log_cleanup_enabled,
-                    max_files: ctx.cfg.logging.postgres_log_cleanup_max_files,
-                    max_age_seconds: ctx.cfg.logging.postgres_log_cleanup_max_age.as_secs(),
-                    protect_recent_seconds: ctx
-                        .cfg
-                        .logging
-                        .postgres_log_cleanup_protect_recent
-                        .as_secs(),
-                },
+                ctx.cfg.logging.postgres_log_cleanup_max_files,
+                ctx.cfg.logging.postgres_log_cleanup_max_age,
+                ctx.cfg.logging.postgres_log_cleanup_protect_recent,
                 protected.as_slice(),
                 SystemTime::now(),
             )
@@ -537,7 +529,9 @@ async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), Wo
 
 async fn cleanup_log_dir(
     dir: &Path,
-    cleanup: &LogCleanupConfig,
+    max_files: u64,
+    max_age: Duration,
+    protect_recent: Duration,
     protected_paths: &[&Path],
     now: SystemTime,
 ) -> Result<CleanupReport, WorkerError> {
@@ -631,7 +625,7 @@ async fn cleanup_log_dir(
         if !protected {
             let is_recent = match modified {
                 Some(modified) => match now.duration_since(modified) {
-                    Ok(age) => age.as_secs() <= cleanup.protect_recent_seconds,
+                    Ok(age) => age <= protect_recent,
                     Err(err) => {
                         issues.push(format!(
                             "stage=cleanup.age kind=duration_since path={} error={err}",
@@ -670,18 +664,18 @@ async fn cleanup_log_dir(
 
     let mut to_remove: Vec<std::path::PathBuf> = Vec::new();
 
-    if cleanup.max_files > 0 && (eligible.len() as u64) > cleanup.max_files {
-        let remove_count = eligible.len().saturating_sub(cleanup.max_files as usize);
+    if max_files > 0 && (eligible.len() as u64) > max_files {
+        let remove_count = eligible.len().saturating_sub(max_files as usize);
         for (path, _) in eligible.iter().take(remove_count) {
             to_remove.push(path.clone());
         }
     }
 
-    if cleanup.max_age_seconds > 0 {
+    if !max_age.is_zero() {
         for (path, modified) in eligible {
             match now.duration_since(modified) {
                 Ok(age) => {
-                    if age.as_secs() > cleanup.max_age_seconds {
+                    if age > max_age {
                         to_remove.push(path);
                     }
                 }
@@ -895,9 +889,8 @@ mod tests {
     use serde_json::Value;
     use tokio::task::JoinHandle;
 
-    use crate::config::{
-        DebugConfig, InlineOrPath, LogCleanupConfig, LogLevel, LoggingConfig,
-        PostgresLoggingConfig, RuntimeConfig,
+    use crate::config_v2::types::{
+        LogLevel, LoggingConfig as RuntimeLoggingConfig, RuntimeConfigV2,
     };
     use crate::logging::{
         LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogSink, LogTransport, TestSink,
@@ -922,26 +915,19 @@ mod tests {
         }
     }
 
-    fn sample_runtime_config() -> RuntimeConfig {
-        let baseline_logging = crate::dev_support::runtime_config::sample_postgres_logging_config();
+    fn sample_runtime_config() -> RuntimeConfigV2 {
+        let baseline_logging = crate::dev_support::runtime_config::sample_logging_config();
         crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_pg_hba(InlineOrPath::Inline {
-                content: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",)
-                    .to_string(),
-            })
-            .with_logging(LoggingConfig {
+            .with_pg_hba_contents(concat!(
+                "local all all trust\n",
+                "host all all 127.0.0.1/32 trust\n",
+            ))
+            .with_logging(RuntimeLoggingConfig {
                 level: LogLevel::Trace,
-                postgres: PostgresLoggingConfig {
-                    poll_interval_ms: 50,
-                    cleanup: LogCleanupConfig {
-                        enabled: false,
-                        ..baseline_logging.cleanup
-                    },
-                    ..baseline_logging
-                },
-                ..crate::dev_support::runtime_config::sample_logging_config()
+                postgres_log_poll_interval: Duration::from_millis(50),
+                postgres_log_cleanup_enabled: false,
+                ..baseline_logging
             })
-            .with_debug(DebugConfig { enabled: false })
             .build()
     }
 
@@ -1193,12 +1179,9 @@ mod tests {
 
         let report = cleanup_log_dir(
             dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 2,
-                max_age_seconds: 365 * 24 * 60 * 60,
-                protect_recent_seconds: 1,
-            },
+            2,
+            Duration::from_secs(365 * 24 * 60 * 60),
+            Duration::from_secs(1),
             &[protected.as_path()],
             SystemTime::now() + Duration::from_secs(3600),
         )
@@ -1240,12 +1223,9 @@ mod tests {
 
         let report = cleanup_log_dir(
             dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 1,
-                max_age_seconds: 365 * 24 * 60 * 60,
-                protect_recent_seconds: 1,
-            },
+            1,
+            Duration::from_secs(365 * 24 * 60 * 60),
+            Duration::from_secs(1),
             &[],
             SystemTime::now() + Duration::from_secs(3600),
         )
@@ -1281,12 +1261,9 @@ mod tests {
 
         let report = cleanup_log_dir(
             dir.as_path(),
-            &LogCleanupConfig {
-                enabled: true,
-                max_files: 1,
-                max_age_seconds: 1,
-                protect_recent_seconds: 1,
-            },
+            1,
+            Duration::from_secs(1),
+            Duration::from_secs(1),
             &[],
             SystemTime::now() + Duration::from_secs(3600),
         )
@@ -1441,7 +1418,7 @@ mod tests {
         }
 
         fn build_process_worker_ctx(
-            cfg: &crate::config::RuntimeConfig,
+            cfg: &crate::config_v2::RuntimeConfigV2,
             log: crate::logging::LogSender,
             dcs: DcsSnapshot,
             inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
@@ -1452,10 +1429,7 @@ mod tests {
             ),
             WorkerError,
         > {
-            let cfg = Box::leak(Box::new(
-                crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg.clone())
-                    .map_err(WorkerError::Message)?,
-            ));
+            let cfg = Box::leak(Box::new(cfg.clone()));
             let initial = ProcessState::starting();
             let (publisher, subscriber) = new_state_channel(initial.clone());
             let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
@@ -1610,11 +1584,9 @@ mod tests {
             let mut pg = spawn_pg16_for_vanilla_postgres(spec, &conf_lines).await?;
 
             let mut cfg = sample_runtime_config();
-            cfg.logging.postgres.log_dir = Some(log_dir);
-            cfg.logging.postgres.cleanup.enabled = false;
-            cfg.postgres.paths.log_file = Some(ns.child_dir("runtime/pg_ctl.log"));
-            let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
-                .map_err(WorkerError::Message)?;
+            cfg.logging.postgres_log_dir = log_dir;
+            cfg.logging.postgres_log_cleanup_enabled = false;
+            cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
 
             let test_log = start_test_log();
             let ctx = PostgresIngestWorkerCtx {
@@ -1684,38 +1656,35 @@ mod tests {
             std::fs::write(&jsonlog_path, b"")
                 .map_err(|err| WorkerError::Message(format!("seed jsonlog failed: {err}")))?;
 
-            let mut legacy_cfg = sample_runtime_config();
-            legacy_cfg.process.binaries = binaries.clone();
-            legacy_cfg.process.timeouts.bootstrap_ms = 30_000;
-            legacy_cfg.process.timeouts.fencing_ms = 30_000;
-            legacy_cfg.postgres.paths.data_dir = data_dir.clone();
-            legacy_cfg.postgres.paths.socket_dir = Some(socket_dir.clone());
-            legacy_cfg.postgres.network.listen_port = port;
-            legacy_cfg.postgres.paths.log_file = Some(log_file.clone());
-            legacy_cfg
-                .postgres
+            let mut cfg = sample_runtime_config();
+            cfg.binaries = binaries.clone();
+            cfg.timing.bootstrap_timeout = Duration::from_secs(30);
+            cfg.timing.fencing_timeout = Duration::from_secs(30);
+            cfg.postgres.data_dir = data_dir.clone();
+            cfg.postgres.pg_hba_file = data_dir.join("pgtm.pg_hba.conf");
+            cfg.postgres.pg_ident_file = data_dir.join("pgtm.pg_ident.conf");
+            cfg.postgres.socket_dir = socket_dir.clone();
+            cfg.postgres.listen_port = port;
+            cfg.postgres.advertise_port = port;
+            cfg.postgres.log_file = log_file.clone();
+            cfg.logging.postgres_pg_ctl_log = log_file.clone();
+            cfg.postgres
                 .extra_gucs
                 .insert("log_filename".to_string(), "postgres.json".to_string());
-            legacy_cfg
-                .postgres
+            cfg.postgres
                 .extra_gucs
                 .insert("log_directory".to_string(), log_dir.display().to_string());
-            legacy_cfg
-                .postgres
+            cfg.postgres
                 .extra_gucs
                 .insert("log_statement".to_string(), "all".to_string());
-            legacy_cfg.logging.postgres.log_dir = Some(log_dir.clone());
-            legacy_cfg.logging.postgres.cleanup.enabled = false;
-            let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(
-                legacy_cfg.clone(),
-            )
-            .map_err(WorkerError::Message)?;
+            cfg.logging.postgres_log_dir = log_dir.clone();
+            cfg.logging.postgres_log_cleanup_enabled = false;
 
             let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
             let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
-                &legacy_cfg,
+                &cfg,
                 test_log.sender(),
                 DcsSnapshot::starting(),
                 rx,
@@ -1832,9 +1801,7 @@ mod tests {
             }
 
             // Pump ingestion a bit to collect pg_ctl log lines.
-            let psql_bin = binaries.overrides.psql.clone().ok_or_else(|| {
-                WorkerError::Message("test process binaries missing psql override".to_string())
-            })?;
+            let psql_bin = binaries.psql.clone();
             let mut cmd = Command::new(psql_bin);
             cmd.arg("-h")
                 .arg("127.0.0.1")
@@ -1949,7 +1916,7 @@ mod tests {
                 .map_err(|err| WorkerError::Message(format!("create data_dir failed: {err}")))?;
 
             let mut cfg = sample_runtime_config();
-            cfg.process.binaries = binaries;
+            cfg.binaries = binaries;
 
             let test_log = start_test_log();
 

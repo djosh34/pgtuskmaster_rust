@@ -5,9 +5,9 @@ Your only goal is to reduce code and clean up the codebase.
 use just-reduce-code skill
 
 
-End goal: remove 50% of code from src/ and tests/
+End goal: remove 50-75% of code from src/ and tests/
 
-Check current code reduction since that commit via:
+Check current code reduction since commit '.ralph/git_diff_lines.txt' via:
 'bash .ralph/git_diff_lines_since.sh'
 
 

@@ -6,7 +6,6 @@ pub mod error;
 pub mod status;
 pub mod switchover;
 
-use crate::config::SecretSource;
 use args::{Cli, Command, SwitchoverCommand};
 use config::resolve_operator_context;
 use connect::{run_primary, run_replicas};
@@ -19,7 +18,7 @@ pub async fn run(cli: Cli) -> Result<String, CliError> {
     let command = cli.command.clone().unwrap_or(Command::Status);
     if context.api_auth_enabled
         && matches!(command, Command::Switchover(_))
-        && matches!(context.api_client.auth.admin_token, SecretSource::None)
+        && context.api_client.auth.admin_token.is_none()
     {
         return Err(CliError::Config(
             "admin token is required for switchover commands when API auth is enabled".to_string(),

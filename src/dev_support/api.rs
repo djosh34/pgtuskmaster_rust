@@ -4,7 +4,7 @@ use axum::Router;
 
 use crate::{
     api::worker::{build_router, ApiObservedState},
-    config::RuntimeConfig,
+    config_v2::RuntimeConfigV2,
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -14,18 +14,27 @@ use crate::{
 
 use super::HarnessError;
 
-pub fn build_test_router(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
-    build_test_router_with_state(cfg, ApiObservedState::Unavailable)
+pub fn build_test_router(
+    read_token: Option<&str>,
+    admin_token: Option<&str>,
+) -> Result<Router, HarnessError> {
+    build_test_router_with_state(
+        build_test_runtime_config(read_token, admin_token)?,
+        ApiObservedState::Unavailable,
+    )
 }
 
-pub fn build_test_router_with_live_state(cfg: RuntimeConfig) -> Result<Router, HarnessError> {
+pub fn build_test_router_with_live_state(
+    read_token: Option<&str>,
+    admin_token: Option<&str>,
+) -> Result<Router, HarnessError> {
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
     let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsSnapshot::starting());
     let (_ha_publisher, ha) = new_state_channel(HaState::initial(WorkerStatus::Running));
 
     build_test_router_with_state(
-        cfg,
+        build_test_runtime_config(read_token, admin_token)?,
         ApiObservedState::Live {
             pg,
             process,
@@ -35,14 +44,25 @@ pub fn build_test_router_with_live_state(cfg: RuntimeConfig) -> Result<Router, H
     )
 }
 
+fn build_test_runtime_config(
+    read_token: Option<&str>,
+    admin_token: Option<&str>,
+) -> Result<RuntimeConfigV2, HarnessError> {
+    let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
+        read_token,
+        admin_token,
+    )
+    .map_err(HarnessError::InvalidInput)?;
+    Ok(crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
+        .with_api_auth(auth)
+        .build())
+}
+
 fn build_test_router_with_state(
-    cfg: RuntimeConfig,
+    cfg: RuntimeConfigV2,
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
-    let cfg = Box::leak(Box::new(
-        crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
-            .map_err(HarnessError::InvalidInput)?,
-    ));
+    let cfg = Box::leak(Box::new(cfg));
     let runtime = crate::api::startup::bootstrap(
         NodeIdentity {
             cluster_name: cfg.cluster_name.clone(),

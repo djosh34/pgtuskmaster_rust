@@ -915,7 +915,7 @@ mod tests {
     use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
     use crate::{
-        config::{HaConfig, ProcessTimeoutsConfig},
+        config_v2::types::{PostgresConfig, TimingConfig},
         dcs::DcsSnapshot,
         dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
         logging::LogSender,
@@ -1069,32 +1069,22 @@ mod tests {
     > {
         let cfg = RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir.clone())
-            .transform_postgres(move |postgres| crate::config::PostgresConfig {
-                paths: crate::config::PostgresPathsConfig {
-                    data_dir: postgres.paths.data_dir.clone(),
-                    socket_dir: Some(socket_dir.clone()),
-                    log_file: Some(log_file.clone()),
-                },
+            .transform_postgres(move |postgres| PostgresConfig {
+                socket_dir: socket_dir.clone(),
+                log_file: log_file.clone(),
                 ..postgres
             })
             .with_dcs_scope("cluster-a")
-            .with_ha(HaConfig {
-                loop_interval_ms: 500,
-                lease_ttl_ms: 5_000,
+            .with_timing(TimingConfig {
+                ha_loop_interval: Duration::from_millis(500),
+                ha_lease_ttl: Duration::from_secs(5),
+                bootstrap_timeout: Duration::from_secs(30),
+                pg_rewind_timeout: Duration::from_secs(30),
+                fencing_timeout: Duration::from_secs(10),
             })
-            .with_process(crate::config::ProcessConfig {
-                timeouts: ProcessTimeoutsConfig {
-                    pg_rewind_ms: 30_000,
-                    bootstrap_ms: 30_000,
-                    fencing_ms: 10_000,
-                },
-                working_root: std::path::PathBuf::from("/tmp/pgtuskmaster"),
-                binaries: sample_binary_paths(),
-            })
+            .with_binaries(sample_binary_paths())
             .build();
-        let cfg = Box::leak(Box::new(
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?,
-        ));
+        let cfg = Box::leak(Box::new(cfg));
         let initial = ProcessState::starting();
         let (publisher, subscriber) = new_state_channel(initial.clone());
         let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsSnapshot::starting());

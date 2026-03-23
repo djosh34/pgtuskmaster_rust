@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Mon Mar 23 11:11:12 PM CET 2026
+Generated: Tue Mar 24 12:15:55 AM CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
@@ -56,6 +56,18 @@ Inside dirs:
 
 <description>
 **Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to only depend on config_v2 package and 0 on config package, and LARGE SCALE CODE REDUCTION/NESTED STRUCT COLLAPSE
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/03-delete-old-config.md`
+
+```
+## Task: Delete `src/config/` And Prove Zero Config Dependencies Remain <status>done</status> <passes>true</passes>
+
+<description>
+Migrate the final code to src/config_v2, while not making ANYTHING new public inside src/config_v2/parser
+All validation, in ALL code (must verify this), but only be done once, and that must be done only inside src/config_v2/parser.
 ```
 
 ==============

@@ -10,6 +10,7 @@ use std::{
 
 use cucumber::World;
 use pgtuskmaster_rust::api::{authoritative_primary_member, NodeState};
+use pgtuskmaster_test_support::runtime_config::validate_runtime_config_contents;
 use tokio::{
     runtime::{Builder, Handle, RuntimeFlavor},
     task::JoinHandle,
@@ -1530,20 +1531,18 @@ mod tests {
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
             assert!(compose.contains(output_root.display().to_string().as_str()));
 
-            let runtime = fs::read_to_string(
-                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                source,
+            let runtime_path = output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
+            let runtime = fs::read_to_string(runtime_path.as_path()).map_err(|source| {
+                HarnessError::Io {
+                    path: runtime_path.clone(),
+                    source,
+                }
             })?;
-            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(runtime.as_str()).map_err(
-                |source| {
-                    HarnessError::message(format!(
-                        "materialized node runtime config failed to parse: {source}"
-                    ))
-                },
-            )?;
+            validate_runtime_config_contents(runtime.as_str()).map_err(|source| {
+                HarnessError::message(format!(
+                    "materialized node runtime config failed validation: {source}"
+                ))
+            })?;
             assert!(runtime.contains(r#"username = "replicator""#));
             assert!(runtime.contains(r#"username = "rewinder""#));
             assert!(output_root.join("configs/tls/ca.crt").is_file());
@@ -1625,34 +1624,36 @@ mod tests {
                 compose_variant_absolute_path(given.compose_variant_relative_path())?;
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
 
-            let node_a_runtime = fs::read_to_string(
-                output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeA.runtime_config_relative_path()),
-                source,
-            })?;
-            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(node_a_runtime.as_str())
-                .map_err(|source| {
-                    HarnessError::message(format!(
-                        "materialized node-a runtime config failed to parse: {source}"
-                    ))
+            let node_a_runtime_path =
+                output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
+            let node_a_runtime =
+                fs::read_to_string(node_a_runtime_path.as_path()).map_err(|source| {
+                    HarnessError::Io {
+                        path: node_a_runtime_path.clone(),
+                        source,
+                    }
                 })?;
+            validate_runtime_config_contents(node_a_runtime.as_str()).map_err(|source| {
+                HarnessError::message(format!(
+                    "materialized node-a runtime config failed validation: {source}"
+                ))
+            })?;
             assert!(node_a_runtime.contains(r#"endpoints = ["http://etcd-a:2379"]"#));
 
-            let node_b_runtime = fs::read_to_string(
-                output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
-                source,
-            })?;
-            toml::from_str::<pgtuskmaster_rust::config::RuntimeConfig>(node_b_runtime.as_str())
-                .map_err(|source| {
-                    HarnessError::message(format!(
-                        "materialized node-b runtime config failed to parse: {source}"
-                    ))
+            let node_b_runtime_path =
+                output_root.join(ClusterMember::NodeB.runtime_config_relative_path());
+            let node_b_runtime =
+                fs::read_to_string(node_b_runtime_path.as_path()).map_err(|source| {
+                    HarnessError::Io {
+                        path: node_b_runtime_path.clone(),
+                        source,
+                    }
                 })?;
+            validate_runtime_config_contents(node_b_runtime.as_str()).map_err(|source| {
+                HarnessError::message(format!(
+                    "materialized node-b runtime config failed validation: {source}"
+                ))
+            })?;
             assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
             Ok(())
         })();

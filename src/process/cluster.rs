@@ -174,7 +174,7 @@ mod tests {
         }
     }
 
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
         RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .build()
@@ -273,9 +273,7 @@ psql = "/bin/true"
     fn prepare_replica_start_runs_through_planner_session_and_tool_layers() -> Result<(), String> {
         let root = unique_test_dir("replica-start")?;
         let data_dir = root.join("data");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime_config(data_dir.clone());
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
             dcs: DcsSnapshot::quorum(

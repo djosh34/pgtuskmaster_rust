@@ -1,7 +1,6 @@
 pub mod api;
 pub mod cli;
 pub mod command;
-pub mod config;
 mod config_v2;
 pub mod dcs;
 #[cfg(test)]

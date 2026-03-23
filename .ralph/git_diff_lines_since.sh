@@ -12,7 +12,7 @@ if ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
 fi
 
 read -r added removed < <(
-  git diff --numstat "$base_ref" -- . ':(exclude).ralph' ':(exclude).agents' ':(exclude).codex' |
+  git diff --numstat "$base_ref" -- ./src ./tests |
     awk '
       $1 == "-" || $2 == "-" { next }
       { added += $1; removed += $2 }

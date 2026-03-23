@@ -265,6 +265,29 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
     })
 }
 
+#[cfg(any(test, feature = "internal-test-support"))]
+pub(crate) fn validate_runtime_document(path: &Path) -> Result<(), ConfigErrorV2> {
+    let contents = read_config_file(path)?;
+    let _: raw::RuntimeDocument =
+        toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
+    Ok(())
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub(crate) fn load_runtime_timing_values(
+    path: &Path,
+) -> Result<(Duration, Duration, Duration, Duration), ConfigErrorV2> {
+    let contents = read_config_file(path)?;
+    let document: raw::RuntimeDocument =
+        toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
+    Ok((
+        Duration::from_millis(document.ha.loop_interval_ms),
+        Duration::from_millis(document.ha.lease_ttl_ms),
+        Duration::from_millis(document.process.timeouts.bootstrap_ms),
+        Duration::from_millis(document.process.timeouts.pg_rewind_ms),
+    ))
+}
+
 const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_POSTGRES_LISTEN_PORT: u16 = 5432;

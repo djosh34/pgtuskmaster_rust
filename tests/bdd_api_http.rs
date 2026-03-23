@@ -2,31 +2,8 @@ use axum::{
     body::Body,
     http::{Method, Request, StatusCode},
 };
-use pgtuskmaster_rust::config::{ApiAuthConfig, ApiRoleTokensConfig, RuntimeConfig, SecretSource};
 use pgtuskmaster_test_support::api::{build_test_router, build_test_router_with_live_state};
 use tower::util::ServiceExt;
-
-fn sample_runtime_config(read_token: Option<&str>, admin_token: Option<&str>) -> RuntimeConfig {
-    let auth = match (read_token, admin_token) {
-        (None, None) => ApiAuthConfig::Disabled,
-        (read_token, admin_token) => ApiAuthConfig::RoleTokens(ApiRoleTokensConfig {
-            read_token: read_token
-                .map(|token| SecretSource::String {
-                    value: token.to_string(),
-                })
-                .unwrap_or(SecretSource::None),
-            admin_token: admin_token
-                .map(|token| SecretSource::String {
-                    value: token.to_string(),
-                })
-                .unwrap_or(SecretSource::None),
-        }),
-    };
-
-    pgtuskmaster_test_support::runtime_config::RuntimeConfigBuilder::new()
-        .with_api_auth(auth)
-        .build()
-}
 
 fn request(
     method: Method,
@@ -43,7 +20,7 @@ fn request(
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_test_router(sample_runtime_config(None, None))?;
+    let app = build_test_router(None, None)?;
 
     let response = app.oneshot(request(Method::GET, "/state", None)?).await?;
 
@@ -54,7 +31,7 @@ async fn bdd_api_state_requires_live_state_subscribers() -> Result<(), Box<dyn s
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), Box<dyn std::error::Error>>
 {
-    let app = build_test_router(sample_runtime_config(None, None))?;
+    let app = build_test_router(None, None)?;
 
     let debug_response = app
         .clone()
@@ -71,7 +48,7 @@ async fn bdd_api_old_debug_and_fallback_routes_are_gone() -> Result<(), Box<dyn 
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_auth_token_denies_missing_header() -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_test_router(sample_runtime_config(Some("reader"), Some("admin")))?;
+    let app = build_test_router(Some("reader"), Some("admin"))?;
 
     let response = app.oneshot(request(Method::GET, "/state", None)?).await?;
 
@@ -81,7 +58,7 @@ async fn bdd_api_auth_token_denies_missing_header() -> Result<(), Box<dyn std::e
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_test_router(sample_runtime_config(Some("reader"), Some("admin")))?;
+    let app = build_test_router(Some("reader"), Some("admin"))?;
 
     let response = app
         .oneshot(request(Method::GET, "/state", Some("wrong-token"))?)
@@ -93,7 +70,7 @@ async fn bdd_api_auth_token_denies_invalid_header() -> Result<(), Box<dyn std::e
 
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), Box<dyn std::error::Error>> {
-    let app = build_test_router_with_live_state(sample_runtime_config(None, None))?;
+    let app = build_test_router_with_live_state(None, None)?;
 
     let response = app.oneshot(request(Method::GET, "/state", None)?).await?;
 
@@ -104,8 +81,7 @@ async fn bdd_api_state_succeeds_with_live_subscribers() -> Result<(), Box<dyn st
 #[tokio::test(flavor = "current_thread")]
 async fn bdd_api_read_token_can_read_but_not_call_admin_routes(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let app =
-        build_test_router_with_live_state(sample_runtime_config(Some("reader"), Some("admin")))?;
+    let app = build_test_router_with_live_state(Some("reader"), Some("admin"))?;
 
     let read_response = app
         .clone()

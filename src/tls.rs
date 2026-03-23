@@ -11,16 +11,8 @@ use rustls::{
 use thiserror::Error;
 use x509_parser::parse_x509_certificate;
 
-#[cfg(test)]
-use crate::config::TlsServerConfig;
-#[cfg(test)]
-use crate::config::{
-    resolve_inline_or_path_bytes, ApiClientAuthConfig, ClientCertificateMode, ClientCommonName,
-    InlineOrPath, TlsClientAuthConfig,
-};
 use crate::{
     api::worker::{ApiServerTransport, ApiTlsRuntime},
-    config::ConfigMaterializeError,
     config_v2::types::ApiTransport as ApiTransportV2,
 };
 
@@ -32,14 +24,6 @@ pub(crate) enum TlsConfigError {
     PemParse { message: String },
     #[error("rustls error: {message}")]
     Rustls { message: String },
-}
-
-impl From<ConfigMaterializeError> for TlsConfigError {
-    fn from(err: ConfigMaterializeError) -> Self {
-        Self::Io {
-            message: err.to_string(),
-        }
-    }
 }
 
 pub(crate) fn build_api_server_transport_v2(
@@ -77,64 +61,10 @@ pub(crate) fn build_api_server_config_v2(
     Ok(Arc::new(config))
 }
 
-#[cfg(test)]
-pub(crate) fn build_rustls_server_config(
-    tls: &TlsServerConfig,
-) -> Result<Option<Arc<rustls::ServerConfig>>, TlsConfigError> {
-    match tls {
-        TlsServerConfig::Disabled => Ok(None),
-        TlsServerConfig::Enabled {
-            identity,
-            client_auth,
-        } => {
-            let verifier = plain_client_verifier(client_auth.as_ref())?;
-            let config = build_server_config(
-                "tls.identity",
-                &identity.cert_chain,
-                &identity.private_key,
-                verifier,
-            )?;
-            Ok(Some(Arc::new(config)))
-        }
-    }
-}
-
 fn build_api_rustls_config_v2(transport: &ApiTransportV2) -> Result<RustlsConfig, TlsConfigError> {
     Ok(RustlsConfig::from_config(build_api_server_config_v2(
         transport,
     )?))
-}
-
-#[cfg(test)]
-fn build_server_config(
-    identity_field_prefix: &'static str,
-    cert_chain: &InlineOrPath,
-    private_key: &InlineOrPath,
-    verifier: Arc<dyn ClientCertVerifier>,
-) -> Result<rustls::ServerConfig, TlsConfigError> {
-    let cert_pem = resolve_inline_or_path_bytes(
-        format!("{identity_field_prefix}.cert_chain").as_str(),
-        cert_chain,
-    )?;
-    let key_pem = resolve_inline_or_path_bytes(
-        format!("{identity_field_prefix}.private_key").as_str(),
-        private_key,
-    )?;
-
-    let cert_chain = parse_pem_cert_chain(cert_pem.as_slice())?;
-    let key = parse_pem_private_key(key_pem.as_slice())?;
-
-    let provider = rustls::crypto::ring::default_provider();
-    rustls::ServerConfig::builder_with_provider(provider.into())
-        .with_safe_default_protocol_versions()
-        .map_err(|err| TlsConfigError::Rustls {
-            message: format!("build server config failed: {err}"),
-        })?
-        .with_client_cert_verifier(verifier)
-        .with_single_cert(cert_chain, key)
-        .map_err(|err| TlsConfigError::Rustls {
-            message: format!("configure server cert/key failed: {err}"),
-        })
 }
 
 fn build_server_config_from_paths(
@@ -165,96 +95,6 @@ fn build_server_config_from_paths(
         })
 }
 
-#[cfg(test)]
-fn plain_client_verifier(
-    client_auth: Option<&TlsClientAuthConfig>,
-) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
-    match client_auth {
-        Some(client_auth) => build_client_verifier(
-            client_auth,
-            CommonNamePolicy::Disabled,
-            "tls.client_auth.client_ca",
-        ),
-        None => Ok(Arc::new(rustls::server::NoClientAuth)),
-    }
-}
-
-#[cfg(test)]
-fn api_client_verifier(
-    client_auth: &ApiClientAuthConfig,
-) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
-    match client_auth {
-        ApiClientAuthConfig::Disabled => Ok(Arc::new(rustls::server::NoClientAuth)),
-        ApiClientAuthConfig::Optional { client_ca } => build_client_verifier(
-            &TlsClientAuthConfig {
-                client_ca: client_ca.clone(),
-                client_certificate: ClientCertificateMode::Optional,
-            },
-            CommonNamePolicy::Disabled,
-            "api.security.transport.https.tls.client_auth.client_ca",
-        ),
-        ApiClientAuthConfig::Required {
-            client_ca,
-            allowed_common_names,
-        } => build_client_verifier(
-            &TlsClientAuthConfig {
-                client_ca: client_ca.clone(),
-                client_certificate: ClientCertificateMode::Required,
-            },
-            CommonNamePolicy::AllowList(client_common_names(allowed_common_names)),
-            "api.security.transport.https.tls.client_auth.client_ca",
-        ),
-    }
-}
-
-#[cfg(test)]
-fn build_client_verifier(
-    client_auth: &TlsClientAuthConfig,
-    common_name_policy: CommonNamePolicy,
-    field: &'static str,
-) -> Result<Arc<dyn ClientCertVerifier>, TlsConfigError> {
-    let ca_pem = resolve_inline_or_path_bytes(field, &client_auth.client_ca)?;
-    let ca_certs = parse_pem_cert_chain(ca_pem.as_slice())?;
-
-    let mut roots = rustls::RootCertStore::empty();
-    for cert in ca_certs {
-        roots.add(cert).map_err(|err| TlsConfigError::Rustls {
-            message: format!("add client ca cert failed: {err}"),
-        })?;
-    }
-
-    let provider = rustls::crypto::ring::default_provider();
-    let mut verifier_builder = rustls::server::WebPkiClientVerifier::builder_with_provider(
-        Arc::new(roots),
-        provider.into(),
-    );
-    if matches!(
-        client_auth.client_certificate,
-        ClientCertificateMode::Optional
-    ) {
-        verifier_builder = verifier_builder.allow_unauthenticated();
-    }
-
-    let verifier = verifier_builder
-        .build()
-        .map_err(|err| TlsConfigError::Rustls {
-            message: format!("build client cert verifier failed: {err}"),
-        })?;
-
-    match common_name_policy {
-        CommonNamePolicy::Disabled => Ok(verifier),
-        CommonNamePolicy::AllowList(allowed_common_names) => {
-            if allowed_common_names.is_empty() {
-                Ok(verifier)
-            } else {
-                Ok(Arc::new(AllowedCommonNamesClientCertVerifier {
-                    inner: verifier,
-                    allowed_common_names,
-                }))
-            }
-        }
-    }
-}
 
 fn build_client_verifier_from_paths(
     client_ca: Option<&std::path::Path>,
@@ -299,13 +139,6 @@ fn build_client_verifier_from_paths(
             allowed_common_names: allowed_client_common_names.iter().cloned().collect(),
         }))
     }
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum CommonNamePolicy {
-    Disabled,
-    AllowList(BTreeSet<String>),
 }
 
 #[derive(Debug)]
@@ -407,14 +240,6 @@ fn certificate_common_names(
     Ok(values)
 }
 
-#[cfg(test)]
-fn client_common_names(values: &[ClientCommonName]) -> BTreeSet<String> {
-    values
-        .iter()
-        .map(|value| value.0.trim().to_string())
-        .collect()
-}
-
 fn parse_pem_cert_chain(pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
     let mut reader = std::io::BufReader::new(Cursor::new(pem));
     let certs = rustls_pemfile::certs(&mut reader)
@@ -443,105 +268,117 @@ fn parse_pem_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsConfig
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{path::PathBuf, time::Duration};
 
     use rustls::pki_types::UnixTime;
 
-    use std::path::PathBuf;
-
     use crate::{
-        config::{
-            ApiClientAuthConfig, ClientCommonName, InlineOrPath, TlsClientAuthConfig,
-            TlsServerConfig, TlsServerIdentityConfig,
-        },
+        config_v2::types::{ApiTransport as ApiTransportV2, TlsConfig},
         dev_support::tls::build_adversarial_tls_fixture,
     };
 
-    use super::{api_client_verifier, build_rustls_server_config, TlsConfigError};
+    use super::{build_api_server_config_v2, build_client_verifier_from_paths, TlsConfigError};
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-tls-{label}-{}-{}",
+            std::process::id(),
+            crate::logging::system_now_unix_millis()
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn write_pem_file(dir: &std::path::Path, name: &str, contents: &str) -> Result<PathBuf, String> {
+        let path = dir.join(name);
+        std::fs::write(&path, contents)
+            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
+        Ok(path)
+    }
 
     fn sample_validation_time() -> UnixTime {
         UnixTime::since_unix_epoch(Duration::from_secs(1_735_689_600))
     }
 
     #[test]
-    fn build_rustls_server_config_accepts_inline_identity_and_optional_client_auth(
+    fn build_api_server_config_accepts_path_identity_and_optional_client_auth(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let cfg = TlsServerConfig::Enabled {
-            identity: TlsServerIdentityConfig {
-                cert_chain: InlineOrPath::Inline {
-                    content: fixture.valid_server.cert_pem.clone(),
-                },
-                private_key: InlineOrPath::Inline {
-                    content: fixture.valid_server.key_pem.clone(),
-                },
+        let dir = unique_test_dir("server-config-ok")?;
+        let cfg = ApiTransportV2::Https {
+            tls: TlsConfig {
+                cert: write_pem_file(dir.as_path(), "server.crt", fixture.valid_server.cert_pem.as_str())?,
+                key: write_pem_file(dir.as_path(), "server.key", fixture.valid_server.key_pem.as_str())?,
+                ca_cert: None,
             },
-            client_auth: Some(TlsClientAuthConfig {
-                client_ca: InlineOrPath::Inline {
-                    content: fixture.trusted_client_ca.cert.cert_pem.clone(),
-                },
-                client_certificate: crate::config::ClientCertificateMode::Optional,
-            }),
+            client_ca: Some(write_pem_file(
+                dir.as_path(),
+                "client-ca.crt",
+                fixture.trusted_client_ca.cert.cert_pem.as_str(),
+            )?),
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
         };
 
-        let built = build_rustls_server_config(&cfg)?;
-        assert!(built.is_some());
+        let built = build_api_server_config_v2(&cfg)?;
+        assert_eq!(built.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
         Ok(())
     }
 
     #[test]
-    fn build_rustls_server_config_reports_io_error_when_cert_path_missing() {
-        let cfg = TlsServerConfig::Enabled {
-            identity: TlsServerIdentityConfig {
-                cert_chain: InlineOrPath::Path(PathBuf::from(
-                    "/tmp/pgtuskmaster-missing-cert-chain.pem",
-                )),
-                private_key: InlineOrPath::Path(PathBuf::from(
-                    "/tmp/pgtuskmaster-missing-private-key.pem",
-                )),
+    fn build_api_server_config_reports_io_error_when_cert_path_missing() {
+        let cfg = ApiTransportV2::Https {
+            tls: TlsConfig {
+                cert: PathBuf::from("/tmp/pgtuskmaster-missing-cert-chain.pem"),
+                key: PathBuf::from("/tmp/pgtuskmaster-missing-private-key.pem"),
+                ca_cert: None,
             },
-            client_auth: None,
+            client_ca: None,
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
         };
 
-        let result = build_rustls_server_config(&cfg);
+        let result = build_api_server_config_v2(&cfg);
         assert!(matches!(result, Err(TlsConfigError::Io { .. })));
     }
 
     #[test]
-    fn build_rustls_server_config_reports_pem_error_for_invalid_cert_chain() {
-        let cfg = TlsServerConfig::Enabled {
-            identity: TlsServerIdentityConfig {
-                cert_chain: InlineOrPath::Inline {
-                    content: "not-a-cert".to_string(),
-                },
-                private_key: InlineOrPath::Inline {
-                    content: "not-a-key".to_string(),
-                },
+    fn build_api_server_config_reports_pem_error_for_invalid_cert_chain() -> Result<(), String> {
+        let dir = unique_test_dir("invalid-cert")?;
+        let cfg = ApiTransportV2::Https {
+            tls: TlsConfig {
+                cert: write_pem_file(dir.as_path(), "server.crt", "not-a-cert")?,
+                key: write_pem_file(dir.as_path(), "server.key", "not-a-key")?,
+                ca_cert: None,
             },
-            client_auth: None,
+            client_ca: None,
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
         };
 
-        let result = build_rustls_server_config(&cfg);
+        let result = build_api_server_config_v2(&cfg);
         assert!(matches!(result, Err(TlsConfigError::PemParse { .. })));
+        Ok(())
     }
 
     #[test]
-    fn build_rustls_server_config_reports_pem_error_for_invalid_private_key(
+    fn build_api_server_config_reports_pem_error_for_invalid_private_key(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let cfg = TlsServerConfig::Enabled {
-            identity: TlsServerIdentityConfig {
-                cert_chain: InlineOrPath::Inline {
-                    content: fixture.valid_server.cert_pem.clone(),
-                },
-                private_key: InlineOrPath::Inline {
-                    content: "not-a-private-key".to_string(),
-                },
+        let dir = unique_test_dir("invalid-key")?;
+        let cfg = ApiTransportV2::Https {
+            tls: TlsConfig {
+                cert: write_pem_file(dir.as_path(), "server.crt", fixture.valid_server.cert_pem.as_str())?,
+                key: write_pem_file(dir.as_path(), "server.key", "not-a-private-key")?,
+                ca_cert: None,
             },
-            client_auth: None,
+            client_ca: None,
+            client_cert_required: false,
+            allowed_client_common_names: Vec::new(),
         };
 
-        let result = build_rustls_server_config(&cfg);
+        let result = build_api_server_config_v2(&cfg);
         assert!(matches!(result, Err(TlsConfigError::PemParse { .. })));
         Ok(())
     }
@@ -550,12 +387,17 @@ mod tests {
     fn api_client_verifier_rejects_client_signed_by_unconfigured_ca(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let verifier = api_client_verifier(&ApiClientAuthConfig::Required {
-            client_ca: InlineOrPath::Inline {
-                content: fixture.trusted_client_ca.cert.cert_pem.clone(),
-            },
-            allowed_common_names: vec![ClientCommonName("trusted-client".to_string())],
-        })?;
+        let dir = unique_test_dir("verifier-untrusted")?;
+        let ca_path = write_pem_file(
+            dir.as_path(),
+            "client-ca.crt",
+            fixture.trusted_client_ca.cert.cert_pem.as_str(),
+        )?;
+        let verifier = build_client_verifier_from_paths(
+            Some(ca_path.as_path()),
+            true,
+            &["trusted-client".to_string()],
+        )?;
 
         let result = verifier.verify_client_cert(
             &fixture.untrusted_client.cert_der(),
@@ -571,12 +413,17 @@ mod tests {
     fn api_client_verifier_rejects_client_common_name_outside_allow_list(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let verifier = api_client_verifier(&ApiClientAuthConfig::Required {
-            client_ca: InlineOrPath::Inline {
-                content: fixture.trusted_client_ca.cert.cert_pem.clone(),
-            },
-            allowed_common_names: vec![ClientCommonName("ops-admin".to_string())],
-        })?;
+        let dir = unique_test_dir("verifier-cn")?;
+        let ca_path = write_pem_file(
+            dir.as_path(),
+            "client-ca.crt",
+            fixture.trusted_client_ca.cert.cert_pem.as_str(),
+        )?;
+        let verifier = build_client_verifier_from_paths(
+            Some(ca_path.as_path()),
+            true,
+            &["ops-admin".to_string()],
+        )?;
 
         let result = verifier.verify_client_cert(
             &fixture.trusted_client.cert_der(),

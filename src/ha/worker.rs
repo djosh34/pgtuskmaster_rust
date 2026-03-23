@@ -267,7 +267,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        config::RuntimeConfig,
         dcs::{DcsHandle, DcsMemberState, DcsSnapshot},
         dev_support::runtime_config::RuntimeConfigBuilder,
         ha::state::{HaControlPlane, HaObservedState, HaStateChannel},
@@ -426,13 +425,11 @@ mod tests {
     }
 
     fn ha_context(
-        runtime_config: RuntimeConfig,
+        runtime_config: crate::config_v2::RuntimeConfigV2,
         pg: PgInfoState,
         dcs: DcsSnapshot,
     ) -> Result<HaRuntimeCtx<'static>, String> {
-        let cfg = Box::leak(Box::new(
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?,
-        ));
+        let cfg = Box::leak(Box::new(runtime_config));
         let (pg_publisher, pg_subscriber) = new_state_channel(pg);
         let (dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
         let (process_publisher, process) = new_state_channel(ProcessState::Idle {

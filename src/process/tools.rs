@@ -400,7 +400,7 @@ mod tests {
         Ok(dir)
     }
 
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config::RuntimeConfig {
+    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
         RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
             .build()
@@ -417,9 +417,7 @@ mod tests {
         fs::write(&stale, "stale")
             .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
 
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime_config(data_dir.clone());
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
@@ -481,9 +479,7 @@ mod tests {
     fn build_command_for_start_postgres_uses_prepared_session_paths() -> Result<(), String> {
         let root = unique_test_dir("start-command")?;
         let data_dir = root.join("data");
-        let runtime_config = sample_runtime_config(data_dir.clone());
-        let cfg =
-            crate::dev_support::runtime_config_v2::from_legacy_runtime_config(runtime_config)?;
+        let cfg = sample_runtime_config(data_dir.clone());
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,

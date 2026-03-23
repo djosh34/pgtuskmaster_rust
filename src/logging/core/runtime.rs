@@ -723,10 +723,9 @@ impl LogSink for TestSink {
 mod tests {
     use super::*;
 
-    use crate::config::{
-        DebugConfig, LogCleanupConfig, LogLevel, LoggingConfig, PostgresLoggingConfig,
-        RuntimeConfig,
-    };
+    use std::time::Duration;
+
+    use crate::config_v2::types::{LogLevel, LoggingConfig, RuntimeConfigV2};
     use crate::process::jobs::ProcessJobKind;
     use crate::process::log_event::{CapturedStream, SubprocessLogEvent};
     use crate::runtime::log_event::RuntimeLogEvent;
@@ -783,22 +782,15 @@ mod tests {
             .collect())
     }
 
-    fn sample_runtime_config() -> RuntimeConfig {
+    fn sample_runtime_config() -> RuntimeConfigV2 {
+        let baseline = crate::dev_support::runtime_config::sample_logging_config();
         crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
             .with_logging(LoggingConfig {
                 level: LogLevel::Trace,
-                postgres: PostgresLoggingConfig {
-                    poll_interval_ms: 50,
-                    cleanup: LogCleanupConfig {
-                        enabled: false,
-                        ..crate::dev_support::runtime_config::sample_postgres_logging_config()
-                            .cleanup
-                    },
-                    ..crate::dev_support::runtime_config::sample_postgres_logging_config()
-                },
-                ..crate::dev_support::runtime_config::sample_logging_config()
+                postgres_log_poll_interval: Duration::from_millis(50),
+                postgres_log_cleanup_enabled: false,
+                ..baseline
             })
-            .with_debug(DebugConfig { enabled: false })
             .build()
     }
 
@@ -1113,10 +1105,9 @@ mod tests {
         let path = root.join("app.jsonl");
 
         let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = Some(path.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?;
+        cfg.logging.stderr_enabled = false;
+        cfg.logging.file_enabled = true;
+        cfg.logging.file_path = path.clone();
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1145,10 +1136,9 @@ mod tests {
         let path = root.join("app.jsonl");
 
         let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = true;
-        cfg.logging.sinks.file.enabled = true;
-        cfg.logging.sinks.file.path = Some(path.clone());
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)?;
+        cfg.logging.stderr_enabled = true;
+        cfg.logging.file_enabled = true;
+        cfg.logging.file_path = path.clone();
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1167,10 +1157,8 @@ mod tests {
     #[test]
     fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), String> {
         let mut cfg = sample_runtime_config();
-        cfg.logging.sinks.stderr.enabled = false;
-        cfg.logging.sinks.file.enabled = false;
-        let cfg = crate::dev_support::runtime_config_v2::from_legacy_runtime_config(cfg)
-            .map_err(|err| format!("legacy runtime config to v2 conversion failed: {err}"))?;
+        cfg.logging.stderr_enabled = false;
+        cfg.logging.file_enabled = false;
 
         let system = bootstrap(&cfg).map_err(|err| err.to_string())?;
         let res = system.sender.send(sample_runtime_event());
