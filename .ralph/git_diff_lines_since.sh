@@ -2,21 +2,9 @@
 
 set -euo pipefail
 
-usage() {
-  cat <<'EOF'
-Usage: .ralph/git_diff_lines_since.sh <hash-or-hash-snippet>
 
-Print the total added and removed lines between the given commit-ish and the
-current working tree. Files under .ralph, .agents, and .codex are ignored.
-EOF
-}
-
-if [[ $# -ne 1 ]]; then
-  usage >&2
-  exit 1
-fi
-
-base_ref="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+base_ref="$(cat ${SCRIPT_DIR}/git_diff_lines.txt)"
 
 if ! git rev-parse --verify --quiet "$base_ref^{commit}" >/dev/null; then
   echo "error: unknown revision: $base_ref" >&2

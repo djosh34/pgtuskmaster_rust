@@ -350,3 +350,4 @@ NONE
 .ralph/tasks/bugs/legacy-runtime-config-v2-test-converter-drops-api-and-dcs-tls.md
 .ralph/tasks/bugs/config-v2-binaries-drop-postgres-and-psql-needed-by-ha-fixtures.md
 .ralph/tasks/bugs/config-v2-drops-replica-source-tls-ca-needed-by-basebackup.md
+.ralph/tasks/bugs/config-v2-ha-bootstrap-pgtm-https-status-cannot-reach-seed-primary.md

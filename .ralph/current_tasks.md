@@ -1,6 +1,6 @@
 # Current Tasks Summary
 
-Generated: Fri Mar 20 09:22:45 PM CET 2026
+Generated: Mon Mar 23 11:05:16 PM CET 2026
 
 # Task `.ralph/tasks/bugs/api-worker-reload-certificates-tests-leak-managed-postgres-processes.md`
 
@@ -57,6 +57,17 @@ Generated: Fri Mar 20 09:22:45 PM CET 2026
 
 ==============
 
+# Task `.ralph/tasks/bugs/legacy-config-cutover-still-blocks-compile.md`
+
+```
+## Bug: Legacy config cutover still blocks compile <status>not_started</status> <passes>false</passes>
+
+<description>
+Disabling the exports in `src/config/mod.rs` shows that production code still imports legacy `crate::config` types and helpers instead of using `config_v2`.
+```
+
+==============
+
 # Task `.ralph/tasks/bugs/legacy-runtime-config-v2-test-converter-drops-postgres-tls.md`
 
 ```
@@ -79,23 +90,37 @@ Generated: Fri Mar 20 09:22:45 PM CET 2026
 
 ==============
 
-# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/10-task-rebuild-dev-support-and-tests-around-v2-config-only.md`
-
-```
-## Task: Rebuild `dev_support/` And Tests Around V2 Config Only <status>not_started</status> <passes>false</passes>
-
-<description>
-**Goal:** Remove test/dev preservation of the old config tree by rebuilding helpers, builders, harnesses, and fixtures around `RuntimeConfigV2` and `OperatorConfigV2` only. The higher-order goal is to prevent tests from keeping `src/config/` alive after production code migrates.
-```
-
-==============
-
-# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/11-task-delete-src-config-and-prove-zero-config-dependencies-remain.md`
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/03-delete-old-config.md`
 
 ```
 ## Task: Delete `src/config/` And Prove Zero Config Dependencies Remain <status>not_started</status> <passes>false</passes>
 
 <description>
-**Goal:** Delete `src/config/` entirely and prove that no code, tests, docs, or fixtures depend on it anymore. The higher-order goal is to close the story with a hard architectural proof instead of stopping at a partial migration.
+Migrate the final code to src/config_v2, while not making ANYTHING new public inside src/config_v2/parser
+All validation, in ALL code (must verify this), but only be done once, and that must be done only inside src/config_v2/parser.
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/04-eliminate-tls-bytes.md`
+
+```
+## Task: Eliminate TLS bytes <status>not_started</status> <passes>false</passes>
+
+<description>
+Someone previously had this crazy idea to store bytes within the config struct. This causes a crazy amount of issues.
+I don't want that at all. I don't want tls bytes to be inside the config struct, nor i ever want them to be written somewhere else.
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md`
+
+```
+## Task: Reduce Code Loop <status>not_started</status> <passes>false</passes>
+
+Your only goal is to reduce code and clean up the codebase.
+
+use just-reduce-code skill
 ```
 

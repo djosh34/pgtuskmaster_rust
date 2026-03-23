@@ -2,11 +2,11 @@
 
 Your only goal is to reduce code and clean up the codebase.
 
-1) use just-reduce-code skill
+use just-reduce-code skill
 
 
-End goal: remove 50% of code compared to commit:
+End goal: remove 50% of code.
 
-
-''
+Check current code reduction since that commit via:
+'bash .ralph/git_diff_lines_since.sh'
 

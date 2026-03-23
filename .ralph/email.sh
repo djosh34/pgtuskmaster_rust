@@ -138,7 +138,7 @@ PROGRESS=$("$SCRIPT_DIR/progress_read.sh" EMAIL 2>/dev/null) || true
 # Build gauges
 TASK_PATH_VAL="${CURRENT_TASK_PATH:-(not set)}"
 TASK_NAME_VAL="${CURRENT_TASK_NAME:-(not set)}"
-LINE_DIFF_VAL=$("$SCRIPT_DIR/git_diff_lines_since.sh" bb18fdd1ff37af2dee0c6b0cc7ff7b6e880c78e1 2>/dev/null) || true
+LINE_DIFF_VAL=$("$SCRIPT_DIR/git_diff_lines_since.sh" 2>/dev/null) || true
 PROGRESS_VAL="not found"
 [[ -n "$PROGRESS" ]] && PROGRESS_VAL="exists (see below)"
 

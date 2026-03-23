@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Fri Mar 20 09:22:45 PM CET 2026
+Generated: Mon Mar 23 11:05:16 PM CET 2026
 
 # Task `.ralph/tasks/bugs/cli-client-drops-file-backed-api-tls-material.md`
 
@@ -162,7 +162,7 @@ Inside dirs:
 # Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/02-task-follow-the-direct-cfg-reduction-loop-one-root-at-a-time.md`
 
 ```
-## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>in_progress</status> <passes>true</passes>
+## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to only depend on config_v2 package and 0 on config package, and LARGE SCALE CODE REDUCTION/NESTED STRUCT COLLAPSE
