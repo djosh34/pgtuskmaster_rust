@@ -42,6 +42,30 @@ pub(crate) enum ProcessExecutionKind {
     StartPostgres(StartPostgresSpec),
 }
 
+impl ProcessExecutionKind {
+    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
+        match self {
+            Self::Bootstrap(_) => ActiveJobKind::Bootstrap,
+            Self::BaseBackup(_) => ActiveJobKind::BaseBackup,
+            Self::PgRewind(_) => ActiveJobKind::PgRewind,
+            Self::Promote(_) => ActiveJobKind::Promote,
+            Self::Demote(_) => ActiveJobKind::Demote,
+            Self::StartPostgres(spec) => spec.mode.active_job_kind(),
+        }
+    }
+
+    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
+            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
+            Self::PgRewind(_) => ProcessJobKind::PgRewind,
+            Self::Promote(_) => ProcessJobKind::Promote,
+            Self::Demote(_) => ProcessJobKind::Demote,
+            Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessIntentRequest {
     pub(crate) id: JobId,

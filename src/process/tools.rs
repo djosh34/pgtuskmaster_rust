@@ -4,8 +4,7 @@ use crate::{
     config_v2::{types::Secret, RuntimeConfigV2},
     process::{
         jobs::{
-            ActiveJobKind, PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar,
-            ProcessError, ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, StartPostgresSpec,
+            ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, StartPostgresSpec,
         },
         planner::ClusterProcessPlan,
         session::PreparedManagedPostgresSession,
@@ -90,7 +89,7 @@ impl ExternalToolLowerer {
                     ],
                     env: Vec::new(),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
             ProcessExecutionKind::BaseBackup(spec) => {
@@ -122,7 +121,7 @@ impl ExternalToolLowerer {
                     ],
                     env: role_auth_env(&spec.source.auth),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
             ProcessExecutionKind::PgRewind(spec) => {
@@ -152,7 +151,7 @@ impl ExternalToolLowerer {
                     ],
                     env: role_auth_env(&spec.source.auth),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
             ProcessExecutionKind::Promote(spec) => {
@@ -173,7 +172,7 @@ impl ExternalToolLowerer {
                     args,
                     env: Vec::new(),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
             ProcessExecutionKind::Demote(spec) => {
@@ -191,7 +190,7 @@ impl ExternalToolLowerer {
                     ],
                     env: Vec::new(),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
             ProcessExecutionKind::StartPostgres(spec) => {
@@ -221,59 +220,10 @@ impl ExternalToolLowerer {
                     ],
                     env: Vec::new(),
                     capture_output: cfg.logging.capture_subprocess_output,
-                    job_kind: process_job_kind_from_execution(kind),
+                    job_kind: kind.process_job_kind(),
                 })
             }
         }
-    }
-}
-
-pub(crate) fn active_kind_from_intent(intent: &ProcessIntent) -> ActiveJobKind {
-    match intent {
-        ProcessIntent::Bootstrap => ActiveJobKind::Bootstrap,
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
-            ActiveJobKind::BaseBackup
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
-            ActiveJobKind::PgRewind
-        }
-        ProcessIntent::Promote => ActiveJobKind::Promote,
-        ProcessIntent::Demote(_) => ActiveJobKind::Demote,
-        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::Primary) => {
-            ActiveJobKind::StartPrimary
-        }
-        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::DetachedStandby) => {
-            ActiveJobKind::StartDetachedStandby
-        }
-        ProcessIntent::Start(crate::process::jobs::PostgresStartIntent::Replica { .. }) => {
-            ActiveJobKind::StartReplica
-        }
-    }
-}
-
-pub(crate) fn active_kind(kind: &ProcessExecutionKind) -> ActiveJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ActiveJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ActiveJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ActiveJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ActiveJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ActiveJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(spec) => match spec.mode {
-            PostgresStartMode::Primary => ActiveJobKind::StartPrimary,
-            PostgresStartMode::DetachedStandby => ActiveJobKind::StartDetachedStandby,
-            PostgresStartMode::Replica => ActiveJobKind::StartReplica,
-        },
-    }
-}
-
-pub(crate) fn process_job_kind_from_execution(kind: &ProcessExecutionKind) -> ProcessJobKind {
-    match kind {
-        ProcessExecutionKind::Bootstrap(_) => ProcessJobKind::Bootstrap,
-        ProcessExecutionKind::BaseBackup(_) => ProcessJobKind::BaseBackup,
-        ProcessExecutionKind::PgRewind(_) => ProcessJobKind::PgRewind,
-        ProcessExecutionKind::Promote(_) => ProcessJobKind::Promote,
-        ProcessExecutionKind::Demote(_) => ProcessJobKind::Demote,
-        ProcessExecutionKind::StartPostgres(_) => ProcessJobKind::StartPostgres,
     }
 }
 

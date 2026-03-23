@@ -4,5 +4,6 @@ Your only goal is to reduce code and clean up the codebase.
 You have two methods to do that:
 
 1) use improve-code-boundaries skill to find and remove smells
-2) use cfg reduce loop to use cfg more directly
+2) use cfg-reduce-loop skill to use cfg more directly
+3) use just-reduce-code skill
 

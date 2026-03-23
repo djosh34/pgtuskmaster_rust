@@ -30,6 +30,36 @@ impl ProcessIntent {
             Self::Demote(_) => "demote",
         }
     }
+
+    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
+        match self {
+            Self::Bootstrap => ActiveJobKind::Bootstrap,
+            Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
+                ActiveJobKind::BaseBackup
+            }
+            Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
+                ActiveJobKind::PgRewind
+            }
+            Self::Start(start) => start.active_job_kind(),
+            Self::Promote => ActiveJobKind::Promote,
+            Self::Demote(_) => ActiveJobKind::Demote,
+        }
+    }
+
+    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Bootstrap => ProcessJobKind::Bootstrap,
+            Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
+                ProcessJobKind::BaseBackup
+            }
+            Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
+                ProcessJobKind::PgRewind
+            }
+            Self::Start(start) => start.process_job_kind(),
+            Self::Promote => ProcessJobKind::Promote,
+            Self::Demote(_) => ProcessJobKind::Demote,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -43,6 +73,34 @@ pub enum PostgresStartIntent {
     Primary,
     DetachedStandby,
     Replica { leader: MemberId },
+}
+
+impl PostgresStartIntent {
+    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
+        match self {
+            Self::Primary => ActiveJobKind::StartPrimary,
+            Self::DetachedStandby => ActiveJobKind::StartDetachedStandby,
+            Self::Replica { .. } => ActiveJobKind::StartReplica,
+        }
+    }
+
+    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Primary => ProcessJobKind::StartPrimary,
+            Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
+            Self::Replica { .. } => ProcessJobKind::StartReplica,
+        }
+    }
+}
+
+impl PostgresStartMode {
+    pub(crate) fn active_job_kind(self) -> ActiveJobKind {
+        match self {
+            Self::Primary => ActiveJobKind::StartPrimary,
+            Self::DetachedStandby => ActiveJobKind::StartDetachedStandby,
+            Self::Replica => ActiveJobKind::StartReplica,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

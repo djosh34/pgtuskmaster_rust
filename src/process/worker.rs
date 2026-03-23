@@ -10,16 +10,14 @@ use crate::{
     process::{
         cluster::{ProcessCluster, ProcessPreparationError},
         postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
-        tools::{active_kind, active_kind_from_intent, process_job_kind_from_execution},
     },
     state::{UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
     jobs::{
-        ActiveJob, PostgresStartIntent, ProcessCommandSpec, ProcessError, ProcessExit,
-        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
-        ReplicaProvisionIntent,
+        ActiveJob, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle, ProcessIntent,
+        ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     state::{
@@ -33,25 +31,6 @@ const PROCESS_OUTPUT_READ_TIMEOUT: std::time::Duration = std::time::Duration::fr
 const PROCESS_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
-
-fn process_job_kind_from_intent(intent: &ProcessIntent) -> ProcessJobKind {
-    match intent {
-        ProcessIntent::Bootstrap => ProcessJobKind::Bootstrap,
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
-            ProcessJobKind::BaseBackup
-        }
-        ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
-            ProcessJobKind::PgRewind
-        }
-        ProcessIntent::Start(PostgresStartIntent::Primary) => ProcessJobKind::StartPrimary,
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-            ProcessJobKind::StartDetachedStandby
-        }
-        ProcessIntent::Start(PostgresStartIntent::Replica { .. }) => ProcessJobKind::StartReplica,
-        ProcessIntent::Promote => ProcessJobKind::Promote,
-        ProcessIntent::Demote(_) => ProcessJobKind::Demote,
-    }
-}
 
 struct TokioProcessHandle {
     child: Child,
@@ -327,7 +306,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), Work
         ctx.runtime
             .log
             .send(ProcessLogEvent::RequestReceived {
-                job_kind: process_job_kind_from_intent(&request.intent),
+                job_kind: request.intent.process_job_kind(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process request log send failed: {err}"))
@@ -464,11 +443,7 @@ fn start_postgres_preflight_details(
     intent: &ProcessIntent,
 ) -> Option<(std::path::PathBuf, std::path::PathBuf, u16)> {
     match intent {
-        ProcessIntent::Start(
-            PostgresStartIntent::Primary
-            | PostgresStartIntent::DetachedStandby
-            | PostgresStartIntent::Replica { .. },
-        ) => Some((
+        ProcessIntent::Start(_) => Some((
             ctx.cfg.postgres.data_dir.clone(),
             ctx.cfg.postgres.socket_dir.clone(),
             ctx.cfg.postgres.listen_port,
@@ -492,7 +467,7 @@ pub(crate) async fn start_job(
         ctx.runtime
             .log
             .send(ProcessLogEvent::BusyRejected {
-                job_kind: process_job_kind_from_intent(&request.intent),
+                job_kind: request.intent.process_job_kind(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process busy reject log send failed: {err}"))
@@ -524,7 +499,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Success {
                         id: request.id,
-                        job_kind: active_kind_from_intent(&request.intent),
+                        job_kind: request.intent.active_job_kind(),
                         finished_at: now,
                     },
                     now,
@@ -547,7 +522,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Failure {
                         id: request.id,
-                        job_kind: active_kind_from_intent(&request.intent),
+                        job_kind: request.intent.active_job_kind(),
                         error,
                         finished_at: now,
                     },
@@ -564,7 +539,7 @@ pub(crate) async fn start_job(
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::IntentMaterializationFailed {
-                    job_kind: process_job_kind_from_intent(&request.intent),
+                    job_kind: request.intent.process_job_kind(),
                     cause: format!("planning snapshot failed: {error}"),
                 })
                 .map_err(|err| {
@@ -576,7 +551,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: active_kind_from_intent(&request.intent),
+                    job_kind: request.intent.active_job_kind(),
                     error,
                     finished_at: now,
                 },
@@ -593,7 +568,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: active_kind_from_intent(&request.intent),
+                    job_kind: request.intent.active_job_kind(),
                     error: error.into_process_error(),
                     finished_at: now,
                 },
@@ -614,7 +589,7 @@ pub(crate) async fn start_job(
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::SpawnFailed {
-                    job_kind: process_job_kind_from_execution(&execution_request.kind),
+                    job_kind: execution_request.kind.process_job_kind(),
                     cause: error.to_string(),
                 })
                 .map_err(|err| {
@@ -624,7 +599,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: active_kind(&execution_request.kind),
+                    job_kind: execution_request.kind.active_job_kind(),
                     error,
                     finished_at: now,
                 },
@@ -636,7 +611,7 @@ pub(crate) async fn start_job(
 
     let active = ActiveJob {
         id: request.id.clone(),
-        kind: active_kind(&execution_request.kind),
+        kind: execution_request.kind.active_job_kind(),
         started_at: now,
         deadline_at,
     };
@@ -666,44 +641,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
     };
 
     let now = current_time(ctx)?;
-    match runtime
-        .handle
-        .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
-        .await
-    {
-        Ok(lines) => {
-            for line in lines {
-                if let Err(err) = ctx
-                    .runtime
-                    .log
-                    .send(subprocess_log_event(runtime.job_kind, line.clone()))
-                {
-                    ctx.runtime
-                        .log
-                        .send(ProcessLogEvent::OutputEmitFailed {
-                            job_kind: runtime.job_kind,
-                            stream: captured_stream(line.stream),
-                            cause: err.to_string(),
-                        })
-                        .map_err(|send_err| {
-                            WorkerError::Message(format!(
-                                "process output emit failure log send failed: {send_err}"
-                            ))
-                        })?;
-                }
-            }
-        }
-        Err(err) => ctx
-            .runtime
-            .log
-            .send(ProcessLogEvent::OutputDrainFailed {
-                job_kind: runtime.job_kind,
-                cause: err.to_string(),
-            })
-            .map_err(|send_err| {
-                WorkerError::Message(format!("process output drain log send failed: {send_err}"))
-            })?,
-    }
+    flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
     if now.0 >= runtime.deadline_at.0 {
         ctx.runtime
             .log
@@ -714,55 +652,16 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
                 WorkerError::Message(format!("process timeout log send failed: {err}"))
             })?;
         let cancel_result = runtime.handle.cancel().await;
-        match runtime
-            .handle
-            .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
-            .await
-        {
-            Ok(lines) => {
-                for line in lines {
-                    if let Err(err) = ctx
-                        .runtime
-                        .log
-                        .send(subprocess_log_event(runtime.job_kind, line.clone()))
-                    {
-                        ctx.runtime
-                            .log
-                            .send(ProcessLogEvent::OutputEmitFailed {
-                                job_kind: runtime.job_kind,
-                                stream: captured_stream(line.stream),
-                                cause: err.to_string(),
-                            })
-                            .map_err(|send_err| {
-                                WorkerError::Message(format!(
-                                    "process output emit failure log send failed: {send_err}"
-                                ))
-                            })?;
-                    }
-                }
-            }
-            Err(err) => ctx
-                .runtime
-                .log
-                .send(ProcessLogEvent::OutputDrainFailed {
-                    job_kind: runtime.job_kind,
-                    cause: err.to_string(),
-                })
-                .map_err(|send_err| {
-                    WorkerError::Message(format!(
-                        "process output drain log send failed: {send_err}"
-                    ))
-                })?,
-        }
+        flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
                 id: runtime.request.id,
-                job_kind: active_kind(&runtime.request.kind),
+                job_kind: runtime.request.kind.active_job_kind(),
                 finished_at: now,
             },
             Err(error) => JobOutcome::Failure {
                 id: runtime.request.id,
-                job_kind: active_kind(&runtime.request.kind),
+                job_kind: runtime.request.kind.active_job_kind(),
                 error,
                 finished_at: now,
             },
@@ -778,50 +677,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
-            match runtime
-                .handle
-                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
-                .await
-            {
-                Ok(lines) => {
-                    for line in lines {
-                        if let Err(err) = ctx
-                            .runtime
-                            .log
-                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
-                        {
-                            ctx.runtime
-                                .log
-                                .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.job_kind,
-                                    stream: captured_stream(line.stream),
-                                    cause: err.to_string(),
-                                })
-                                .map_err(|send_err| {
-                                    WorkerError::Message(format!(
-                                        "process output emit failure log send failed: {send_err}"
-                                    ))
-                                })?;
-                        }
-                    }
-                }
-                Err(err) => ctx
-                    .runtime
-                    .log
-                    .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.job_kind,
-                        cause: err.to_string(),
-                    })
-                    .map_err(|send_err| {
-                        WorkerError::Message(format!(
-                            "process output drain log send failed: {send_err}"
-                        ))
-                    })?,
-            }
+            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
                 id: job_id,
-                job_kind: active_kind(&runtime.request.kind),
+                job_kind: runtime.request.kind.active_job_kind(),
                 finished_at: now,
             };
             ctx.runtime
@@ -835,50 +695,11 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
-            match runtime
-                .handle
-                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
-                .await
-            {
-                Ok(lines) => {
-                    for line in lines {
-                        if let Err(err) = ctx
-                            .runtime
-                            .log
-                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
-                        {
-                            ctx.runtime
-                                .log
-                                .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.job_kind,
-                                    stream: captured_stream(line.stream),
-                                    cause: err.to_string(),
-                                })
-                                .map_err(|send_err| {
-                                    WorkerError::Message(format!(
-                                        "process output emit failure log send failed: {send_err}"
-                                    ))
-                                })?;
-                        }
-                    }
-                }
-                Err(err) => ctx
-                    .runtime
-                    .log
-                    .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.job_kind,
-                        cause: err.to_string(),
-                    })
-                    .map_err(|send_err| {
-                        WorkerError::Message(format!(
-                            "process output drain log send failed: {send_err}"
-                        ))
-                    })?,
-            }
+            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
             let exit_error = ProcessError::from_exit(exit);
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id.clone(),
-                job_kind: active_kind(&runtime.request.kind),
+                job_kind: runtime.request.kind.active_job_kind(),
                 error: exit_error.clone(),
                 finished_at: now,
             };
@@ -894,49 +715,10 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
-            match runtime
-                .handle
-                .drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES)
-                .await
-            {
-                Ok(lines) => {
-                    for line in lines {
-                        if let Err(err) = ctx
-                            .runtime
-                            .log
-                            .send(subprocess_log_event(runtime.job_kind, line.clone()))
-                        {
-                            ctx.runtime
-                                .log
-                                .send(ProcessLogEvent::OutputEmitFailed {
-                                    job_kind: runtime.job_kind,
-                                    stream: captured_stream(line.stream),
-                                    cause: err.to_string(),
-                                })
-                                .map_err(|send_err| {
-                                    WorkerError::Message(format!(
-                                        "process output emit failure log send failed: {send_err}"
-                                    ))
-                                })?;
-                        }
-                    }
-                }
-                Err(err) => ctx
-                    .runtime
-                    .log
-                    .send(ProcessLogEvent::OutputDrainFailed {
-                        job_kind: runtime.job_kind,
-                        cause: err.to_string(),
-                    })
-                    .map_err(|send_err| {
-                        WorkerError::Message(format!(
-                            "process output drain log send failed: {send_err}"
-                        ))
-                    })?,
-            }
+            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id.clone(),
-                job_kind: active_kind(&runtime.request.kind),
+                job_kind: runtime.request.kind.active_job_kind(),
                 error,
                 finished_at: now,
             };
@@ -967,6 +749,55 @@ fn captured_stream(stream: ProcessOutputStream) -> CapturedStream {
         ProcessOutputStream::Stdout => CapturedStream::Stdout,
         ProcessOutputStream::Stderr => CapturedStream::Stderr,
     }
+}
+
+async fn flush_subprocess_output(
+    ctx: &mut ProcessWorkerCtx<'_>,
+    handle: &mut dyn ProcessHandle,
+    job_kind: ProcessJobKind,
+) -> Result<(), WorkerError> {
+    match handle.drain_output(PROCESS_OUTPUT_DRAIN_MAX_BYTES).await {
+        Ok(lines) => emit_subprocess_output(ctx, job_kind, lines),
+        Err(err) => ctx
+            .runtime
+            .log
+            .send(ProcessLogEvent::OutputDrainFailed {
+                job_kind,
+                cause: err.to_string(),
+            })
+            .map_err(|send_err| {
+                WorkerError::Message(format!("process output drain log send failed: {send_err}"))
+            }),
+    }
+}
+
+fn emit_subprocess_output(
+    ctx: &mut ProcessWorkerCtx<'_>,
+    job_kind: ProcessJobKind,
+    lines: Vec<ProcessOutputLine>,
+) -> Result<(), WorkerError> {
+    for line in lines {
+        if let Err(err) = ctx
+            .runtime
+            .log
+            .send(subprocess_log_event(job_kind, line.clone()))
+        {
+            ctx.runtime
+                .log
+                .send(ProcessLogEvent::OutputEmitFailed {
+                    job_kind,
+                    stream: captured_stream(line.stream),
+                    cause: err.to_string(),
+                })
+                .map_err(|send_err| {
+                    WorkerError::Message(format!(
+                        "process output emit failure log send failed: {send_err}"
+                    ))
+                })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn subprocess_log_event(job_kind: ProcessJobKind, line: ProcessOutputLine) -> SubprocessLogEvent {
@@ -1047,7 +878,7 @@ fn log_prepare_failure(
             .runtime
             .log
             .send(ProcessLogEvent::IntentMaterializationFailed {
-                job_kind: process_job_kind_from_intent(&request.intent),
+                job_kind: request.intent.process_job_kind(),
                 cause: format!("{} failed: {inner}", error.stage_label()),
             })
             .map_err(|err| {
@@ -1059,7 +890,7 @@ fn log_prepare_failure(
             .runtime
             .log
             .send(ProcessLogEvent::BuildCommandFailed {
-                job_kind: process_job_kind_from_intent(&request.intent),
+                job_kind: request.intent.process_job_kind(),
                 cause: format!("{} failed: {inner}", error.stage_label()),
             })
             .map_err(|err| {
