@@ -96,6 +96,18 @@ impl StateProjectionDto {
         } else {
             StateHealthDto::Degraded
         };
+        let switchover = match state.dcs.switchover() {
+            Some(SwitchoverState::AnyHealthyReplica) => Some(StateSwitchoverDto {
+                pending: true,
+                target_member_id: None,
+            }),
+            Some(SwitchoverState::Specific(member_id)) => Some(StateSwitchoverDto {
+                pending: true,
+                target_member_id: Some(member_id.0.clone()),
+            }),
+            Some(SwitchoverState::None) | None => None,
+        };
+
         Self {
             cluster_name: state.identity.cluster_name.0.clone(),
             scope: state.identity.scope.0.clone(),
@@ -104,7 +116,7 @@ impl StateProjectionDto {
             verbose,
             discovered_member_count: state.dcs.member_count(),
             warnings,
-            switchover: switchover_projection(&state.dcs),
+            switchover,
         }
     }
 }
@@ -308,20 +320,6 @@ impl fmt::Display for StateHealthDto {
             Self::Healthy => "healthy",
             Self::Degraded => "degraded",
         })
-    }
-}
-
-pub fn switchover_projection(snapshot: &crate::dcs::DcsSnapshot) -> Option<StateSwitchoverDto> {
-    match snapshot.switchover() {
-        Some(SwitchoverState::AnyHealthyReplica) => Some(StateSwitchoverDto {
-            pending: true,
-            target_member_id: None,
-        }),
-        Some(SwitchoverState::Specific(member_id)) => Some(StateSwitchoverDto {
-            pending: true,
-            target_member_id: Some(member_id.0.clone()),
-        }),
-        Some(SwitchoverState::None) | None => None,
     }
 }
 

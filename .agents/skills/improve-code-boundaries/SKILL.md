@@ -9,10 +9,7 @@ Use this skill when the code works but the behavior lives in the wrong folder, w
 
 The goal is narrow and strict:
 
-- first check `found_smells/`; if it contains a smell file, do that before picking anything else
-- when that smell is fully done, remove the processed file from `found_smells/`
-- pick one single smell
-- find one single boundary issue for that smell (if you can't find any, switch smell)
+- find one single boundary issue for a smell
 - untangle it fully according to the smell instructions
 - make check & make test
 

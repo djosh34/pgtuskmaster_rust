@@ -1,4 +1,4 @@
-## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>in_progress</status> <passes>true</passes>
+## Task: Follow The Direct-`cfg` Reduction Loop One Root At A Time <status>done</status> <passes>true</passes>
 
 <description>
 **Goal:** Define the exact reduction loop that every config-v2 migration task in this story must follow. The higher-order goal is to only depend on config_v2 package and 0 on config package, and LARGE SCALE CODE REDUCTION/NESTED STRUCT COLLAPSE
