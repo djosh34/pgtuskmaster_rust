@@ -5,7 +5,9 @@ use crate::{
         error::CliError,
     },
     config::SecretSource,
-    config_v2::{load_operator_config, OperatorConfigV2, PgtmApiTransportExpectation},
+    config_v2::{
+        load_operator_config, OperatorApiEndpoint, OperatorConfigV2, PgtmApiTransportExpectation,
+    },
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,7 +27,12 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         .transpose()?;
     let config = config.as_ref();
 
-    let base_url = resolve_api_url(cli.base_url.as_deref(), config)?;
+    let api = resolve_api_endpoint(cli.base_url.as_deref(), config.map(|cfg| &cfg.api))?;
+    let base_url = api.base_url.clone().ok_or_else(|| {
+        CliError::Config(
+            "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
+        )
+    })?;
     let (config_read_token, config_admin_token, api_auth_enabled) = resolve_config_auth(config)?;
     let read_token = normalize_optional_token(cli.read_token.as_deref()).or(config_read_token);
     let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or(config_admin_token);
@@ -52,22 +59,28 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
                 },
             },
             tls: api_client_tls,
-            resolve_to: config.and_then(|cfg| cfg.api_resolve_to),
+            resolve_to: api.resolve_to,
         },
         postgres_client_tls,
         api_auth_enabled,
     })
 }
 
-fn resolve_api_url(
+fn resolve_api_endpoint(
     override_base_url: Option<&str>,
-    config: Option<&OperatorConfigV2>,
-) -> Result<reqwest::Url, CliError> {
+    config: Option<&OperatorApiEndpoint>,
+) -> Result<OperatorApiEndpoint, CliError> {
     if let Some(raw) = override_base_url {
         let url = reqwest::Url::parse(raw.trim())
             .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
-        validate_expected_transport(&url, config)?;
-        return Ok(url);
+        let mut endpoint = config.cloned().unwrap_or(OperatorApiEndpoint {
+            base_url: None,
+            expected_transport: None,
+            resolve_to: None,
+        });
+        validate_expected_transport(&url, endpoint.expected_transport)?;
+        endpoint.base_url = Some(url);
+        return Ok(endpoint);
     }
 
     let Some(config) = config else {
@@ -76,43 +89,24 @@ fn resolve_api_url(
         ));
     };
 
-    let base_url = config.api_base_url.clone().ok_or_else(|| {
-        CliError::Config(
-            "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
-        )
-    })?;
-
-    let url = reqwest::Url::parse(base_url.as_str()).map_err(|err| {
-        CliError::Config(format!("invalid `api.base_url` in operator config: {err}"))
-    })?;
-    validate_expected_transport(&url, Some(config))?;
-    Ok(url)
+    Ok(config.clone())
 }
 
 fn validate_expected_transport(
     url: &reqwest::Url,
-    config: Option<&OperatorConfigV2>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
 ) -> Result<(), CliError> {
-    let Some(expected_transport) = config.and_then(|cfg| cfg.expected_transport) else {
+    let Some(expected_transport) = expected_transport else {
         return Ok(());
     };
 
-    let scheme_matches = match expected_transport {
-        PgtmApiTransportExpectation::Http => url.scheme() == "http",
-        PgtmApiTransportExpectation::Https => url.scheme() == "https",
-    };
-
-    if scheme_matches {
+    if expected_transport.matches_url(url) {
         return Ok(());
     }
 
-    let expected_scheme = match expected_transport {
-        PgtmApiTransportExpectation::Http => "http",
-        PgtmApiTransportExpectation::Https => "https",
-    };
-
     Err(CliError::Config(format!(
-        "operator config expects `{expected_scheme}` API transport, but resolved base URL uses `{}`",
+        "operator config expects `{}` API transport, but resolved base URL uses `{}`",
+        expected_transport.scheme(),
         url.scheme()
     )))
 }
@@ -170,10 +164,26 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::{
+        path::{Path, PathBuf},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use axum::{routing::get, Json, Router};
+    use axum_server::tls_rustls::RustlsConfig;
 
     use super::resolve_operator_context;
+    use crate::api::NodeState;
     use crate::cli::args::{Cli, Command};
+    use crate::cli::client::CliApiClient;
+    use crate::dcs::DcsSnapshot;
+    use crate::dev_support::tls::{
+        build_server_config_with_client_auth, generate_ca, generate_leaf_cert, TestSubjectAltName,
+    };
+    use crate::ha::state::HaState;
+    use crate::pginfo::state::PgInfoState;
+    use crate::process::state::ProcessState;
+    use crate::state::{ClusterName, MemberId, NodeIdentity, ScopeName, WorkerStatus};
 
     fn base_cli() -> Cli {
         Cli {
@@ -187,6 +197,27 @@ mod tests {
             watch: false,
             command: Some(Command::Status),
         }
+    }
+
+    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|err| format!("clock error for test dir: {err}"))?
+            .as_millis();
+        let dir = std::env::temp_dir().join(format!(
+            "pgtm-cli-config-{label}-{}-{millis}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir)
+            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
+        Ok(dir)
+    }
+
+    fn write_pem_file(dir: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
+        let path = dir.join(name);
+        std::fs::write(&path, contents)
+            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
+        Ok(path)
     }
 
     #[test]
@@ -392,6 +423,117 @@ expected_transport = "https"
             Err(err) => Err(format!("unexpected error: {err}")),
             Ok(_) => Err("expected transport mismatch failure".to_string()),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn resolve_context_uses_https_resolve_to_for_non_resolvable_host() -> Result<(), String> {
+        let server_ca = generate_ca("server-ca").map_err(|err| err.to_string())?;
+        let client_ca = generate_ca("client-ca").map_err(|err| err.to_string())?;
+        let server_cert = generate_leaf_cert(
+            "node-b",
+            &[TestSubjectAltName::Dns("node-b".to_string())],
+            false,
+            server_ca.issuer(),
+            false,
+        )
+        .map_err(|err| err.to_string())?;
+        let client_cert = generate_leaf_cert(
+            "observer",
+            &[TestSubjectAltName::Dns("localhost".to_string())],
+            false,
+            client_ca.issuer(),
+            true,
+        )
+        .map_err(|err| err.to_string())?;
+
+        let dir = unique_test_dir("https-resolve-to")?;
+        let ca_cert = write_pem_file(dir.as_path(), "ca.crt", server_ca.cert.cert_pem.as_str())?;
+        let client_cert_path =
+            write_pem_file(dir.as_path(), "client.crt", client_cert.cert_pem.as_str())?;
+        let client_key_path =
+            write_pem_file(dir.as_path(), "client.key", client_cert.key_pem.as_str())?;
+
+        let server_config =
+            build_server_config_with_client_auth(&server_cert, &server_ca.cert, &client_ca.cert)
+                .map_err(|err| err.to_string())?;
+        let listener = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .map_err(|err| format!("bind test listener failed: {err}"))?;
+        let listen_addr = listener
+            .local_addr()
+            .map_err(|err| format!("read test listener addr failed: {err}"))?;
+        drop(listener);
+        let server = tokio::spawn(async move {
+            let state = NodeState {
+                identity: NodeIdentity {
+                    cluster_name: ClusterName("cluster-a".to_string()),
+                    scope: ScopeName("scope-a".to_string()),
+                    member_id: MemberId("node-b".to_string()),
+                },
+                pg: PgInfoState::starting(),
+                process: ProcessState::starting(),
+                dcs: DcsSnapshot::starting(),
+                ha: HaState::initial(WorkerStatus::Starting),
+            };
+            axum_server::bind_rustls(listen_addr, RustlsConfig::from_config(server_config))
+                .serve(
+                    Router::new()
+                        .route(
+                            "/state",
+                            get(move || {
+                                let state = state.clone();
+                                async move { Json(state) }
+                            }),
+                        )
+                        .into_make_service(),
+                )
+                .await
+        });
+
+        let path = write_temp_config(format!(
+            r#"
+[api]
+base_url = "https://node-b:{port}"
+expected_transport = "https"
+resolve_to = "127.0.0.1:{port}"
+
+[api.tls]
+ca_cert = {{ path = "{ca_path}" }}
+identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ type = "file", path = "{client_key_path}" }} }}
+"#,
+            port = listen_addr.port(),
+            ca_path = ca_cert.display(),
+            client_cert_path = client_cert_path.display(),
+            client_key_path = client_key_path.display(),
+        ))?;
+        let cli = Cli {
+            config: Some(path.clone()),
+            base_url: None,
+            read_token: None,
+            admin_token: None,
+            timeout_ms: 5_000,
+            json: false,
+            verbose: false,
+            watch: false,
+            command: Some(Command::Status),
+        };
+
+        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
+        let client = CliApiClient::from_config(ctx.api_client).map_err(|err| err.to_string())?;
+        let state = client.get_state().await.map_err(|err| err.to_string())?;
+
+        server.abort();
+        let _ = server.await;
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+
+        if state.identity.member_id.0 != "node-b" {
+            return Err(format!(
+                "expected state identity for node-b, got {}",
+                state.identity.member_id.0
+            ));
+        }
+
+        Ok(())
     }
 
     fn write_temp_config(contents: impl AsRef<str>) -> Result<PathBuf, String> {

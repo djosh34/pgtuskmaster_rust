@@ -1,5 +1,6 @@
 use crate::pginfo::conninfo::PgClientTls;
 use crate::state::{ClusterName, MemberId, ScopeName};
+use reqwest::Url;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -216,11 +217,29 @@ pub(crate) enum PgtmApiTransportExpectation {
     Https,
 }
 
+impl PgtmApiTransportExpectation {
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Self::Http => "http",
+            Self::Https => "https",
+        }
+    }
+
+    pub fn matches_url(self, url: &Url) -> bool {
+        url.scheme() == self.scheme()
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct OperatorApiEndpoint {
+    pub base_url: Option<Url>,
+    pub expected_transport: Option<PgtmApiTransportExpectation>,
+    pub resolve_to: Option<SocketAddr>,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OperatorConfigV2 {
-    pub api_base_url: Option<String>,
-    pub expected_transport: Option<PgtmApiTransportExpectation>,
-    pub api_resolve_to: Option<SocketAddr>,
+    pub api: OperatorApiEndpoint,
     pub client_tls: OperatorClientTlsConfig,
     pub api_auth: ApiClientTokens,
 }

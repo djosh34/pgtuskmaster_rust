@@ -235,7 +235,12 @@ psql = "/bin/true"
                 ca_cert.display()
             ),
         )
-        .map_err(|err| format!("write runtime config {} failed: {err}", config_path.display()))?;
+        .map_err(|err| {
+            format!(
+                "write runtime config {} failed: {err}",
+                config_path.display()
+            )
+        })?;
         Ok(config_path)
     }
 

@@ -60,7 +60,7 @@ impl CliApiClient {
                         "API URL did not include a hostname for custom resolution".to_string(),
                     )
                 })?;
-                http.resolve(host, resolve_to)
+                http.no_proxy().resolve(host, resolve_to)
             }
             None => http,
         };

@@ -1,9 +1,10 @@
 use std::{path::Path, path::PathBuf};
 
 use crate::config_v2::types::{
-    ApiClientTokens, OperatorClientTlsConfig, OperatorConfigV2, PgtmApiTransportExpectation,
-    TlsConfig,
+    ApiClientTokens, OperatorApiEndpoint, OperatorClientTlsConfig, OperatorConfigV2,
+    PgtmApiTransportExpectation, TlsConfig,
 };
+use reqwest::Url;
 
 use super::{
     load_config::{
@@ -39,20 +40,67 @@ pub fn load_operator_config(
     }
 
     Ok(OperatorConfigV2 {
-        api_base_url: normalize_optional_string(operator.api.base_url),
-        expected_transport: operator.api.expected_transport.map(|expected_transport| {
-            match expected_transport {
-                raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
-                raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
-            }
-        }),
-        api_resolve_to: operator.api.resolve_to,
+        api: parse_operator_api_endpoint(
+            normalize_optional_string(operator.api.base_url),
+            operator
+                .api
+                .expected_transport
+                .map(|expected_transport| match expected_transport {
+                    raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
+                    raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
+                }),
+            operator.api.resolve_to,
+        )?,
         client_tls: merge_client_tls(
             map_operator_client_tls("pgtm.api.tls", operator.api.tls)?,
             map_operator_client_tls("pgtm.postgres.tls", operator.postgres.tls)?,
         )?,
         api_auth: map_operator_auth(operator.api.auth)?,
     })
+}
+
+fn parse_operator_api_endpoint(
+    base_url: Option<String>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+    resolve_to: Option<std::net::SocketAddr>,
+) -> Result<OperatorApiEndpoint, crate::config_v2::ConfigErrorV2> {
+    let base_url = base_url
+        .map(|base_url| {
+            let url = Url::parse(base_url.as_str()).map_err(|err| {
+                validation_error("pgtm.api.base_url", format!("must be a valid URL: {err}"))
+            })?;
+            validate_expected_transport(&url, expected_transport)?;
+            Ok(url)
+        })
+        .transpose()?;
+
+    Ok(OperatorApiEndpoint {
+        base_url,
+        expected_transport,
+        resolve_to,
+    })
+}
+
+fn validate_expected_transport(
+    url: &Url,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<(), crate::config_v2::ConfigErrorV2> {
+    let Some(expected_transport) = expected_transport else {
+        return Ok(());
+    };
+
+    if expected_transport.matches_url(url) {
+        return Ok(());
+    }
+
+    Err(validation_error(
+        "pgtm.api.base_url",
+        format!(
+            "operator config expects `{}` API transport, but resolved base URL uses `{}`",
+            expected_transport.scheme(),
+            url.scheme()
+        ),
+    ))
 }
 
 fn map_operator_auth(
@@ -172,7 +220,7 @@ fn operator_key_field(field_prefix: &'static str) -> &'static str {
 mod tests {
     use super::load_operator_config;
     use crate::config_v2::PgtmApiTransportExpectation;
-    use std::{path::PathBuf, time::SystemTime};
+    use std::{net::SocketAddr, path::PathBuf, time::SystemTime};
 
     #[test]
     fn load_operator_config_preserves_expected_transport_for_operator_documents(
@@ -189,10 +237,10 @@ expected_transport = "https"
 
         let _ = std::fs::remove_file(path);
 
-        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "expected https transport expectation, got {:?}",
-                config.expected_transport
+                config.api.expected_transport
             ));
         }
 
@@ -241,10 +289,47 @@ expected_transport = "https"
 
         let _ = std::fs::remove_file(path);
 
-        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "expected https transport expectation from runtime document, got {:?}",
-                config.expected_transport
+                config.api.expected_transport
+            ));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_keeps_resolve_to_on_validated_api_endpoint() -> Result<(), String> {
+        let path = write_temp_config(
+            r#"
+[api]
+base_url = "https://node-b:8443"
+expected_transport = "https"
+resolve_to = "127.0.0.1:18443"
+"#,
+        )?;
+
+        let config = load_operator_config(path.as_path()).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+
+        if config.api.base_url.as_ref().map(reqwest::Url::as_str) != Some("https://node-b:8443/") {
+            return Err(format!(
+                "unexpected api base url: {:?}",
+                config.api.base_url
+            ));
+        }
+        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+            return Err(format!(
+                "unexpected transport expectation: {:?}",
+                config.api.expected_transport
+            ));
+        }
+        if config.api.resolve_to != Some(SocketAddr::from(([127, 0, 0, 1], 18443))) {
+            return Err(format!(
+                "unexpected resolve_to: {:?}",
+                config.api.resolve_to
             ));
         }
 
