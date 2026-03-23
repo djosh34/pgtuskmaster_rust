@@ -1,0 +1,1 @@
+.ralph/tasks/story-config-v2-direct-cfg-collapse/03-delete-old-config.md
