@@ -39,6 +39,12 @@ pub(crate) struct VerifiedManagedPostmaster {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartPostgresPreflight {
+    AlreadyRunning,
+    SafeToStart,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostmasterSignal {
     Sighup,
 }
@@ -96,8 +102,27 @@ pub(crate) enum ManagedPostmasterError {
         expected_data_dir: PathBuf,
         pid_file: PathBuf,
     },
+    #[error("read postgres socket lock {lock_file} failed: {source}")]
+    ReadSocketLock {
+        lock_file: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("parse postgres socket lock pid '{value}' in {lock_file} failed: {source}")]
+    InvalidSocketLockPid {
+        lock_file: PathBuf,
+        value: String,
+        #[source]
+        source: ParseIntError,
+    },
     #[error("read process metadata {path} failed: {source}")]
     ReadProcessMetadata {
+        path: PathBuf,
+        #[source]
+        source: io::Error,
+    },
+    #[error("remove file {path} failed: {source}")]
+    RemoveFile {
         path: PathBuf,
         #[source]
         source: io::Error,
@@ -122,6 +147,40 @@ pub(crate) fn reload_managed_postmaster(
 ) -> Result<ManagedPostmasterSignalDelivery, ManagedPostmasterError> {
     let postmaster = lookup_managed_postmaster(target)?;
     signal_managed_postmaster(&postmaster, ManagedPostmasterSignal::Sighup)
+}
+
+pub(crate) fn start_postgres_preflight(
+    data_dir: &Path,
+    socket_dir: &Path,
+    port: u16,
+) -> Result<StartPostgresPreflight, ManagedPostmasterError> {
+    let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
+    if target.pid_file.exists() {
+        match lookup_managed_postmaster(&target) {
+            Ok(_) => return Ok(StartPostgresPreflight::AlreadyRunning),
+            Err(
+                ManagedPostmasterError::MissingPidFile { .. }
+                | ManagedPostmasterError::PidNotRunning { .. }
+                | ManagedPostmasterError::DataDirMismatch { .. },
+            ) => {
+                remove_file_if_exists(target.pid_file.as_path())?;
+                remove_file_if_exists(data_dir.join("postmaster.opts").as_path())?;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+
+    let (_, lock_file) = postgres_socket_paths(socket_dir, port);
+    if let Some(pid) = parse_postgres_socket_lock_pid(lock_file.as_path())? {
+        if pid_is_running_postgres(ManagedPostmasterPid::new(pid))? {
+            return Ok(StartPostgresPreflight::AlreadyRunning);
+        }
+    }
+
+    let (socket_file, lock_file) = postgres_socket_paths(socket_dir, port);
+    remove_file_if_exists(socket_file.as_path())?;
+    remove_file_if_exists(lock_file.as_path())?;
+    Ok(StartPostgresPreflight::SafeToStart)
 }
 
 pub(crate) fn lookup_managed_postmaster(
@@ -208,39 +267,14 @@ fn pid_matches_data_dir(
 
     #[cfg(unix)]
     {
-        let pid_value = pid.value();
-        let cmdline_path = PathBuf::from(format!("/proc/{pid_value}/cmdline"));
-        let cmdline = match fs::read(&cmdline_path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => {
-                return Err(ManagedPostmasterError::PidNotRunning {
-                    pid: pid_value,
-                    pid_file: pid_file.to_path_buf(),
-                });
-            }
-            Err(err) => {
-                return Err(ManagedPostmasterError::ReadProcessMetadata {
-                    path: cmdline_path,
-                    source: err,
-                });
-            }
+        let Some(cmdline_args) = read_process_cmdline(pid)? else {
+            return Err(ManagedPostmasterError::PidNotRunning {
+                pid: pid.value(),
+                pid_file: pid_file.to_path_buf(),
+            });
         };
-        let data_dir_text = data_dir.display().to_string();
-        let cmdline_args = cmdline
-            .split(|byte| *byte == 0)
-            .filter(|arg| !arg.is_empty())
-            .map(|arg| String::from_utf8_lossy(arg))
-            .collect::<Vec<_>>();
-        let has_data_dir = cmdline_args
-            .iter()
-            .any(|arg| arg.contains(data_dir_text.as_str()));
-        let has_postgres_argv = cmdline_args.iter().any(|arg| {
-            Path::new(arg.as_ref())
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| matches!(name, "postgres" | "postmaster"))
-                .unwrap_or(false)
-        });
+        let has_data_dir = process_cmdline_has_data_dir(cmdline_args.as_slice(), data_dir);
+        let has_postgres_argv = process_cmdline_has_postgres_binary(cmdline_args.as_slice());
         if !has_postgres_argv {
             return Ok(false);
         }
@@ -253,6 +287,105 @@ fn pid_matches_data_dir(
     {
         let _data_dir = data_dir;
         let _pid_file = pid_file;
+        Err(ManagedPostmasterError::UnsupportedPlatform)
+    }
+}
+
+fn postgres_socket_paths(socket_dir: &Path, port: u16) -> (PathBuf, PathBuf) {
+    let socket_file = socket_dir.join(format!(".s.PGSQL.{port}"));
+    let lock_file = socket_dir.join(format!(".s.PGSQL.{port}.lock"));
+    (socket_file, lock_file)
+}
+
+fn parse_postgres_socket_lock_pid(lock_file: &Path) -> Result<Option<u32>, ManagedPostmasterError> {
+    let contents = match fs::read_to_string(lock_file) {
+        Ok(contents) => contents,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(ManagedPostmasterError::ReadSocketLock {
+                lock_file: lock_file.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let Some(first_line) = contents.lines().next() else {
+        return Ok(None);
+    };
+    let trimmed = first_line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    trimmed.parse::<u32>().map(Some).map_err(|source| {
+        ManagedPostmasterError::InvalidSocketLockPid {
+            lock_file: lock_file.to_path_buf(),
+            value: trimmed.to_string(),
+            source,
+        }
+    })
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), ManagedPostmasterError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(ManagedPostmasterError::RemoveFile {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn pid_is_running_postgres(pid: ManagedPostmasterPid) -> Result<bool, ManagedPostmasterError> {
+    if !pid_exists(pid)? {
+        return Ok(false);
+    }
+
+    Ok(read_process_cmdline(pid)?
+        .map(|cmdline_args| process_cmdline_has_postgres_binary(cmdline_args.as_slice()))
+        .unwrap_or(false))
+}
+
+fn process_cmdline_has_data_dir(cmdline_args: &[String], data_dir: &Path) -> bool {
+    let data_dir_text = data_dir.display().to_string();
+    cmdline_args
+        .iter()
+        .any(|arg| arg.contains(data_dir_text.as_str()))
+}
+
+fn process_cmdline_has_postgres_binary(cmdline_args: &[String]) -> bool {
+    cmdline_args.iter().any(|arg| {
+        Path::new(arg)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| matches!(name, "postgres" | "postmaster"))
+            .unwrap_or(false)
+    })
+}
+
+fn read_process_cmdline(
+    pid: ManagedPostmasterPid,
+) -> Result<Option<Vec<String>>, ManagedPostmasterError> {
+    #[cfg(unix)]
+    {
+        let path = PathBuf::from(format!("/proc/{}/cmdline", pid.value()));
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(ManagedPostmasterError::ReadProcessMetadata { path, source });
+            }
+        };
+        Ok(Some(
+            bytes
+                .split(|byte| *byte == 0)
+                .filter(|arg| !arg.is_empty())
+                .map(|arg| String::from_utf8_lossy(arg).into_owned())
+                .collect(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _pid = pid;
         Err(ManagedPostmasterError::UnsupportedPlatform)
     }
 }
@@ -347,8 +480,9 @@ mod tests {
 
     use super::{
         lookup_managed_postmaster, reload_managed_postmaster, signal_managed_postmaster,
-        ManagedPostmasterError, ManagedPostmasterPid, ManagedPostmasterSignal,
-        ManagedPostmasterTarget, VerifiedManagedPostmaster,
+        start_postgres_preflight, ManagedPostmasterError, ManagedPostmasterPid,
+        ManagedPostmasterSignal, ManagedPostmasterTarget, StartPostgresPreflight,
+        VerifiedManagedPostmaster,
     };
 
     struct ChildGuard(Option<Child>);
@@ -470,6 +604,11 @@ while True:
                 pid_file.display()
             )
         })
+    }
+
+    fn write_socket_lock(lock_file: &Path, pid: u32) -> Result<(), String> {
+        fs::write(lock_file, format!("{pid}\n"))
+            .map_err(|err| format!("write socket lock {} failed: {err}", lock_file.display()))
     }
 
     fn wait_for_lookup_ready(target: &ManagedPostmasterTarget) -> Result<(), String> {
@@ -687,6 +826,164 @@ while True:
                 "signal log {} did not record hup: {contents:?}",
                 signal_log.display()
             ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_postgres_preflight_returns_already_running_for_managed_postmaster(
+    ) -> Result<(), String> {
+        let root = unique_test_dir("postmaster", "preflight-managed-running")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
+        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let _child = child;
+        let target = ManagedPostmasterTarget::from_data_dir(data_dir.clone());
+        wait_for_lookup_ready(&target)?;
+
+        let result = start_postgres_preflight(&data_dir, &socket_dir, 5432)
+            .map_err(|err| err.to_string())?;
+
+        if result != StartPostgresPreflight::AlreadyRunning {
+            return Err(format!(
+                "unexpected preflight result: expected={:?} actual={result:?}",
+                StartPostgresPreflight::AlreadyRunning,
+            ));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_postgres_preflight_removes_stale_pid_and_opts_files() -> Result<(), String> {
+        let root = unique_test_dir("postmaster", "preflight-stale-pid")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
+        let mut child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        child
+            .child_mut()?
+            .kill()
+            .map_err(|err| format!("kill fake postgres pid={pid} failed: {err}"))?;
+        child
+            .child_mut()?
+            .wait()
+            .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
+        write_postmaster_pid(&data_dir, pid, &data_dir)?;
+        let opts_file = data_dir.join("postmaster.opts");
+        fs::write(&opts_file, "-D stale\n")
+            .map_err(|err| format!("write opts file {} failed: {err}", opts_file.display()))?;
+
+        let result = start_postgres_preflight(&data_dir, &socket_dir, 5432)
+            .map_err(|err| err.to_string())?;
+
+        if result != StartPostgresPreflight::SafeToStart {
+            return Err(format!(
+                "unexpected preflight result: expected={:?} actual={result:?}",
+                StartPostgresPreflight::SafeToStart,
+            ));
+        }
+        if data_dir.join("postmaster.pid").exists() {
+            return Err("stale postmaster.pid was not removed".to_string());
+        }
+        if opts_file.exists() {
+            return Err("stale postmaster.opts was not removed".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_postgres_preflight_removes_stale_socket_files() -> Result<(), String> {
+        let root = unique_test_dir("postmaster", "preflight-stale-socket")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
+        let mut child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        child
+            .child_mut()?
+            .kill()
+            .map_err(|err| format!("kill fake postgres pid={pid} failed: {err}"))?;
+        child
+            .child_mut()?
+            .wait()
+            .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
+        let socket_file = socket_dir.join(".s.PGSQL.5432");
+        let lock_file = socket_dir.join(".s.PGSQL.5432.lock");
+        fs::write(&socket_file, [])
+            .map_err(|err| format!("write socket file {} failed: {err}", socket_file.display()))?;
+        write_socket_lock(&lock_file, pid)?;
+
+        let result = start_postgres_preflight(&data_dir, &socket_dir, 5432)
+            .map_err(|err| err.to_string())?;
+
+        if result != StartPostgresPreflight::SafeToStart {
+            return Err(format!(
+                "unexpected preflight result: expected={:?} actual={result:?}",
+                StartPostgresPreflight::SafeToStart,
+            ));
+        }
+        if socket_file.exists() {
+            return Err("stale postgres socket file was not removed".to_string());
+        }
+        if lock_file.exists() {
+            return Err("stale postgres socket lock file was not removed".to_string());
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn start_postgres_preflight_keeps_live_socket_lock_files() -> Result<(), String> {
+        let root = unique_test_dir("postmaster", "preflight-live-socket")?;
+        let data_dir = root.join("data");
+        let socket_dir = root.join("socket");
+        let signal_log = root.join("signal.log");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        fs::create_dir_all(&socket_dir)
+            .map_err(|err| format!("create socket dir {} failed: {err}", socket_dir.display()))?;
+        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
+        let pid = child.child()?.id();
+        let _child = child;
+        let socket_file = socket_dir.join(".s.PGSQL.5432");
+        let lock_file = socket_dir.join(".s.PGSQL.5432.lock");
+        fs::write(&socket_file, [])
+            .map_err(|err| format!("write socket file {} failed: {err}", socket_file.display()))?;
+        write_socket_lock(&lock_file, pid)?;
+
+        let result = start_postgres_preflight(&data_dir, &socket_dir, 5432)
+            .map_err(|err| err.to_string())?;
+
+        if result != StartPostgresPreflight::AlreadyRunning {
+            return Err(format!(
+                "unexpected preflight result: expected={:?} actual={result:?}",
+                StartPostgresPreflight::AlreadyRunning,
+            ));
+        }
+        if !socket_file.exists() {
+            return Err("live postgres socket file was unexpectedly removed".to_string());
+        }
+        if !lock_file.exists() {
+            return Err("live postgres socket lock file was unexpectedly removed".to_string());
         }
         Ok(())
     }

@@ -1,4 +1,4 @@
-use std::{fs, path::Path, process::Stdio};
+use std::process::Stdio;
 
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
@@ -12,7 +12,7 @@ use crate::{
     logging::LogSender,
     process::{
         cluster::{prepare_process_launch_from_ctx, ProcessPreparationError},
-        postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
+        postmaster::{start_postgres_preflight, StartPostgresPreflight},
     },
     state::{new_state_channel, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
@@ -380,141 +380,6 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), Work
     tick_active_job(ctx).await
 }
 
-fn pid_is_postgres_process(pid: u32) -> Result<bool, ProcessError> {
-    #[cfg(unix)]
-    {
-        let cmdline_path = std::path::PathBuf::from(format!("/proc/{pid}/cmdline"));
-        let cmdline = match fs::read(&cmdline_path) {
-            Ok(bytes) => bytes,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-            Err(err) => {
-                return Err(ProcessError::InvalidSpec(format!(
-                    "read {} failed: {err}",
-                    cmdline_path.display()
-                )));
-            }
-        };
-        Ok(cmdline
-            .split(|byte| *byte == 0)
-            .filter(|arg| !arg.is_empty())
-            .map(|arg| String::from_utf8_lossy(arg))
-            .any(|arg| {
-                std::path::Path::new(arg.as_ref())
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .map(|name| matches!(name, "postgres" | "postmaster"))
-                    .unwrap_or(false)
-            }))
-    }
-    #[cfg(not(unix))]
-    {
-        Ok(true)
-    }
-}
-
-fn remove_file_best_effort(path: &Path) -> Result<(), ProcessError> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(ProcessError::InvalidSpec(format!(
-            "remove file {} failed: {err}",
-            path.display()
-        ))),
-    }
-}
-
-fn postgres_socket_paths(socket_dir: &Path, port: u16) -> (std::path::PathBuf, std::path::PathBuf) {
-    let socket_file = socket_dir.join(format!(".s.PGSQL.{port}"));
-    let lock_file = socket_dir.join(format!(".s.PGSQL.{port}.lock"));
-    (socket_file, lock_file)
-}
-
-fn parse_postgres_socket_lock_pid(lock_file: &Path) -> Result<Option<u32>, ProcessError> {
-    let contents = match fs::read_to_string(lock_file) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(err) => {
-            return Err(ProcessError::InvalidSpec(format!(
-                "read postgres socket lock {} failed: {err}",
-                lock_file.display()
-            )));
-        }
-    };
-    let Some(first_line) = contents.lines().next() else {
-        return Ok(None);
-    };
-    let trimmed = first_line.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    trimmed.parse::<u32>().map(Some).map_err(|err| {
-        ProcessError::InvalidSpec(format!(
-            "parse postgres socket lock pid '{}' in {} failed: {err}",
-            trimmed,
-            lock_file.display()
-        ))
-    })
-}
-
-fn cleanup_postgres_socket_files(socket_dir: &Path, port: u16) -> Result<(), ProcessError> {
-    let (socket_file, lock_file) = postgres_socket_paths(socket_dir, port);
-    remove_file_best_effort(&socket_file)?;
-    remove_file_best_effort(&lock_file)?;
-    Ok(())
-}
-
-fn start_postgres_preflight_is_already_running(
-    data_dir: &Path,
-    socket_dir: &Path,
-    port: u16,
-) -> Result<bool, ProcessError> {
-    let pid_file = data_dir.join("postmaster.pid");
-    if pid_file.exists() {
-        let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
-        match lookup_managed_postmaster(&target) {
-            Ok(_postmaster) => return Ok(true),
-            Err(
-                ManagedPostmasterError::MissingPidFile { .. }
-                | ManagedPostmasterError::PidNotRunning { .. }
-                | ManagedPostmasterError::DataDirMismatch { .. },
-            ) => {
-                remove_file_best_effort(&pid_file)?;
-                let opts_file = data_dir.join("postmaster.opts");
-                remove_file_best_effort(&opts_file)?;
-            }
-            Err(err) => {
-                return Err(ProcessError::InvalidSpec(format!(
-                    "start postgres preflight managed postmaster lookup failed: {err}"
-                )));
-            }
-        }
-    }
-
-    let (_, lock_file) = postgres_socket_paths(socket_dir, port);
-    if let Some(pid) = parse_postgres_socket_lock_pid(&lock_file)? {
-        if pid_is_postgres_process(pid)? {
-            return Ok(true);
-        }
-    }
-
-    cleanup_postgres_socket_files(socket_dir, port)?;
-    Ok(false)
-}
-
-fn start_postgres_preflight_details(
-    ctx: &ProcessWorkerCtx<'_>,
-    intent: &ProcessIntent,
-) -> Option<(std::path::PathBuf, std::path::PathBuf, u16)> {
-    match intent {
-        ProcessIntent::Start(_) => Some((
-            ctx.cfg.postgres.data_dir.clone(),
-            ctx.cfg.postgres.socket_dir.clone(),
-            ctx.cfg.postgres.listen_port,
-        )),
-        _ => None,
-    }
-}
-
 pub(crate) async fn start_job(
     ctx: &mut ProcessWorkerCtx<'_>,
     request: ProcessIntentRequest,
@@ -539,19 +404,17 @@ pub(crate) async fn start_job(
     }
 
     let now = current_time(ctx)?;
-    if let Some((data_dir, socket_dir, port)) =
-        start_postgres_preflight_details(ctx, &request.intent)
-    {
-        match start_postgres_preflight_is_already_running(
-            data_dir.as_path(),
-            socket_dir.as_path(),
-            port,
+    if matches!(&request.intent, ProcessIntent::Start(_)) {
+        match start_postgres_preflight(
+            ctx.cfg.postgres.data_dir.as_path(),
+            ctx.cfg.postgres.socket_dir.as_path(),
+            ctx.cfg.postgres.listen_port,
         ) {
-            Ok(true) => {
+            Ok(StartPostgresPreflight::AlreadyRunning) => {
                 ctx.runtime
                     .log
                     .send(ProcessLogEvent::StartPostgresAlreadyRunning {
-                        data_dir: data_dir.display().to_string(),
+                        data_dir: ctx.cfg.postgres.data_dir.display().to_string(),
                     })
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -569,12 +432,13 @@ pub(crate) async fn start_job(
                 )?;
                 return Ok(());
             }
-            Ok(false) => {}
+            Ok(StartPostgresPreflight::SafeToStart) => {}
             Err(error) => {
+                let cause = format!("start postgres preflight failed: {error}");
                 ctx.runtime
                     .log
                     .send(ProcessLogEvent::StartPostgresPreflightFailed {
-                        cause: error.to_string(),
+                        cause: cause.clone(),
                     })
                     .map_err(|err| {
                         WorkerError::Message(format!(
@@ -586,7 +450,7 @@ pub(crate) async fn start_job(
                     JobOutcome::Failure {
                         id: request.id,
                         job_kind: request.intent.job_kind(),
-                        error,
+                        error: ProcessError::InvalidSpec(cause),
                         finished_at: now,
                     },
                     now,
