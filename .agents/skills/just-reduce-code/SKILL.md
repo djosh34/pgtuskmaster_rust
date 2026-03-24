@@ -10,3 +10,12 @@ Large refactors are very much encouraged, if that leads to a good untangling ses
 Be bold, be creative
 
 The goal is always to reduce code.
+
+
+Couple of hints:
+
+- Use more rust stuff, to let types validate/render for you
+- Find similar helper functions, that should've all used the same thing
+- Reduce arguments by using cfg using cfg-reduce-loop skill
+- Reduce smells by using improve-code-boundaries skill
+

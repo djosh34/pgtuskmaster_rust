@@ -1,6 +1,5 @@
-
-
-service_tier="flex"
+#service_tier = "flex"
+#service_tier = "flex"
 
 model_reasoning_summary = "detailed"
 model_verbosity = "high"
@@ -23,7 +22,7 @@ model_reasoning_effort = "xhigh"
 [profiles.normal_model_fast]
 model = "gpt-5.4"
 model_reasoning_effort = "high"
-service_tier="fast"
+#service_tier = "fast"
 
 [profiles.normal_model]
 model = "gpt-5.4"
@@ -56,7 +55,7 @@ model_reasoning_effort = "high"
 environment = "pgtuskmaster_rust"
 log_user_prompt = true
 
-exporter = { otlp-grpc = { endpoint = "http://10.0.4.30:5081", headers = { "Authorization" = "Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==", "stream-name" = "pgtuskmaster_rust", "organization" =  "default" } } }
+exporter = { otlp-grpc = { endpoint = "http://10.0.4.30:5081", headers = { "Authorization" = "Basic ZXhhbXBsZUBlbWFpbC5jb206OXdPdzNrSVBrYzRHc0Nrcw==", "stream-name" = "pgtuskmaster_rust", "organization" = "default" } } }
 
 
 [agents]
