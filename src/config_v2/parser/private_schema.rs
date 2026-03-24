@@ -639,18 +639,6 @@ fn string_secret(value: &str) -> SecretSource {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn file_secret(path: &str) -> SecretSource {
-    SecretSource::Tagged(TaggedSecretSource::File {
-        path: PathBuf::from(path),
-    })
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn path_source(path: impl Into<PathBuf>) -> PathSource {
-    PathSource::PathConfig { path: path.into() }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 fn inline_content(content: &str) -> PathOrInline {
     PathOrInline::Inline {
         content: content.to_string(),
@@ -674,19 +662,6 @@ fn runtime_test_postgres_roles() -> PostgresRolesConfig {
             rewinder: postgres_role_with_password("rewinder", string_secret("rewinder")),
         },
         extra: BTreeMap::new(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn token_auth_from_file_paths(read_token: &str, admin_token: &str) -> TokenAuthConfig {
-    TokenAuthConfig {
-        kind: Some("role_tokens".to_string()),
-        read_token: None,
-        admin_token: None,
-        tokens: Some(RoleTokens {
-            read_token: Some(file_secret(read_token)),
-            admin_token: Some(file_secret(admin_token)),
-        }),
     }
 }
 
@@ -832,7 +807,7 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn build_runtime_test_document_value<I, S>(
+pub fn build_runtime_test_document_value<I, S>(
     cluster_name: &str,
     scope: &str,
     member_id: &str,
@@ -871,171 +846,6 @@ where
         render_toml_value("runtime test config", &value)?,
         extra_sections,
     ))
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn build_ha_member_runtime_document_value(
-    member_name: &str,
-    dcs_endpoint: &str,
-    replicator: &str,
-    rewinder: &str,
-) -> Result<toml::Value, String> {
-    let mut document = runtime_test_document(
-        "ha-cucumber-cluster",
-        "ha-cucumber-cluster",
-        member_name,
-        (
-            std::path::Path::new("/var/lib/postgresql/data"),
-            std::path::Path::new("/var/lib/pgtuskmaster/socket"),
-            std::path::Path::new("/var/log/pgtuskmaster/postgres.log"),
-        ),
-        [dcs_endpoint],
-    );
-    let member_identity = TlsServerIdentityConfig {
-        cert_chain: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.crt")),
-        private_key: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.key")),
-    };
-    let api_auth = token_auth_from_file_paths(
-        "/run/secrets/api-read-token",
-        "/run/secrets/api-admin-token",
-    );
-    let api_tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
-    let postgres_tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
-    let pgtm = build_operator_test_document_value(
-        Some(format!("https://{member_name}:8443").as_str()),
-        None,
-        None,
-        None,
-        Some(api_auth.clone()),
-        Some(api_tls.clone()),
-        Some(postgres_tls.clone()),
-    )?;
-    document.postgres.network.listen_host = member_name.to_string();
-    document.postgres.rewind = PostgresRewindConfig {
-        database: DEFAULT_POSTGRES_DATABASE.to_string(),
-        transport: PostgresClientTransportConfig {
-            ssl_mode: PgSslMode::VerifyFull,
-            ca_cert: Some(path_source("/etc/pgtuskmaster/tls/ca.crt")),
-        },
-    };
-    document.postgres.tls = TlsServerConfig::Enabled {
-        identity: member_identity.clone(),
-        client_auth: Some(TlsClientAuthConfig {
-            client_ca: path_source("/etc/pgtuskmaster/tls/ca.crt"),
-            client_certificate: ClientCertificateMode::Optional,
-        }),
-    };
-    document.postgres.roles = PostgresRolesConfig {
-        mandatory: MandatoryPostgresRolesConfig {
-            superuser: postgres_role_with_password(
-                "postgres",
-                file_secret("/run/secrets/postgres-superuser-password"),
-            ),
-            replicator: postgres_role_with_password(
-                replicator,
-                file_secret("/run/secrets/replicator-password"),
-            ),
-            rewinder: postgres_role_with_password(
-                rewinder,
-                file_secret("/run/secrets/rewinder-password"),
-            ),
-        },
-        extra: BTreeMap::new(),
-    };
-    document.postgres.access = PostgresAccessConfig {
-        hba: PathOrInline::PathConfig {
-            path: PathBuf::from("/etc/pgtuskmaster/pg_hba.conf"),
-        },
-        ident: PathOrInline::PathConfig {
-            path: PathBuf::from("/etc/pgtuskmaster/pg_ident.conf"),
-        },
-    };
-    document.postgres.extra_gucs =
-        BTreeMap::from([("wal_keep_size".to_string(), "128MB".to_string())]);
-    document.process = ProcessConfig {
-        timeouts: ProcessTimeoutsConfig::default(),
-        working_root: default_runtime_working_root(),
-        binaries: BinaryResolutionConfig {
-            overrides: BinaryPathOverrides {
-                postgres: Some(PathBuf::from(
-                    "/usr/local/lib/pgtuskmaster/wrappers/postgres",
-                )),
-                pg_ctl: Some(PathBuf::from("/usr/lib/postgresql/16/bin/pg_ctl")),
-                pg_rewind: Some(PathBuf::from(
-                    "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind",
-                )),
-                initdb: Some(PathBuf::from("/usr/lib/postgresql/16/bin/initdb")),
-                pg_basebackup: Some(PathBuf::from(
-                    "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup",
-                )),
-                psql: Some(PathBuf::from("/usr/lib/postgresql/16/bin/psql")),
-            },
-        },
-    };
-    document.logging = LoggingConfig {
-        level: LogLevel::Info,
-        capture_subprocess_output: true,
-        postgres: PostgresLoggingConfig {
-            enabled: true,
-            pg_ctl_log_file: None,
-            log_dir: None,
-            poll_interval_ms: DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
-            cleanup: LogCleanupConfig {
-                enabled: true,
-                max_files: 20,
-                max_age_seconds: 86_400,
-                protect_recent_seconds: 300,
-            },
-        },
-        sinks: LoggingSinksConfig {
-            stderr: StderrSinkConfig { enabled: true },
-            file: FileSinkConfig {
-                enabled: true,
-                path: Some(PathBuf::from("/var/log/pgtuskmaster/runtime.jsonl")),
-                mode: FileSinkMode::Append,
-            },
-        },
-    };
-    document.api = ApiConfig {
-        listen_addr: SocketAddr::from(([0, 0, 0, 0], 8443)),
-        transport: ApiTransportConfig::Https {
-            tls: ApiTlsConfig {
-                identity: member_identity,
-                client_auth: ApiClientAuthConfig::Disabled,
-            },
-        },
-        auth: token_auth_from_file_paths(
-            "/run/secrets/api-read-token",
-            "/run/secrets/api-admin-token",
-        ),
-    };
-    document.pgtm = Some(pgtm);
-    document.debug = DebugConfig { enabled: true };
-    toml_value("HA member runtime document", document)
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_ha_member_runtime_config_toml(
-    member_name: &str,
-    dcs_endpoint: &str,
-    replicator: &str,
-    rewinder: &str,
-) -> Result<String, String> {
-    render_toml_value(
-        "HA member runtime config",
-        &build_ha_member_runtime_document_value(member_name, dcs_endpoint, replicator, rewinder)?,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn operator_tls_config(
-    ca_cert_path: impl Into<PathBuf>,
-    identity: Option<TlsClientIdentityConfig>,
-) -> OperatorClientTlsInput {
-    OperatorClientTlsInput {
-        ca_cert: Some(path_source(ca_cert_path)),
-        identity,
-    }
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -1095,45 +905,4 @@ where
         )?,
         extra_sections,
     ))
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_host_observer_operator_config_toml(
-    member_name: &str,
-    resolve_to: SocketAddr,
-    ca_cert_path: &std::path::Path,
-    read_token_path: &std::path::Path,
-    admin_token_path: &std::path::Path,
-    observer_cert_path: &std::path::Path,
-    observer_key_path: &std::path::Path,
-) -> Result<String, String> {
-    let identity = TlsClientIdentityConfig {
-        cert: path_source(observer_cert_path.to_path_buf()),
-        key: path_source(observer_key_path.to_path_buf()),
-    };
-    let document = build_operator_test_document_value(
-        Some(format!("https://{member_name}:{}", resolve_to.port()).as_str()),
-        None,
-        Some("https"),
-        Some(resolve_to),
-        Some(TokenAuthConfig {
-            kind: Some("role_tokens".to_string()),
-            read_token: Some(SecretSource::PathConfig {
-                path: read_token_path.to_path_buf(),
-            }),
-            admin_token: Some(SecretSource::PathConfig {
-                path: admin_token_path.to_path_buf(),
-            }),
-            tokens: None,
-        }),
-        Some(operator_tls_config(
-            ca_cert_path.to_path_buf(),
-            Some(identity.clone()),
-        )),
-        Some(operator_tls_config(
-            ca_cert_path.to_path_buf(),
-            Some(identity),
-        )),
-    )?;
-    render_toml_value("host observer operator config", &document)
 }

@@ -14,6 +14,7 @@ use pgtuskmaster_rust::{
         state::{PgConnInfo, PgInfoState, PgSslMode, Readiness},
     },
 };
+use pgtuskmaster_test_support::config_v2::{render_operator_test_config_toml, toml_path_source};
 
 use crate::support::{
     config::harness_settings,
@@ -465,16 +466,38 @@ fn build_host_observer_config(
     observer_cert_path: &Path,
     observer_key_path: &Path,
 ) -> Result<String> {
-    pgtuskmaster_test_support::config_v2::render_host_observer_operator_config_toml(
-        member.service_name(),
-        resolve_to,
-        ca_cert_path,
-        read_token_path,
-        admin_token_path,
-        observer_cert_path,
-        observer_key_path,
+    render_operator_test_config_toml(
+        Some(format!("https://{}:{}", member.service_name(), resolve_to.port()).as_str()),
+        None,
+        Some("https"),
+        Some(resolve_to),
+        [
+            format!(
+                r#"[api.auth]
+type = "role_tokens"
+read_token = {}
+admin_token = {}"#,
+                toml_path_source(read_token_path),
+                toml_path_source(admin_token_path),
+            ),
+            format!(
+                r#"[api.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}
+
+[postgres.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}"#,
+                toml_path_source(ca_cert_path),
+                toml_path_source(observer_cert_path),
+                toml_path_source(observer_key_path),
+                toml_path_source(ca_cert_path),
+                toml_path_source(observer_cert_path),
+                toml_path_source(observer_key_path),
+            ),
+        ],
     )
-    .map_err(|err| HarnessError::message(err.to_string()))
+    .map_err(HarnessError::message)
 }
 
 #[cfg(test)]
