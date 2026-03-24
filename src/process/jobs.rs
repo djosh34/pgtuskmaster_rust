@@ -114,6 +114,29 @@ pub(crate) struct StartPostgresSpec {
     pub(crate) primary_slot_name: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessExecutionKind {
+    Bootstrap(BootstrapSpec),
+    BaseBackup(BaseBackupSpec),
+    PgRewind(PgRewindSpec),
+    Promote(PromoteSpec),
+    Demote(DemoteSpec),
+    StartPostgres(StartPostgresSpec),
+}
+
+impl ProcessExecutionKind {
+    pub(crate) fn job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
+            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
+            Self::PgRewind(_) => ProcessJobKind::PgRewind,
+            Self::Promote(_) => ProcessJobKind::Promote,
+            Self::Demote(_) => ProcessJobKind::Demote,
+            Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
+        }
+    }
+}
+
 impl ShutdownMode {
     pub(crate) fn as_pg_ctl_arg(&self) -> &'static str {
         match self {

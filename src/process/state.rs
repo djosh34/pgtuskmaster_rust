@@ -13,8 +13,8 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec, ProcessCommandRunner,
-    ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec, StartPostgresSpec,
+    ActiveJob, ProcessCommandRunner, ProcessError, ProcessExecutionKind, ProcessHandle,
+    ProcessIntent, ProcessJobKind,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
@@ -26,29 +26,6 @@ pub enum ProcessState {
         worker: WorkerStatus,
         active: ActiveJob,
     },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessExecutionKind {
-    Bootstrap(BootstrapSpec),
-    BaseBackup(BaseBackupSpec),
-    PgRewind(PgRewindSpec),
-    Promote(PromoteSpec),
-    Demote(DemoteSpec),
-    StartPostgres(StartPostgresSpec),
-}
-
-impl ProcessExecutionKind {
-    pub(crate) fn job_kind(&self) -> ProcessJobKind {
-        match self {
-            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
-            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
-            Self::PgRewind(_) => ProcessJobKind::PgRewind,
-            Self::Promote(_) => ProcessJobKind::Promote,
-            Self::Demote(_) => ProcessJobKind::Demote,
-            Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

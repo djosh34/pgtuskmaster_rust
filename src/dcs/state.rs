@@ -7,6 +7,18 @@ use crate::{
     state::{ApiRoute, LeaseEpoch, MemberId, PgRoute, SwitchoverState},
 };
 
+macro_rules! test_public_method {
+    ($(#[$meta:meta])* fn $name:ident($($args:tt)*) -> $ret:ty $body:block) => {
+        #[cfg(any(test, feature = "internal-test-support"))]
+        $(#[$meta])*
+        pub fn $name($($args)*) -> $ret $body
+
+        #[cfg(not(any(test, feature = "internal-test-support")))]
+        $(#[$meta])*
+        pub(crate) fn $name($($args)*) -> $ret $body
+    };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DcsMemberState {
     pub cluster_postgres: PgRoute,
@@ -18,31 +30,39 @@ pub struct DcsMemberState {
 }
 
 impl DcsMemberState {
-    pub fn cluster_postgres_target(&self) -> &PgRoute {
+    test_public_method! {
+    fn cluster_postgres_target(&self) -> &PgRoute {
         &self.cluster_postgres
-    }
+    }}
 
-    pub fn operator_postgres_target(&self) -> Option<&PgRoute> {
-        self.operator_postgres.as_ref()
-    }
-
-    pub fn operator_or_cluster_postgres_target(&self) -> &PgRoute {
+    test_public_method! {
+    fn operator_or_cluster_postgres_target(&self) -> &PgRoute {
         self.operator_postgres
             .as_ref()
             .unwrap_or(&self.cluster_postgres)
-    }
+    }}
 
-    pub fn operator_api_target(&self) -> Option<&ApiRoute> {
+    test_public_method! {
+    fn operator_api_target(&self) -> Option<&ApiRoute> {
         self.operator_api.as_ref()
-    }
+    }}
 
-    pub fn postgres(&self) -> &PgInfoState {
+    test_public_method! {
+    fn postgres(&self) -> &PgInfoState {
         &self.postgres
-    }
+    }}
 }
 
+#[cfg(any(test, feature = "internal-test-support"))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DcsAuthority {
+    NoQuorum,
+    Quorum,
+}
+
+#[cfg(not(any(test, feature = "internal-test-support")))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DcsAuthority {
     NoQuorum,
     Quorum,
 }
@@ -64,21 +84,15 @@ pub struct DcsQuorumState {
 }
 
 impl DcsQuorumState {
-    pub fn members(&self) -> impl Iterator<Item = (&MemberId, &DcsMemberState)> {
+    test_public_method! {
+    fn members(&self) -> impl Iterator<Item = (&MemberId, &DcsMemberState)> {
         self.members.iter()
-    }
+    }}
 
-    pub fn member_ids(&self) -> impl Iterator<Item = &MemberId> {
-        self.members.keys()
-    }
-
-    pub fn member_count(&self) -> usize {
-        self.members.len()
-    }
-
-    pub fn member(&self, member_id: &MemberId) -> Option<&DcsMemberState> {
+    test_public_method! {
+    fn member(&self, member_id: &MemberId) -> Option<&DcsMemberState> {
         self.members.get(member_id)
-    }
+    }}
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,10 +103,12 @@ pub enum DcsSnapshot {
 }
 
 impl DcsSnapshot {
-    pub fn starting() -> Self {
+    test_public_method! {
+    fn starting() -> Self {
         Self::NoQuorum
-    }
+    }}
 
+    #[cfg(any(test, feature = "internal-test-support"))]
     pub fn quorum(
         leadership: Option<LeaseEpoch>,
         switchover: SwitchoverState,
@@ -105,58 +121,52 @@ impl DcsSnapshot {
         })
     }
 
-    pub fn authority(&self) -> DcsAuthority {
+    test_public_method! {
+    fn authority(&self) -> DcsAuthority {
         match self {
             Self::NoQuorum => DcsAuthority::NoQuorum,
             Self::Quorum(_) => DcsAuthority::Quorum,
         }
-    }
+    }}
 
-    pub fn is_quorum(&self) -> bool {
+    test_public_method! {
+    fn is_quorum(&self) -> bool {
         matches!(self, Self::Quorum(_))
-    }
+    }}
 
-    pub fn leadership(&self) -> Option<&LeaseEpoch> {
-        match self {
-            Self::NoQuorum => None,
-            Self::Quorum(cluster) => cluster.leadership.as_ref(),
-        }
-    }
-
-    pub fn quorum_state(&self) -> Option<&DcsQuorumState> {
+    test_public_method! {
+    fn quorum_state(&self) -> Option<&DcsQuorumState> {
         match self {
             Self::Quorum(cluster) => Some(cluster),
             Self::NoQuorum => None,
         }
-    }
+    }}
 
-    pub fn members(&self) -> impl Iterator<Item = (&MemberId, &DcsMemberState)> {
+    test_public_method! {
+    fn members(&self) -> impl Iterator<Item = (&MemberId, &DcsMemberState)> {
         self.members_map()
             .into_iter()
             .flat_map(|members| members.iter())
-    }
+    }}
 
-    pub fn member_ids(&self) -> impl Iterator<Item = &MemberId> {
-        self.members_map()
-            .into_iter()
-            .flat_map(|members| members.keys())
-    }
-
-    pub fn member_count(&self) -> usize {
+    test_public_method! {
+    fn member_count(&self) -> usize {
         self.members_map().map(|members| members.len()).unwrap_or(0)
-    }
+    }}
 
-    pub fn member(&self, member_id: &MemberId) -> Option<&DcsMemberState> {
+    test_public_method! {
+    fn member(&self, member_id: &MemberId) -> Option<&DcsMemberState> {
         self.members_map()
             .and_then(|members| members.get(member_id))
-    }
+    }}
 
-    pub fn switchover(&self) -> Option<&SwitchoverState> {
+    test_public_method! {
+    fn switchover(&self) -> Option<&SwitchoverState> {
         match self {
             Self::NoQuorum => None,
             Self::Quorum(cluster) => Some(&cluster.switchover),
         }
-    }
+    }}
 
     fn members_map(&self) -> Option<&BTreeMap<MemberId, DcsMemberState>> {
         match self {

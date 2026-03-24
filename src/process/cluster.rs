@@ -7,13 +7,13 @@ use crate::{
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
     process::{
         jobs::{
-            ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessJobKind,
-            StartPostgresSpec,
+            ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessExecutionKind,
+            ProcessJobKind, StartPostgresSpec,
         },
-        planner::{ClusterProcessPlan, ProcessIntentPlanner},
+        planner::ProcessIntentPlanner,
         state::{
-            ensure_start_paths, ProcessExecutionKind, ProcessExecutionRequest,
-            ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx,
+            ensure_start_paths, ProcessExecutionRequest, ProcessIntentRequest,
+            ProcessObservedSnapshot, ProcessWorkerCtx,
         },
     },
 };
@@ -59,11 +59,11 @@ pub(crate) fn prepare_process_launch(
     observed: &ProcessObservedSnapshot,
     request: &ProcessIntentRequest,
 ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
-    let plan = ProcessIntentPlanner
+    let kind = ProcessIntentPlanner
         .plan(&cfg.member_id, cfg, observed, &request.intent)
         .map_err(ProcessPreparationError::IntentMaterialization)?;
     let execution_request =
-        execution_request_from_plan(request.id.clone(), request.intent.job_kind(), cfg, &plan)
+        prepare_execution_request(request.id.clone(), request.intent.job_kind(), cfg, kind)
             .map_err(ProcessPreparationError::IntentMaterialization)?;
     let command = build_command(cfg, &execution_request.kind)
         .map_err(ProcessPreparationError::BuildCommand)?;
@@ -88,29 +88,22 @@ fn observed_snapshot_from_ctx(
     })
 }
 
-fn execution_request_from_plan(
+fn prepare_execution_request(
     request_id: crate::state::JobId,
     tracked_job_kind: ProcessJobKind,
     cfg: &RuntimeConfigV2,
-    plan: &ClusterProcessPlan,
+    kind: ProcessExecutionKind,
 ) -> Result<ProcessExecutionRequest, ProcessError> {
-    let kind = match plan {
-        ClusterProcessPlan::Bootstrap(spec) => {
-            wipe_data_dir(spec.data_dir.as_path())?;
-            ProcessExecutionKind::Bootstrap(spec.clone())
-        }
-        ClusterProcessPlan::BaseBackup(spec) => {
-            wipe_data_dir(spec.data_dir.as_path())?;
-            ProcessExecutionKind::BaseBackup(spec.clone())
-        }
-        ClusterProcessPlan::PgRewind(spec) => ProcessExecutionKind::PgRewind(spec.clone()),
-        ClusterProcessPlan::StartPostgres(spec) => {
+    match &kind {
+        ProcessExecutionKind::Bootstrap(spec) => wipe_data_dir(spec.data_dir.as_path())?,
+        ProcessExecutionKind::BaseBackup(spec) => wipe_data_dir(spec.data_dir.as_path())?,
+        ProcessExecutionKind::StartPostgres(spec) => {
             materialize_start_config(cfg, tracked_job_kind, spec)?;
-            ProcessExecutionKind::StartPostgres(spec.clone())
         }
-        ClusterProcessPlan::Promote(spec) => ProcessExecutionKind::Promote(spec.clone()),
-        ClusterProcessPlan::Demote(spec) => ProcessExecutionKind::Demote(spec.clone()),
-    };
+        ProcessExecutionKind::PgRewind(_)
+        | ProcessExecutionKind::Promote(_)
+        | ProcessExecutionKind::Demote(_) => {}
+    }
 
     Ok(ProcessExecutionRequest {
         id: request_id,
@@ -560,7 +553,7 @@ psql = "/bin/true""#
             ));
         }
         match prepared.request.kind {
-            crate::process::state::ProcessExecutionKind::StartPostgres(spec) => {
+            crate::process::jobs::ProcessExecutionKind::StartPostgres(spec) => {
                 let primary_conninfo = spec
                     .primary_conninfo
                     .as_ref()
@@ -711,7 +704,7 @@ psql = "/bin/true""#
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
         if !matches!(
             prepared.request.kind,
-            crate::process::state::ProcessExecutionKind::BaseBackup(_)
+            crate::process::jobs::ProcessExecutionKind::BaseBackup(_)
         ) {
             return Err(format!(
                 "unexpected execution request kind: {:?}",
@@ -746,7 +739,7 @@ psql = "/bin/true""#
             .map_err(|err| format!("prepare non-start plan failed: {err}"))?;
         if !matches!(
             prepared.request.kind,
-            crate::process::state::ProcessExecutionKind::Promote(_)
+            crate::process::jobs::ProcessExecutionKind::Promote(_)
         ) {
             return Err(format!(
                 "unexpected execution request kind for promote: {:?}",

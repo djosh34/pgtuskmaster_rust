@@ -1,27 +1,30 @@
+use thiserror::Error;
+
 use crate::{
     config_v2::RuntimeConfigV2,
     dcs::{DcsMemberState, DcsSnapshot},
+    pginfo::state::{PgConnInfo, PgInfoState},
     postgres_managed::{ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn,
-            MandatorySourceRole, PgRewindSpec, PostgresStartIntent, ProcessError, ProcessIntent,
-            PromoteSpec, ReplicaProvisionIntent, StartPostgresSpec,
+            MandatorySourceRole, PgRewindSpec, PostgresStartIntent, ProcessError,
+            ProcessExecutionKind, ProcessIntent, PromoteSpec, ReplicaProvisionIntent,
+            StartPostgresSpec,
         },
-        source::source_from_member,
         state::ProcessObservedSnapshot,
     },
     state::MemberId,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ClusterProcessPlan {
-    Bootstrap(BootstrapSpec),
-    BaseBackup(BaseBackupSpec),
-    PgRewind(PgRewindSpec),
-    StartPostgres(StartPostgresSpec),
-    Promote(PromoteSpec),
-    Demote(DemoteSpec),
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+enum SourceMaterializationError {
+    #[error("remote source member `{member_id}` is self")]
+    SelfTarget { member_id: String },
+    #[error("remote source member `{member_id}` is not a healthy primary")]
+    NotHealthyPrimary { member_id: String },
+    #[error("remote source member `{member_id}` has an empty postgres host")]
+    EmptyHost { member_id: String },
 }
 
 #[derive(Default)]
@@ -34,16 +37,16 @@ impl ProcessIntentPlanner {
         cfg: &RuntimeConfigV2,
         observed: &ProcessObservedSnapshot,
         intent: &ProcessIntent,
-    ) -> Result<ClusterProcessPlan, ProcessError> {
+    ) -> Result<ProcessExecutionKind, ProcessError> {
         match intent {
-            ProcessIntent::Bootstrap => Ok(ClusterProcessPlan::Bootstrap(BootstrapSpec {
+            ProcessIntent::Bootstrap => Ok(ProcessExecutionKind::Bootstrap(BootstrapSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 superuser: cfg.postgres.superuser.username.clone(),
                 timeout_ms: None,
             })),
             ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
                 let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
-                Ok(ClusterProcessPlan::BaseBackup(BaseBackupSpec {
+                Ok(ProcessExecutionKind::BaseBackup(BaseBackupSpec {
                     data_dir: cfg.postgres.data_dir.clone(),
                     source,
                     timeout_ms: Some(duration_millis_u64(cfg.timing.bootstrap_timeout)),
@@ -60,7 +63,7 @@ impl ProcessIntentPlanner {
                     MandatorySourceRole::Rewinder,
                 )
                 .map_err(source_materialization_error)?;
-                Ok(ClusterProcessPlan::PgRewind(PgRewindSpec {
+                Ok(ProcessExecutionKind::PgRewind(PgRewindSpec {
                     target_data_dir: cfg.postgres.data_dir.clone(),
                     source,
                     timeout_ms: None,
@@ -72,27 +75,27 @@ impl ProcessIntentPlanner {
                         "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
                     ));
                 }
-                Ok(ClusterProcessPlan::StartPostgres(start_postgres_spec(
+                Ok(ProcessExecutionKind::StartPostgres(start_postgres_spec(
                     cfg, None, None,
                 )))
             }
             ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => Ok(
-                ClusterProcessPlan::StartPostgres(start_postgres_spec(cfg, None, None)),
+                ProcessExecutionKind::StartPostgres(start_postgres_spec(cfg, None, None)),
             ),
             ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
                 let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
-                Ok(ClusterProcessPlan::StartPostgres(start_postgres_spec(
+                Ok(ProcessExecutionKind::StartPostgres(start_postgres_spec(
                     cfg,
                     Some(source.conninfo),
                     None,
                 )))
             }
-            ProcessIntent::Promote => Ok(ClusterProcessPlan::Promote(PromoteSpec {
+            ProcessIntent::Promote => Ok(ProcessExecutionKind::Promote(PromoteSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 wait_seconds: None,
                 timeout_ms: None,
             })),
-            ProcessIntent::Demote(mode) => Ok(ClusterProcessPlan::Demote(DemoteSpec {
+            ProcessIntent::Demote(mode) => Ok(ProcessExecutionKind::Demote(DemoteSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
                 mode: mode.clone(),
                 timeout_ms: None,
@@ -103,7 +106,7 @@ impl ProcessIntentPlanner {
 
 fn start_postgres_spec(
     cfg: &RuntimeConfigV2,
-    primary_conninfo: Option<crate::pginfo::state::PgConnInfo>,
+    primary_conninfo: Option<PgConnInfo>,
     primary_slot_name: Option<String>,
 ) -> StartPostgresSpec {
     StartPostgresSpec {
@@ -153,8 +156,54 @@ fn resolve_source_member<'a>(
         })
 }
 
-fn source_materialization_error(error: super::source::SourceMaterializationError) -> ProcessError {
+fn source_materialization_error(error: SourceMaterializationError) -> ProcessError {
     ProcessError::InvalidSpec(error.to_string())
+}
+
+fn source_from_member(
+    self_id: &MemberId,
+    cfg: &RuntimeConfigV2,
+    member_id: &MemberId,
+    member: &DcsMemberState,
+    role: MandatorySourceRole,
+) -> Result<MandatoryRoleSourceConn, SourceMaterializationError> {
+    if member_id == self_id {
+        return Err(SourceMaterializationError::SelfTarget {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    if member.cluster_postgres_target().host().trim().is_empty() {
+        return Err(SourceMaterializationError::EmptyHost {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    if !matches!(member.postgres(), PgInfoState::Primary { .. }) {
+        return Err(SourceMaterializationError::NotHealthyPrimary {
+            member_id: member_id.0.clone(),
+        });
+    }
+
+    let credential = match role {
+        MandatorySourceRole::Replicator => &cfg.postgres.replicator,
+        MandatorySourceRole::Rewinder => &cfg.postgres.rewinder,
+    };
+    Ok(MandatoryRoleSourceConn {
+        role,
+        conninfo: PgConnInfo {
+            route: member.cluster_postgres_target().clone(),
+            user: credential.username.clone(),
+            dbname: cfg.postgres.local_database.clone(),
+            application_name: None,
+            connect_timeout_s: Some(
+                u32::try_from(cfg.postgres.connect_timeout.as_secs()).unwrap_or(u32::MAX),
+            ),
+            options: None,
+            tls: cfg.postgres.source_client_tls.clone(),
+        },
+        auth: credential.password.clone(),
+    })
 }
 
 fn duration_millis_u64(duration: std::time::Duration) -> u64 {
@@ -166,15 +215,18 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        config_v2::runtime_test_config_with_data_dir,
+        config_v2::{runtime_test_config_with_data_dir, RuntimeConfigV2},
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        pginfo::{
+            conninfo::{PgClientTls, PgSslMode},
+            state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
+        },
         postgres_managed::ManagedRecoverySignal,
         process::{
             jobs::{
-                MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
-                ShutdownMode, StartPostgresSpec,
+                MandatorySourceRole, PostgresStartIntent, ProcessExecutionKind, ProcessIntent,
+                ReplicaProvisionIntent, ShutdownMode, StartPostgresSpec,
             },
             state::ProcessObservedSnapshot,
         },
@@ -184,7 +236,7 @@ mod tests {
         },
     };
 
-    use super::{ClusterProcessPlan, ProcessIntentPlanner};
+    use super::{source_from_member, ProcessIntentPlanner, SourceMaterializationError};
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
@@ -209,6 +261,36 @@ mod tests {
                 },
                 wal_lsn: WalLsn(99),
                 slots: Vec::new(),
+            },
+        })
+    }
+
+    fn replica_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
+        Ok(DcsMemberState {
+            cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
+            operator_postgres: None,
+            operator_api: None,
+            postgres: PgInfoState::Replica {
+                common: PgInfoCommon {
+                    worker: WorkerStatus::Running,
+                    sql: SqlStatus::Healthy,
+                    readiness: Readiness::Ready,
+                    timeline: Some(TimelineId(7)),
+                    system_identifier: Some(SystemIdentifier(41)),
+                    pg_config: PgConfig {
+                        port: Some(port),
+                        hot_standby: Some(true),
+                        primary_conninfo: None,
+                        primary_slot_name: None,
+                        extra: BTreeMap::new(),
+                    },
+                    last_refresh_at: Some(UnixMillis(123)),
+                },
+                replay_lsn: WalLsn(98),
+                follow_lsn: Some(WalLsn(99)),
+                upstream: Some(crate::pginfo::state::UpstreamInfo {
+                    member_id: MemberId("node-a".to_string()),
+                }),
             },
         })
     }
@@ -276,17 +358,17 @@ mod tests {
                 .map_err(|err| format!("planning {label} failed: {err}"))?;
             let matches_expected = matches!(
                 (&plan, label),
-                (ClusterProcessPlan::Bootstrap(_), "bootstrap")
-                    | (ClusterProcessPlan::StartPostgres(_), "start-primary")
+                (ProcessExecutionKind::Bootstrap(_), "bootstrap")
+                    | (ProcessExecutionKind::StartPostgres(_), "start-primary")
                     | (
-                        ClusterProcessPlan::StartPostgres(_),
+                        ProcessExecutionKind::StartPostgres(_),
                         "start-detached-standby"
                     )
-                    | (ClusterProcessPlan::StartPostgres(_), "start-replica")
-                    | (ClusterProcessPlan::BaseBackup(_), "basebackup")
-                    | (ClusterProcessPlan::PgRewind(_), "pg-rewind")
-                    | (ClusterProcessPlan::Promote(_), "promote")
-                    | (ClusterProcessPlan::Demote(_), "demote")
+                    | (ProcessExecutionKind::StartPostgres(_), "start-replica")
+                    | (ProcessExecutionKind::BaseBackup(_), "basebackup")
+                    | (ProcessExecutionKind::PgRewind(_), "pg-rewind")
+                    | (ProcessExecutionKind::Promote(_), "promote")
+                    | (ProcessExecutionKind::Demote(_), "demote")
             );
             if !matches_expected {
                 return Err(format!("unexpected plan for {label}: {plan:?}"));
@@ -355,11 +437,11 @@ mod tests {
             .map_err(|err| format!("plan rewind failed: {err}"))?;
 
         let basebackup_role = match basebackup_plan {
-            ClusterProcessPlan::BaseBackup(spec) => spec.source.role,
+            ProcessExecutionKind::BaseBackup(spec) => spec.source.role,
             other => return Err(format!("unexpected basebackup plan: {other:?}")),
         };
         let rewind_role = match rewind_plan {
-            ClusterProcessPlan::PgRewind(spec) => spec.source.role,
+            ProcessExecutionKind::PgRewind(spec) => spec.source.role,
             other => return Err(format!("unexpected rewind plan: {other:?}")),
         };
 
@@ -385,7 +467,7 @@ mod tests {
             )
             .map_err(|err| format!("plan replica start failed: {err}"))?;
         match replica_plan {
-            ClusterProcessPlan::StartPostgres(StartPostgresSpec {
+            ProcessExecutionKind::StartPostgres(StartPostgresSpec {
                 primary_conninfo: Some(primary_conninfo),
                 primary_slot_name,
                 ..
@@ -405,6 +487,168 @@ mod tests {
             other => return Err(format!("unexpected replica start plan: {other:?}")),
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_selects_role_specific_credentials() -> Result<(), String> {
+        let root = unique_test_dir("process-planner", "source-credentials")?;
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let member_id = MemberId("node-b".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        let replicator = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Replicator,
+        )
+        .map_err(|err| err.to_string())?;
+        let rewinder = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Rewinder,
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(replicator.role, MandatorySourceRole::Replicator);
+        assert_eq!(replicator.conninfo.user, cfg.postgres.replicator.username);
+        assert_eq!(
+            replicator.conninfo.connect_timeout_s,
+            Some(u32::try_from(cfg.postgres.connect_timeout.as_secs()).unwrap_or(u32::MAX))
+        );
+        assert_eq!(replicator.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(replicator.auth, cfg.postgres.replicator.password.clone());
+
+        assert_eq!(rewinder.role, MandatorySourceRole::Rewinder);
+        assert_eq!(rewinder.conninfo.user, cfg.postgres.rewinder.username);
+        assert_eq!(rewinder.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(rewinder.auth, cfg.postgres.rewinder.password.clone());
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_uses_shared_source_client_tls_for_all_roles() -> Result<(), String> {
+        let root = unique_test_dir("process-planner", "source-shared-tls")?;
+        let config =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                source_client_tls: PgClientTls {
+                    mode: PgSslMode::VerifyFull,
+                    root_cert: Some("/tmp/pgtm/source-ca.crt".into()),
+                    client_cert: None,
+                    client_key: None,
+                },
+                ..config.postgres
+            },
+            ..config
+        };
+        let member_id = MemberId("node-b".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        let replicator = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Replicator,
+        )
+        .map_err(|err| err.to_string())?;
+        let rewinder = source_from_member(
+            &MemberId("node-a".to_string()),
+            &cfg,
+            &member_id,
+            &member,
+            MandatorySourceRole::Rewinder,
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(cfg.postgres.source_client_tls.mode, PgSslMode::VerifyFull);
+        assert_eq!(
+            cfg.postgres.source_client_tls.root_cert,
+            Some("/tmp/pgtm/source-ca.crt".into())
+        );
+        assert_eq!(replicator.conninfo.tls, cfg.postgres.source_client_tls);
+        assert_eq!(rewinder.conninfo.tls, cfg.postgres.source_client_tls);
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_rejects_empty_host_route() -> Result<(), String> {
+        let root = unique_test_dir("process-planner", "source-empty-host")?;
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let member_id = MemberId("node-b".to_string());
+        let member = DcsMemberState {
+            cluster_postgres: PgRoute::unix_socket("/tmp/pgtm".into(), 5432)?,
+            operator_postgres: None,
+            operator_api: None,
+            postgres: primary_member("10.0.0.9", 5432)?.postgres,
+        };
+
+        assert_eq!(
+            source_from_member(
+                &MemberId("node-a".to_string()),
+                &cfg,
+                &member_id,
+                &member,
+                MandatorySourceRole::Replicator,
+            ),
+            Err(SourceMaterializationError::EmptyHost {
+                member_id: "node-b".to_string(),
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_rejects_non_primary_source() -> Result<(), String> {
+        let root = unique_test_dir("process-planner", "source-non-primary")?;
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let member_id = MemberId("node-b".to_string());
+        let member = replica_member("10.0.0.9", 5432)?;
+
+        assert_eq!(
+            source_from_member(
+                &MemberId("node-a".to_string()),
+                &cfg,
+                &member_id,
+                &member,
+                MandatorySourceRole::Replicator,
+            ),
+            Err(SourceMaterializationError::NotHealthyPrimary {
+                member_id: "node-b".to_string(),
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_from_member_rejects_self_target() -> Result<(), String> {
+        let root = unique_test_dir("process-planner", "source-self-target")?;
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let member_id = MemberId("node-a".to_string());
+        let member = primary_member("10.0.0.9", 5432)?;
+
+        assert_eq!(
+            source_from_member(
+                &member_id,
+                &cfg,
+                &member_id,
+                &member,
+                MandatorySourceRole::Replicator,
+            ),
+            Err(SourceMaterializationError::SelfTarget {
+                member_id: "node-a".to_string(),
+            })
+        );
         Ok(())
     }
 }

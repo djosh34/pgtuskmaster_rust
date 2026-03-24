@@ -19,14 +19,14 @@ use crate::{
 
 use super::{
     jobs::{
-        ActiveJob, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle, ProcessIntent,
-        ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
+        ActiveJob, ProcessCommandSpec, ProcessError, ProcessExecutionKind, ProcessExit,
+        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     state::{
-        ActiveRuntime, JobOutcome, ProcessCadence, ProcessControlPlane, ProcessExecutionKind,
-        ProcessIntentRequest, ProcessJobRejection, ProcessObservedState, ProcessRuntime,
-        ProcessState, ProcessStateChannel, ProcessWorkerCtx,
+        ActiveRuntime, JobOutcome, ProcessCadence, ProcessControlPlane, ProcessIntentRequest,
+        ProcessJobRejection, ProcessObservedState, ProcessRuntime, ProcessState,
+        ProcessStateChannel, ProcessWorkerCtx,
     },
 };
 
