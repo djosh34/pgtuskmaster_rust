@@ -353,3 +353,4 @@ NONE
 .ralph/tasks/bugs/config-v2-ha-bootstrap-pgtm-https-status-cannot-reach-seed-primary.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/03-delete-old-config.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/04-eliminate-tls-bytes.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 12:56:59 AM CET 2026
+Generated: Tue Mar 24 01:04:35 CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
@@ -45,6 +45,17 @@ Inside dirs:
 **Superseded:** the current repo direction for config migration is now `.ralph/tasks/story-config-v2-direct-cfg-collapse/`. Do not implement this task as written without reconciling it against that newer story first; this older task preserves a weaker boundary than the current agreed architecture.
 
 <priority>medium</priority>
+```
+
+==============
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md`
+
+```
+## Task: Create Private TOML Schema And Initial `RuntimeConfigV2` Root Handoff <status>completed</status> <passes>true</passes>
+
+<description>
+**Goal:** Create the first concrete execution task for the config-v2 direct-cfg collapse story. The higher-order goal is to start the migration by making `src/config_v2/parser/private_schema.rs` the only TOML-parsable config shape, adding parse functions in the config-v2 loaders, and switching `src/runtime/node.rs` to root itself in `RuntimeConfigV2` only. This task intentionally does not finish the downstream migration. It must stop at the first compile-failing handoff once the remaining failures are only due to the old `src/config/` corridor that later tasks in this story will delete.
 ```
 
 ==============
