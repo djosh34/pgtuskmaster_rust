@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use pgtm_log_derive::LoggableEvent;
@@ -288,17 +288,6 @@ fn encode_path_token(path: &Path) -> String {
     path.display().to_string().replace(' ', "%20")
 }
 
-fn file_name_best_effort(path: &Path) -> String {
-    match path.file_name() {
-        Some(name) => name.to_string_lossy().to_string(),
-        None => "log".to_string(),
-    }
-}
-
-fn postgres_log_dir_origin(path: &Path) -> String {
-    format!("postgres_log_dir:{}", file_name_best_effort(path))
-}
-
 fn ingestable_postgres_log_start(path: &Path) -> Option<StartPosition> {
     let matches = matches!(
         path.extension().and_then(|ext| ext.to_str()),
@@ -319,6 +308,47 @@ fn ingest_issue(stage: &str, kind: &str, path: &Path, error: impl std::fmt::Disp
         "stage={stage} kind={kind} path={} error={error}",
         encode_path_token(path),
     )
+}
+
+async fn collect_ingestable_postgres_log_paths(
+    dir: &Path,
+    read_dir_error: &str,
+    entry_error: &str,
+    file_type_stage: &str,
+) -> Result<Vec<PathBuf>, WorkerError> {
+    let mut entries = match tokio::fs::read_dir(dir).await {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(WorkerError::Message(format!(
+                "{read_dir_error} {}: {err}",
+                dir.display()
+            )));
+        }
+    };
+
+    let mut paths = Vec::new();
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|err| WorkerError::Message(format!("{entry_error}: {err}")))?
+    {
+        let path = entry.path();
+        let is_file = match entry.file_type().await {
+            Ok(ft) => ft.is_file(),
+            Err(err) => {
+                return Err(WorkerError::Message(format!(
+                    "stage={file_type_stage} kind=file_type path={} error={err}",
+                    path.display()
+                )));
+            }
+        };
+        if is_file && ingestable_postgres_log_start(path.as_path()).is_some() {
+            paths.push(path);
+        }
+    }
+
+    Ok(paths)
 }
 
 async fn emit_tailer_lines(
@@ -385,7 +415,12 @@ async fn step_once(
 
         for (path, tailer) in state.dir_tailers.iter_mut() {
             log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
-            let origin = postgres_log_dir_origin(path);
+            let origin = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map_or("postgres_log_dir:log".to_string(), |name| {
+                    format!("postgres_log_dir:{name}")
+                });
             match emit_tailer_lines(
                 &ctx.log,
                 tailer,
@@ -406,19 +441,18 @@ async fn step_once(
         }
 
         if ctx.cfg.logging.postgres_log_cleanup_enabled {
-            let protected: Vec<&Path> = vec![state.pg_ctl_log.path()];
-
             match cleanup_log_dir(
                 dir,
                 ctx.cfg.logging.postgres_log_cleanup_max_files,
                 ctx.cfg.logging.postgres_log_cleanup_max_age,
                 ctx.cfg.logging.postgres_log_cleanup_protect_recent,
-                protected.as_slice(),
+                &[state.pg_ctl_log.path()],
                 SystemTime::now(),
+                &mut issues,
             )
             .await
             {
-                Ok(cleanup_issues) => issues.extend(cleanup_issues),
+                Ok(()) => {}
                 Err(err) => issues.push(ingest_issue("log_dir.cleanup", "cleanup.fatal", dir, err)),
             }
         }
@@ -459,36 +493,14 @@ async fn step_once(
 }
 
 async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), WorkerError> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "read_dir failed for {}: {err}",
-                dir.display()
-            )));
-        }
-    };
-
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|err| WorkerError::Message(format!("read_dir entry failed: {err}")))?
+    for path in collect_ingestable_postgres_log_paths(
+        dir,
+        "read_dir failed for",
+        "read_dir entry failed",
+        "log_dir.discover",
+    )
+    .await?
     {
-        let path = entry.path();
-        let is_file = match entry.file_type().await {
-            Ok(ft) => ft.is_file(),
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "stage=log_dir.discover kind=file_type path={} error={err}",
-                    path.display()
-                )));
-            }
-        };
-        if !is_file {
-            continue;
-        }
-
         let start = match ingestable_postgres_log_start(path.as_path()) {
             Some(start) => start,
             None => continue,
@@ -505,56 +517,24 @@ async fn cleanup_log_dir(
     protect_recent: Duration,
     protected_paths: &[&Path],
     now: SystemTime,
-) -> Result<Vec<String>, WorkerError> {
-    let mut entries = match tokio::fs::read_dir(dir).await {
-        Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "cleanup read_dir failed for {}: {err}",
-                dir.display()
-            )));
-        }
-    };
-
+    issues: &mut Vec<String>,
+) -> Result<(), WorkerError> {
     let protected_basenames: [&str; 3] = [
         "postgres.json",
         "postgres.stderr.log",
         "postgres.stdout.log",
     ];
 
-    let mut issues: Vec<String> = Vec::new();
     let mut candidates = Vec::new();
-    while let Some(entry) = entries
-        .next_entry()
-        .await
-        .map_err(|err| WorkerError::Message(format!("cleanup readdir entry failed: {err}")))?
+    for path in collect_ingestable_postgres_log_paths(
+        dir,
+        "cleanup read_dir failed for",
+        "cleanup readdir entry failed",
+        "cleanup.file_type",
+    )
+    .await?
     {
-        let path = entry.path();
-        let is_file = match entry.file_type().await {
-            Ok(ft) => ft.is_file(),
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "stage=cleanup.file_type kind=file_type path={} error={err}",
-                    path.display()
-                )));
-            }
-        };
-        if !is_file {
-            continue;
-        }
-
-        if ingestable_postgres_log_start(path.as_path()).is_none() {
-            continue;
-        }
-
-        let mut protected = false;
-        for p in protected_paths {
-            if path.as_path() == *p {
-                protected = true;
-                break;
-            }
-        }
+        let mut protected = protected_paths.contains(&path.as_path());
 
         let file_name = match path.file_name() {
             Some(name) => name.to_string_lossy().to_string(),
@@ -564,7 +544,7 @@ async fn cleanup_log_dir(
             protected = true;
         }
 
-        let meta = match entry.metadata().await {
+        let meta = match tokio::fs::metadata(&path).await {
             Ok(meta) => meta,
             Err(err) => {
                 protected = true;
@@ -629,7 +609,7 @@ async fn cleanup_log_dir(
         a.0.cmp(&b.0)
     });
 
-    let mut to_remove: Vec<std::path::PathBuf> = Vec::new();
+    let mut to_remove: Vec<PathBuf> = Vec::new();
 
     if max_files > 0 && (eligible.len() as u64) > max_files {
         let remove_count = eligible.len().saturating_sub(max_files as usize);
@@ -669,7 +649,7 @@ async fn cleanup_log_dir(
         }
     }
 
-    Ok(issues)
+    Ok(())
 }
 
 fn postgres_line_event(
@@ -1098,13 +1078,15 @@ mod tests {
             std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
         }
 
-        let issues = cleanup_log_dir(
+        let mut issues = Vec::new();
+        cleanup_log_dir(
             dir.as_path(),
             2,
             Duration::from_secs(365 * 24 * 60 * 60),
             Duration::from_secs(1),
             &[protected.as_path()],
             SystemTime::now() + Duration::from_secs(3600),
+            &mut issues,
         )
         .await?;
         assert!(issues.is_empty());
@@ -1142,13 +1124,15 @@ mod tests {
             std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
         }
 
-        let issues = cleanup_log_dir(
+        let mut issues = Vec::new();
+        cleanup_log_dir(
             dir.as_path(),
             1,
             Duration::from_secs(365 * 24 * 60 * 60),
             Duration::from_secs(1),
             &[],
             SystemTime::now() + Duration::from_secs(3600),
+            &mut issues,
         )
         .await?;
         assert!(issues.is_empty());
@@ -1180,13 +1164,15 @@ mod tests {
         std::fs::set_permissions(&dir, perms)
             .map_err(|err| WorkerError::Message(err.to_string()))?;
 
-        let issues = cleanup_log_dir(
+        let mut issues = Vec::new();
+        cleanup_log_dir(
             dir.as_path(),
             1,
             Duration::from_secs(1),
             Duration::from_secs(1),
             &[],
             SystemTime::now() + Duration::from_secs(3600),
+            &mut issues,
         )
         .await?;
         assert!(!issues.is_empty());
