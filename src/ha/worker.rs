@@ -144,25 +144,28 @@ fn observe(
         }
     };
 
-    let resolved_upstream = match &pg {
-        PgInfoState::Replica {
-            upstream: Some(upstream),
-            ..
-        } => Some(upstream.member_id.clone()),
-        PgInfoState::Replica { common, .. } => common
-            .pg_config
-            .primary_conninfo
-            .as_ref()
-            .and_then(|conninfo| match conninfo.route.endpoint() {
-                PgEndpoint::Tcp { host, port } => dcs.members().find_map(|(member_id, member)| {
-                    (member.cluster_postgres_target().host() == host.as_str()
-                        && member.cluster_postgres_target().port() == *port)
-                        .then_some(member_id.clone())
+    let resolved_upstream =
+        match &pg {
+            PgInfoState::Replica {
+                upstream: Some(upstream),
+                ..
+            } => Some(upstream.member_id.clone()),
+            PgInfoState::Replica { common, .. } => common
+                .pg_config
+                .primary_conninfo
+                .as_ref()
+                .and_then(|conninfo| match conninfo.route.endpoint() {
+                    PgEndpoint::Tcp { host, port } => {
+                        dcs.members().find_map(|(member_id, member)| {
+                            (member.cluster_postgres_target().host() == host.as_str()
+                                && member.cluster_postgres_target().port() == *port)
+                                .then_some(member_id.clone())
+                        })
+                    }
+                    PgEndpoint::UnixSocket { .. } => None,
                 }),
-                PgEndpoint::UnixSocket { .. } => None,
-            }),
-        PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } => None,
-    };
+            PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } => None,
+        };
 
     let self_candidate = match (&local_data, &pg) {
         (LocalDataState::Missing | LocalDataState::BootstrapEmpty, _) => CandidateState::Bootstrap,

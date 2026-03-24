@@ -6,10 +6,10 @@ use crate::{
         types::{AuthorityProjection, PublicationState},
     },
     pginfo::state::Readiness,
-    state::{MemberId, SwitchoverState},
+    state::{MemberId, SwitchoverRequest as PersistedSwitchoverRequest, SwitchoverTarget},
 };
 
-pub(crate) type SwitchoverRequest = SwitchoverState;
+pub(crate) type SwitchoverRequest = SwitchoverTarget;
 
 pub(crate) async fn post_switchover(
     _scope: &str,
@@ -25,24 +25,22 @@ pub(crate) async fn post_switchover(
         ));
     }
 
-    match &ha.publication {
+    let epoch = match &ha.publication {
         PublicationState::Projected(AuthorityProjection::Primary(epoch))
-            if epoch.holder == *self_id => {}
+            if epoch.holder == *self_id =>
+        {
+            epoch.clone()
+        }
         _ => {
             return Err(ApiError::bad_request(
                 "switchover requests must be sent to the authoritative primary".to_string(),
             ));
         }
-    }
+    };
 
     let target = match input {
-        SwitchoverState::None => {
-            return Err(ApiError::bad_request(
-                "switchover request must choose a target state".to_string(),
-            ));
-        }
-        SwitchoverState::AnyHealthyReplica => SwitchoverState::AnyHealthyReplica,
-        SwitchoverState::Specific(target_member_id) => {
+        SwitchoverTarget::AnyHealthyReplica => SwitchoverTarget::AnyHealthyReplica,
+        SwitchoverTarget::Specific(target_member_id) => {
             let target = target_member_id.0.trim().to_string();
             if &target_member_id == self_id {
                 return Err(ApiError::bad_request(format!(
@@ -60,11 +58,14 @@ pub(crate) async fn post_switchover(
                 )));
             }
 
-            SwitchoverState::Specific(target_member_id)
+            SwitchoverTarget::Specific(target_member_id)
         }
     };
     handle
-        .publish_switchover(target)
+        .publish_switchover(PersistedSwitchoverRequest {
+            requested_from: epoch,
+            target,
+        })
         .map_err(|err| ApiError::DcsCommand(err.to_string()))?;
 
     Ok(AcceptedResponse { accepted: true })

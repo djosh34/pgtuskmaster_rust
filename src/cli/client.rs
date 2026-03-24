@@ -8,7 +8,7 @@ pub(crate) use crate::api::{AcceptedResponse, NodeState as NodeStateResponse};
 use crate::{
     cli::error::CliError,
     config_v2::types::OperatorClientTlsConfig,
-    state::{MemberId, SwitchoverState},
+    state::{MemberId, SwitchoverTarget},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -40,7 +40,7 @@ enum AuthRole {
     Admin,
 }
 
-type SwitchoverRequestInput = SwitchoverState;
+type SwitchoverRequestInput = SwitchoverTarget;
 
 impl CliApiClient {
     pub(crate) fn from_config(config: CliApiClientConfig) -> Result<Self, CliError> {

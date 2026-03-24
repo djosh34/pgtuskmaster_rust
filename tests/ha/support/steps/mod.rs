@@ -1093,8 +1093,8 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus, UpstreamInfo},
         process::state::ProcessState,
         state::{
-            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgRoute, ScopeName,
-            SwitchoverState, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState,
+            TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
 

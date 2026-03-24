@@ -529,12 +529,8 @@ impl ConnectedSession {
                 self.release_local_leadership(keys, &identity.member_id, cluster)
                     .await
             }
-            DcsCommand::PublishSwitchoverAny => {
-                self.set_switchover(keys, SwitchoverState::AnyHealthyReplica, cluster)
-                    .await
-            }
-            DcsCommand::PublishSwitchoverTo(target) => {
-                self.set_switchover(keys, SwitchoverState::Specific(target), cluster)
+            DcsCommand::PublishSwitchover(request) => {
+                self.set_switchover(keys, SwitchoverState::Pending(request), cluster)
                     .await
             }
             DcsCommand::ClearSwitchover => {

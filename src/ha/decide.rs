@@ -4,7 +4,7 @@ use crate::{
     dcs::{DcsMemberState, DcsQuorumState},
     pginfo::state::{PgInfoState, Readiness, SqlStatus},
     process::jobs::ShutdownMode,
-    state::{LeaseEpoch, MemberId, ObservedWalPosition, SwitchoverState},
+    state::{LeaseEpoch, MemberId, ObservedWalPosition, SwitchoverState, SwitchoverTarget},
 };
 
 use super::types::{
@@ -142,55 +142,64 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                     publication,
                     clear_switchover: false,
                 },
-                SwitchoverState::Specific(target) if target == self_id => HaDecision {
-                    mode: HaMode::Lead(epoch.clone()),
-                    publication,
-                    clear_switchover: false,
-                },
-                SwitchoverState::Specific(target)
-                    if quorum
-                        .member(target)
-                        .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
-                {
+                SwitchoverState::Pending(request) if request.requested_from != *epoch => {
                     HaDecision {
-                        mode: HaMode::DemoteForSwitchover(target.clone()),
-                        publication: None,
-                        clear_switchover: false,
+                        mode: HaMode::Lead(epoch.clone()),
+                        publication,
+                        clear_switchover: true,
                     }
                 }
-                SwitchoverState::Specific(_) => HaDecision {
-                    mode: HaMode::Lead(epoch.clone()),
-                    publication,
-                    clear_switchover: true,
-                },
-                SwitchoverState::AnyHealthyReplica => {
-                    let best_target = quorum
-                        .members()
-                        .filter(|(member_id, _)| *member_id != self_id)
-                        .filter_map(|(member_id, member)| {
-                            let candidate = candidate_for_member(member);
-                            candidate
-                                .is_eligible()
-                                .then_some((member_id.clone(), candidate))
-                        })
-                        .max_by(|(left_id, left), (right_id, right)| {
-                            compare_candidates(left_id, left, right_id, right)
-                        })
-                        .map(|(member_id, _)| member_id);
-
-                    match best_target {
-                        Some(target) => HaDecision {
-                            mode: HaMode::DemoteForSwitchover(target),
+                SwitchoverState::Pending(request) => match &request.target {
+                    SwitchoverTarget::Specific(target) if target == self_id => HaDecision {
+                        mode: HaMode::Lead(epoch.clone()),
+                        publication,
+                        clear_switchover: false,
+                    },
+                    SwitchoverTarget::Specific(target)
+                        if quorum
+                            .member(target)
+                            .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
+                    {
+                        HaDecision {
+                            mode: HaMode::DemoteForSwitchover(target.clone()),
                             publication: None,
                             clear_switchover: false,
-                        },
-                        None => HaDecision {
-                            mode: HaMode::Lead(epoch.clone()),
-                            publication,
-                            clear_switchover: false,
-                        },
+                        }
                     }
-                }
+                    SwitchoverTarget::Specific(_) => HaDecision {
+                        mode: HaMode::Lead(epoch.clone()),
+                        publication,
+                        clear_switchover: true,
+                    },
+                    SwitchoverTarget::AnyHealthyReplica => {
+                        let best_target = quorum
+                            .members()
+                            .filter(|(member_id, _)| *member_id != self_id)
+                            .filter_map(|(member_id, member)| {
+                                let candidate = candidate_for_member(member);
+                                candidate
+                                    .is_eligible()
+                                    .then_some((member_id.clone(), candidate))
+                            })
+                            .max_by(|(left_id, left), (right_id, right)| {
+                                compare_candidates(left_id, left, right_id, right)
+                            })
+                            .map(|(member_id, _)| member_id);
+
+                        match best_target {
+                            Some(target) => HaDecision {
+                                mode: HaMode::DemoteForSwitchover(target),
+                                publication: None,
+                                clear_switchover: false,
+                            },
+                            None => HaDecision {
+                                mode: HaMode::Lead(epoch.clone()),
+                                publication,
+                                clear_switchover: false,
+                            },
+                        }
+                    }
+                },
             }
         }
         Some(epoch) => {
@@ -246,52 +255,56 @@ pub(crate) fn decide(observation: &HaObservation, self_id: &MemberId) -> HaDecis
                 NoPrimaryProjection::LeaseOpen,
             ));
             match &quorum.switchover {
-                SwitchoverState::Specific(target)
-                    if target == self_id && observation.self_candidate.is_eligible() =>
-                {
-                    HaDecision {
-                        mode: HaMode::AcquireLease(LeaseClaim::TargetedSwitchover(target.clone())),
-                        publication,
-                        clear_switchover: false,
+                SwitchoverState::Pending(request) => match &request.target {
+                    SwitchoverTarget::Specific(target)
+                        if target == self_id && observation.self_candidate.is_eligible() =>
+                    {
+                        HaDecision {
+                            mode: HaMode::AcquireLease(LeaseClaim::TargetedSwitchover(
+                                target.clone(),
+                            )),
+                            publication,
+                            clear_switchover: false,
+                        }
                     }
-                }
-                SwitchoverState::Specific(target)
-                    if quorum
-                        .member(target)
-                        .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
-                {
-                    HaDecision {
-                        mode: HaMode::WaitForTarget(target.clone()),
-                        publication,
-                        clear_switchover: false,
+                    SwitchoverTarget::Specific(target)
+                        if quorum
+                            .member(target)
+                            .is_some_and(|member| candidate_for_member(member).is_eligible()) =>
+                    {
+                        HaDecision {
+                            mode: HaMode::WaitForTarget(target.clone()),
+                            publication,
+                            clear_switchover: false,
+                        }
                     }
-                }
-                SwitchoverState::Specific(_) => HaDecision {
-                    mode: HaMode::WaitForLeader,
-                    publication,
-                    clear_switchover: true,
+                    SwitchoverTarget::Specific(_) => HaDecision {
+                        mode: HaMode::WaitForLeader,
+                        publication,
+                        clear_switchover: true,
+                    },
+                    SwitchoverTarget::AnyHealthyReplica => {
+                        let best =
+                            best_failover_candidate(quorum, &observation.self_candidate, self_id);
+                        match best {
+                            Some(candidate) if candidate == *self_id => HaDecision {
+                                mode: HaMode::AcquireLease(lease_claim(observation, self_id)),
+                                publication,
+                                clear_switchover: false,
+                            },
+                            Some(candidate) => HaDecision {
+                                mode: HaMode::WaitForTarget(candidate),
+                                publication,
+                                clear_switchover: false,
+                            },
+                            None => HaDecision {
+                                mode: HaMode::WaitForLeader,
+                                publication,
+                                clear_switchover: false,
+                            },
+                        }
+                    }
                 },
-                SwitchoverState::AnyHealthyReplica => {
-                    let best =
-                        best_failover_candidate(quorum, &observation.self_candidate, self_id);
-                    match best {
-                        Some(candidate) if candidate == *self_id => HaDecision {
-                            mode: HaMode::AcquireLease(lease_claim(observation, self_id)),
-                            publication,
-                            clear_switchover: false,
-                        },
-                        Some(candidate) => HaDecision {
-                            mode: HaMode::WaitForTarget(candidate),
-                            publication,
-                            clear_switchover: false,
-                        },
-                        None => HaDecision {
-                            mode: HaMode::WaitForLeader,
-                            publication,
-                            clear_switchover: false,
-                        },
-                    }
-                }
                 SwitchoverState::None => {
                     match best_failover_candidate(quorum, &observation.self_candidate, self_id) {
                         Some(candidate) if candidate == *self_id => HaDecision {
@@ -375,9 +388,12 @@ fn lease_claim(observation: &HaObservation, self_id: &MemberId) -> LeaseClaim {
         return LeaseClaim::ResumeAfterOutage;
     }
 
-    if observation.dcs.switchover().is_some_and(
-        |switchover| matches!(switchover, SwitchoverState::Specific(target) if target == self_id),
-    ) {
+    if observation
+        .dcs
+        .switchover()
+        .and_then(SwitchoverState::request)
+        .is_some_and(|request| request.target.member() == Some(self_id))
+    {
         return LeaseClaim::TargetedSwitchover(self_id.clone());
     }
 
@@ -496,8 +512,8 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{
-            LeaseEpoch, MemberId, ObservedWalPosition, PgRoute, SwitchoverState, TimelineId,
-            WalLsn, WorkerStatus,
+            LeaseEpoch, MemberId, ObservedWalPosition, PgRoute, SwitchoverRequest, SwitchoverState,
+            SwitchoverTarget, TimelineId, WalLsn, WorkerStatus,
         },
     };
 
@@ -666,7 +682,13 @@ mod tests {
                 holder: self_id.clone(),
                 generation: 7,
             }),
-            SwitchoverState::AnyHealthyReplica,
+            SwitchoverState::Pending(SwitchoverRequest {
+                requested_from: LeaseEpoch {
+                    holder: self_id.clone(),
+                    generation: 7,
+                },
+                target: SwitchoverTarget::AnyHealthyReplica,
+            }),
             BTreeMap::from([(
                 MemberId("node-b".to_string()),
                 peer(
@@ -688,6 +710,69 @@ mod tests {
     }
 
     #[test]
+    fn targeted_switchover_successor_clears_completed_request() {
+        let self_id = MemberId("node-b".to_string());
+        let active_epoch = LeaseEpoch {
+            holder: self_id.clone(),
+            generation: 8,
+        };
+        let mut observation = observation(primary(50));
+        observation.dcs = DcsSnapshot::quorum(
+            Some(active_epoch.clone()),
+            SwitchoverState::Pending(SwitchoverRequest {
+                requested_from: LeaseEpoch {
+                    holder: MemberId("node-a".to_string()),
+                    generation: 7,
+                },
+                target: SwitchoverTarget::Specific(self_id.clone()),
+            }),
+            BTreeMap::from([(MemberId("node-a".to_string()), peer("node-a", replica(40)))]),
+        );
+
+        assert_eq!(
+            decide(&observation, &self_id),
+            HaDecision {
+                mode: HaMode::Lead(active_epoch.clone()),
+                publication: Some(AuthorityProjection::Primary(active_epoch)),
+                clear_switchover: true,
+            }
+        );
+    }
+
+    #[test]
+    fn generic_switchover_successor_clears_completed_request() {
+        let self_id = MemberId("node-b".to_string());
+        let active_epoch = LeaseEpoch {
+            holder: self_id.clone(),
+            generation: 8,
+        };
+        let mut observation = observation(primary(50));
+        observation.dcs = DcsSnapshot::quorum(
+            Some(active_epoch.clone()),
+            SwitchoverState::Pending(SwitchoverRequest {
+                requested_from: LeaseEpoch {
+                    holder: MemberId("node-a".to_string()),
+                    generation: 7,
+                },
+                target: SwitchoverTarget::AnyHealthyReplica,
+            }),
+            BTreeMap::from([
+                (MemberId("node-a".to_string()), peer("node-a", replica(40))),
+                (MemberId("node-c".to_string()), peer("node-c", replica(45))),
+            ]),
+        );
+
+        assert_eq!(
+            decide(&observation, &self_id),
+            HaDecision {
+                mode: HaMode::Lead(active_epoch.clone()),
+                publication: Some(AuthorityProjection::Primary(active_epoch)),
+                clear_switchover: true,
+            }
+        );
+    }
+
+    #[test]
     fn lease_holder_demotes_for_best_switchover_target() {
         let self_id = MemberId("node-c".to_string());
         let mut observation = observation(replica(50));
@@ -696,7 +781,13 @@ mod tests {
                 holder: self_id.clone(),
                 generation: 7,
             }),
-            SwitchoverState::AnyHealthyReplica,
+            SwitchoverState::Pending(SwitchoverRequest {
+                requested_from: LeaseEpoch {
+                    holder: self_id.clone(),
+                    generation: 7,
+                },
+                target: SwitchoverTarget::AnyHealthyReplica,
+            }),
             BTreeMap::from([(MemberId("node-a".to_string()), peer("node-a", replica(40)))]),
         );
 

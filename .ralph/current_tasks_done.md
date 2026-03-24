@@ -1,6 +1,17 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 02:53:58 AM CET 2026
+Generated: Tue Mar 24 03:21:10 AM CET 2026
+
+# Task `.ralph/tasks/bugs/generic-switchover-request-can-stall-without-primary.md`
+
+```
+## Bug: Switchover requests can stay pending until manual clear and generic requests can strand the cluster without a primary <status>completed</status> <passes>true</passes> <priority>high</priority>
+
+<description>
+The switchover lifecycle is not reliably self-clearing in the shipped Docker walkthrough.
+```
+
+==============
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 

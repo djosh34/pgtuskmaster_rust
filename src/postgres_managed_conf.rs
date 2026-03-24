@@ -328,11 +328,9 @@ fn escape_postgres_conf_string(value: &str) -> String {
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
-    use crate::{
-        pginfo::{
-            conninfo::PgClientTls,
-            state::{PgConnInfo, PgSslMode},
-        },
+    use crate::pginfo::{
+        conninfo::PgClientTls,
+        state::{PgConnInfo, PgSslMode},
     };
 
     use super::{

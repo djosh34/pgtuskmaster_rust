@@ -96,17 +96,10 @@ impl StateProjectionDto {
         } else {
             StateHealthDto::Degraded
         };
-        let switchover = match state.dcs.switchover() {
-            Some(SwitchoverState::AnyHealthyReplica) => Some(StateSwitchoverDto {
-                pending: true,
-                target_member_id: None,
-            }),
-            Some(SwitchoverState::Specific(member_id)) => Some(StateSwitchoverDto {
-                pending: true,
-                target_member_id: Some(member_id.0.clone()),
-            }),
-            Some(SwitchoverState::None) | None => None,
-        };
+        let switchover = state
+            .dcs
+            .switchover()
+            .and_then(StateSwitchoverDto::from_state);
 
         Self {
             cluster_name: state.identity.cluster_name.0.clone(),
@@ -147,6 +140,15 @@ pub enum StateHealthDto {
 pub struct StateSwitchoverDto {
     pub pending: bool,
     pub target_member_id: Option<String>,
+}
+
+impl StateSwitchoverDto {
+    fn from_state(state: &SwitchoverState) -> Option<Self> {
+        state.request().map(|request| Self {
+            pending: true,
+            target_member_id: request.target.member().map(|member_id| member_id.0.clone()),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -97,6 +97,8 @@ Request body:
 ```
 
 `switchover_to` is optional. When omitted, the API records a generic switchover request and the HA loop chooses the successor from the observed DCS view.
+The persisted request includes both the requested target and the current authoritative `LeaseEpoch`.
+That origin epoch is part of the switchover lifecycle contract: only the leader that accepted the request executes it, and the successor that takes over clears the stale request on a later tick.
 
 Success status: `202 Accepted`
 

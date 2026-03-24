@@ -1665,11 +1665,10 @@ mod tests {
             cfg.postgres.pg_ident_file = data_dir.join("pgtm.pg_ident.conf");
             cfg.postgres.socket_dir = socket_dir.clone();
             cfg.postgres.listen_port = port;
-            cfg.postgres.cluster_advertise = crate::state::PgRoute::tcp(
-                cfg.postgres.listen_host.clone(),
-                port,
-            )
-            .map_err(|err| WorkerError::Message(format!("test advertise route failed: {err}")))?;
+            cfg.postgres.cluster_advertise =
+                crate::state::PgRoute::tcp(cfg.postgres.listen_host.clone(), port).map_err(
+                    |err| WorkerError::Message(format!("test advertise route failed: {err}")),
+                )?;
             cfg.postgres.log_file = log_file.clone();
             cfg.logging.postgres_pg_ctl_log = log_file.clone();
             cfg.postgres
@@ -1927,11 +1926,10 @@ mod tests {
                 std::collections::BTreeMap::from([(
                     MemberId("node-b".to_string()),
                     DcsMemberState {
-                        cluster_postgres: crate::state::PgRoute::tcp(
-                            "127.0.0.1".to_string(),
-                            9,
-                        )
-                        .map_err(|err| WorkerError::Message(format!("test dcs target failed: {err}")))?,
+                        cluster_postgres: crate::state::PgRoute::tcp("127.0.0.1".to_string(), 9)
+                            .map_err(|err| {
+                                WorkerError::Message(format!("test dcs target failed: {err}"))
+                            })?,
                         operator_postgres: None,
                         postgres: PgInfoState::Primary {
                             common: PgInfoCommon {

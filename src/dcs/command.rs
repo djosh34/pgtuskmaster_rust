@@ -1,13 +1,12 @@
 use tokio::sync::mpsc;
 
-use crate::state::{MemberId, SwitchoverTarget};
+use crate::state::SwitchoverRequest;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum DcsCommand {
     AcquireLeadership,
     ReleaseLeadership,
-    PublishSwitchoverAny,
-    PublishSwitchoverTo(MemberId),
+    PublishSwitchover(SwitchoverRequest),
     ClearSwitchover,
 }
 
@@ -45,23 +44,11 @@ impl DcsHandle {
         self.send(DcsCommand::ReleaseLeadership)
     }
 
-    pub(crate) fn publish_switchover_any(&self) -> Result<(), DcsHandleError> {
-        self.send(DcsCommand::PublishSwitchoverAny)
-    }
-
-    pub(crate) fn publish_switchover_to(&self, target: MemberId) -> Result<(), DcsHandleError> {
-        self.send(DcsCommand::PublishSwitchoverTo(target))
-    }
-
     pub(crate) fn publish_switchover(
         &self,
-        target: SwitchoverTarget,
+        request: SwitchoverRequest,
     ) -> Result<(), DcsHandleError> {
-        match target {
-            SwitchoverTarget::None => self.clear_switchover(),
-            SwitchoverTarget::AnyHealthyReplica => self.publish_switchover_any(),
-            SwitchoverTarget::Specific(member_id) => self.publish_switchover_to(member_id),
-        }
+        self.send(DcsCommand::PublishSwitchover(request))
     }
 
     pub(crate) fn clear_switchover(&self) -> Result<(), DcsHandleError> {

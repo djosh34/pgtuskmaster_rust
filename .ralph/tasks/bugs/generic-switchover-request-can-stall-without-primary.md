@@ -1,4 +1,4 @@
-## Bug: Switchover requests can stay pending until manual clear and generic requests can strand the cluster without a primary <status>not_started</status> <passes>false</passes> <priority>high</priority>
+## Bug: Switchover requests can stay pending until manual clear and generic requests can strand the cluster without a primary <status>completed</status> <passes>true</passes> <priority>high</priority>
 
 <description>
 The switchover lifecycle is not reliably self-clearing in the shipped Docker walkthrough.
@@ -28,11 +28,23 @@ Then verify if bug still holds. If yes, create new Red test, and continue with R
 </mandatory_red_green_tdd>
 
 <acceptance_criteria>
-- [ ] I created a Red unit and/or integration test that captures the bug
-- [ ] I made the test green by fixing
-- [ ] I manually verified the bug, and created a new Red test if not working still
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this bug impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] I created a Red unit and/or integration test that captures the bug
+- [x] I made the test green by fixing
+- [x] I manually verified the bug, and created a new Red test if not working still
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this bug impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<plan>
+- [x] Finish propagating the new switchover ADT split across the codebase:
+  `SwitchoverTarget` is operator input only; persisted quorum state is `SwitchoverState::Pending(SwitchoverRequest { requested_from: LeaseEpoch, target })`; remove remaining call sites that still treat persisted switchover state as a raw target enum.
+- [x] Add one Red HA/decision test that proves a targeted switchover clears itself after the requested replica becomes leader instead of leaving `switchover: pending -> <target>` behind.
+- [x] Make that test green by updating HA decision/reconcile logic so only the originating leader executes a pending request, while the successor that completes the handoff clears the request on the next tick.
+- [x] Manually re-verify the targeted Docker walkthrough; if the pending marker still lingers anywhere, add the next Red test before changing more behavior.
+- [x] Add one Red HA/integration test for the generic request that proves the successor leader does not immediately reinterpret the old request and demote again.
+- [x] Make that test green by centralizing switchover lifecycle helpers on the new typed request boundary and teaching the post-takeover leader to clear stale requests instead of executing them twice.
+- [x] Update status rendering, API/CLI serialization, docs/examples, and fixtures/tests that still pattern-match the old enum so they render pending target data from `SwitchoverRequest.target`.
+- [x] Run the required validation gates in repo order only after the design still looks correct: `make check`, `make lint`, `make test`, `make test-long`. If execution shows this ADT split is still wrong, switch this task back to `TO BE VERIFIED`, explain the exact mismatch here, and stop immediately.
+</plan>

@@ -14,6 +14,18 @@ DcsQuorumState
 - switchover: SwitchoverState
 - members: BTreeMap<MemberId, DcsMemberState>
 
+SwitchoverState
+- None
+- Pending(SwitchoverRequest)
+
+SwitchoverRequest
+- requested_from: LeaseEpoch
+- target: SwitchoverTarget
+
+SwitchoverTarget
+- AnyHealthyReplica
+- Specific(MemberId)
+
 DcsMemberState
 - cluster_postgres: PgRoute
 - operator_postgres: Option<PgRoute>
@@ -71,6 +83,22 @@ Public accessors expose the authoritative cluster payload:
 - `member_count()` returns the number of quorum-visible members
 - `member(member_id)` returns `Some(&DcsMemberState)` when the member exists
 - `quorum_state()` returns `Some(&DcsQuorumState)`
+
+Pending switchover state now carries the request origin explicitly:
+
+```text
+SwitchoverState::Pending(SwitchoverRequest {
+    requested_from: LeaseEpoch,
+    target: SwitchoverTarget,
+})
+```
+
+`requested_from` is the authoritative lease epoch that accepted the switchover request. That lets HA distinguish:
+
+- an in-flight request still owned by the current leader
+- a stale request left behind after a successor has already taken over
+
+That distinction is what allows the new leader to clear a completed switchover instead of re-executing it.
 
 ## Member payload
 
