@@ -627,20 +627,10 @@ async fn read_monitored_member_counts(
     observer: Option<&PgtmObserver>,
     query_timeout: Duration,
 ) -> Vec<MemberCountObservation> {
-    futures::future::join_all(
-        members
-            .iter()
-            .map(|member| read_member_count(member, observer, query_timeout)),
-    )
+    futures::future::join_all(members.iter().map(|member| {
+        read_member_count_via_fresh_connection(member, observer, query_timeout, None)
+    }))
     .await
-}
-
-async fn read_member_count(
-    member: &PostgresRoutingTarget,
-    observer: Option<&PgtmObserver>,
-    query_timeout: Duration,
-) -> MemberCountObservation {
-    read_member_count_via_fresh_connection(member, observer, query_timeout, None).await
 }
 
 async fn read_member_count_via_fresh_connection(
@@ -649,7 +639,14 @@ async fn read_member_count_via_fresh_connection(
     connect_timeout: Duration,
     previous_error: Option<String>,
 ) -> MemberCountObservation {
-    let routing_target = match resolve_observation_routing_target(member, observer) {
+    let routing_target = match observer.map_or_else(
+        || Ok(member.clone()),
+        |observer| {
+            observer
+                .postgres_routing_target(member.member)
+                .map_err(|err| err.to_string())
+        },
+    ) {
         Ok(routing_target) => routing_target,
         Err(err) => {
             return MemberCountObservation::Failed {
@@ -695,20 +692,6 @@ async fn read_count_via_fresh_connection_target(
     }
 }
 
-fn resolve_observation_routing_target(
-    member: &PostgresRoutingTarget,
-    observer: Option<&PgtmObserver>,
-) -> Result<PostgresRoutingTarget, String> {
-    observer.map_or_else(
-        || Ok(member.clone()),
-        |observer| {
-            observer
-                .postgres_routing_target(member.member)
-                .map_err(|err| err.to_string())
-        },
-    )
-}
-
 async fn wait_for_convergence(
     members: &[PostgresRoutingTarget],
     observer: Option<&PgtmObserver>,
@@ -744,11 +727,21 @@ async fn convergence_expectation(
     let last_write_error = write_gate.last_error();
     let accepted_count = write_gate.accepted_count();
     let expected_count = if last_write_error_is_ambiguous_timeout(last_write_error.as_deref()) {
-        let authoritative_count = read_count_via_target(
-            &authoritative_reconciliation_target(members, observer)?,
-            query_timeout,
-        )
-        .await?;
+        let routing_target = match observer {
+            Some(observer) => authoritative_primary_routing_target(observer)
+                .map_err(WriteConvergenceInvariantError::Failed)?
+                .or_else(|| members.first().cloned()),
+            None => members.first().cloned(),
+        }
+        .ok_or_else(|| {
+            WriteConvergenceInvariantError::Failed(
+                "write convergence invariant has no selected members to reconcile".to_string(),
+            )
+        })?;
+        let authoritative_count =
+            read_count_via_fresh_connection_target(&routing_target, query_timeout)
+                .await
+                .map_err(|(_, err)| WriteConvergenceInvariantError::Failed(err))?;
         Some(accepted_count.map_or(authoritative_count, |count| count.max(authoritative_count)))
     } else {
         accepted_count
@@ -758,33 +751,6 @@ async fn convergence_expectation(
 
 fn last_write_error_is_ambiguous_timeout(last_write_error: Option<&str>) -> bool {
     last_write_error.is_some_and(|error| error.contains("increment fixture row timed out after"))
-}
-
-fn authoritative_reconciliation_target(
-    members: &[PostgresRoutingTarget],
-    observer: Option<&PgtmObserver>,
-) -> Result<PostgresRoutingTarget, WriteConvergenceInvariantError> {
-    if let Some(observer) = observer {
-        if let Some(routing_target) = authoritative_primary_routing_target(observer)
-            .map_err(WriteConvergenceInvariantError::Failed)?
-        {
-            return Ok(routing_target);
-        }
-    }
-    members.first().cloned().ok_or_else(|| {
-        WriteConvergenceInvariantError::Failed(
-            "write convergence invariant has no selected members to reconcile".to_string(),
-        )
-    })
-}
-
-async fn read_count_via_target(
-    routing_target: &PostgresRoutingTarget,
-    query_timeout: Duration,
-) -> Result<u64, WriteConvergenceInvariantError> {
-    read_count_via_fresh_connection_target(routing_target, query_timeout)
-        .await
-        .map_err(|(_, err)| WriteConvergenceInvariantError::Failed(err))
 }
 
 async fn read_count(

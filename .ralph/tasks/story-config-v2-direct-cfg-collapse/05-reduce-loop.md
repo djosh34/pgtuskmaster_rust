@@ -30,21 +30,21 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/20-collapse-fresh-read-count-connection-lifecycle.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/24-collapse-write-convergence-count-read-wrapper-stack.md`
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
 - [x] Find a potential plan if it exists, otherwise find new ones
 - [x] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
-- [ ] Do improvement
-- [ ] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
-- [ ] test&validate new code
-- [ ] task_switch + commit everything (including .ralph etc) + push
+- [x] Do improvement
+- [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
+- [x] test&validate new code
+- [x] task_switch + commit everything (including .ralph etc) + push
 - [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
-- [ ] `make check`
-- [ ] `make lint`
-- [ ] `make test`
-- [ ] `make test-long`
+- [x] `make check`
+- [x] `make lint`
+- [x] `make test`
+- [x] `make test-long`
 </acceptance_criteria>
