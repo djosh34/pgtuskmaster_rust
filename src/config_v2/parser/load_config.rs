@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -43,7 +44,7 @@ fn load_runtime_config_contents_at(
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let document: raw::RuntimeDocument =
         toml::from_str(contents).map_err(|source| parse_error(path, source))?;
-    map_runtime_document(document)
+    map_runtime_document(document, path)
 }
 
 fn load_operator_config_contents_at(
@@ -53,22 +54,23 @@ fn load_operator_config_contents_at(
     let document: toml::Value =
         toml::from_str(contents).map_err(|source| parse_error(path, source))?;
     if looks_like_runtime_operator_source(&document) {
-        return document
+        let runtime_document = document
             .try_into::<raw::RuntimeDocument>()
-            .map_err(|source| parse_error(path, source))?
+            .map_err(|source| parse_error(path, source))?;
+        return runtime_document
             .pgtm
             .ok_or_else(|| {
                 validation_error("pgtm", "missing operator config block in runtime document")
-            })?
-            .into_config();
+            })
+            .and_then(|pgtm| parse_operator_config_value_at(pgtm, path, true));
     }
-    document
-        .try_into::<raw::OperatorConfigInput>()
-        .map_err(|source| parse_error(path, source))?
-        .into_config()
+    parse_operator_config_value_at(document, path, true)
 }
 
-fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+fn map_runtime_document(
+    document: raw::RuntimeDocument,
+    path: &Path,
+) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     validate_non_empty("cluster.name", document.cluster.name.as_str())?;
     validate_non_empty("cluster.scope", document.cluster.scope.as_str())?;
     validate_non_empty("cluster.member_id", document.cluster.member_id.as_str())?;
@@ -291,7 +293,7 @@ fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV
     };
     let operator_advertise = document
         .pgtm
-        .map(raw::OperatorConfigInput::into_config)
+        .map(|pgtm| parse_operator_config_value_at(pgtm, path, false))
         .transpose()?
         .and_then(|config| config.advertised_url);
 
@@ -691,61 +693,95 @@ fn looks_like_runtime_operator_source(document: &toml::Value) -> bool {
     })
 }
 
-impl raw::OperatorConfigInput {
-    fn into_config(self) -> Result<OperatorConfigV2, ConfigErrorV2> {
-        let raw::OperatorConfigInput { api, postgres } = self;
-        let raw::OperatorApiInput {
-            base_url,
+fn parse_operator_config_value_at(
+    value: toml::Value,
+    path: &Path,
+    resolve_auth_tokens: bool,
+) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorConfigDocument {
+        #[serde(default)]
+        api: OperatorApiDocument,
+        #[serde(default)]
+        postgres: OperatorPostgresDocument,
+    }
+
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorApiDocument {
+        base_url: Option<String>,
+        advertised_url: Option<String>,
+        expected_transport: Option<PgtmApiTransportExpectation>,
+        resolve_to: Option<SocketAddr>,
+        #[serde(default)]
+        auth: raw::TokenAuthConfig,
+        #[serde(default)]
+        tls: raw::OperatorClientTlsInput,
+    }
+
+    #[derive(Debug, Default, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorPostgresDocument {
+        #[serde(default)]
+        tls: raw::OperatorClientTlsInput,
+    }
+
+    let document: OperatorConfigDocument = value
+        .try_into()
+        .map_err(|source| parse_error(path, source))?;
+    let OperatorConfigDocument { api, postgres } = document;
+    let OperatorApiDocument {
+        base_url,
+        advertised_url,
+        expected_transport,
+        resolve_to,
+        auth,
+        tls: api_tls,
+    } = api;
+    let (read_token_source, admin_token_source) = take_token_sources(auth.clone());
+    let (read_token, admin_token) = match (resolve_auth_tokens, token_auth_mode(&auth)) {
+        (_, TokenAuthMode::Disabled) | (false, TokenAuthMode::RoleTokens) => (None, None),
+        (true, TokenAuthMode::RoleTokens) => (
+            resolve_secret_optional("pgtm.api.auth.read_token", read_token_source)?,
+            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token_source)?,
+        ),
+    };
+    let api_tls = resolve_operator_client_tls(
+        api_tls,
+        "pgtm.api.tls.ca_cert",
+        "pgtm.api.tls.identity.cert",
+        "pgtm.api.tls.identity.key",
+    )?;
+    let postgres_tls = resolve_operator_client_tls(
+        postgres.tls,
+        "pgtm.postgres.tls.ca_cert",
+        "pgtm.postgres.tls.identity.cert",
+        "pgtm.postgres.tls.identity.key",
+    )?;
+
+    Ok(OperatorConfigV2 {
+        base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?,
+        advertised_url: map_operator_api_route(
+            "pgtm.api.advertised_url",
             advertised_url,
             expected_transport,
-            resolve_to,
-            auth,
-            tls: api_tls,
-        } = api;
-        let (read_token_source, admin_token_source) = take_token_sources(auth.clone());
-        let (read_token, admin_token) = match token_auth_mode(&auth) {
-            TokenAuthMode::Disabled => (None, None),
-            TokenAuthMode::RoleTokens => (
-                resolve_secret_optional("pgtm.api.auth.read_token", read_token_source)?,
-                resolve_secret_optional("pgtm.api.auth.admin_token", admin_token_source)?,
-            ),
-        };
-        let api_tls = resolve_operator_client_tls(
-            api_tls,
-            "pgtm.api.tls.ca_cert",
-            "pgtm.api.tls.identity.cert",
-            "pgtm.api.tls.identity.key",
-        )?;
-        let postgres_tls = resolve_operator_client_tls(
-            postgres.tls,
-            "pgtm.postgres.tls.ca_cert",
-            "pgtm.postgres.tls.identity.cert",
-            "pgtm.postgres.tls.identity.key",
-        )?;
-
-        Ok(OperatorConfigV2 {
-            base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?,
-            advertised_url: map_operator_api_route(
-                "pgtm.api.advertised_url",
-                advertised_url,
-                expected_transport,
+        )?,
+        expected_transport,
+        resolve_to,
+        client_tls: OperatorClientTlsConfig {
+            ca_cert: merge_optional_path(
+                "pgtm.api.tls.ca_cert",
+                api_tls.ca_cert,
+                "pgtm.postgres.tls.ca_cert",
+                postgres_tls.ca_cert,
+                "pgtm.client_tls.ca_cert",
             )?,
-            expected_transport,
-            resolve_to,
-            client_tls: OperatorClientTlsConfig {
-                ca_cert: merge_optional_path(
-                    "pgtm.api.tls.ca_cert",
-                    api_tls.ca_cert,
-                    "pgtm.postgres.tls.ca_cert",
-                    postgres_tls.ca_cert,
-                    "pgtm.client_tls.ca_cert",
-                )?,
-                identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
-            },
-            read_token,
-            admin_token,
-        })
-    }
+            identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
+        },
+        read_token,
+        admin_token,
+    })
 }
 
 fn resolve_operator_client_tls(
@@ -1099,7 +1135,7 @@ mod tests {
         dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgSslMode,
     };
-    use std::{net::SocketAddr, path::Path};
+    use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path};
 
     #[test]
     fn load_runtime_config_preserves_shared_source_client_tls() -> Result<(), String> {
@@ -1199,6 +1235,57 @@ expected_transport = "https""#
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_does_not_require_readable_operator_auth_tokens() -> Result<(), String> {
+        let root = unique_test_dir("load-config", "runtime-config-v2-operator-auth")?;
+        let unreadable_token = root.join("operator-admin-token");
+        fs::write(unreadable_token.as_path(), "secret\n").map_err(|err| err.to_string())?;
+        fs::set_permissions(
+            unreadable_token.as_path(),
+            fs::Permissions::from_mode(0o000),
+        )
+        .map_err(|err| err.to_string())?;
+        let unreadable_token_toml =
+            toml::Value::String(unreadable_token.display().to_string()).to_string();
+
+        let result = load_runtime_config_contents(
+            render_runtime_test_config_toml(
+                "cluster-a",
+                "scope-a",
+                "node-a",
+                (
+                    root.join("data").as_path(),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [format!(
+                    r#"[pgtm.api]
+base_url = "https://127.0.0.1:8443"
+
+[pgtm.api.auth]
+type = "role_tokens"
+
+[pgtm.api.auth.tokens.admin_token]
+type = "file"
+path = {}"#,
+                    unreadable_token_toml,
+                )],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        );
+
+        fs::set_permissions(
+            unreadable_token.as_path(),
+            fs::Permissions::from_mode(0o600),
+        )
+        .map_err(|err| err.to_string())?;
+        let _ = fs::remove_dir_all(root);
+
+        result.map(|_| ()).map_err(|err| err.to_string())
     }
 
     #[test]

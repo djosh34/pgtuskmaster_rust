@@ -7,9 +7,12 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config_v2::types::{FileSinkMode, LogLevel, PgtmApiTransportExpectation},
+    config_v2::types::{FileSinkMode, LogLevel},
     pginfo::conninfo::PgSslMode,
 };
+
+#[cfg(any(test, feature = "internal-test-support"))]
+use crate::config_v2::types::PgtmApiTransportExpectation;
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
@@ -165,7 +168,7 @@ pub(super) struct RuntimeDocument {
     #[serde(default)]
     pub api: ApiConfig,
     #[serde(default)]
-    pub pgtm: Option<OperatorConfigInput>,
+    pub pgtm: Option<toml::Value>,
     #[serde(default)]
     pub debug: DebugConfig,
 }
@@ -567,35 +570,6 @@ pub(super) struct RoleTokens {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorConfigInput {
-    #[serde(default)]
-    pub api: OperatorApiInput,
-    #[serde(default)]
-    pub postgres: OperatorPostgresInput,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OperatorApiInput {
-    pub base_url: Option<String>,
-    pub advertised_url: Option<String>,
-    pub expected_transport: Option<PgtmApiTransportExpectation>,
-    pub resolve_to: Option<SocketAddr>,
-    #[serde(default)]
-    pub auth: TokenAuthConfig,
-    #[serde(default)]
-    pub tls: OperatorClientTlsInput,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OperatorPostgresInput {
-    #[serde(default)]
-    pub tls: OperatorClientTlsInput,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
 pub(super) struct OperatorClientTlsInput {
     pub ca_cert: Option<PathSource>,
     pub identity: Option<TlsClientIdentityConfig>,
@@ -879,11 +853,20 @@ pub(crate) fn build_ha_member_runtime_document_value(
         cert_chain: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.crt")),
         private_key: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.key")),
     };
-    let mut pgtm = base_operator_test_config(
+    let api_auth = token_auth_from_file_paths(
+        "/run/secrets/api-read-token",
+        "/run/secrets/api-admin-token",
+    );
+    let api_tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
+    let postgres_tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
+    let pgtm = build_operator_test_document_value(
         Some(format!("https://{member_name}:8443").as_str()),
         None,
         None,
         None,
+        Some(api_auth.clone()),
+        Some(api_tls.clone()),
+        Some(postgres_tls.clone()),
     )?;
     document.postgres.network.listen_host = member_name.to_string();
     document.postgres.rewind = PostgresRewindConfig {
@@ -984,12 +967,6 @@ pub(crate) fn build_ha_member_runtime_document_value(
             "/run/secrets/api-admin-token",
         ),
     };
-    pgtm.api.auth = token_auth_from_file_paths(
-        "/run/secrets/api-read-token",
-        "/run/secrets/api-admin-token",
-    );
-    pgtm.api.tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
-    pgtm.postgres.tls = operator_tls_config("/etc/pgtuskmaster/tls/ca.crt", None);
     document.pgtm = Some(pgtm);
     document.debug = DebugConfig { enabled: true };
     toml_value("HA member runtime document", document)
@@ -1020,25 +997,62 @@ fn operator_tls_config(
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn base_operator_test_config(
+fn build_operator_test_document_value(
     base_url: Option<&str>,
     advertised_url: Option<&str>,
     expected_transport: Option<&str>,
     resolve_to: Option<SocketAddr>,
-) -> Result<OperatorConfigInput, String> {
-    Ok(OperatorConfigInput {
-        api: OperatorApiInput {
-            base_url: base_url.map(str::to_string),
-            advertised_url: advertised_url.map(str::to_string),
-            expected_transport: expected_transport
-                .map(operator_transport_expectation)
-                .transpose()?,
-            resolve_to,
-            auth: TokenAuthConfig::default(),
-            tls: OperatorClientTlsInput::default(),
+    auth: Option<TokenAuthConfig>,
+    api_tls: Option<OperatorClientTlsInput>,
+    postgres_tls: Option<OperatorClientTlsInput>,
+) -> Result<toml::Value, String> {
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorDocument {
+        api: OperatorApiDocument,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        postgres: Option<OperatorPostgresDocument>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorApiDocument {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        base_url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        advertised_url: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        expected_transport: Option<PgtmApiTransportExpectation>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolve_to: Option<SocketAddr>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        auth: Option<TokenAuthConfig>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tls: Option<OperatorClientTlsInput>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct OperatorPostgresDocument {
+        tls: OperatorClientTlsInput,
+    }
+
+    toml_value(
+        "operator test document",
+        OperatorDocument {
+            api: OperatorApiDocument {
+                base_url: base_url.map(str::to_string),
+                advertised_url: advertised_url.map(str::to_string),
+                expected_transport: expected_transport
+                    .map(operator_transport_expectation)
+                    .transpose()?,
+                resolve_to,
+                auth,
+                tls: api_tls,
+            },
+            postgres: postgres_tls.map(|tls| OperatorPostgresDocument { tls }),
         },
-        postgres: OperatorPostgresInput::default(),
-    })
+    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -1053,30 +1067,19 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let mut value = toml_value(
-        "operator test document",
-        base_operator_test_config(base_url, advertised_url, expected_transport, resolve_to)?,
-    )?;
-    let root = value
-        .as_table_mut()
-        .ok_or_else(|| "operator test document should serialize as a TOML table".to_string())?;
-    if let Some(api) = root.get_mut("api").and_then(toml::Value::as_table_mut) {
-        let _ = api.remove("auth");
-        let _ = api.remove("tls");
-    }
-    let drop_postgres = root
-        .get_mut("postgres")
-        .and_then(toml::Value::as_table_mut)
-        .map(|postgres| {
-            let _ = postgres.remove("tls");
-            postgres.is_empty()
-        })
-        .unwrap_or(false);
-    if drop_postgres {
-        let _ = root.remove("postgres");
-    }
     Ok(join_rendered_sections(
-        render_toml_value("operator test config", &value)?,
+        render_toml_value(
+            "operator test config",
+            &build_operator_test_document_value(
+                base_url,
+                advertised_url,
+                expected_transport,
+                resolve_to,
+                None,
+                None,
+                None,
+            )?,
+        )?,
         extra_sections,
     ))
 }
@@ -1095,26 +1098,29 @@ pub fn render_host_observer_operator_config_toml(
         cert: path_source(observer_cert_path.to_path_buf()),
         key: path_source(observer_key_path.to_path_buf()),
     };
-    let mut document = base_operator_test_config(
+    let document = build_operator_test_document_value(
         Some(format!("https://{member_name}:{}", resolve_to.port()).as_str()),
         None,
         Some("https"),
         Some(resolve_to),
+        Some(TokenAuthConfig {
+            kind: Some("role_tokens".to_string()),
+            read_token: Some(SecretSource::PathConfig {
+                path: read_token_path.to_path_buf(),
+            }),
+            admin_token: Some(SecretSource::PathConfig {
+                path: admin_token_path.to_path_buf(),
+            }),
+            tokens: None,
+        }),
+        Some(operator_tls_config(
+            ca_cert_path.to_path_buf(),
+            Some(identity.clone()),
+        )),
+        Some(operator_tls_config(
+            ca_cert_path.to_path_buf(),
+            Some(identity),
+        )),
     )?;
-    document.api.auth = TokenAuthConfig {
-        kind: Some("role_tokens".to_string()),
-        read_token: Some(SecretSource::PathConfig {
-            path: read_token_path.to_path_buf(),
-        }),
-        admin_token: Some(SecretSource::PathConfig {
-            path: admin_token_path.to_path_buf(),
-        }),
-        tokens: None,
-    };
-    document.api.tls = operator_tls_config(ca_cert_path.to_path_buf(), Some(identity.clone()));
-    document.postgres.tls = operator_tls_config(ca_cert_path.to_path_buf(), Some(identity));
-    render_toml_value(
-        "host observer operator config",
-        &toml_value("host observer operator document", document)?,
-    )
+    render_toml_value("host observer operator config", &document)
 }
