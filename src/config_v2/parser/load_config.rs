@@ -1,5 +1,4 @@
 use std::{
-    net::SocketAddr,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -698,40 +697,18 @@ fn parse_operator_config_value_at(
     path: &Path,
     resolve_auth_tokens: bool,
 ) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    #[derive(Debug, Default, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorConfigDocument {
-        #[serde(default)]
-        api: OperatorApiDocument,
-        #[serde(default)]
-        postgres: OperatorPostgresDocument,
-    }
-
-    #[derive(Debug, Default, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorApiDocument {
-        base_url: Option<String>,
-        advertised_url: Option<String>,
-        expected_transport: Option<PgtmApiTransportExpectation>,
-        resolve_to: Option<SocketAddr>,
-        #[serde(default)]
-        auth: raw::TokenAuthConfig,
-        #[serde(default)]
-        tls: raw::OperatorClientTlsInput,
-    }
-
-    #[derive(Debug, Default, serde::Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorPostgresDocument {
-        #[serde(default)]
-        tls: raw::OperatorClientTlsInput,
-    }
-
-    let document: OperatorConfigDocument = value
+    let document: raw::OperatorDocument = value
         .try_into()
         .map_err(|source| parse_error(path, source))?;
-    let OperatorConfigDocument { api, postgres } = document;
-    let OperatorApiDocument {
+    map_operator_document(document, resolve_auth_tokens)
+}
+
+fn map_operator_document(
+    document: raw::OperatorDocument,
+    resolve_auth_tokens: bool,
+) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    let raw::OperatorDocument { api, postgres } = document;
+    let raw::OperatorApiConfig {
         base_url,
         advertised_url,
         expected_transport,
@@ -762,11 +739,15 @@ fn parse_operator_config_value_at(
 
     Ok(OperatorConfigV2 {
         base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?,
-        advertised_url: map_operator_api_route(
+        advertised_url: parse_operator_url(
             "pgtm.api.advertised_url",
             advertised_url,
             expected_transport,
-        )?,
+        )?
+        .map(|url| {
+            ApiRoute::from_url(url).map_err(|err| validation_error("pgtm.api.advertised_url", err))
+        })
+        .transpose()?,
         expected_transport,
         resolve_to,
         client_tls: OperatorClientTlsConfig {
@@ -844,16 +825,6 @@ fn validate_expected_transport(
             url.scheme()
         ),
     ))
-}
-
-pub(super) fn map_operator_api_route(
-    field: &'static str,
-    advertise: Option<String>,
-    expected_transport: Option<PgtmApiTransportExpectation>,
-) -> Result<Option<ApiRoute>, ConfigErrorV2> {
-    parse_operator_url(field, advertise, expected_transport)?
-        .map(|url| ApiRoute::from_url(url).map_err(|err| validation_error(field, err)))
-        .transpose()
 }
 
 fn merge_optional_path(

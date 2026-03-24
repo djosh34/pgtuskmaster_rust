@@ -7,12 +7,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config_v2::types::{FileSinkMode, LogLevel},
+    config_v2::types::{FileSinkMode, LogLevel, PgtmApiTransportExpectation},
     pginfo::conninfo::PgSslMode,
 };
-
-#[cfg(any(test, feature = "internal-test-support"))]
-use crate::config_v2::types::PgtmApiTransportExpectation;
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
@@ -575,6 +572,51 @@ pub(super) struct OperatorClientTlsInput {
     pub identity: Option<TlsClientIdentityConfig>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OperatorDocument {
+    #[serde(default)]
+    pub api: OperatorApiConfig,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "operator_postgres_config_is_empty")]
+    pub postgres: OperatorPostgresConfig,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OperatorApiConfig {
+    pub base_url: Option<String>,
+    pub advertised_url: Option<String>,
+    pub expected_transport: Option<PgtmApiTransportExpectation>,
+    pub resolve_to: Option<SocketAddr>,
+    #[serde(default, skip_serializing_if = "token_auth_config_is_disabled")]
+    pub auth: TokenAuthConfig,
+    #[serde(default, skip_serializing_if = "operator_client_tls_input_is_empty")]
+    pub tls: OperatorClientTlsInput,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct OperatorPostgresConfig {
+    #[serde(default, skip_serializing_if = "operator_client_tls_input_is_empty")]
+    pub tls: OperatorClientTlsInput,
+}
+
+fn token_auth_config_is_disabled(auth: &TokenAuthConfig) -> bool {
+    auth.kind.is_none()
+        && auth.read_token.is_none()
+        && auth.admin_token.is_none()
+        && auth.tokens.is_none()
+}
+
+fn operator_client_tls_input_is_empty(tls: &OperatorClientTlsInput) -> bool {
+    tls.ca_cert.is_none() && tls.identity.is_none()
+}
+
+fn operator_postgres_config_is_empty(postgres: &OperatorPostgresConfig) -> bool {
+    operator_client_tls_input_is_empty(&postgres.tls)
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DebugConfig {
@@ -1006,51 +1048,22 @@ fn build_operator_test_document_value(
     api_tls: Option<OperatorClientTlsInput>,
     postgres_tls: Option<OperatorClientTlsInput>,
 ) -> Result<toml::Value, String> {
-    #[derive(Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorDocument {
-        api: OperatorApiDocument,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        postgres: Option<OperatorPostgresDocument>,
-    }
-
-    #[derive(Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorApiDocument {
-        #[serde(skip_serializing_if = "Option::is_none")]
-        base_url: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        advertised_url: Option<String>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        expected_transport: Option<PgtmApiTransportExpectation>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        resolve_to: Option<SocketAddr>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        auth: Option<TokenAuthConfig>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        tls: Option<OperatorClientTlsInput>,
-    }
-
-    #[derive(Serialize)]
-    #[serde(deny_unknown_fields)]
-    struct OperatorPostgresDocument {
-        tls: OperatorClientTlsInput,
-    }
-
     toml_value(
         "operator test document",
         OperatorDocument {
-            api: OperatorApiDocument {
+            api: OperatorApiConfig {
                 base_url: base_url.map(str::to_string),
                 advertised_url: advertised_url.map(str::to_string),
                 expected_transport: expected_transport
                     .map(operator_transport_expectation)
                     .transpose()?,
                 resolve_to,
-                auth,
-                tls: api_tls,
+                auth: auth.unwrap_or_default(),
+                tls: api_tls.unwrap_or_default(),
             },
-            postgres: postgres_tls.map(|tls| OperatorPostgresDocument { tls }),
+            postgres: OperatorPostgresConfig {
+                tls: postgres_tls.unwrap_or_default(),
+            },
         },
     )
 }
