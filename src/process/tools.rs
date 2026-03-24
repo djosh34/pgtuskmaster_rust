@@ -361,14 +361,10 @@ fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{fs, path::PathBuf};
 
     use crate::{
-        dev_support::runtime_config::RuntimeConfigBuilder,
+        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
         pginfo::{conninfo::PgClientTls, state::PgConnInfo},
         postgres_managed::ManagedPostgresConfig,
         postgres_managed_conf::ManagedRecoverySignal,
@@ -386,20 +382,6 @@ mod tests {
 
     use super::ExternalToolLowerer;
 
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-process-tools-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
-
     fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
         RuntimeConfigBuilder::new()
             .with_postgres_data_dir(data_dir)
@@ -409,7 +391,7 @@ mod tests {
     #[test]
     fn lower_execution_request_for_basebackup_wipes_existing_data_dir_contents(
     ) -> Result<(), String> {
-        let root = unique_test_dir("wipe-basebackup")?;
+        let root = unique_test_dir("process-tools", "wipe-basebackup")?;
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
@@ -477,7 +459,7 @@ mod tests {
 
     #[test]
     fn build_command_for_start_postgres_uses_prepared_session_paths() -> Result<(), String> {
-        let root = unique_test_dir("start-command")?;
+        let root = unique_test_dir("process-tools", "start-command")?;
         let data_dir = root.join("data");
         let cfg = sample_runtime_config(data_dir.clone());
         let observed = ProcessObservedSnapshot {

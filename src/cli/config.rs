@@ -148,10 +148,7 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        time::{Duration, SystemTime, UNIX_EPOCH},
-    };
+    use std::{path::PathBuf, time::Duration};
 
     use axum::{routing::get, Json, Router};
     use axum_server::tls_rustls::RustlsConfig;
@@ -161,8 +158,12 @@ mod tests {
     use crate::cli::args::{Cli, Command};
     use crate::cli::client::CliApiClient;
     use crate::dcs::DcsSnapshot;
-    use crate::dev_support::tls::{
-        build_server_config_with_client_auth, generate_ca, generate_leaf_cert, TestSubjectAltName,
+    use crate::dev_support::{
+        test_fs::{unique_test_dir, write_text_file},
+        tls::{
+            build_server_config_with_client_auth, generate_ca, generate_leaf_cert,
+            TestSubjectAltName,
+        },
     };
     use crate::ha::state::HaState;
     use crate::pginfo::state::PgInfoState;
@@ -181,27 +182,6 @@ mod tests {
             watch: false,
             command: Some(Command::Status),
         }
-    }
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-cli-config-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
-
-    fn write_pem_file(dir: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
-        let path = dir.join(name);
-        std::fs::write(&path, contents)
-            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
-        Ok(path)
     }
 
     #[test]
@@ -243,15 +223,8 @@ mod tests {
 
     #[test]
     fn resolve_context_loads_tokens_and_tls_from_config() -> Result<(), String> {
-        let ca_path = std::env::temp_dir().join(format!(
-            "pgtm-api-ca-{}-{}.pem",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        std::fs::write(&ca_path, "ca-cert").map_err(|err| err.to_string())?;
+        let dir = unique_test_dir("cli-config", "api-tls")?;
+        let ca_path = write_text_file(dir.as_path(), "api-ca.pem", "ca-cert")?;
         let path = write_temp_config(format!(
             r##"
 [api]
@@ -309,33 +282,11 @@ ca_cert = {{ path = "{}" }}
 
     #[test]
     fn resolve_context_preserves_postgres_tls_paths() -> Result<(), String> {
-        let ca_path = std::env::temp_dir().join(format!(
-            "pgtm-postgres-ca-{}-{}.pem",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        let identity_cert_path = std::env::temp_dir().join(format!(
-            "pgtm-postgres-cert-{}-{}.pem",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        let identity_key_path = std::env::temp_dir().join(format!(
-            "pgtm-postgres-key-{}-{}.pem",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        std::fs::write(&ca_path, "ca-cert").map_err(|err| err.to_string())?;
-        std::fs::write(&identity_cert_path, "client-cert").map_err(|err| err.to_string())?;
-        std::fs::write(&identity_key_path, "client-key").map_err(|err| err.to_string())?;
+        let dir = unique_test_dir("cli-config", "postgres-tls")?;
+        let ca_path = write_text_file(dir.as_path(), "postgres-ca.pem", "ca-cert")?;
+        let identity_cert_path =
+            write_text_file(dir.as_path(), "postgres-cert.pem", "client-cert")?;
+        let identity_key_path = write_text_file(dir.as_path(), "postgres-key.pem", "client-key")?;
 
         let path = write_temp_config(format!(
             r#"
@@ -444,12 +395,12 @@ expected_transport = "https"
         )
         .map_err(|err| err.to_string())?;
 
-        let dir = unique_test_dir("https-resolve-to")?;
-        let ca_cert = write_pem_file(dir.as_path(), "ca.crt", server_ca.cert.cert_pem.as_str())?;
+        let dir = unique_test_dir("cli-config", "https-resolve-to")?;
+        let ca_cert = write_text_file(dir.as_path(), "ca.crt", server_ca.cert.cert_pem.as_str())?;
         let client_cert_path =
-            write_pem_file(dir.as_path(), "client.crt", client_cert.cert_pem.as_str())?;
+            write_text_file(dir.as_path(), "client.crt", client_cert.cert_pem.as_str())?;
         let client_key_path =
-            write_pem_file(dir.as_path(), "client.key", client_cert.key_pem.as_str())?;
+            write_text_file(dir.as_path(), "client.key", client_cert.key_pem.as_str())?;
 
         let server_config =
             build_server_config_with_client_auth(&server_cert, &server_ca.cert, &client_ca.cert)

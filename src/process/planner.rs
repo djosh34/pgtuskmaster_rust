@@ -178,15 +178,11 @@ fn duration_millis_u64(duration: std::time::Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{collections::BTreeMap, path::PathBuf};
 
     use crate::{
         dcs::{DcsMemberState, DcsSnapshot},
-        dev_support::runtime_config::RuntimeConfigBuilder,
+        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
@@ -203,20 +199,6 @@ mod tests {
     };
 
     use super::{ClusterProcessPlan, DesiredManagedPostgresSession, ProcessIntentPlanner};
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-process-planner-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
 
     fn sample_identity() -> NodeIdentity {
         NodeIdentity {
@@ -269,7 +251,7 @@ mod tests {
 
     #[test]
     fn planner_maps_process_intents_to_expected_plan_variants() -> Result<(), String> {
-        let root = unique_test_dir("intent-variants")?;
+        let root = unique_test_dir("process-planner", "intent-variants")?;
         let cfg = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
@@ -341,7 +323,7 @@ mod tests {
 
     #[test]
     fn planner_rejects_primary_start_with_existing_managed_replica_state() -> Result<(), String> {
-        let root = unique_test_dir("primary-reject")?;
+        let root = unique_test_dir("process-planner", "primary-reject")?;
         let cfg = sample_runtime(root.join("data"));
         let snapshot = observed_snapshot(DcsSnapshot::starting(), ManagedRecoverySignal::Standby);
         let planner = ProcessIntentPlanner;
@@ -364,7 +346,7 @@ mod tests {
 
     #[test]
     fn planner_uses_distinct_source_roles_for_basebackup_and_rewind() -> Result<(), String> {
-        let root = unique_test_dir("source-roles")?;
+        let root = unique_test_dir("process-planner", "source-roles")?;
         let cfg = sample_runtime(root.join("data"));
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(

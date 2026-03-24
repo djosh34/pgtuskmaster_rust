@@ -390,7 +390,7 @@ mod tests {
         fs,
         path::{Path, PathBuf},
         process::{Child, Command},
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::Duration,
     };
 
     use axum::{
@@ -407,7 +407,10 @@ mod tests {
             RuntimeConfigV2,
         },
         dcs::DcsHandle,
-        dev_support::{runtime_config::RuntimeConfigBuilder, tls::build_adversarial_tls_fixture},
+        dev_support::{
+            runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir,
+            tls::build_adversarial_tls_fixture,
+        },
         logging::LogSender,
         process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget},
         state::new_state_channel,
@@ -450,20 +453,6 @@ mod tests {
             .header("authorization", "Bearer admin-secret")
             .body(Body::empty())
             .map_err(|err| err.to_string())
-    }
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-api-worker-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
     }
 
     fn write_test_tls_files(
@@ -742,7 +731,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_succeeds_for_https_transport_and_signals_postgres(
     ) -> Result<(), String> {
-        let root = unique_test_dir("reload-success")?;
+        let root = unique_test_dir("api-worker", "reload-success")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
@@ -793,7 +782,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_returns_error_when_postmaster_pid_is_missing() -> Result<(), String>
     {
-        let root = unique_test_dir("reload-missing-postmaster")?;
+        let root = unique_test_dir("api-worker", "reload-missing-postmaster")?;
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
@@ -826,7 +815,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_returns_error_when_postmaster_pid_is_stale() -> Result<(), String>
     {
-        let root = unique_test_dir("reload-stale-postmaster")?;
+        let root = unique_test_dir("api-worker", "reload-stale-postmaster")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
@@ -864,7 +853,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_returns_error_when_postmaster_data_dir_mismatches(
     ) -> Result<(), String> {
-        let root = unique_test_dir("reload-mismatch")?;
+        let root = unique_test_dir("api-worker", "reload-mismatch")?;
         let target_data_dir = root.join("target-data");
         let real_data_dir = root.join("real-data");
         let signal_log = root.join("signal.log");
@@ -914,7 +903,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_does_not_signal_postgres_when_api_reload_fails(
     ) -> Result<(), String> {
-        let root = unique_test_dir("reload-ordering")?;
+        let root = unique_test_dir("api-worker", "reload-ordering")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
@@ -954,7 +943,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn reload_certificates_returns_error_when_https_runtime_sees_http_config(
     ) -> Result<(), String> {
-        let root = unique_test_dir("reload-transport-mismatch")?;
+        let root = unique_test_dir("api-worker", "reload-transport-mismatch")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)

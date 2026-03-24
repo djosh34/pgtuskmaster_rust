@@ -259,11 +259,6 @@ fn normalize_token(raw: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        path::{Path, PathBuf},
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
     use axum::{routing::get, Json, Router};
     use axum_server::tls_rustls::RustlsConfig;
     use reqwest::{Method, StatusCode, Url};
@@ -273,45 +268,27 @@ mod tests {
     use crate::{
         cli::client::CliAuthConfig,
         config_v2::types::{OperatorClientTlsConfig, TlsConfig},
-        dev_support::tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
+        dev_support::{
+            test_fs::{unique_test_dir, write_text_file},
+            tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
+        },
     };
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-cli-client-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
-
-    fn write_pem_file(dir: &Path, name: &str, contents: &str) -> Result<PathBuf, String> {
-        let path = dir.join(name);
-        std::fs::write(&path, contents)
-            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
-        Ok(path)
-    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn cli_api_client_loads_tls_material_from_paths() -> Result<(), String> {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        let dir = unique_test_dir("tls-paths")?;
-        let ca_cert = write_pem_file(
+        let dir = unique_test_dir("cli-client", "tls-paths")?;
+        let ca_cert = write_text_file(
             dir.as_path(),
             "ca.crt",
             fixture.valid_server_ca.cert.cert_pem.as_str(),
         )?;
-        let client_cert = write_pem_file(
+        let client_cert = write_text_file(
             dir.as_path(),
             "client.crt",
             fixture.trusted_client.cert_pem.as_str(),
         )?;
-        let client_key = write_pem_file(
+        let client_key = write_text_file(
             dir.as_path(),
             "client.key",
             fixture.trusted_client.key_pem.as_str(),

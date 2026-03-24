@@ -95,7 +95,6 @@ fn build_server_config_from_paths(
         })
 }
 
-
 fn build_client_verifier_from_paths(
     client_ca: Option<&std::path::Path>,
     client_cert_required: bool,
@@ -274,28 +273,13 @@ mod tests {
 
     use crate::{
         config_v2::types::{ApiTransport as ApiTransportV2, TlsConfig},
-        dev_support::tls::build_adversarial_tls_fixture,
+        dev_support::{
+            test_fs::{unique_test_dir, write_text_file},
+            tls::build_adversarial_tls_fixture,
+        },
     };
 
     use super::{build_api_server_config_v2, build_client_verifier_from_paths, TlsConfigError};
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-tls-{label}-{}-{}",
-            std::process::id(),
-            crate::logging::system_now_unix_millis()
-        ));
-        std::fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
-
-    fn write_pem_file(dir: &std::path::Path, name: &str, contents: &str) -> Result<PathBuf, String> {
-        let path = dir.join(name);
-        std::fs::write(&path, contents)
-            .map_err(|err| format!("write {} failed: {err}", path.display()))?;
-        Ok(path)
-    }
 
     fn sample_validation_time() -> UnixTime {
         UnixTime::since_unix_epoch(Duration::from_secs(1_735_689_600))
@@ -305,14 +289,22 @@ mod tests {
     fn build_api_server_config_accepts_path_identity_and_optional_client_auth(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let dir = unique_test_dir("server-config-ok")?;
+        let dir = unique_test_dir("tls", "server-config-ok")?;
         let cfg = ApiTransportV2::Https {
             tls: TlsConfig {
-                cert: write_pem_file(dir.as_path(), "server.crt", fixture.valid_server.cert_pem.as_str())?,
-                key: write_pem_file(dir.as_path(), "server.key", fixture.valid_server.key_pem.as_str())?,
+                cert: write_text_file(
+                    dir.as_path(),
+                    "server.crt",
+                    fixture.valid_server.cert_pem.as_str(),
+                )?,
+                key: write_text_file(
+                    dir.as_path(),
+                    "server.key",
+                    fixture.valid_server.key_pem.as_str(),
+                )?,
                 ca_cert: None,
             },
-            client_ca: Some(write_pem_file(
+            client_ca: Some(write_text_file(
                 dir.as_path(),
                 "client-ca.crt",
                 fixture.trusted_client_ca.cert.cert_pem.as_str(),
@@ -322,7 +314,10 @@ mod tests {
         };
 
         let built = build_api_server_config_v2(&cfg)?;
-        assert_eq!(built.alpn_protocols, vec![b"h2".to_vec(), b"http/1.1".to_vec()]);
+        assert_eq!(
+            built.alpn_protocols,
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        );
         Ok(())
     }
 
@@ -345,11 +340,11 @@ mod tests {
 
     #[test]
     fn build_api_server_config_reports_pem_error_for_invalid_cert_chain() -> Result<(), String> {
-        let dir = unique_test_dir("invalid-cert")?;
+        let dir = unique_test_dir("tls", "invalid-cert")?;
         let cfg = ApiTransportV2::Https {
             tls: TlsConfig {
-                cert: write_pem_file(dir.as_path(), "server.crt", "not-a-cert")?,
-                key: write_pem_file(dir.as_path(), "server.key", "not-a-key")?,
+                cert: write_text_file(dir.as_path(), "server.crt", "not-a-cert")?,
+                key: write_text_file(dir.as_path(), "server.key", "not-a-key")?,
                 ca_cert: None,
             },
             client_ca: None,
@@ -366,11 +361,15 @@ mod tests {
     fn build_api_server_config_reports_pem_error_for_invalid_private_key(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let dir = unique_test_dir("invalid-key")?;
+        let dir = unique_test_dir("tls", "invalid-key")?;
         let cfg = ApiTransportV2::Https {
             tls: TlsConfig {
-                cert: write_pem_file(dir.as_path(), "server.crt", fixture.valid_server.cert_pem.as_str())?,
-                key: write_pem_file(dir.as_path(), "server.key", "not-a-private-key")?,
+                cert: write_text_file(
+                    dir.as_path(),
+                    "server.crt",
+                    fixture.valid_server.cert_pem.as_str(),
+                )?,
+                key: write_text_file(dir.as_path(), "server.key", "not-a-private-key")?,
                 ca_cert: None,
             },
             client_ca: None,
@@ -387,8 +386,8 @@ mod tests {
     fn api_client_verifier_rejects_client_signed_by_unconfigured_ca(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let dir = unique_test_dir("verifier-untrusted")?;
-        let ca_path = write_pem_file(
+        let dir = unique_test_dir("tls", "verifier-untrusted")?;
+        let ca_path = write_text_file(
             dir.as_path(),
             "client-ca.crt",
             fixture.trusted_client_ca.cert.cert_pem.as_str(),
@@ -413,8 +412,8 @@ mod tests {
     fn api_client_verifier_rejects_client_common_name_outside_allow_list(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let fixture = build_adversarial_tls_fixture()?;
-        let dir = unique_test_dir("verifier-cn")?;
-        let ca_path = write_pem_file(
+        let dir = unique_test_dir("tls", "verifier-cn")?;
+        let ca_path = write_text_file(
             dir.as_path(),
             "client-ca.crt",
             fixture.trusted_client_ca.cert.cert_pem.as_str(),

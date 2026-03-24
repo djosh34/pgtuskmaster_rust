@@ -1683,12 +1683,8 @@ mod tests {
             let test_log = start_test_log();
 
             let (tx, rx) = mpsc::unbounded_channel();
-            let (mut process_ctx, _process_state_subscriber) = build_process_worker_ctx(
-                &cfg,
-                test_log.sender(),
-                DcsSnapshot::starting(),
-                rx,
-            )?;
+            let (mut process_ctx, _process_state_subscriber) =
+                build_process_worker_ctx(&cfg, test_log.sender(), DcsSnapshot::starting(), rx)?;
 
             let ingest_ctx = PostgresIngestWorkerCtx {
                 cfg: &cfg,

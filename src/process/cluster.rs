@@ -126,17 +126,12 @@ impl<'a> ProcessCluster<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        path::PathBuf,
-        time::{SystemTime, UNIX_EPOCH},
-    };
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use crate::{
         config_v2::load_runtime_config,
         dcs::{DcsMemberState, DcsSnapshot},
-        dev_support::runtime_config::RuntimeConfigBuilder,
+        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
         pginfo::conninfo::PgConnInfo,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
@@ -151,20 +146,6 @@ mod tests {
     };
 
     use super::ProcessCluster;
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-process-cluster-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
 
     fn sample_identity() -> NodeIdentity {
         NodeIdentity {
@@ -271,7 +252,7 @@ psql = "/bin/true"
 
     #[test]
     fn prepare_replica_start_runs_through_planner_session_and_tool_layers() -> Result<(), String> {
-        let root = unique_test_dir("replica-start")?;
+        let root = unique_test_dir("process-cluster", "replica-start")?;
         let data_dir = root.join("data");
         let cfg = sample_runtime_config(data_dir.clone());
         let leader = MemberId("node-b".to_string());
@@ -319,7 +300,7 @@ psql = "/bin/true"
 
     #[test]
     fn prepare_basebackup_from_config_v2_preserves_sslrootcert_in_conninfo() -> Result<(), String> {
-        let root = unique_test_dir("basebackup-source-ca")?;
+        let root = unique_test_dir("process-cluster", "basebackup-source-ca")?;
         let config_path = write_runtime_config_v2_with_source_ca(root.as_path())?;
         let cfg = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
         let leader = MemberId("node-b".to_string());

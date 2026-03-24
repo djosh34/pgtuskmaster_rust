@@ -1,4 +1,4 @@
-## Task: Reduce Code Loop <status>not_started</status> <passes>false</passes>
+## Task: Reduce Code Loop <status>done</status> <passes>true</passes>
 
 Your only goal is to reduce code and clean up the codebase.
 

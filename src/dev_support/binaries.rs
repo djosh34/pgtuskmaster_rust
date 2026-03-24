@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::dev_support::provenance;
-use crate::dev_support::HarnessError;
 #[cfg(test)]
 use crate::config_v2::types::BinariesConfig;
+use crate::dev_support::provenance;
+use crate::dev_support::HarnessError;
 
 pub fn validate_executable_file(path: &Path, label: &str) -> Result<(), HarnessError> {
     let metadata = fs::metadata(path).map_err(|err| {
@@ -57,7 +57,8 @@ pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessErr
 }
 
 #[cfg(test)]
-pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinariesConfig, HarnessError> {
+pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinariesConfig, HarnessError>
+{
     Ok(BinariesConfig {
         postgres: require_pg16_bin_for_real_tests("postgres")?,
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,

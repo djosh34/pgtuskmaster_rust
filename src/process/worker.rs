@@ -909,7 +909,7 @@ mod tests {
         fs,
         path::PathBuf,
         process::{Child, Command},
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::Duration,
     };
 
     use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
@@ -917,7 +917,10 @@ mod tests {
     use crate::{
         config_v2::types::{PostgresConfig, TimingConfig},
         dcs::DcsSnapshot,
-        dev_support::runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+        dev_support::{
+            runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
+            test_fs::unique_test_dir,
+        },
         logging::LogSender,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
@@ -1025,20 +1028,6 @@ mod tests {
         }
     }
 
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-process-worker-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
-    }
-
     fn wait_for_fake_postgres_readiness(data_dir: &std::path::Path) -> Result<(), String> {
         let mut attempts = 0_u8;
         while attempts < 50 {
@@ -1127,7 +1116,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_postgres_noop_preserves_existing_standby_passfile() -> Result<(), String> {
-        let root = unique_test_dir("noop-passfile")?;
+        let root = unique_test_dir("process-worker", "noop-passfile")?;
         let data_dir = root.join("data");
         let socket_dir = root.join("socket");
         let log_file = root.join("logs/postgres.log");
@@ -1219,7 +1208,7 @@ mod tests {
 
     #[tokio::test]
     async fn step_once_rejects_only_latest_queued_request_when_busy() -> Result<(), String> {
-        let root = unique_test_dir("busy-drain-latest")?;
+        let root = unique_test_dir("process-worker", "busy-drain-latest")?;
         let data_dir = root.join("data");
         let socket_dir = root.join("socket");
         let log_file = root.join("logs/postgres.log");

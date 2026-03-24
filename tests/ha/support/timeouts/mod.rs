@@ -55,15 +55,15 @@ fn derive_timeout_model(
     let recovery_slack = ha_loop_interval.mul_f64(RECOVERY_SLACK_LOOPS as f64);
     let failover_deadline = (lease_ttl + failover_slack + failover_buffer)
         .min(Duration::from_millis(MAX_FAILOVER_DEADLINE_MS));
-    let startup_deadline = (bootstrap_timeout + recovery_slack)
-        .min(Duration::from_millis(MAX_STARTUP_DEADLINE_MS));
+    let startup_deadline =
+        (bootstrap_timeout + recovery_slack).min(Duration::from_millis(MAX_STARTUP_DEADLINE_MS));
     let recovery_base = bootstrap_timeout.max(pg_rewind_timeout);
-    let recovery_deadline = (recovery_base + recovery_slack)
-        .min(Duration::from_millis(MAX_RECOVERY_DEADLINE_MS));
+    let recovery_deadline =
+        (recovery_base + recovery_slack).min(Duration::from_millis(MAX_RECOVERY_DEADLINE_MS));
     let write_convergence_deadline = (failover_deadline
         + recovery_deadline
         + Duration::from_millis(WRITE_CONVERGENCE_EXTRA_BUFFER_MS))
-        .min(Duration::from_millis(MAX_WRITE_CONVERGENCE_DEADLINE_MS));
+    .min(Duration::from_millis(MAX_WRITE_CONVERGENCE_DEADLINE_MS));
     let poll_interval = Duration::from_millis(
         duration_millis_u64(ha_loop_interval)
             .saturating_mul(HARNESS_POLL_INTERVAL_MULTIPLIER)

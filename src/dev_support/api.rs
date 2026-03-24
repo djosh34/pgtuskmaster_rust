@@ -48,14 +48,14 @@ fn build_test_runtime_config(
     read_token: Option<&str>,
     admin_token: Option<&str>,
 ) -> Result<RuntimeConfigV2, HarnessError> {
-    let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
-        read_token,
-        admin_token,
+    let auth =
+        crate::dev_support::runtime_config::api_auth_from_optional_tokens(read_token, admin_token)
+            .map_err(HarnessError::InvalidInput)?;
+    Ok(
+        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
+            .with_api_auth(auth)
+            .build(),
     )
-    .map_err(HarnessError::InvalidInput)?;
-    Ok(crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-        .with_api_auth(auth)
-        .build())
 }
 
 fn build_test_router_with_state(

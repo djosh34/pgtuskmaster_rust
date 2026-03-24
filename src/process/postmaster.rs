@@ -338,10 +338,12 @@ fn read_postmaster_pid_file(pid_file: &Path) -> Result<String, ManagedPostmaster
 mod tests {
     use std::{
         fs, io,
-        path::{Path, PathBuf},
+        path::Path,
         process::{Child, Command},
-        time::{Duration, SystemTime, UNIX_EPOCH},
+        time::Duration,
     };
+
+    use crate::dev_support::test_fs::unique_test_dir;
 
     use super::{
         lookup_managed_postmaster, reload_managed_postmaster, signal_managed_postmaster,
@@ -372,20 +374,6 @@ mod tests {
                 let _ = child.wait();
             }
         }
-    }
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let millis = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|err| format!("clock error for test dir: {err}"))?
-            .as_millis();
-        let dir = std::env::temp_dir().join(format!(
-            "pgtm-postmaster-{label}-{}-{millis}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&dir)
-            .map_err(|err| format!("create test dir {} failed: {err}", dir.display()))?;
-        Ok(dir)
     }
 
     #[cfg(unix)]
@@ -547,7 +535,7 @@ while True:
 
     #[test]
     fn lookup_managed_postmaster_reports_missing_pid_file() -> Result<(), String> {
-        let root = unique_test_dir("missing-pid")?;
+        let root = unique_test_dir("postmaster", "missing-pid")?;
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
@@ -575,7 +563,7 @@ while True:
     #[cfg(unix)]
     #[test]
     fn lookup_managed_postmaster_reports_stale_pid_file() -> Result<(), String> {
-        let root = unique_test_dir("stale-pid")?;
+        let root = unique_test_dir("postmaster", "stale-pid")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
@@ -613,7 +601,7 @@ while True:
     #[cfg(unix)]
     #[test]
     fn lookup_managed_postmaster_reports_data_dir_mismatch() -> Result<(), String> {
-        let root = unique_test_dir("mismatch")?;
+        let root = unique_test_dir("postmaster", "mismatch")?;
         let target_data_dir = root.join("target-data");
         let real_data_dir = root.join("real-data");
         let signal_log = root.join("signal.log");
@@ -666,7 +654,7 @@ while True:
     #[cfg(unix)]
     #[test]
     fn reload_managed_postmaster_sends_sighup() -> Result<(), String> {
-        let root = unique_test_dir("reload-success")?;
+        let root = unique_test_dir("postmaster", "reload-success")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
@@ -706,7 +694,7 @@ while True:
     #[cfg(unix)]
     #[test]
     fn signal_managed_postmaster_reports_signal_delivery_failure() -> Result<(), String> {
-        let root = unique_test_dir("signal-failure")?;
+        let root = unique_test_dir("postmaster", "signal-failure")?;
         let data_dir = root.join("data");
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)

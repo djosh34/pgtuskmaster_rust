@@ -13,6 +13,8 @@ pub mod ports;
 pub mod provenance;
 pub mod runtime_config;
 pub mod signals;
+#[cfg(test)]
+pub mod test_fs;
 pub mod tls;
 
 #[derive(Debug, Error)]

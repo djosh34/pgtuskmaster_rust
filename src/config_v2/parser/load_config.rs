@@ -783,16 +783,16 @@ where
 #[cfg(test)]
 mod tests {
     use super::{load_runtime_config, validate_runtime_document};
-    use crate::{config_v2::ConfigErrorV2, pginfo::conninfo::PgSslMode};
-    use std::{
-        fs,
-        path::{Path, PathBuf},
-        time::SystemTime,
+    use crate::{
+        config_v2::ConfigErrorV2,
+        dev_support::test_fs::unique_test_dir,
+        pginfo::conninfo::PgSslMode,
     };
+    use std::fs;
 
     #[test]
     fn load_runtime_config_preserves_shared_source_client_tls() -> Result<(), String> {
-        let root = unique_test_dir("runtime-config-v2-source-client-tls")?;
+        let root = unique_test_dir("load-config", "runtime-config-v2-source-client-tls")?;
         fs::create_dir_all(root.join("data")).map_err(|err| err.to_string())?;
         let ca_cert = root.join("source-ca.crt");
         fs::write(&ca_cert, "test ca").map_err(|err| err.to_string())?;
@@ -864,7 +864,7 @@ psql = "/bin/true"
     #[test]
     fn validate_runtime_document_rejects_inline_postgres_tls_sources_at_parse_boundary(
     ) -> Result<(), String> {
-        let root = unique_test_dir("runtime-config-v2-inline-tls")?;
+        let root = unique_test_dir("load-config", "runtime-config-v2-inline-tls")?;
         fs::create_dir_all(&root).map_err(|err| err.to_string())?;
         let config_path = root.join("runtime.toml");
         fs::write(
@@ -911,27 +911,6 @@ endpoints = ["http://127.0.0.1:2379"]
             Err(ConfigErrorV2::Parse { .. }) => Ok(()),
             Err(err) => Err(format!("expected parse error, got {err}")),
             Ok(()) => Err("expected inline TLS parse rejection".to_string()),
-        }
-    }
-
-    fn unique_test_dir(label: &str) -> Result<PathBuf, String> {
-        let root = std::env::temp_dir().join(format!(
-            "pgtm-{label}-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        remove_dir_if_exists(root.as_path())?;
-        Ok(root)
-    }
-
-    fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
-        match fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!("remove {} failed: {err}", path.display())),
         }
     }
 }

@@ -8,8 +8,7 @@ use std::{
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, DcsConfig, DcsEndpoint, FileSinkMode,
-        LogLevel, LoggingConfig, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret,
-        TimingConfig,
+        LogLevel, LoggingConfig, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret, TimingConfig,
     },
     pginfo::conninfo::{PgClientTls, PgSslMode},
     state::{ClusterName, MemberId, ScopeName},
@@ -150,9 +149,7 @@ pub(crate) fn api_auth_from_optional_tokens(
                 admin_token: sample_secret(admin_token),
             })
         }
-        _ => Err(
-            "read and admin tokens must either both be set or both be absent".to_string(),
-        ),
+        _ => Err("read and admin tokens must either both be set or both be absent".to_string()),
     }
 }
 
@@ -340,24 +337,22 @@ pub fn validate_operator_config_contents(contents: &str) -> Result<(), HarnessEr
     })
 }
 
-pub fn runtime_timing_values(path: &Path) -> Result<(Duration, Duration, Duration, Duration), HarnessError> {
+pub fn runtime_timing_values(
+    path: &Path,
+) -> Result<(Duration, Duration, Duration, Duration), HarnessError> {
     crate::config_v2::load_runtime_timing_values(path)
         .map_err(|err| HarnessError::InvalidInput(err.to_string()))
 }
 
-fn validate_with_temp_toml<F, T>(
-    label: &str,
-    contents: &str,
-    loader: F,
-) -> Result<T, HarnessError>
+fn validate_with_temp_toml<F, T>(label: &str, contents: &str, loader: F) -> Result<T, HarnessError>
 where
     F: FnOnce(&Path) -> Result<T, crate::config_v2::ConfigErrorV2>,
 {
     let path = unique_temp_toml_path(label);
     std::fs::write(&path, contents).map_err(HarnessError::Io)?;
 
-    let load_result = loader(path.as_path())
-        .map_err(|err| HarnessError::InvalidInput(err.to_string()));
+    let load_result =
+        loader(path.as_path()).map_err(|err| HarnessError::InvalidInput(err.to_string()));
     let cleanup_result = std::fs::remove_file(&path).map_err(HarnessError::Io);
 
     match (load_result, cleanup_result) {
@@ -384,27 +379,12 @@ mod tests {
 
     use crate::{
         config_v2::types::{ApiAuth, FileSinkMode},
+        dev_support::test_fs::{remove_dir_if_exists, unique_test_dir},
         postgres_managed::materialize_managed_postgres_config,
         postgres_managed_conf::{ManagedPostgresStartIntent, MANAGED_POSTGRESQL_CONF_NAME},
     };
 
     use super::{api_auth_from_optional_tokens, sample_logging_config, RuntimeConfigBuilder};
-
-    fn remove_dir_if_exists(path: &std::path::Path) -> Result<(), String> {
-        match fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(err) => Err(format!("remove {} failed: {err}", path.display())),
-        }
-    }
-
-    fn unique_temp_dir(label: &str) -> PathBuf {
-        std::env::temp_dir().join(format!(
-            "pgtm-runtime-config-{label}-{}-{}",
-            std::process::id(),
-            crate::logging::system_now_unix_millis()
-        ))
-    }
 
     #[test]
     fn targeted_override_preserves_required_fields() {
@@ -413,14 +393,35 @@ mod tests {
             .with_postgres_data_dir("/tmp/override-data-dir")
             .build();
 
-        assert_eq!(updated.postgres.data_dir, PathBuf::from("/tmp/override-data-dir"));
-        assert_eq!(updated.postgres.local_database, baseline.postgres.local_database);
-        assert_eq!(updated.postgres.superuser.username, baseline.postgres.superuser.username);
+        assert_eq!(
+            updated.postgres.data_dir,
+            PathBuf::from("/tmp/override-data-dir")
+        );
+        assert_eq!(
+            updated.postgres.local_database,
+            baseline.postgres.local_database
+        );
+        assert_eq!(
+            updated.postgres.superuser.username,
+            baseline.postgres.superuser.username
+        );
         assert!(updated.postgres.tls.is_none());
-        assert!(matches!(baseline.api.transport, crate::config_v2::types::ApiTransport::Http));
-        assert!(matches!(updated.api.transport, crate::config_v2::types::ApiTransport::Http));
-        assert!(matches!(baseline.api.auth, crate::config_v2::types::ApiAuth::Disabled));
-        assert!(matches!(updated.api.auth, crate::config_v2::types::ApiAuth::Disabled));
+        assert!(matches!(
+            baseline.api.transport,
+            crate::config_v2::types::ApiTransport::Http
+        ));
+        assert!(matches!(
+            updated.api.transport,
+            crate::config_v2::types::ApiTransport::Http
+        ));
+        assert!(matches!(
+            baseline.api.auth,
+            crate::config_v2::types::ApiAuth::Disabled
+        ));
+        assert!(matches!(
+            updated.api.auth,
+            crate::config_v2::types::ApiAuth::Disabled
+        ));
     }
 
     #[test]
@@ -445,15 +446,12 @@ mod tests {
         assert_eq!(updated.postgres.listen_host, baseline.postgres.listen_host);
         assert!(updated.logging.file_enabled);
         assert!(matches!(updated.logging.file_mode, FileSinkMode::Truncate));
-        assert_eq!(
-            updated.timing.ha_loop_interval,
-            Duration::from_millis(500)
-        );
+        assert_eq!(updated.timing.ha_loop_interval, Duration::from_millis(500));
     }
 
     #[test]
     fn builder_works_with_managed_postgres_materialization() -> Result<(), String> {
-        let data_dir = unique_temp_dir("materialize");
+        let data_dir = unique_test_dir("runtime-config", "materialize")?;
         remove_dir_if_exists(data_dir.as_path())?;
 
         let cfg = RuntimeConfigBuilder::new()

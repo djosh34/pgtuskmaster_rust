@@ -1531,13 +1531,13 @@ mod tests {
             assert!(compose.contains(expected_variant.display().to_string().as_str()));
             assert!(compose.contains(output_root.display().to_string().as_str()));
 
-            let runtime_path = output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
-            let runtime = fs::read_to_string(runtime_path.as_path()).map_err(|source| {
-                HarnessError::Io {
+            let runtime_path =
+                output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
+            let runtime =
+                fs::read_to_string(runtime_path.as_path()).map_err(|source| HarnessError::Io {
                     path: runtime_path.clone(),
                     source,
-                }
-            })?;
+                })?;
             validate_runtime_config_contents(runtime.as_str()).map_err(|source| {
                 HarnessError::message(format!(
                     "materialized node runtime config failed validation: {source}"
