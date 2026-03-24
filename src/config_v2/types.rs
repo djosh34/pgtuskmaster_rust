@@ -231,22 +231,18 @@ impl PgtmApiTransportExpectation {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct OperatorApiEndpoint {
+pub(crate) struct OperatorConfigV2 {
     pub base_url: Option<Url>,
     pub expected_transport: Option<PgtmApiTransportExpectation>,
     pub resolve_to: Option<SocketAddr>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct OperatorConfigV2 {
-    pub api: OperatorApiEndpoint,
     pub client_tls: OperatorClientTlsConfig,
-    pub api_auth: ApiClientTokens,
+    pub read_token: Option<Secret>,
+    pub admin_token: Option<Secret>,
 }
 
 impl OperatorConfigV2 {
     pub fn api_auth_enabled(&self) -> bool {
-        self.api_auth.read_token.is_some() || self.api_auth.admin_token.is_some()
+        self.read_token.is_some() || self.admin_token.is_some()
     }
 }
 
@@ -254,10 +250,4 @@ impl OperatorConfigV2 {
 pub(crate) struct OperatorClientTlsConfig {
     pub ca_cert: Option<PathBuf>,
     pub identity: Option<TlsConfig>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ApiClientTokens {
-    pub read_token: Option<Secret>,
-    pub admin_token: Option<Secret>,
 }

@@ -784,8 +784,7 @@ where
 mod tests {
     use super::{load_runtime_config, validate_runtime_document};
     use crate::{
-        config_v2::ConfigErrorV2,
-        dev_support::test_fs::unique_test_dir,
+        config_v2::ConfigErrorV2, dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgSslMode,
     };
     use std::fs;

@@ -5,8 +5,8 @@ use crate::{
         error::CliError,
     },
     config_v2::{
-        load_operator_config, types::OperatorClientTlsConfig, OperatorApiEndpoint,
-        OperatorConfigV2, PgtmApiTransportExpectation,
+        load_operator_config, types::OperatorClientTlsConfig, OperatorConfigV2,
+        PgtmApiTransportExpectation,
     },
 };
 
@@ -27,15 +27,26 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
         .transpose()?;
     let config = config.as_ref();
 
-    let api = resolve_api_endpoint(cli.base_url.as_deref(), config.map(|cfg| &cfg.api))?;
-    let base_url = api.base_url.clone().ok_or_else(|| {
-        CliError::Config(
-            "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
-        )
-    })?;
-    let (config_read_token, config_admin_token, api_auth_enabled) = resolve_config_auth(config)?;
-    let read_token = normalize_optional_token(cli.read_token.as_deref()).or(config_read_token);
-    let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or(config_admin_token);
+    let base_url = resolve_base_url(cli.base_url.as_deref(), config)?;
+    let read_token = normalize_optional_token(cli.read_token.as_deref()).or_else(|| {
+        config.and_then(|config| {
+            config
+                .read_token
+                .as_ref()
+                .map(|token| token.as_str().to_string())
+        })
+    });
+    let admin_token = normalize_optional_token(cli.admin_token.as_deref()).or_else(|| {
+        config.and_then(|config| {
+            config
+                .admin_token
+                .as_ref()
+                .map(|token| token.as_str().to_string())
+        })
+    });
+    let api_auth_enabled = config
+        .map(OperatorConfigV2::api_auth_enabled)
+        .unwrap_or(false);
 
     let api_client_tls = if base_url.scheme() == "https" {
         resolve_client_tls(config)
@@ -53,37 +64,34 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
                 admin_token,
             },
             tls: api_client_tls,
-            resolve_to: api.resolve_to,
+            resolve_to: config.and_then(|config| config.resolve_to),
         },
         postgres_client_tls,
         api_auth_enabled,
     })
 }
 
-fn resolve_api_endpoint(
+fn resolve_base_url(
     override_base_url: Option<&str>,
-    config: Option<&OperatorApiEndpoint>,
-) -> Result<OperatorApiEndpoint, CliError> {
+    config: Option<&OperatorConfigV2>,
+) -> Result<reqwest::Url, CliError> {
     if let Some(raw) = override_base_url {
         let url = reqwest::Url::parse(raw.trim())
             .map_err(|err| CliError::RequestBuild(format!("invalid --base-url value: {err}")))?;
-        let mut endpoint = config.cloned().unwrap_or(OperatorApiEndpoint {
-            base_url: None,
-            expected_transport: None,
-            resolve_to: None,
-        });
-        validate_expected_transport(&url, endpoint.expected_transport)?;
-        endpoint.base_url = Some(url);
-        return Ok(endpoint);
+        validate_expected_transport(&url, config.and_then(|config| config.expected_transport))?;
+        return Ok(url);
     }
 
-    let Some(config) = config else {
-        return Err(CliError::Config(
+    match config {
+        Some(config) => config.base_url.clone().ok_or_else(|| {
+            CliError::Config(
+                "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
+            )
+        }),
+        None => Err(CliError::Config(
             "either `-c <PATH>` or `--base-url <URL>` must be provided".to_string(),
-        ));
-    };
-
-    Ok(config.clone())
+        )),
+    }
 }
 
 fn validate_expected_transport(
@@ -103,30 +111,6 @@ fn validate_expected_transport(
         expected_transport.scheme(),
         url.scheme()
     )))
-}
-
-fn resolve_config_auth(
-    config: Option<&OperatorConfigV2>,
-) -> Result<(Option<String>, Option<String>, bool), CliError> {
-    let Some(config) = config else {
-        return Ok((None, None, false));
-    };
-
-    Ok((
-        config
-            .api_auth
-            .read_token
-            .as_ref()
-            .map(|token| token.as_str().to_string())
-            .and_then(|token| normalize_optional_token(Some(token.as_str()))),
-        config
-            .api_auth
-            .admin_token
-            .as_ref()
-            .map(|token| token.as_str().to_string())
-            .and_then(|token| normalize_optional_token(Some(token.as_str()))),
-        config.api_auth_enabled(),
-    ))
 }
 
 fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> OperatorClientTlsConfig {

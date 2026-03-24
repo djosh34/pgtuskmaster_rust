@@ -1,8 +1,7 @@
 use std::{path::Path, path::PathBuf};
 
 use crate::config_v2::types::{
-    ApiClientTokens, OperatorApiEndpoint, OperatorClientTlsConfig, OperatorConfigV2,
-    PgtmApiTransportExpectation, TlsConfig,
+    OperatorClientTlsConfig, OperatorConfigV2, PgtmApiTransportExpectation, Secret, TlsConfig,
 };
 use reqwest::Url;
 
@@ -38,33 +37,37 @@ pub fn load_operator_config(
             "is not supported by config_v2",
         ));
     }
+    let expected_transport =
+        operator
+            .api
+            .expected_transport
+            .map(|expected_transport| match expected_transport {
+                raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
+                raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
+            });
+    let (read_token, admin_token) = map_operator_auth(operator.api.auth)?;
 
     Ok(OperatorConfigV2 {
-        api: parse_operator_api_endpoint(
+        base_url: parse_operator_base_url(
             normalize_optional_string(operator.api.base_url),
-            operator
-                .api
-                .expected_transport
-                .map(|expected_transport| match expected_transport {
-                    raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
-                    raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
-                }),
-            operator.api.resolve_to,
+            expected_transport,
         )?,
+        expected_transport,
+        resolve_to: operator.api.resolve_to,
         client_tls: merge_client_tls(
             map_operator_client_tls("pgtm.api.tls", operator.api.tls)?,
             map_operator_client_tls("pgtm.postgres.tls", operator.postgres.tls)?,
         )?,
-        api_auth: map_operator_auth(operator.api.auth)?,
+        read_token,
+        admin_token,
     })
 }
 
-fn parse_operator_api_endpoint(
+fn parse_operator_base_url(
     base_url: Option<String>,
     expected_transport: Option<PgtmApiTransportExpectation>,
-    resolve_to: Option<std::net::SocketAddr>,
-) -> Result<OperatorApiEndpoint, crate::config_v2::ConfigErrorV2> {
-    let base_url = base_url
+) -> Result<Option<Url>, crate::config_v2::ConfigErrorV2> {
+    base_url
         .map(|base_url| {
             let url = Url::parse(base_url.as_str()).map_err(|err| {
                 validation_error("pgtm.api.base_url", format!("must be a valid URL: {err}"))
@@ -72,13 +75,7 @@ fn parse_operator_api_endpoint(
             validate_expected_transport(&url, expected_transport)?;
             Ok(url)
         })
-        .transpose()?;
-
-    Ok(OperatorApiEndpoint {
-        base_url,
-        expected_transport,
-        resolve_to,
-    })
+        .transpose()
 }
 
 fn validate_expected_transport(
@@ -105,15 +102,15 @@ fn validate_expected_transport(
 
 fn map_operator_auth(
     auth: raw::TokenAuthConfig,
-) -> Result<ApiClientTokens, crate::config_v2::ConfigErrorV2> {
+) -> Result<(Option<Secret>, Option<Secret>), crate::config_v2::ConfigErrorV2> {
     let mode = token_auth_mode(&auth);
     let (read_token, admin_token) = take_token_sources(auth);
     match mode {
-        TokenAuthMode::Disabled => Ok(ApiClientTokens::default()),
-        TokenAuthMode::RoleTokens => Ok(ApiClientTokens {
-            read_token: resolve_secret_optional("pgtm.api.auth.read_token", read_token)?,
-            admin_token: resolve_secret_optional("pgtm.api.auth.admin_token", admin_token)?,
-        }),
+        TokenAuthMode::Disabled => Ok((None, None)),
+        TokenAuthMode::RoleTokens => Ok((
+            resolve_secret_optional("pgtm.api.auth.read_token", read_token)?,
+            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token)?,
+        )),
     }
 }
 
@@ -237,10 +234,10 @@ expected_transport = "https"
 
         let _ = std::fs::remove_file(path);
 
-        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "expected https transport expectation, got {:?}",
-                config.api.expected_transport
+                config.expected_transport
             ));
         }
 
@@ -289,10 +286,10 @@ expected_transport = "https"
 
         let _ = std::fs::remove_file(path);
 
-        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "expected https transport expectation from runtime document, got {:?}",
-                config.api.expected_transport
+                config.expected_transport
             ));
         }
 
@@ -314,22 +311,81 @@ resolve_to = "127.0.0.1:18443"
 
         let _ = std::fs::remove_file(path);
 
-        if config.api.base_url.as_ref().map(reqwest::Url::as_str) != Some("https://node-b:8443/") {
-            return Err(format!(
-                "unexpected api base url: {:?}",
-                config.api.base_url
-            ));
+        if config.base_url.as_ref().map(reqwest::Url::as_str) != Some("https://node-b:8443/") {
+            return Err(format!("unexpected api base url: {:?}", config.base_url));
         }
-        if config.api.expected_transport != Some(PgtmApiTransportExpectation::Https) {
+        if config.expected_transport != Some(PgtmApiTransportExpectation::Https) {
             return Err(format!(
                 "unexpected transport expectation: {:?}",
-                config.api.expected_transport
+                config.expected_transport
             ));
         }
-        if config.api.resolve_to != Some(SocketAddr::from(([127, 0, 0, 1], 18443))) {
+        if config.resolve_to != Some(SocketAddr::from(([127, 0, 0, 1], 18443))) {
+            return Err(format!("unexpected resolve_to: {:?}", config.resolve_to));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_flattens_tokens_and_merges_client_tls() -> Result<(), String> {
+        let dir = temp_test_dir("pgtm-operator-config-merge")?;
+        let api_ca_path = dir.join("api-ca.pem");
+        let identity_cert_path = dir.join("client.crt");
+        let identity_key_path = dir.join("client.key");
+        let path = write_temp_config(format!(
+            r#"
+[api]
+base_url = "https://127.0.0.1:8443"
+
+[api.auth]
+type = "role_tokens"
+read_token = {{ type = "string", value = "read-token" }}
+admin_token = {{ type = "string", value = "admin-token" }}
+
+[api.tls]
+ca_cert = {{ path = "{}" }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
+
+[postgres.tls]
+ca_cert = {{ path = "{}" }}
+identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
+"#,
+            api_ca_path.display(),
+            identity_cert_path.display(),
+            identity_key_path.display(),
+            api_ca_path.display(),
+            identity_cert_path.display(),
+            identity_key_path.display(),
+        ))?;
+
+        let config = load_operator_config(path.as_path()).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_dir_all(dir);
+
+        if config.read_token.as_ref().map(|token| token.as_str()) != Some("read-token") {
+            return Err(format!("unexpected read token: {:?}", config.read_token));
+        }
+        if config.admin_token.as_ref().map(|token| token.as_str()) != Some("admin-token") {
+            return Err(format!("unexpected admin token: {:?}", config.admin_token));
+        }
+        if config.client_tls.ca_cert.as_ref() != Some(&api_ca_path) {
             return Err(format!(
-                "unexpected resolve_to: {:?}",
-                config.api.resolve_to
+                "unexpected merged CA cert: {:?}",
+                config.client_tls.ca_cert
+            ));
+        }
+        if config.client_tls.identity.as_ref().map(|tls| &tls.cert) != Some(&identity_cert_path) {
+            return Err(format!(
+                "unexpected merged client cert: {:?}",
+                config.client_tls.identity
+            ));
+        }
+        if config.client_tls.identity.as_ref().map(|tls| &tls.key) != Some(&identity_key_path) {
+            return Err(format!(
+                "unexpected merged client key: {:?}",
+                config.client_tls.identity
             ));
         }
 
@@ -359,7 +415,7 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
         }
     }
 
-    fn write_temp_config(contents: &str) -> Result<PathBuf, String> {
+    fn write_temp_config(contents: impl AsRef<str>) -> Result<PathBuf, String> {
         let path = std::env::temp_dir().join(format!(
             "pgtm-operator-config-{}-{}.toml",
             std::process::id(),
@@ -368,7 +424,20 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
                 .map_err(|err| err.to_string())?
                 .as_nanos()
         ));
-        std::fs::write(&path, contents).map_err(|err| err.to_string())?;
+        std::fs::write(&path, contents.as_ref()).map_err(|err| err.to_string())?;
         Ok(path)
+    }
+
+    fn temp_test_dir(prefix: &str) -> Result<PathBuf, String> {
+        let dir = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|err| err.to_string())?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        Ok(dir)
     }
 }

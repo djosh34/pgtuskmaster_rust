@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 01:29:07 AM CET 2026
+Generated: Tue Mar 24 01:49:42 AM CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
@@ -98,11 +98,10 @@ I don't want that at all. I don't want tls bytes to be inside the config struct,
 # Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md`
 
 ```
-## Task: Reduce Code Loop <status>done</status> <passes>true</passes>
+## Task: Reduce Code Loop <status>completed</status> <passes>true</passes>
 
+<description>
 Your only goal is to reduce code and clean up the codebase.
-
-use just-reduce-code skill
 ```
 
 ==============

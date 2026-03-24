@@ -355,3 +355,4 @@ NONE
 .ralph/tasks/story-config-v2-direct-cfg-collapse/04-eliminate-tls-bytes.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
