@@ -23,7 +23,7 @@ EOF_APPEND_PROGRESS_LOG
 - [ ] complete the work like this:
     - [ ] If you read nothing/ TO BE VERIFIED, follow these steps:
         - [ ] Aim to Reuse/Merge/Remove struct/enums/functions to simplify/not increase code complexity
-        - [ ] Create a plan first in separate file in plans subdir .ralph/[story]/[task]_plans/[plan].md
+        - [ ] Create a plan first in separate file in plans subdir .ralph/tasks/[story]/[task]_plans/[plan].md
         - [ ] Replace end of plan with 'TO BE VERIFIED' and add path to the plan
         - [ ] Once your happy with plan/interface design/types/enums, replace end of plan with 'NOW EXECUTE'
         - [ ] QUIT IMMEDIATELY!

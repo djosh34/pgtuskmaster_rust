@@ -31,13 +31,16 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/01-collapse-runtime-node-identity.md`
+
 <steps>
 - [ ] If fresh (based on progress history), untick all boxes, remove existing path to plan file
-- [ ] Choose one improvement and write a plan, add the path to that plan inside task_file
+- [x] Choose one improvement and write a plan, add the path to that plan inside task_file
 - [ ] Do improvement
 - [ ] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
 - [ ] test&validate new code
 - [ ] task_switch
+- [ ] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
 - [ ] `make check`
@@ -45,4 +48,3 @@ DO COMMIT BETWEEN EACH IMPROVEMENT!
 - [ ] `make test`
 - [ ] `make test-long`
 </acceptance_criteria>
-

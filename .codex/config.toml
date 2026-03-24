@@ -1,5 +1,7 @@
 
 
+service_tier="flex"
+
 model_reasoning_summary = "detailed"
 model_verbosity = "high"
 model_supports_reasoning_summaries = true
@@ -17,6 +19,11 @@ model_supports_reasoning_summaries = false
 [profiles.normal_xhigh]
 model = "gpt-5.4"
 model_reasoning_effort = "xhigh"
+
+[profiles.normal_model_fast]
+model = "gpt-5.4"
+model_reasoning_effort = "high"
+service_tier="fast"
 
 [profiles.normal_model]
 model = "gpt-5.4"

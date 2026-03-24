@@ -1,4 +1,13 @@
 # Current Tasks Summary
 
-Generated: Tue Mar 24 04:16:53 AM CET 2026
+Generated: Tue Mar 24 08:35:08 AM CET 2026
+
+# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md`
+
+```
+## Task: Reduce Code Loop <status>in_progress</status> <passes>false</passes> <priority>high</priority>
+
+<description>
+Your only goal is to reduce code and clean up the codebase.
+```
 

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 04:16:53 AM CET 2026
+Generated: Tue Mar 24 08:35:08 AM CET 2026
 
 # Task `.ralph/tasks/bugs/generic-switchover-request-can-stall-without-primary.md`
 
@@ -113,17 +113,6 @@ All validation, in ALL code (must verify this), but only be done once, and that 
 <description>
 Someone previously had this crazy idea to store bytes within the config struct. This causes a crazy amount of issues.
 I don't want that at all. I don't want tls bytes to be inside the config struct, nor i ever want them to be written somewhere else.
-```
-
-==============
-
-# Task `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md`
-
-```
-## Task: Reduce Code Loop <status>completed</status> <passes>true</passes>
-
-<description>
-Your only goal is to reduce code and clean up the codebase.
 ```
 
 ==============
