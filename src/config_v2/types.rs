@@ -138,12 +138,10 @@ pub(crate) struct TimingConfig {
 
 #[derive(Clone, Debug)]
 pub(crate) struct BinariesConfig {
-    pub postgres: PathBuf,
     pub pg_ctl: PathBuf,
     pub initdb: PathBuf,
     pub pg_rewind: PathBuf,
     pub pg_basebackup: PathBuf,
-    pub psql: PathBuf,
 }
 
 // === LOGGING CONFIG ===

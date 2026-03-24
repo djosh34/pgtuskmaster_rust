@@ -16,8 +16,8 @@ use crate::{
             ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, ShutdownMode,
         },
         state::{
-            ensure_start_paths, ProcessExecutionRequest, ProcessIntentRequest,
-            ProcessObservedSnapshot, ProcessWorkerCtx,
+            ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot,
+            ProcessWorkerCtx,
         },
     },
     state::MemberId,
@@ -91,8 +91,7 @@ pub(crate) fn prepare_process_launch(
         ProcessIntent::Bootstrap => {
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command =
-                build_bootstrap_command(cfg).map_err(ProcessPreparationError::BuildCommand)?;
+            let command = build_bootstrap_command(cfg);
             Ok(prepared_launch(
                 request.id.clone(),
                 tracked_job_kind,
@@ -105,8 +104,7 @@ pub(crate) fn prepare_process_launch(
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command = build_basebackup_command(cfg, &source)
-                .map_err(ProcessPreparationError::BuildCommand)?;
+            let command = build_basebackup_command(cfg, &source);
             Ok(prepared_launch(
                 request.id.clone(),
                 tracked_job_kind,
@@ -117,8 +115,7 @@ pub(crate) fn prepare_process_launch(
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
             let source = rewind_source_from_leader(&cfg.member_id, cfg, &observed.dcs, leader)
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command = build_pg_rewind_command(cfg, &source)
-                .map_err(ProcessPreparationError::BuildCommand)?;
+            let command = build_pg_rewind_command(cfg, &source);
             Ok(prepared_launch(
                 request.id.clone(),
                 tracked_job_kind,
@@ -172,8 +169,7 @@ pub(crate) fn prepare_process_launch(
             ))
         }
         ProcessIntent::Promote => {
-            let command =
-                build_promote_command(cfg, None).map_err(ProcessPreparationError::BuildCommand)?;
+            let command = build_promote_command(cfg, None);
             Ok(prepared_launch(
                 request.id.clone(),
                 tracked_job_kind,
@@ -182,8 +178,7 @@ pub(crate) fn prepare_process_launch(
             ))
         }
         ProcessIntent::Demote(mode) => {
-            let command =
-                build_demote_command(cfg, mode).map_err(ProcessPreparationError::BuildCommand)?;
+            let command = build_demote_command(cfg, mode);
             Ok(prepared_launch(
                 request.id.clone(),
                 tracked_job_kind,
@@ -231,22 +226,15 @@ fn materialize_start_config(
     primary_conninfo: Option<&PgConnInfo>,
     primary_slot_name: Option<&str>,
 ) -> Result<(), ProcessError> {
-    ensure_start_paths(cfg)?;
     materialize_managed_postgres_config(cfg, tracked_job_kind, primary_conninfo, primary_slot_name)
         .map_err(|err| {
             ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
         })
 }
 
-fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandSpec, ProcessError> {
-    validate_non_empty_path("bootstrap.data_dir", &cfg.postgres.data_dir)?;
-    if cfg.postgres.superuser.username.trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(
-            "bootstrap.superuser must not be empty".to_string(),
-        ));
-    }
+fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
     let program = cfg.binaries.initdb.clone();
-    Ok(ProcessCommandSpec {
+    ProcessCommandSpec {
         program: program.clone(),
         args: vec![
             "-D".to_string(),
@@ -259,17 +247,12 @@ fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandSpec, 
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
         job_kind: ProcessJobKind::Bootstrap,
-    })
+    }
 }
 
-fn build_basebackup_command(
-    cfg: &RuntimeConfigV2,
-    source: &SourceConn,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    validate_non_empty_path("basebackup.data_dir", &cfg.postgres.data_dir)?;
-    validate_source_conninfo("basebackup.source_conninfo", &source.conninfo)?;
+fn build_basebackup_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
     let program = cfg.binaries.pg_basebackup.clone();
-    Ok(ProcessCommandSpec {
+    ProcessCommandSpec {
         program: program.clone(),
         args: vec![
             "--dbname".to_string(),
@@ -282,17 +265,12 @@ fn build_basebackup_command(
         env: role_auth_env(&source.auth),
         capture_output: cfg.logging.capture_subprocess_output,
         job_kind: ProcessJobKind::BaseBackup,
-    })
+    }
 }
 
-fn build_pg_rewind_command(
-    cfg: &RuntimeConfigV2,
-    source: &SourceConn,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    validate_non_empty_path("pg_rewind.target_data_dir", &cfg.postgres.data_dir)?;
-    validate_source_conninfo("pg_rewind.source_conninfo", &source.conninfo)?;
+fn build_pg_rewind_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
     let program = cfg.binaries.pg_rewind.clone();
-    Ok(ProcessCommandSpec {
+    ProcessCommandSpec {
         program: program.clone(),
         args: vec![
             "--target-pgdata".to_string(),
@@ -303,14 +281,10 @@ fn build_pg_rewind_command(
         env: role_auth_env(&source.auth),
         capture_output: cfg.logging.capture_subprocess_output,
         job_kind: ProcessJobKind::PgRewind,
-    })
+    }
 }
 
-fn build_promote_command(
-    cfg: &RuntimeConfigV2,
-    wait_seconds: Option<u64>,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    validate_non_empty_path("promote.data_dir", &cfg.postgres.data_dir)?;
+fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> ProcessCommandSpec {
     let wait_args = wait_seconds
         .into_iter()
         .flat_map(|seconds| ["-t".to_string(), seconds.to_string()])
@@ -326,22 +300,18 @@ fn build_promote_command(
         wait_args,
     ]
     .concat();
-    Ok(ProcessCommandSpec {
+    ProcessCommandSpec {
         program: program.clone(),
         args,
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
         job_kind: ProcessJobKind::Promote,
-    })
+    }
 }
 
-fn build_demote_command(
-    cfg: &RuntimeConfigV2,
-    mode: &ShutdownMode,
-) -> Result<ProcessCommandSpec, ProcessError> {
-    validate_non_empty_path("demote.data_dir", &cfg.postgres.data_dir)?;
+fn build_demote_command(cfg: &RuntimeConfigV2, mode: &ShutdownMode) -> ProcessCommandSpec {
     let program = cfg.binaries.pg_ctl.clone();
-    Ok(ProcessCommandSpec {
+    ProcessCommandSpec {
         program: program.clone(),
         args: vec![
             "-D".to_string(),
@@ -354,14 +324,11 @@ fn build_demote_command(
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
         job_kind: ProcessJobKind::Demote,
-    })
+    }
 }
 
 fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandSpec, ProcessError> {
     let config_file = managed_postgresql_conf_path(cfg.postgres.data_dir.as_path());
-    validate_non_empty_path("start_postgres.data_dir", &cfg.postgres.data_dir)?;
-    validate_non_empty_path("start_postgres.config_file", &config_file)?;
-    validate_non_empty_path("start_postgres.log_file", &cfg.postgres.log_file)?;
     let option_tokens = vec![
         "-c".to_string(),
         format!("config_file={}", config_file.display()),
@@ -448,45 +415,6 @@ fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
                 ))
             })?;
         }
-    }
-    Ok(())
-}
-
-fn validate_non_empty_path(field: &str, value: &Path) -> Result<(), ProcessError> {
-    if value.as_os_str().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field} must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_non_empty_pg_endpoint(
-    field: &str,
-    value: &crate::state::PgEndpoint,
-) -> Result<(), ProcessError> {
-    if value.host().trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field}.host must not be empty"
-        )));
-    }
-    Ok(())
-}
-
-fn validate_source_conninfo(field: &str, conninfo: &PgConnInfo) -> Result<(), ProcessError> {
-    validate_non_empty_pg_endpoint(
-        format!("{field}.endpoint").as_str(),
-        conninfo.route.endpoint(),
-    )?;
-    if conninfo.user.trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field}.user must not be empty"
-        )));
-    }
-    if conninfo.dbname.trim().is_empty() {
-        return Err(ProcessError::InvalidSpec(format!(
-            "{field}.dbname must not be empty"
-        )));
     }
     Ok(())
 }
@@ -723,12 +651,10 @@ ca_cert = {}"#,
                         toml_path_source(ca_cert.as_path()),
                     ),
                     r#"[process.binaries.overrides]
-postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true"
-psql = "/bin/true""#
+pg_basebackup = "/bin/true""#
                         .to_string(),
                 ],
             )

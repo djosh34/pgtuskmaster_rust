@@ -1693,7 +1693,7 @@ mod tests {
             }
 
             // Pump ingestion a bit to collect pg_ctl log lines.
-            let psql_bin = binaries.psql.clone();
+            let psql_bin = require_pg16_bin_for_real_tests("psql")?;
             let mut cmd = Command::new(psql_bin);
             cmd.arg("-h")
                 .arg("127.0.0.1")

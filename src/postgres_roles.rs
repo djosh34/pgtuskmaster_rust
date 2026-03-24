@@ -258,12 +258,10 @@ mod tests {
                 fencing_timeout: std::time::Duration::from_secs(30),
             },
             binaries: BinariesConfig {
-                postgres: "/usr/bin/postgres".into(),
                 pg_ctl: "/usr/bin/pg_ctl".into(),
                 initdb: "/usr/bin/initdb".into(),
                 pg_rewind: "/usr/bin/pg_rewind".into(),
                 pg_basebackup: "/usr/bin/pg_basebackup".into(),
-                psql: "/usr/bin/psql".into(),
             },
             logging: LoggingConfig {
                 level: LogLevel::Info,

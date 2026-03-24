@@ -1,11 +1,8 @@
-use std::path::Path;
+use std::{fs, path::Path};
 
 use thiserror::Error;
 
-use crate::{
-    config_v2::{load_runtime_config, ConfigErrorV2, RuntimeConfigV2},
-    process::state::ensure_start_paths,
-};
+use crate::config_v2::{load_runtime_config, ConfigErrorV2, RuntimeConfigV2};
 
 use super::log_event::RuntimeLogEvent;
 
@@ -53,11 +50,58 @@ pub(crate) async fn run_node_from_config(cfg: RuntimeConfigV2) -> Result<(), Run
         RuntimeError::StartupExecution(format!("runtime start log emit failed: {err}"))
     })?;
 
-    ensure_start_paths(cfg).map_err(|err| {
-        RuntimeError::StartupExecution(format!("process start path preparation failed: {err}"))
-    })?;
+    prepare_runtime_start_paths(cfg)?;
 
     run_workers(cfg, log, worker).await
+}
+
+fn prepare_runtime_start_paths(cfg: &RuntimeConfigV2) -> Result<(), RuntimeError> {
+    let data_dir = &cfg.postgres.data_dir;
+    if let Some(parent) = data_dir.parent() {
+        fs::create_dir_all(parent).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to create postgres data dir parent `{}`: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    fs::create_dir_all(data_dir).map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to create postgres data dir `{}`: {err}",
+            data_dir.display()
+        ))
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to set postgres data dir permissions on `{}`: {err}",
+                data_dir.display()
+            ))
+        })?;
+    }
+
+    fs::create_dir_all(&cfg.postgres.socket_dir).map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to create postgres socket dir `{}`: {err}",
+            cfg.postgres.socket_dir.display()
+        ))
+    })?;
+
+    if let Some(log_parent) = cfg.postgres.log_file.parent() {
+        fs::create_dir_all(log_parent).map_err(|err| {
+            RuntimeError::StartupExecution(format!(
+                "failed to create postgres log dir `{}`: {err}",
+                log_parent.display()
+            ))
+        })?;
+    }
+
+    Ok(())
 }
 
 async fn run_workers(
@@ -136,5 +180,111 @@ fn runtime_log_level(level: &crate::config_v2::types::LogLevel) -> &'static str 
         crate::config_v2::types::LogLevel::Warn => "warn",
         crate::config_v2::types::LogLevel::Error => "error",
         crate::config_v2::types::LogLevel::Fatal => "fatal",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use crate::{
+        config_v2::runtime_test_config_with_data_dir, dev_support::test_fs::unique_test_dir,
+    };
+
+    use super::{prepare_runtime_start_paths, RuntimeError};
+
+    #[test]
+    fn prepare_runtime_start_paths_creates_required_directories() -> Result<(), String> {
+        let root = unique_test_dir("runtime-node", "prepare-start-paths")?;
+        let data_dir = root.join("pg").join("data");
+        let socket_dir = root.join("run").join("socket");
+        let log_file = root.join("logs").join("postgres.log");
+        let cfg =
+            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
+        let cfg = crate::config_v2::RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                socket_dir: socket_dir.clone(),
+                log_file: log_file.clone(),
+                ..cfg.postgres
+            },
+            ..cfg
+        };
+
+        prepare_runtime_start_paths(&cfg).map_err(|err| err.to_string())?;
+
+        if !data_dir.is_dir() {
+            return Err(format!(
+                "expected data dir to exist at {}",
+                data_dir.display()
+            ));
+        }
+        if !socket_dir.is_dir() {
+            return Err(format!(
+                "expected socket dir to exist at {}",
+                socket_dir.display()
+            ));
+        }
+        let log_parent = log_file
+            .parent()
+            .ok_or_else(|| format!("expected log parent for {}", log_file.display()))?;
+        if !log_parent.is_dir() {
+            return Err(format!(
+                "expected log dir to exist at {}",
+                log_parent.display()
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = fs::metadata(&data_dir)
+                .map_err(|err| format!("metadata {} failed: {err}", data_dir.display()))?
+                .permissions()
+                .mode()
+                & 0o777;
+            if mode != 0o700 {
+                return Err(format!(
+                    "expected {} permissions 0o700, observed {mode:o}",
+                    data_dir.display()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn prepare_runtime_start_paths_reports_socket_dir_failures() -> Result<(), String> {
+        let root = unique_test_dir("runtime-node", "prepare-start-paths-error")?;
+        let data_dir = root.join("pg").join("data");
+        let socket_dir = root.join("socket-file");
+        fs::write(&socket_dir, "occupied")
+            .map_err(|err| format!("write {} failed: {err}", socket_dir.display()))?;
+        let cfg = runtime_test_config_with_data_dir(data_dir).map_err(|err| err.to_string())?;
+        let cfg = crate::config_v2::RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                socket_dir: socket_dir.clone(),
+                ..cfg.postgres
+            },
+            ..cfg
+        };
+
+        let error = prepare_runtime_start_paths(&cfg).err().ok_or_else(|| {
+            format!(
+                "expected startup path preparation to fail for {}",
+                socket_dir.display()
+            )
+        })?;
+        match error {
+            RuntimeError::StartupExecution(message) => {
+                if !message.contains("failed to create postgres socket dir") {
+                    return Err(format!("unexpected startup error: {message}"));
+                }
+            }
+            other => return Err(format!("unexpected error variant: {other}")),
+        }
+
+        Ok(())
     }
 }

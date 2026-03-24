@@ -280,12 +280,10 @@ ident = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }}
 wal_keep_size = "128MB"
 
 [process.binaries.overrides]
-postgres = "/usr/local/lib/pgtuskmaster/wrappers/postgres"
 pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
 pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
 initdb = "/usr/lib/postgresql/16/bin/initdb"
 pg_basebackup = "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup"
-psql = "/usr/lib/postgresql/16/bin/psql"
 
 [logging.postgres.cleanup]
 max_files = 20

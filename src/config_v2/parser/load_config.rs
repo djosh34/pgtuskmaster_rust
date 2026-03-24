@@ -211,11 +211,6 @@ fn map_runtime_document(
     };
 
     let binaries = BinariesConfig {
-        postgres: resolve_binary_path(
-            "process.binaries.overrides.postgres",
-            "postgres",
-            document.process.binaries.overrides.postgres,
-        )?,
         pg_ctl: resolve_binary_path(
             "process.binaries.overrides.pg_ctl",
             "pg_ctl",
@@ -235,11 +230,6 @@ fn map_runtime_document(
             "process.binaries.overrides.pg_basebackup",
             "pg_basebackup",
             document.process.binaries.overrides.pg_basebackup,
-        )?,
-        psql: resolve_binary_path(
-            "process.binaries.overrides.psql",
-            "psql",
-            document.process.binaries.overrides.psql,
         )?,
     };
 
@@ -1150,12 +1140,10 @@ ca_cert = {}"#,
                         toml_path_source(ca_cert.as_path()),
                     ),
                     r#"[process.binaries.overrides]
-postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true"
-psql = "/bin/true""#
+pg_basebackup = "/bin/true""#
                         .to_string(),
                 ],
             )
@@ -1193,12 +1181,10 @@ psql = "/bin/true""#
                 ["http://127.0.0.1:2379"],
                 [
                     r#"[process.binaries.overrides]
-postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true"
-psql = "/bin/true""#
+pg_basebackup = "/bin/true""#
                         .to_string(),
                     r#"[pgtm.api]
 advertised_url = "https://127.0.0.1:18081"

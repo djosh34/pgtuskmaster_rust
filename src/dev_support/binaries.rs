@@ -60,12 +60,10 @@ pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessErr
 pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinariesConfig, HarnessError>
 {
     Ok(BinariesConfig {
-        postgres: require_pg16_bin_for_real_tests("postgres")?,
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,
         pg_rewind: require_pg16_bin_for_real_tests("pg_rewind")?,
         initdb: require_pg16_bin_for_real_tests("initdb")?,
         pg_basebackup: require_pg16_bin_for_real_tests("pg_basebackup")?,
-        psql: require_pg16_bin_for_real_tests("psql")?,
     })
 }
 

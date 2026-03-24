@@ -411,12 +411,10 @@ pub(super) struct BinaryResolutionConfig {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct BinaryPathOverrides {
-    pub postgres: Option<PathBuf>,
     pub pg_ctl: Option<PathBuf>,
     pub pg_rewind: Option<PathBuf>,
     pub initdb: Option<PathBuf>,
     pub pg_basebackup: Option<PathBuf>,
-    pub psql: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
