@@ -958,7 +958,7 @@ mod tests {
         dcs::DcsSnapshot,
         dev_support::test_fs::unique_test_dir,
         logging::LogSender,
-        postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
+        postgres_managed::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
             jobs::{
                 ActiveJob, PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec,

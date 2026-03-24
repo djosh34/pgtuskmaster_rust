@@ -445,7 +445,7 @@ mod tests {
             conninfo::PgConnInfo,
             state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         },
-        postgres_managed_conf::{
+        postgres_managed::{
             managed_standby_passfile_path, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME,
         },
         process::{

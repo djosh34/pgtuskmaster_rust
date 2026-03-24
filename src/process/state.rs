@@ -8,7 +8,7 @@ use crate::{
     dcs::DcsSnapshot,
     logging::LogSender,
     pginfo::state::PgInfoState,
-    postgres_managed_conf::ManagedRecoverySignal,
+    postgres_managed::ManagedRecoverySignal,
     state::{JobId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 

@@ -12,7 +12,6 @@ pub mod ha;
 pub(crate) mod logging;
 pub mod pginfo;
 pub(crate) mod postgres_managed;
-pub(crate) mod postgres_managed_conf;
 pub(crate) mod postgres_roles;
 pub mod process;
 pub mod runtime;

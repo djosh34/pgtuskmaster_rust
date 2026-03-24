@@ -8,17 +8,52 @@ use thiserror::Error;
 
 use crate::{
     config_v2::RuntimeConfigV2,
-    postgres_managed_conf::{
-        managed_recovery_signal_for_start_job, managed_standby_passfile_path,
-        render_managed_postgres_conf, ManagedPostgresConf, ManagedPostgresConfError,
-        ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME,
-        MANAGED_RECOVERY_SIGNAL_NAME, MANAGED_STANDBY_SIGNAL_NAME,
-    },
+    pginfo::{conninfo::render_conninfo_value, state::PgConnInfo},
     process::jobs::{ProcessJobKind, StartPostgresSpec},
 };
 
+pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
+const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
+# This file is managed by pgtuskmaster.\n\
+# Backup-era archive and restore settings have been removed.\n\
+# Production TLS material must be supplied by the operator as direct file paths.\n";
+pub(crate) const MANAGED_STANDBY_SIGNAL_NAME: &str = "standby.signal";
+pub(crate) const MANAGED_RECOVERY_SIGNAL_NAME: &str = "recovery.signal";
+const MANAGED_STANDBY_PASSFILE_NAME: &str = "pgtm.standby.passfile";
 const POSTGRESQL_AUTO_CONF_NAME: &str = "postgresql.auto.conf";
 const QUARANTINED_POSTGRESQL_AUTO_CONF_NAME: &str = "pgtm.unmanaged.postgresql.auto.conf";
+
+const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
+    "archive_cleanup_command",
+    "config_file",
+    "hba_file",
+    "hot_standby",
+    "ident_file",
+    "listen_addresses",
+    "log_destination",
+    "logging_collector",
+    "port",
+    "primary_conninfo",
+    "primary_slot_name",
+    "promote_trigger_file",
+    "recovery_end_command",
+    "recovery_min_apply_delay",
+    "recovery_target",
+    "recovery_target_action",
+    "recovery_target_inclusive",
+    "recovery_target_lsn",
+    "recovery_target_name",
+    "recovery_target_time",
+    "recovery_target_timeline",
+    "recovery_target_xid",
+    "restore_command",
+    "ssl",
+    "ssl_ca_file",
+    "ssl_cert_file",
+    "ssl_key_file",
+    "trigger_file",
+    "unix_socket_directories",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedPostgresConfig {
@@ -40,6 +75,23 @@ pub(crate) enum ManagedPostgresError {
     InvalidConfig { message: String },
     #[error("invalid managed postgres state: {message}")]
     InvalidManagedState { message: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedRecoverySignal {
+    None,
+    Standby,
+    Recovery,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ManagedPostgresTlsConfig {
+    Disabled,
+    Enabled {
+        cert_file: PathBuf,
+        key_file: PathBuf,
+        ca_file: Option<PathBuf>,
+    },
 }
 
 pub(crate) fn materialize_managed_postgres_config(
@@ -89,21 +141,15 @@ pub(crate) fn materialize_managed_postgres_config(
         start_spec,
         managed_standby_passfile.as_path(),
     )?;
-    let managed_conf = ManagedPostgresConf {
-        listen_addresses: cfg.postgres.listen_host.clone(),
-        port: cfg.postgres.listen_port,
-        unix_socket_directories: cfg.postgres.socket_dir.clone(),
-        hba_file: managed_hba.clone(),
-        ident_file: managed_ident.clone(),
-        tls: managed_tls_config,
-        start_job_kind: tracked_job_kind,
-        primary_conninfo: start_spec.primary_conninfo.clone(),
-        primary_slot_name: start_spec.primary_slot_name.clone(),
-        extra_gucs: cfg.postgres.extra_gucs.clone(),
-    };
-    let rendered_conf =
-        render_managed_postgres_conf(&managed_conf, managed_standby_passfile.as_path())
-            .map_err(map_managed_conf_error)?;
+    let rendered_conf = render_managed_postgres_conf(
+        cfg,
+        tracked_job_kind,
+        start_spec,
+        managed_hba.as_path(),
+        managed_ident.as_path(),
+        &managed_tls_config,
+        managed_standby_passfile.as_path(),
+    )?;
     write_atomic(
         &managed_postgresql_conf,
         rendered_conf.as_bytes(),
@@ -112,7 +158,7 @@ pub(crate) fn materialize_managed_postgres_config(
 
     quarantine_postgresql_auto_conf(&postgresql_auto_conf, &quarantined_postgresql_auto_conf)?;
     materialize_recovery_signal_files(
-        managed_recovery_signal_for_start_job(tracked_job_kind).map_err(map_managed_conf_error)?,
+        managed_recovery_signal_for_start_job(tracked_job_kind)?,
         &standby_signal,
         &recovery_signal,
     )?;
@@ -217,7 +263,7 @@ fn materialize_managed_standby_passfile(
 }
 
 fn render_libpq_passfile_entry(
-    conninfo: &crate::pginfo::state::PgConnInfo,
+    conninfo: &PgConnInfo,
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
     const STREAMING_REPLICATION_DATABASE: &str = "replication";
@@ -270,32 +316,250 @@ fn escape_libpq_passfile_field(value: &str) -> String {
     escaped
 }
 
-fn map_managed_conf_error(err: ManagedPostgresConfError) -> ManagedPostgresError {
-    match err {
-        ManagedPostgresConfError::InvalidExtraGuc { key, message } => {
-            ManagedPostgresError::InvalidConfig {
-                message: format!("postgres.extra_gucs entry `{key}` invalid: {message}"),
-            }
+fn render_managed_postgres_conf(
+    cfg: &RuntimeConfigV2,
+    tracked_job_kind: ProcessJobKind,
+    start_spec: &StartPostgresSpec,
+    managed_hba: &Path,
+    managed_ident: &Path,
+    managed_tls_config: &ManagedPostgresTlsConfig,
+    managed_standby_passfile_path: &Path,
+) -> Result<String, ManagedPostgresError> {
+    let mut rendered = String::from(MANAGED_POSTGRESQL_CONF_HEADER);
+
+    push_string_setting(
+        &mut rendered,
+        "listen_addresses",
+        cfg.postgres.listen_host.as_str(),
+    );
+    push_u16_setting(&mut rendered, "port", cfg.postgres.listen_port);
+    push_path_setting(
+        &mut rendered,
+        "unix_socket_directories",
+        cfg.postgres.socket_dir.as_path(),
+    );
+    push_path_setting(&mut rendered, "hba_file", managed_hba);
+    push_path_setting(&mut rendered, "ident_file", managed_ident);
+    push_bool_setting(&mut rendered, "logging_collector", true);
+    push_string_setting(&mut rendered, "log_destination", "jsonlog,stderr");
+
+    match managed_tls_config {
+        ManagedPostgresTlsConfig::Disabled => {
+            push_bool_setting(&mut rendered, "ssl", false);
         }
-        ManagedPostgresConfError::ReservedExtraGuc { key } => ManagedPostgresError::InvalidConfig {
-            message: format!("postgres.extra_gucs entry `{key}` is reserved by pgtuskmaster"),
-        },
-        ManagedPostgresConfError::InvalidPrimarySlotName { slot, message } => {
-            ManagedPostgresError::InvalidConfig {
-                message: format!("managed replica slot `{slot}` invalid: {message}"),
+        ManagedPostgresTlsConfig::Enabled {
+            cert_file,
+            key_file,
+            ca_file,
+        } => {
+            push_bool_setting(&mut rendered, "ssl", true);
+            push_path_setting(&mut rendered, "ssl_cert_file", cert_file.as_path());
+            push_path_setting(&mut rendered, "ssl_key_file", key_file.as_path());
+            if let Some(path) = ca_file.as_ref() {
+                push_path_setting(&mut rendered, "ssl_ca_file", path.as_path());
             }
-        }
-        ManagedPostgresConfError::InvalidStartJobKind { job_kind } => {
-            ManagedPostgresError::InvalidConfig {
-                message: format!(
-                    "managed postgres config requires a start job kind, got `{job_kind}`"
-                ),
-            }
-        }
-        ManagedPostgresConfError::InvalidStartData { message } => {
-            ManagedPostgresError::InvalidConfig { message }
         }
     }
+
+    match tracked_job_kind {
+        ProcessJobKind::StartPrimary => {
+            reject_replica_source_fields(start_spec)?;
+            push_bool_setting(&mut rendered, "hot_standby", false);
+        }
+        ProcessJobKind::StartDetachedStandby => {
+            reject_replica_source_fields(start_spec)?;
+            push_bool_setting(&mut rendered, "hot_standby", true);
+        }
+        ProcessJobKind::StartReplica => {
+            let primary_conninfo = start_spec.primary_conninfo.as_ref().ok_or_else(|| {
+                ManagedPostgresError::InvalidConfig {
+                    message: "replica start requires primary_conninfo".to_string(),
+                }
+            })?;
+            push_bool_setting(&mut rendered, "hot_standby", true);
+            let mut primary_conninfo_with_passfile = primary_conninfo.to_string();
+            primary_conninfo_with_passfile.push(' ');
+            primary_conninfo_with_passfile.push_str("passfile=");
+            primary_conninfo_with_passfile.push_str(
+                render_conninfo_value(managed_standby_passfile_path.display().to_string().as_str())
+                    .as_str(),
+            );
+            push_string_setting(
+                &mut rendered,
+                "primary_conninfo",
+                primary_conninfo_with_passfile.as_str(),
+            );
+            if let Some(slot) = start_spec.primary_slot_name.as_ref() {
+                validate_primary_slot_name(slot.as_str())?;
+                push_string_setting(&mut rendered, "primary_slot_name", slot.as_str());
+            }
+        }
+        other => {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "managed postgres config requires a start job kind, got `{}`",
+                    other.as_str()
+                ),
+            });
+        }
+    }
+
+    for (key, value) in &cfg.postgres.extra_gucs {
+        validate_extra_guc_entry(key.as_str(), value.as_str())?;
+        push_string_setting(&mut rendered, key.as_str(), value.as_str());
+    }
+
+    Ok(rendered)
+}
+
+fn managed_recovery_signal_for_start_job(
+    job_kind: ProcessJobKind,
+) -> Result<ManagedRecoverySignal, ManagedPostgresError> {
+    match job_kind {
+        ProcessJobKind::StartPrimary => Ok(ManagedRecoverySignal::None),
+        ProcessJobKind::StartDetachedStandby | ProcessJobKind::StartReplica => {
+            Ok(ManagedRecoverySignal::Standby)
+        }
+        other => Err(ManagedPostgresError::InvalidConfig {
+            message: format!(
+                "managed postgres config requires a start job kind, got `{}`",
+                other.as_str()
+            ),
+        }),
+    }
+}
+
+pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
+}
+
+fn validate_extra_guc_entry(key: &str, value: &str) -> Result<(), ManagedPostgresError> {
+    validate_extra_guc_name(key)?;
+    if value.chars().any(char::is_control) {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: format!(
+                "postgres.extra_gucs entry `{key}` invalid: value must not contain control characters"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn reject_replica_source_fields(
+    start_spec: &StartPostgresSpec,
+) -> Result<(), ManagedPostgresError> {
+    if start_spec.primary_conninfo.is_some() || start_spec.primary_slot_name.is_some() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "only replica starts may carry primary_conninfo or primary_slot_name"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresError> {
+    if key.is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "postgres.extra_gucs entry `` invalid: name must not be empty".to_string(),
+        });
+    }
+
+    if RESERVED_EXTRA_GUC_KEYS.contains(&key) {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: format!("postgres.extra_gucs entry `{key}` is reserved by pgtuskmaster"),
+        });
+    }
+
+    for component in key.split('.') {
+        if component.is_empty() {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "postgres.extra_gucs entry `{key}` invalid: name must not contain empty namespace components"
+                ),
+            });
+        }
+
+        let mut chars = component.chars();
+        let Some(first) = chars.next() else {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "postgres.extra_gucs entry `{key}` invalid: name must not contain empty namespace components"
+                ),
+            });
+        };
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "postgres.extra_gucs entry `{key}` invalid: each namespace component must start with an ASCII letter or underscore"
+                ),
+            });
+        }
+        if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '$') {
+            return Err(ManagedPostgresError::InvalidConfig {
+                message: format!(
+                    "postgres.extra_gucs entry `{key}` invalid: name may only contain ASCII letters, digits, underscore, dollar sign, and dots"
+                ),
+            });
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_primary_slot_name(slot: &str) -> Result<(), ManagedPostgresError> {
+    if slot.is_empty() {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: "managed replica slot `` invalid: slot name must not be empty".to_string(),
+        });
+    }
+    if !slot
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+    {
+        return Err(ManagedPostgresError::InvalidConfig {
+            message: format!(
+                "managed replica slot `{slot}` invalid: slot name may only contain lowercase ASCII letters, digits, and underscore"
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn push_path_setting(output: &mut String, key: &str, value: &Path) {
+    push_string_setting(output, key, value.display().to_string().as_str());
+}
+
+fn push_u16_setting(output: &mut String, key: &str, value: u16) {
+    output.push_str(key);
+    output.push_str(" = ");
+    output.push_str(value.to_string().as_str());
+    output.push('\n');
+}
+
+fn push_bool_setting(output: &mut String, key: &str, value: bool) {
+    output.push_str(key);
+    output.push_str(" = ");
+    output.push_str(if value { "on" } else { "off" });
+    output.push('\n');
+}
+
+fn push_string_setting(output: &mut String, key: &str, value: &str) {
+    output.push_str(key);
+    output.push_str(" = '");
+    output.push_str(escape_postgres_conf_string(value).as_str());
+    output.push_str("'\n");
+}
+
+fn escape_postgres_conf_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\'' => escaped.push_str("''"),
+            '\\' => escaped.push_str("\\\\"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
 }
 
 fn existing_recovery_signal(
@@ -499,6 +763,7 @@ fn now_millis() -> Result<u128, ManagedPostgresError> {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs, io,
         path::{Path, PathBuf},
         time::Duration,
@@ -523,17 +788,17 @@ mod tests {
             conninfo::{PgClientTls, PgSslMode},
             state::PgConnInfo,
         },
-        postgres_managed_conf::{
-            managed_standby_passfile_path, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME,
-            MANAGED_RECOVERY_SIGNAL_NAME,
-        },
         process::jobs::{ProcessJobKind, StartPostgresSpec},
         state::PgEndpoint,
     };
 
     use super::{
-        inspect_managed_recovery_state, materialize_managed_postgres_config, ManagedPostgresError,
-        POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+        inspect_managed_recovery_state, managed_recovery_signal_for_start_job,
+        managed_standby_passfile_path, materialize_managed_postgres_config,
+        render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresError,
+        ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
+        MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME, POSTGRESQL_AUTO_CONF_NAME,
+        QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
 
     fn sample_managed_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
@@ -560,6 +825,296 @@ mod tests {
             primary_slot_name,
             ..primary_start_spec(cfg)
         }
+    }
+
+    fn sample_render_config() -> Result<RuntimeConfigV2, String> {
+        let cfg = sample_managed_config(PathBuf::from("/var/lib/postgresql/data"))?;
+        Ok(RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                listen_host: "127.0.0.1".to_string(),
+                listen_port: 5432,
+                socket_dir: PathBuf::from("/tmp/pgtm socket"),
+                pg_hba_file: PathBuf::from("/var/lib/postgresql/data/pgtm.pg_hba.conf"),
+                pg_ident_file: PathBuf::from("/var/lib/postgresql/data/pgtm.pg_ident.conf"),
+                extra_gucs: BTreeMap::from([
+                    (
+                        "log_line_prefix".to_string(),
+                        "%m [%p] leader='node-a'".to_string(),
+                    ),
+                    (
+                        "shared_preload_libraries".to_string(),
+                        "pg_stat_statements".to_string(),
+                    ),
+                ]),
+                ..cfg.postgres
+            },
+            ..cfg
+        })
+    }
+
+    fn sample_render_replica_conninfo() -> Result<PgConnInfo, String> {
+        Ok(PgConnInfo {
+            route: crate::state::PgRoute::tcp("leader.internal".to_string(), 5432)?,
+            user: "replicator".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: Some("node-b".to_string()),
+            connect_timeout_s: Some(5),
+            options: Some("-c wal_receiver_status_interval=5s".to_string()),
+            tls: PgClientTls {
+                mode: PgSslMode::Require,
+                root_cert: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
+                client_cert: None,
+                client_key: None,
+            },
+        })
+    }
+
+    fn sample_render_tls_config() -> ManagedPostgresTlsConfig {
+        ManagedPostgresTlsConfig::Enabled {
+            cert_file: PathBuf::from("/etc/pgtuskmaster/tls/server.crt"),
+            key_file: PathBuf::from("/etc/pgtuskmaster/tls/server.key"),
+            ca_file: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
+        }
+    }
+
+    fn render_sample_conf() -> Result<String, String> {
+        let cfg = sample_render_config()?;
+        render_managed_postgres_conf(
+            &cfg,
+            ProcessJobKind::StartReplica,
+            &replica_start_spec(
+                &cfg,
+                sample_render_replica_conninfo()?,
+                Some("slot_a".to_string()),
+            ),
+            cfg.postgres.pg_hba_file.as_path(),
+            cfg.postgres.pg_ident_file.as_path(),
+            &sample_render_tls_config(),
+            managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
+        )
+        .map_err(|err| format!("render failed: {err}"))
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_is_deterministic() -> Result<(), String> {
+        let a = render_sample_conf()?;
+        let b = render_sample_conf()?;
+        assert_eq!(a, b);
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_keeps_owned_settings_before_extra_gucs() -> Result<(), String> {
+        let rendered = render_sample_conf()?;
+        let primary_slot_index = rendered
+            .find("primary_slot_name =")
+            .ok_or_else(|| "missing primary_slot_name line".to_string())?;
+        let extra_index = rendered
+            .find("log_line_prefix =")
+            .ok_or_else(|| "missing log_line_prefix line".to_string())?;
+        if primary_slot_index >= extra_index {
+            return Err(format!(
+                "expected owned settings before extra gucs: primary_slot_index={primary_slot_index} extra_index={extra_index}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_sorts_extra_gucs() -> Result<(), String> {
+        let rendered = render_sample_conf()?;
+        let first = rendered
+            .find("log_line_prefix =")
+            .ok_or_else(|| "missing log_line_prefix".to_string())?;
+        let second = rendered
+            .find("shared_preload_libraries =")
+            .ok_or_else(|| "missing shared_preload_libraries".to_string())?;
+        if first >= second {
+            return Err(format!(
+                "expected sorted extra gucs order: first={first} second={second}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_quotes_and_escapes_string_values() -> Result<(), String> {
+        let rendered = render_sample_conf()?;
+        if !rendered.contains("unix_socket_directories = '/tmp/pgtm socket'") {
+            return Err(format!(
+                "missing quoted socket dir in rendered conf: {rendered}"
+            ));
+        }
+        if !rendered.contains("log_line_prefix = '%m [%p] leader=''node-a'''") {
+            return Err(format!(
+                "missing escaped quoted log_line_prefix in rendered conf: {rendered}"
+            ));
+        }
+        if !rendered.contains(
+            "primary_conninfo = 'host=leader.internal port=5432 user=replicator dbname=postgres application_name=node-b connect_timeout=5 sslmode=require sslrootcert=/etc/pgtuskmaster/tls/client-ca.crt options=''-c wal_receiver_status_interval=5s'' passfile=/var/lib/postgresql/data/pgtm.standby.passfile'",
+        ) {
+            return Err(format!(
+                "missing quoted primary_conninfo in rendered conf: {rendered}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_renders_booleans_and_replica_fields() -> Result<(), String> {
+        let rendered = render_sample_conf()?;
+        if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
+            return Err(format!("missing managed header: {rendered}"));
+        }
+        if !rendered.contains("logging_collector = on") {
+            return Err(format!("missing logging_collector=on: {rendered}"));
+        }
+        if !rendered.contains("log_destination = 'jsonlog,stderr'") {
+            return Err(format!("missing jsonlog destination: {rendered}"));
+        }
+        if !rendered.contains("ssl = on") {
+            return Err(format!("missing ssl=on: {rendered}"));
+        }
+        if !rendered.contains("hot_standby = on") {
+            return Err(format!("missing hot_standby=on: {rendered}"));
+        }
+        if !rendered.contains("primary_slot_name = 'slot_a'") {
+            return Err(format!("missing primary_slot_name: {rendered}"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_renders_primary_without_replica_only_fields(
+    ) -> Result<(), String> {
+        let cfg = sample_render_config()?;
+        let rendered = render_managed_postgres_conf(
+            &cfg,
+            ProcessJobKind::StartPrimary,
+            &primary_start_spec(&cfg),
+            cfg.postgres.pg_hba_file.as_path(),
+            cfg.postgres.pg_ident_file.as_path(),
+            &ManagedPostgresTlsConfig::Disabled,
+            managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
+        )
+        .map_err(|err| format!("render failed: {err}"))?;
+        if !rendered.contains("ssl = off") {
+            return Err(format!("missing ssl=off: {rendered}"));
+        }
+        if !rendered.contains("hot_standby = off") {
+            return Err(format!("missing hot_standby=off: {rendered}"));
+        }
+        if rendered.contains("primary_conninfo") || rendered.contains("primary_slot_name") {
+            return Err(format!(
+                "primary config unexpectedly rendered replica fields: {rendered}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
+    ) -> Result<(), String> {
+        let cfg = sample_render_config()?;
+        let rendered = render_managed_postgres_conf(
+            &cfg,
+            ProcessJobKind::StartDetachedStandby,
+            &primary_start_spec(&cfg),
+            cfg.postgres.pg_hba_file.as_path(),
+            cfg.postgres.pg_ident_file.as_path(),
+            &sample_render_tls_config(),
+            managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
+        )
+        .map_err(|err| format!("render failed: {err}"))?;
+        if !rendered.contains("hot_standby = on") {
+            return Err(format!("missing hot_standby=on: {rendered}"));
+        }
+        if rendered.contains("primary_conninfo") || rendered.contains("primary_slot_name") {
+            return Err(format!(
+                "detached standby config unexpectedly rendered replica source fields: {rendered}"
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn start_job_kind_tracks_recovery_signal_state() -> Result<(), String> {
+        assert_eq!(
+            managed_recovery_signal_for_start_job(ProcessJobKind::StartPrimary)
+                .map_err(|err| err.to_string())?,
+            ManagedRecoverySignal::None
+        );
+        assert_eq!(
+            managed_recovery_signal_for_start_job(ProcessJobKind::StartDetachedStandby)
+                .map_err(|err| err.to_string())?,
+            ManagedRecoverySignal::Standby
+        );
+        assert_eq!(
+            managed_recovery_signal_for_start_job(ProcessJobKind::StartReplica)
+                .map_err(|err| err.to_string())?,
+            ManagedRecoverySignal::Standby
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn validate_extra_guc_entry_rejects_reserved_keys() {
+        assert_eq!(
+            validate_extra_guc_entry("port", "5432"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message: "postgres.extra_gucs entry `port` is reserved by pgtuskmaster".to_string(),
+            })
+        );
+        assert_eq!(
+            validate_extra_guc_entry("log_destination", "stderr"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message: "postgres.extra_gucs entry `log_destination` is reserved by pgtuskmaster"
+                    .to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_extra_guc_entry_rejects_invalid_names() {
+        assert_eq!(
+            validate_extra_guc_entry("invalid-name", "on"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message:
+                    "postgres.extra_gucs entry `invalid-name` invalid: name may only contain ASCII letters, digits, underscore, dollar sign, and dots"
+                        .to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_extra_guc_entry_rejects_control_characters_in_values() {
+        assert_eq!(
+            validate_extra_guc_entry("application_name", "node-a\nnode-b"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message:
+                    "postgres.extra_gucs entry `application_name` invalid: value must not contain control characters"
+                        .to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn validate_extra_guc_entry_rejects_recovery_override_keys() {
+        assert_eq!(
+            validate_extra_guc_entry("restore_command", "cp /archive/%f %p"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message: "postgres.extra_gucs entry `restore_command` is reserved by pgtuskmaster"
+                    .to_string(),
+            })
+        );
+        assert_eq!(
+            validate_extra_guc_entry("recovery_target_timeline", "latest"),
+            Err(ManagedPostgresError::InvalidConfig {
+                message:
+                    "postgres.extra_gucs entry `recovery_target_timeline` is reserved by pgtuskmaster"
+                        .to_string(),
+            })
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use crate::{
     config_v2::RuntimeConfigV2,
     dcs::{DcsMemberState, DcsSnapshot},
-    postgres_managed_conf::{ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME},
+    postgres_managed::{ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn,
@@ -170,7 +170,7 @@ mod tests {
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        postgres_managed_conf::ManagedRecoverySignal,
+        postgres_managed::ManagedRecoverySignal,
         process::{
             jobs::{
                 MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
