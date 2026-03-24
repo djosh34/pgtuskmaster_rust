@@ -1,6 +1,7 @@
 use crate::pginfo::conninfo::PgClientTls;
 use crate::state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName};
 use reqwest::Url;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -165,18 +166,22 @@ pub(crate) struct LoggingConfig {
     pub postgres_log_cleanup_protect_recent: Duration,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum LogLevel {
     Trace,
     Debug,
+    #[default]
     Info,
     Warn,
     Error,
     Fatal,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum FileSinkMode {
+    #[default]
     Append,
     Truncate,
 }
@@ -213,7 +218,8 @@ pub(crate) enum ApiAuth {
 
 // === OPERATOR CONFIG ===
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum PgtmApiTransportExpectation {
     Http,
     Https,

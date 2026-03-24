@@ -6,9 +6,9 @@ use std::{
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
-        DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, OperatorClientTlsConfig,
-        OperatorConfigV2, PgtmApiTransportExpectation, PostgresConfig, RoleConfig, RuntimeConfigV2,
-        Secret, TimingConfig, TlsConfig,
+        DcsEndpoint, LoggingConfig, OperatorClientTlsConfig, OperatorConfigV2,
+        PgtmApiTransportExpectation, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret,
+        TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
@@ -246,7 +246,7 @@ fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV
         .unwrap_or_else(|| working_root.join("logs/postgres"));
 
     let logging = LoggingConfig {
-        level: map_log_level(document.logging.level),
+        level: document.logging.level,
         capture_subprocess_output: document.logging.capture_subprocess_output,
         stderr_enabled: document.logging.sinks.stderr.enabled,
         file_enabled: document.logging.sinks.file.enabled,
@@ -257,7 +257,7 @@ fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV
             .path
             .clone()
             .unwrap_or_else(|| working_root.join("runtime.jsonl")),
-        file_mode: map_file_sink_mode(document.logging.sinks.file.mode),
+        file_mode: document.logging.sinks.file.mode,
         postgres_logs_enabled: document.logging.postgres.enabled,
         postgres_log_dir: postgres_log_dir.clone(),
         postgres_pg_ctl_log: document
@@ -370,7 +370,7 @@ pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let config = runtime_test_config()?;
     Ok(RuntimeConfigV2 {
         logging: LoggingConfig {
-            level: LogLevel::Trace,
+            level: crate::config_v2::types::LogLevel::Trace,
             postgres_log_poll_interval: Duration::from_millis(50),
             postgres_log_cleanup_enabled: false,
             ..config.logging
@@ -679,7 +679,7 @@ fn map_postgres_advertise(
 pub(super) fn map_operator_document(
     operator: raw::OperatorDocument,
 ) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    let expected_transport = operator.api.expected_transport.map(map_expected_transport);
+    let expected_transport = operator.api.expected_transport;
     let (read_token, admin_token) = map_operator_auth(operator.api.auth)?;
 
     Ok(OperatorConfigV2 {
@@ -753,15 +753,6 @@ pub(super) fn map_operator_api_route(
     parse_operator_url(field, advertise, expected_transport)?
         .map(|url| ApiRoute::from_url(url).map_err(|err| validation_error(field, err)))
         .transpose()
-}
-
-pub(super) fn map_expected_transport(
-    expected_transport: raw::PgtmApiTransportExpectation,
-) -> PgtmApiTransportExpectation {
-    match expected_transport {
-        raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
-        raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
-    }
 }
 
 fn map_operator_auth(
@@ -979,24 +970,6 @@ pub(super) fn token_auth_mode(auth: &raw::TokenAuthConfig) -> TokenAuthMode {
 pub(super) enum TokenAuthMode {
     Disabled,
     RoleTokens,
-}
-
-fn map_log_level(level: raw::LogLevel) -> LogLevel {
-    match level {
-        raw::LogLevel::Trace => LogLevel::Trace,
-        raw::LogLevel::Debug => LogLevel::Debug,
-        raw::LogLevel::Info => LogLevel::Info,
-        raw::LogLevel::Warn => LogLevel::Warn,
-        raw::LogLevel::Error => LogLevel::Error,
-        raw::LogLevel::Fatal => LogLevel::Fatal,
-    }
-}
-
-fn map_file_sink_mode(mode: raw::FileSinkMode) -> FileSinkMode {
-    match mode {
-        raw::FileSinkMode::Append => FileSinkMode::Append,
-        raw::FileSinkMode::Truncate => FileSinkMode::Truncate,
-    }
 }
 
 fn normalized_or_default(value: Option<String>, default: &str) -> String {

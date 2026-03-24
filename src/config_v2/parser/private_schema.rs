@@ -6,7 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::pginfo::conninfo::PgSslMode;
+use crate::{
+    config_v2::types::{FileSinkMode, LogLevel, PgtmApiTransportExpectation},
+    pginfo::conninfo::PgSslMode,
+};
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
@@ -446,18 +449,6 @@ impl Default for LoggingConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum LogLevel {
-    Trace,
-    Debug,
-    #[default]
-    Info,
-    Warn,
-    Error,
-    Fatal,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresLoggingConfig {
@@ -523,14 +514,6 @@ impl Default for FileSinkConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum FileSinkMode {
-    #[default]
-    Append,
-    Truncate,
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct LogCleanupConfig {
@@ -587,13 +570,6 @@ pub(super) struct TokenAuthConfig {
 pub(super) struct RoleTokens {
     pub read_token: Option<SecretSource>,
     pub admin_token: Option<SecretSource>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub(super) enum PgtmApiTransportExpectation {
-    Http,
-    Https,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
