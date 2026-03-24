@@ -22,10 +22,10 @@ EOF_APPEND_PROGRESS_LOG
 - [ ] read the [task name].md file from the path specified
 - [ ] complete the work like this:
     - [ ] If you read nothing/ TO BE VERIFIED, follow these steps:
-        - [ ] Iterate on the plan, can something be represented better? better enums that make unrepresentable states impossible? Other Structs/Enums in need of big changes to align with new design? change ALL those types first (before fixing compile errors)
-          - [ ] Make use of improve-code-boundaries skill to evaluate your design and to improve the plan and the codebase
-          - [ ] Aim to Remove/Merge struct/enums/functions to simplify code
-        - [ ] Once your happy with type design, replace end of plan with 'NOW EXECUTE'
+        - [ ] Aim to Reuse/Merge/Remove struct/enums/functions to simplify/not increase code complexity
+        - [ ] Create a plan first in separate file in plans subdir .ralph/[story]/[task]_plans/[plan].md
+        - [ ] Replace end of plan with 'TO BE VERIFIED' and add path to the plan
+        - [ ] Once your happy with plan/interface design/types/enums, replace end of plan with 'NOW EXECUTE'
         - [ ] QUIT IMMEDIATELY!
     - [ ] When you read 'NOW EXECUTE': 
         - [ ] execute the plan as written, fix the compile errors, and tick off the boxes when you do them. 
