@@ -1,12 +1,12 @@
 use crate::{
     config_v2::RuntimeConfigV2,
     dcs::{DcsMemberState, DcsSnapshot},
-    postgres_managed_conf::ManagedRecoverySignal,
+    postgres_managed_conf::{ManagedPostgresStartIntent, ManagedRecoverySignal},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn,
-            MandatorySourceRole, PgRewindSpec, PostgresStartIntent, PostgresStartMode,
-            ProcessError, ProcessIntent, PromoteSpec, ReplicaProvisionIntent,
+            MandatorySourceRole, PgRewindSpec, PostgresStartIntent, ProcessError, ProcessIntent,
+            PromoteSpec, ReplicaProvisionIntent,
         },
         source::source_from_member,
         state::ProcessObservedSnapshot,
@@ -19,37 +19,9 @@ pub(crate) enum ClusterProcessPlan {
     Bootstrap(BootstrapSpec),
     BaseBackup(BaseBackupSpec),
     PgRewind(PgRewindSpec),
-    StartManagedPostgres(ManagedStartPlan),
+    StartManagedPostgres(ManagedPostgresStartIntent),
     Promote(PromoteSpec),
     Demote(DemoteSpec),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedStartPlan {
-    pub(crate) desired_session: DesiredManagedPostgresSession,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum DesiredManagedPostgresSession {
-    Primary,
-    DetachedStandby,
-    Follow(Box<ReplicaFollowPlan>),
-}
-
-impl DesiredManagedPostgresSession {
-    pub(crate) fn mode(&self) -> PostgresStartMode {
-        match self {
-            Self::Primary => PostgresStartMode::Primary,
-            Self::DetachedStandby => PostgresStartMode::DetachedStandby,
-            Self::Follow(_) => PostgresStartMode::Replica,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ReplicaFollowPlan {
-    pub(crate) source: MandatoryRoleSourceConn,
-    pub(crate) primary_slot_name: Option<String>,
 }
 
 #[derive(Default)]
@@ -100,25 +72,20 @@ impl ProcessIntentPlanner {
                         "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
                     ));
                 }
-                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    desired_session: DesiredManagedPostgresSession::Primary,
-                }))
+                Ok(ClusterProcessPlan::StartManagedPostgres(
+                    ManagedPostgresStartIntent::primary(),
+                ))
             }
             ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    desired_session: DesiredManagedPostgresSession::DetachedStandby,
-                }))
+                Ok(ClusterProcessPlan::StartManagedPostgres(
+                    ManagedPostgresStartIntent::detached_standby(),
+                ))
             }
             ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
                 let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
-                Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    desired_session: DesiredManagedPostgresSession::Follow(Box::new(
-                        ReplicaFollowPlan {
-                            source,
-                            primary_slot_name: None,
-                        },
-                    )),
-                }))
+                Ok(ClusterProcessPlan::StartManagedPostgres(
+                    ManagedPostgresStartIntent::replica(source.conninfo, None),
+                ))
             }
             ProcessIntent::Promote => Ok(ClusterProcessPlan::Promote(PromoteSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
@@ -189,7 +156,7 @@ mod tests {
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        postgres_managed_conf::ManagedRecoverySignal,
+        postgres_managed_conf::{ManagedPostgresStartIntent, ManagedRecoverySignal},
         process::{
             jobs::{
                 MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
@@ -203,7 +170,7 @@ mod tests {
         },
     };
 
-    use super::{ClusterProcessPlan, DesiredManagedPostgresSession, ProcessIntentPlanner};
+    use super::{ClusterProcessPlan, ProcessIntentPlanner};
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
@@ -404,17 +371,22 @@ mod tests {
             )
             .map_err(|err| format!("plan replica start failed: {err}"))?;
         match replica_plan {
-            ClusterProcessPlan::StartManagedPostgres(start) => match start.desired_session {
-                DesiredManagedPostgresSession::Follow(follow) => {
-                    if follow.source.role != MandatorySourceRole::Replicator {
-                        return Err(format!(
-                            "replica start should use replicator role, observed {:?}",
-                            follow.source.role
-                        ));
-                    }
+            ClusterProcessPlan::StartManagedPostgres(ManagedPostgresStartIntent::Replica {
+                primary_conninfo,
+                primary_slot_name,
+            }) => {
+                if primary_conninfo.user != "replicator" {
+                    return Err(format!(
+                        "replica start should use replicator user, observed `{}`",
+                        primary_conninfo.user
+                    ));
                 }
-                other => return Err(format!("unexpected replica desired session: {other:?}")),
-            },
+                if primary_slot_name.is_some() {
+                    return Err(format!(
+                        "replica start should not set primary_slot_name, observed {primary_slot_name:?}"
+                    ));
+                }
+            }
             other => return Err(format!("unexpected replica start plan: {other:?}")),
         }
 

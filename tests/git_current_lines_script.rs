@@ -10,15 +10,16 @@ fn unique_temp_dir(label: &str) -> Result<PathBuf, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|err| format!("system clock before unix epoch: {err}"))?
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "pgtm-{label}-{}-{timestamp}",
-        std::process::id()
-    ));
+    let path =
+        std::env::temp_dir().join(format!("pgtm-{label}-{}-{timestamp}", std::process::id()));
     match fs::remove_dir_all(&path) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Err(err) => {
-            return Err(format!("remove existing temp dir {} failed: {err}", path.display()));
+            return Err(format!(
+                "remove existing temp dir {} failed: {err}",
+                path.display()
+            ));
         }
     }
     fs::create_dir_all(&path)
@@ -34,7 +35,10 @@ fn remove_dir_if_exists(path: &Path) -> Result<(), String> {
     }
 }
 
-fn with_temp_dir<T>(label: &str, run: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+fn with_temp_dir<T>(
+    label: &str,
+    run: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
     let path = unique_temp_dir(label)?;
     let result = run(path.as_path());
     let cleanup = remove_dir_if_exists(path.as_path());
@@ -85,7 +89,10 @@ fn deleted_tracked_files_are_excluded_from_git_current_lines_counts() -> Result<
         fs::create_dir_all(repo_root.join("tests"))
             .map_err(|err| format!("create tests dir failed: {err}"))?;
 
-        write_file(&repo_root.join("src/lib.rs"), "pub fn lines() {}\nlet _value = 1;\n")?;
+        write_file(
+            &repo_root.join("src/lib.rs"),
+            "pub fn lines() {}\nlet _value = 1;\n",
+        )?;
         write_file(&repo_root.join("src/main.rs"), "fn main() {}\n")?;
         write_file(
             &repo_root.join("tests/basic.rs"),

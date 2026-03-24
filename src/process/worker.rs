@@ -11,7 +11,7 @@ use crate::{
     config_v2::RuntimeConfigV2,
     logging::LogSender,
     process::{
-        cluster::{ProcessCluster, ProcessPreparationError},
+        cluster::{prepare_process_launch_from_ctx, ProcessPreparationError},
         postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
     },
     state::{new_state_channel, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
@@ -596,34 +596,7 @@ pub(crate) async fn start_job(
         }
     }
 
-    let cluster = match ProcessCluster::production_from_ctx(ctx) {
-        Ok(cluster) => cluster,
-        Err(error) => {
-            ctx.runtime
-                .log
-                .send(ProcessLogEvent::IntentMaterializationFailed {
-                    job_kind: request.intent.process_job_kind(),
-                    cause: format!("planning snapshot failed: {error}"),
-                })
-                .map_err(|err| {
-                    WorkerError::Message(format!(
-                        "process intent materialization log send failed: {err}"
-                    ))
-                })?;
-            transition_to_idle(
-                ctx,
-                JobOutcome::Failure {
-                    id: request.id,
-                    job_kind: request.intent.active_job_kind(),
-                    error,
-                    finished_at: now,
-                },
-                now,
-            )?;
-            return Ok(());
-        }
-    };
-    let prepared_launch = match cluster.prepare(&request) {
+    let prepared_launch = match prepare_process_launch_from_ctx(ctx, &request) {
         Ok(prepared) => prepared,
         Err(error) => {
             log_prepare_failure(ctx, &request, &error)?;
@@ -936,25 +909,25 @@ fn log_prepare_failure(
     error: &ProcessPreparationError,
 ) -> Result<(), WorkerError> {
     match error {
-        ProcessPreparationError::Planning(inner)
-        | ProcessPreparationError::SessionMaterialization(inner) => ctx
+        ProcessPreparationError::Snapshot(inner)
+        | ProcessPreparationError::IntentMaterialization(inner) => ctx
             .runtime
             .log
             .send(ProcessLogEvent::IntentMaterializationFailed {
                 job_kind: request.intent.process_job_kind(),
-                cause: format!("{} failed: {inner}", error.stage_label()),
+                cause: inner.to_string(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!(
                     "process intent materialization log send failed: {err}"
                 ))
             }),
-        ProcessPreparationError::ToolLowering(inner) => ctx
+        ProcessPreparationError::BuildCommand(inner) => ctx
             .runtime
             .log
             .send(ProcessLogEvent::BuildCommandFailed {
                 job_kind: request.intent.process_job_kind(),
-                cause: format!("{} failed: {inner}", error.stage_label()),
+                cause: inner.to_string(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process build command log send failed: {err}"))
