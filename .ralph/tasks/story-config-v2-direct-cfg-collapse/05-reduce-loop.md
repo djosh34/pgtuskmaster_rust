@@ -1,4 +1,4 @@
-## Task: Reduce Code Loop <status>done</status> <passes>true</passes>
+## Task: Reduce Code Loop <status>in_progress</status> <passes>true</passes>
 
 Your only goal is to reduce code and clean up the codebase.
 
@@ -6,6 +6,8 @@ use just-reduce-code skill
 
 
 End goal: remove 50-75% of code from src/ and tests/
+Not done until the full reduction goal is reached.
+Test and commit each change.
 
 Check current code reduction since commit '.ralph/git_diff_lines.txt' via:
 'bash .ralph/git_diff_lines_since.sh'
