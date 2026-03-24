@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 02:09:27 PM CET 2026
+Generated: Tue Mar 24 02:25:30 PM CET 2026
 
 # Task `.ralph/tasks/bugs/generic-switchover-request-can-stall-without-primary.md`
 
@@ -9,6 +9,17 @@ Generated: Tue Mar 24 02:09:27 PM CET 2026
 
 <description>
 The switchover lifecycle is not reliably self-clearing in the shipped Docker walkthrough.
+```
+
+==============
+
+# Task `.ralph/tasks/bugs/git-current-lines-script-fails-after-deleting-tracked-files.md`
+
+```
+## Bug: git_current_lines.sh fails after deleting tracked files <status>completed</status> <passes>true</passes> <priority>medium</priority>
+
+<description>
+`bash .ralph/git_current_lines.sh` emits `wc: ... No such file or directory` once a reduce-loop slice deletes tracked files before commit. This was detected on 2026-03-24 while validating the worker-startup-boundary reduction after deleting `src/api/startup.rs`, `src/ha/startup.rs`, `src/pginfo/startup.rs`, and `src/process/startup.rs`.
 ```
 
 ==============

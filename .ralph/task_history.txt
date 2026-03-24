@@ -360,3 +360,4 @@ NONE
 .ralph/tasks/bugs/generic-switchover-request-can-stall-without-primary.md
 .ralph/tasks/bugs/switchover-request-fails-via-non-primary-seed.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
+.ralph/tasks/bugs/git-current-lines-script-fails-after-deleting-tracked-files.md
