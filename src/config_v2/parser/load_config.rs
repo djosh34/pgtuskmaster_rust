@@ -40,8 +40,9 @@ fn load_runtime_config_contents_at(
     contents: &str,
     path: &Path,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let document: raw::RuntimeDocument =
-        toml::from_str(contents).map_err(|source| parse_error(path, source))?;
+    let document = toml::from_str::<raw::RuntimeDocument>(contents)
+        .map(raw::RuntimeDocument::normalize)
+        .map_err(|source| parse_error(path, source))?;
     map_runtime_document(document, path)
 }
 
@@ -54,6 +55,7 @@ fn load_operator_config_contents_at(
     if looks_like_runtime_operator_source(&document) {
         let runtime_document = document
             .try_into::<raw::RuntimeDocument>()
+            .map(raw::RuntimeDocument::normalize)
             .map_err(|source| parse_error(path, source))?;
         return runtime_document
             .pgtm
@@ -114,14 +116,8 @@ fn map_runtime_document(
         .clone()
         .unwrap_or_else(|| working_root.join("logs/postgres.log"));
 
-    let listen_host = normalized_or_default(
-        Some(document.postgres.network.listen_host.clone()),
-        DEFAULT_POSTGRES_LISTEN_HOST,
-    );
-    let listen_port = nonzero_or_default(
-        document.postgres.network.listen_port,
-        DEFAULT_POSTGRES_LISTEN_PORT,
-    );
+    let listen_host = document.postgres.network.listen_host.clone();
+    let listen_port = document.postgres.network.listen_port;
     let cluster_advertise = map_postgres_advertise(
         "postgres.network.cluster_advertise",
         document
@@ -140,11 +136,6 @@ fn map_runtime_document(
         .operator_advertise
         .map(|advertise| map_postgres_advertise("postgres.network.operator_advertise", advertise))
         .transpose()?;
-    let connect_timeout_s = nonzero_or_default(
-        document.postgres.connect_timeout_s,
-        DEFAULT_POSTGRES_CONNECT_TIMEOUT_S,
-    );
-
     let postgres = PostgresConfig {
         data_dir: data_dir.clone(),
         socket_dir,
@@ -153,7 +144,7 @@ fn map_runtime_document(
         listen_port,
         cluster_advertise,
         operator_advertise,
-        connect_timeout: Duration::from_secs(u64::from(connect_timeout_s)),
+        connect_timeout: Duration::from_secs(u64::from(document.postgres.connect_timeout_s)),
         local_database: non_empty_owned(
             "postgres.local_database",
             document.postgres.local_database,
@@ -261,23 +252,17 @@ fn map_runtime_document(
             .pg_ctl_log_file
             .clone()
             .unwrap_or_else(|| postgres_log_dir.join("pg_ctl.log")),
-        postgres_log_poll_interval: Duration::from_millis(nonzero_or_default(
+        postgres_log_poll_interval: Duration::from_millis(
             document.logging.postgres.poll_interval_ms,
-            DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
-        )),
-        postgres_log_cleanup_enabled: document.logging.postgres.cleanup.enabled,
-        postgres_log_cleanup_max_files: nonzero_or_default(
-            document.logging.postgres.cleanup.max_files,
-            DEFAULT_LOGGING_CLEANUP_MAX_FILES,
         ),
-        postgres_log_cleanup_max_age: Duration::from_secs(nonzero_or_default(
+        postgres_log_cleanup_enabled: document.logging.postgres.cleanup.enabled,
+        postgres_log_cleanup_max_files: document.logging.postgres.cleanup.max_files,
+        postgres_log_cleanup_max_age: Duration::from_secs(
             document.logging.postgres.cleanup.max_age_seconds,
-            DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS,
-        )),
-        postgres_log_cleanup_protect_recent: Duration::from_secs(nonzero_or_default(
+        ),
+        postgres_log_cleanup_protect_recent: Duration::from_secs(
             document.logging.postgres.cleanup.protect_recent_seconds,
-            DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
-        )),
+        ),
     };
     let operator_advertise = document
         .pgtm
@@ -292,26 +277,11 @@ fn map_runtime_document(
         postgres,
         dcs,
         timing: TimingConfig {
-            ha_loop_interval: Duration::from_millis(nonzero_or_default(
-                document.ha.loop_interval_ms,
-                DEFAULT_HA_LOOP_INTERVAL_MS,
-            )),
-            ha_lease_ttl: Duration::from_millis(nonzero_or_default(
-                document.ha.lease_ttl_ms,
-                DEFAULT_HA_LEASE_TTL_MS,
-            )),
-            bootstrap_timeout: Duration::from_millis(nonzero_or_default(
-                document.process.timeouts.bootstrap_ms,
-                DEFAULT_BOOTSTRAP_TIMEOUT_MS,
-            )),
-            pg_rewind_timeout: Duration::from_millis(nonzero_or_default(
-                document.process.timeouts.pg_rewind_ms,
-                DEFAULT_PG_REWIND_TIMEOUT_MS,
-            )),
-            fencing_timeout: Duration::from_millis(nonzero_or_default(
-                document.process.timeouts.fencing_ms,
-                DEFAULT_FENCING_TIMEOUT_MS,
-            )),
+            ha_loop_interval: Duration::from_millis(document.ha.loop_interval_ms),
+            ha_lease_ttl: Duration::from_millis(document.ha.lease_ttl_ms),
+            bootstrap_timeout: Duration::from_millis(document.process.timeouts.bootstrap_ms),
+            pg_rewind_timeout: Duration::from_millis(document.process.timeouts.pg_rewind_ms),
+            fencing_timeout: Duration::from_millis(document.process.timeouts.fencing_ms),
         },
         binaries,
         logging,
@@ -326,7 +296,8 @@ fn map_runtime_document(
 
 #[cfg(any(test, feature = "internal-test-support"))]
 pub fn validate_runtime_document_contents(contents: &str) -> Result<(), ConfigErrorV2> {
-    let _: raw::RuntimeDocument = toml::from_str(contents)
+    let _ = toml::from_str::<raw::RuntimeDocument>(contents)
+        .map(raw::RuntimeDocument::normalize)
         .map_err(|source| parse_error(Path::new("<runtime-config>"), source))?;
     Ok(())
 }
@@ -379,8 +350,9 @@ pub fn load_runtime_timing_values(
     path: &Path,
 ) -> Result<(Duration, Duration, Duration, Duration), ConfigErrorV2> {
     let contents = read_config_file(path)?;
-    let document: raw::RuntimeDocument =
-        toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
+    let document = toml::from_str::<raw::RuntimeDocument>(&contents)
+        .map(raw::RuntimeDocument::normalize)
+        .map_err(|source| parse_error(path, source))?;
     Ok((
         Duration::from_millis(document.ha.loop_interval_ms),
         Duration::from_millis(document.ha.lease_ttl_ms),
@@ -412,19 +384,6 @@ fn load_runtime_test_config_from_paths(
     config.postgres.rewinder.password = password;
     Ok(config)
 }
-
-const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
-const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
-const DEFAULT_POSTGRES_LISTEN_PORT: u16 = 5432;
-const DEFAULT_HA_LOOP_INTERVAL_MS: u64 = 1_000;
-const DEFAULT_HA_LEASE_TTL_MS: u64 = 10_000;
-const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
-const DEFAULT_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
-const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
-const DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS: u64 = 300;
 
 pub(super) fn read_config_file(path: &Path) -> Result<String, ConfigErrorV2> {
     std::fs::read_to_string(path).map_err(|source| ConfigErrorV2::Io {
@@ -977,27 +936,6 @@ pub(super) enum TokenAuthMode {
     RoleTokens,
 }
 
-fn normalized_or_default(value: Option<String>, default: &str) -> String {
-    if let Some(value) = value {
-        let trimmed = value.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-    default.to_string()
-}
-
-fn nonzero_or_default<T>(value: T, default: T) -> T
-where
-    T: Default + PartialEq,
-{
-    if value == T::default() {
-        default
-    } else {
-        value
-    }
-}
-
 fn resolve_binary_path(
     field: &'static str,
     executable: &str,
@@ -1104,7 +1042,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        load_operator_config_contents, load_runtime_config_contents,
+        load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
         validate_runtime_document_contents,
     };
     use crate::{
@@ -1115,11 +1053,52 @@ mod tests {
         dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgSslMode,
     };
-    use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path};
+    use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
+
+    fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> Result<String, String> {
+        Ok(render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "node-a",
+            (
+                root.join("data").as_path(),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            ["http://127.0.0.1:2379"],
+            [
+                r#"[ha]
+loop_interval_ms = 0
+lease_ttl_ms = 0"#,
+                r#"[process.timeouts]
+pg_rewind_ms = 0
+bootstrap_ms = 0
+fencing_ms = 0"#,
+                r#"[process.binaries.overrides]
+pg_ctl = "/bin/true"
+initdb = "/bin/true"
+pg_rewind = "/bin/true"
+pg_basebackup = "/bin/true""#,
+                r#"[logging]
+capture_subprocess_output = true"#,
+                r#"[logging.postgres]
+enabled = true
+poll_interval_ms = 0"#,
+                r#"[logging.postgres.cleanup]
+enabled = true
+max_files = 0
+max_age_seconds = 0
+protect_recent_seconds = 0"#,
+            ],
+        )?
+        .replacen("[postgres]\n", "[postgres]\nconnect_timeout_s = 0\n", 1)
+        .replacen("listen_host = \"127.0.0.1\"", "listen_host = \"   \"", 1)
+        .replacen("listen_port = 5432", "listen_port = 0", 1))
+    }
 
     #[test]
-    fn load_runtime_config_preserves_shared_source_client_tls() -> Result<(), String> {
-        let root = unique_test_dir("load-config", "runtime-config-v2-source-client-tls")?;
+    fn load_runtime_config_preserves_runtime_tls_and_operator_api_fields() -> Result<(), String> {
+        let root = unique_test_dir("load-config", "runtime-config-v2-runtime-fields")?;
         let ca_cert = root.join("source-ca.crt");
         let config = load_runtime_config_contents(
             render_runtime_test_config_toml(
@@ -1145,6 +1124,10 @@ initdb = "/bin/true"
 pg_rewind = "/bin/true"
 pg_basebackup = "/bin/true""#
                         .to_string(),
+                    r#"[pgtm.api]
+advertised_url = "https://127.0.0.1:18081"
+expected_transport = "https""#
+                        .to_string(),
                 ],
             )
             .map_err(|err| err.to_string())?
@@ -1162,41 +1145,6 @@ pg_basebackup = "/bin/true""#
         );
         assert_eq!(config.postgres.replicator.username, "replicator");
         assert_eq!(config.postgres.rewinder.username, "rewinder");
-        Ok(())
-    }
-
-    #[test]
-    fn load_runtime_config_preserves_operator_api_advertise_route() -> Result<(), String> {
-        let root = unique_test_dir("load-config", "runtime-config-v2-operator-api-route")?;
-        let config = load_runtime_config_contents(
-            render_runtime_test_config_toml(
-                "cluster-a",
-                "scope-a",
-                "node-a",
-                (
-                    root.join("data").as_path(),
-                    Path::new("/tmp/pgtm-socket"),
-                    Path::new("/tmp/pgtm.log"),
-                ),
-                ["http://127.0.0.1:2379"],
-                [
-                    r#"[process.binaries.overrides]
-pg_ctl = "/bin/true"
-initdb = "/bin/true"
-pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true""#
-                        .to_string(),
-                    r#"[pgtm.api]
-advertised_url = "https://127.0.0.1:18081"
-expected_transport = "https""#
-                        .to_string(),
-                ],
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
-
         if config
             .api
             .advertise
@@ -1210,6 +1158,57 @@ expected_transport = "https""#
             ));
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_and_timing_values_normalize_zero_runtime_fields() -> Result<(), String> {
+        let root = unique_test_dir("load-config", "runtime-config-v2-zero-defaults")?;
+        let contents = runtime_config_contents_with_zero_runtime_defaults(root.as_path())?;
+        let config =
+            load_runtime_config_contents(contents.as_str()).map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            (
+                config.postgres.listen_host.as_str(),
+                config.postgres.listen_port,
+                config.postgres.cluster_advertise.host(),
+                config.postgres.cluster_advertise.port(),
+                config.postgres.connect_timeout,
+                config.timing.bootstrap_timeout,
+                config.logging.postgres_log_poll_interval,
+            ),
+            (
+                "127.0.0.1",
+                5432,
+                "127.0.0.1",
+                5432,
+                Duration::from_secs(5),
+                Duration::from_millis(300_000),
+                Duration::from_millis(200),
+            )
+        );
+        assert_eq!(config.logging.postgres_log_cleanup_max_files, 50);
+        let config_path = root.join("runtime.toml");
+        fs::write(config_path.as_path(), contents).map_err(|err| err.to_string())?;
+
+        let (loop_interval, lease_ttl, bootstrap_timeout, pg_rewind_timeout) =
+            load_runtime_timing_values(config_path.as_path()).map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            (
+                loop_interval,
+                lease_ttl,
+                bootstrap_timeout,
+                pg_rewind_timeout
+            ),
+            (
+                Duration::from_millis(1_000),
+                Duration::from_millis(10_000),
+                Duration::from_millis(300_000),
+                Duration::from_millis(120_000)
+            )
+        );
         Ok(())
     }
 
@@ -1265,8 +1264,7 @@ path = {}"#,
     }
 
     #[test]
-    fn validate_runtime_document_rejects_inline_postgres_tls_sources_at_parse_boundary(
-    ) -> Result<(), String> {
+    fn parse_boundaries_reject_non_path_tls_sources() -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-inline-tls")?;
         match validate_runtime_document_contents(
             render_runtime_test_config_toml(
@@ -1286,21 +1284,38 @@ identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" 
             .map_err(|err| err.to_string())?
             .as_str(),
         ) {
+            Err(ConfigErrorV2::Parse { .. }) => {}
+            Err(err) => return Err(format!("expected parse error, got {err}")),
+            Ok(()) => return Err("expected inline TLS parse rejection".to_string()),
+        }
+
+        match load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                None,
+                None,
+                [r#"[api.tls]
+identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }"#],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        ) {
             Err(ConfigErrorV2::Parse { .. }) => Ok(()),
             Err(err) => Err(format!("expected parse error, got {err}")),
-            Ok(()) => Err("expected inline TLS parse rejection".to_string()),
+            Ok(_) => Err("expected non-path TLS identity rejection".to_string()),
         }
     }
 
     #[test]
-    fn load_operator_config_preserves_expected_transport_for_operator_documents(
+    fn load_operator_config_preserves_api_routing_fields_for_operator_and_runtime_documents(
     ) -> Result<(), String> {
-        let config = load_operator_config_contents(
+        let operator = load_operator_config_contents(
             render_operator_test_config_toml(
-                Some("https://127.0.0.1:8443"),
-                None,
+                Some("https://node-b:8443"),
+                Some("https://127.0.0.1:18081"),
                 Some("https"),
-                None,
+                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
                 std::iter::empty::<String>(),
             )
             .map_err(|err| err.to_string())?
@@ -1309,15 +1324,23 @@ identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" 
         .map_err(|err| err.to_string())?;
 
         assert_eq!(
-            config.expected_transport,
-            Some(PgtmApiTransportExpectation::Https)
+            (
+                operator.base_url.as_ref().map(reqwest::Url::as_str),
+                operator.expected_transport,
+                operator.resolve_to,
+                operator
+                    .advertised_url
+                    .as_ref()
+                    .map(crate::state::ApiRoute::as_str),
+            ),
+            (
+                Some("https://node-b:8443/"),
+                Some(PgtmApiTransportExpectation::Https),
+                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
+                Some("https://127.0.0.1:18081/"),
+            )
         );
-        Ok(())
-    }
 
-    #[test]
-    fn load_operator_config_preserves_expected_transport_for_runtime_documents(
-    ) -> Result<(), String> {
         let runtime_document = render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
@@ -1350,61 +1373,6 @@ expected_transport = "https""#],
         assert_eq!(
             operator.expected_transport,
             Some(PgtmApiTransportExpectation::Https)
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn load_operator_config_keeps_resolve_to_on_validated_api_endpoint() -> Result<(), String> {
-        let config = load_operator_config_contents(
-            render_operator_test_config_toml(
-                Some("https://node-b:8443"),
-                None,
-                Some("https"),
-                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
-                std::iter::empty::<String>(),
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
-
-        assert_eq!(
-            config.base_url.as_ref().map(reqwest::Url::as_str),
-            Some("https://node-b:8443/")
-        );
-        assert_eq!(
-            config.expected_transport,
-            Some(PgtmApiTransportExpectation::Https)
-        );
-        assert_eq!(
-            config.resolve_to,
-            Some(SocketAddr::from(([127, 0, 0, 1], 18443)))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn load_operator_config_preserves_advertised_url() -> Result<(), String> {
-        let config = load_operator_config_contents(
-            render_operator_test_config_toml(
-                Some("https://node-a:8443"),
-                Some("https://127.0.0.1:18081"),
-                Some("https"),
-                None,
-                std::iter::empty::<String>(),
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
-
-        assert_eq!(
-            config
-                .advertised_url
-                .as_ref()
-                .map(crate::state::ApiRoute::as_str),
-            Some("https://127.0.0.1:18081/")
         );
         Ok(())
     }
@@ -1483,28 +1451,5 @@ identity = {{ cert = {}, key = {} }}"#,
             Some(&identity_key_path)
         );
         Ok(())
-    }
-
-    #[test]
-    fn load_operator_config_rejects_non_path_tls_identity_sources_at_parse_boundary(
-    ) -> Result<(), String> {
-        let result = load_operator_config_contents(
-            render_operator_test_config_toml(
-                Some("https://127.0.0.1:8443"),
-                None,
-                None,
-                None,
-                [r#"[api.tls]
-identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }"#],
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        );
-
-        match result {
-            Err(ConfigErrorV2::Parse { .. }) => Ok(()),
-            Err(err) => Err(format!("expected parse error, got {err}")),
-            Ok(_) => Err("expected non-path TLS identity rejection".to_string()),
-        }
     }
 }

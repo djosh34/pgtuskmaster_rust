@@ -12,6 +12,7 @@ use crate::{
 };
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
+const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_POSTGRES_LISTEN_PORT: u16 = 5432;
 const DEFAULT_HA_LOOP_INTERVAL_MS: u64 = 1_000;
@@ -168,6 +169,73 @@ pub(super) struct RuntimeDocument {
     pub pgtm: Option<toml::Value>,
     #[serde(default)]
     pub debug: DebugConfig,
+}
+
+impl RuntimeDocument {
+    pub(super) fn normalize(mut self) -> Self {
+        self.postgres.network.listen_host = {
+            let listen_host = self.postgres.network.listen_host.trim();
+            if listen_host.is_empty() {
+                DEFAULT_POSTGRES_LISTEN_HOST.to_string()
+            } else {
+                listen_host.to_string()
+            }
+        };
+        self.postgres.network.listen_port = default_if_zero(
+            self.postgres.network.listen_port,
+            DEFAULT_POSTGRES_LISTEN_PORT,
+        );
+        self.postgres.connect_timeout_s = default_if_zero(
+            self.postgres.connect_timeout_s,
+            DEFAULT_POSTGRES_CONNECT_TIMEOUT_S,
+        );
+        for (value, default) in [
+            (&mut self.ha.loop_interval_ms, DEFAULT_HA_LOOP_INTERVAL_MS),
+            (&mut self.ha.lease_ttl_ms, DEFAULT_HA_LEASE_TTL_MS),
+            (
+                &mut self.process.timeouts.pg_rewind_ms,
+                DEFAULT_PG_REWIND_TIMEOUT_MS,
+            ),
+            (
+                &mut self.process.timeouts.bootstrap_ms,
+                DEFAULT_BOOTSTRAP_TIMEOUT_MS,
+            ),
+            (
+                &mut self.process.timeouts.fencing_ms,
+                DEFAULT_FENCING_TIMEOUT_MS,
+            ),
+            (
+                &mut self.logging.postgres.poll_interval_ms,
+                DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
+            ),
+            (
+                &mut self.logging.postgres.cleanup.max_files,
+                DEFAULT_LOGGING_CLEANUP_MAX_FILES,
+            ),
+            (
+                &mut self.logging.postgres.cleanup.max_age_seconds,
+                DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS,
+            ),
+            (
+                &mut self.logging.postgres.cleanup.protect_recent_seconds,
+                DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
+            ),
+        ] {
+            *value = default_if_zero(*value, default);
+        }
+        self
+    }
+}
+
+fn default_if_zero<T>(value: T, default: T) -> T
+where
+    T: Default + PartialEq,
+{
+    if value == T::default() {
+        default
+    } else {
+        value
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -637,46 +705,6 @@ fn string_secret(value: &str) -> SecretSource {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn inline_content(content: &str) -> PathOrInline {
-    PathOrInline::Inline {
-        content: content.to_string(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn postgres_role_with_password(username: &str, password: SecretSource) -> PostgresRoleConfig {
-    PostgresRoleConfig {
-        username: username.to_string(),
-        auth: RoleAuthConfig::Password { password },
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn runtime_test_postgres_roles() -> PostgresRolesConfig {
-    PostgresRolesConfig {
-        mandatory: MandatoryPostgresRolesConfig {
-            superuser: postgres_role_with_password("postgres", string_secret("postgres")),
-            replicator: postgres_role_with_password("replicator", string_secret("replicator")),
-            rewinder: postgres_role_with_password("rewinder", string_secret("rewinder")),
-        },
-        extra: BTreeMap::new(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn operator_transport_expectation(
-    expected_transport: &str,
-) -> Result<PgtmApiTransportExpectation, String> {
-    match expected_transport {
-        "http" => Ok(PgtmApiTransportExpectation::Http),
-        "https" => Ok(PgtmApiTransportExpectation::Https),
-        other => Err(format!(
-            "unsupported operator test transport expectation `{other}`"
-        )),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 fn toml_value<T: Serialize>(label: &str, value: T) -> Result<toml::Value, String> {
     toml::Value::try_from(value)
         .map_err(|error| format!("{label} serialization to toml::Value failed: {error}"))
@@ -751,60 +779,6 @@ pub fn toml_string_secret(value: &str) -> String {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn runtime_test_document<I, S>(
-    cluster_name: &str,
-    scope: &str,
-    member_id: &str,
-    paths: (&std::path::Path, &std::path::Path, &std::path::Path),
-    dcs_endpoints: I,
-) -> RuntimeDocument
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    let (data_dir, socket_dir, log_file) = paths;
-    RuntimeDocument {
-        cluster: ClusterConfig {
-            name: cluster_name.to_string(),
-            scope: scope.to_string(),
-            member_id: member_id.to_string(),
-        },
-        postgres: PostgresConfig {
-            paths: PostgresPathsConfig {
-                data_dir: data_dir.to_path_buf(),
-                socket_dir: Some(socket_dir.to_path_buf()),
-                log_file: Some(log_file.to_path_buf()),
-            },
-            network: PostgresNetworkConfig::default(),
-            connect_timeout_s: 0,
-            local_database: DEFAULT_POSTGRES_DATABASE.to_string(),
-            rewind: PostgresRewindConfig::default(),
-            tls: TlsServerConfig::default(),
-            roles: runtime_test_postgres_roles(),
-            access: PostgresAccessConfig {
-                hba: inline_content("host all all 127.0.0.1/32 trust"),
-                ident: inline_content(""),
-            },
-            extra_gucs: BTreeMap::new(),
-        },
-        dcs: DcsConfig {
-            endpoints: dcs_endpoints
-                .into_iter()
-                .map(|endpoint| endpoint.as_ref().to_string())
-                .collect(),
-            client: DcsClientConfig::default(),
-            init: None,
-        },
-        ha: HaConfig::default(),
-        process: ProcessConfig::default(),
-        logging: LoggingConfig::default(),
-        api: ApiConfig::default(),
-        pgtm: None,
-        debug: DebugConfig::default(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 pub fn build_runtime_test_document_value<I, S>(
     cluster_name: &str,
     scope: &str,
@@ -816,9 +790,74 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<str>,
 {
+    let (data_dir, socket_dir, log_file) = paths;
     toml_value(
         "runtime test document",
-        runtime_test_document(cluster_name, scope, member_id, paths, dcs_endpoints),
+        RuntimeDocument {
+            cluster: ClusterConfig {
+                name: cluster_name.to_string(),
+                scope: scope.to_string(),
+                member_id: member_id.to_string(),
+            },
+            postgres: PostgresConfig {
+                paths: PostgresPathsConfig {
+                    data_dir: data_dir.to_path_buf(),
+                    socket_dir: Some(socket_dir.to_path_buf()),
+                    log_file: Some(log_file.to_path_buf()),
+                },
+                network: PostgresNetworkConfig::default(),
+                connect_timeout_s: DEFAULT_POSTGRES_CONNECT_TIMEOUT_S,
+                local_database: DEFAULT_POSTGRES_DATABASE.to_string(),
+                rewind: PostgresRewindConfig::default(),
+                tls: TlsServerConfig::default(),
+                roles: PostgresRolesConfig {
+                    mandatory: MandatoryPostgresRolesConfig {
+                        superuser: PostgresRoleConfig {
+                            username: "postgres".to_string(),
+                            auth: RoleAuthConfig::Password {
+                                password: string_secret("postgres"),
+                            },
+                        },
+                        replicator: PostgresRoleConfig {
+                            username: "replicator".to_string(),
+                            auth: RoleAuthConfig::Password {
+                                password: string_secret("replicator"),
+                            },
+                        },
+                        rewinder: PostgresRoleConfig {
+                            username: "rewinder".to_string(),
+                            auth: RoleAuthConfig::Password {
+                                password: string_secret("rewinder"),
+                            },
+                        },
+                    },
+                    extra: BTreeMap::new(),
+                },
+                access: PostgresAccessConfig {
+                    hba: PathOrInline::Inline {
+                        content: "host all all 127.0.0.1/32 trust".to_string(),
+                    },
+                    ident: PathOrInline::Inline {
+                        content: String::new(),
+                    },
+                },
+                extra_gucs: BTreeMap::new(),
+            },
+            dcs: DcsConfig {
+                endpoints: dcs_endpoints
+                    .into_iter()
+                    .map(|endpoint| endpoint.as_ref().to_string())
+                    .collect(),
+                client: DcsClientConfig::default(),
+                init: None,
+            },
+            ha: HaConfig::default(),
+            process: ProcessConfig::default(),
+            logging: LoggingConfig::default(),
+            api: ApiConfig::default(),
+            pgtm: None,
+            debug: DebugConfig::default(),
+        },
     )
 }
 
@@ -862,9 +901,16 @@ fn build_operator_test_document_value(
             api: OperatorApiConfig {
                 base_url: base_url.map(str::to_string),
                 advertised_url: advertised_url.map(str::to_string),
-                expected_transport: expected_transport
-                    .map(operator_transport_expectation)
-                    .transpose()?,
+                expected_transport: match expected_transport {
+                    Some("http") => Some(PgtmApiTransportExpectation::Http),
+                    Some("https") => Some(PgtmApiTransportExpectation::Https),
+                    Some(other) => {
+                        return Err(format!(
+                            "unsupported operator test transport expectation `{other}`"
+                        ))
+                    }
+                    None => None,
+                },
                 resolve_to,
                 auth: auth.unwrap_or_default(),
                 tls: api_tls.unwrap_or_default(),
