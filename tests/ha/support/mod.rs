@@ -14,13 +14,14 @@ mod world;
 
 use std::{
     future::Future,
+    io,
     sync::{Mutex, OnceLock},
     thread,
 };
 
 use cucumber::{writer, World as _, WriterExt as _};
 use futures::FutureExt as _;
-use tokio::runtime::{Builder, Handle, RuntimeFlavor};
+use tokio::runtime::{Builder, Handle, Runtime, RuntimeFlavor};
 
 use crate::support::{
     error::{HarnessError, Result},
@@ -166,15 +167,33 @@ fn record_cleanup_error(error: String) {
     }
 }
 
+fn build_current_thread_runtime(
+    runtime_build_error: &'static str,
+) -> std::result::Result<Runtime, String> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("{runtime_build_error}: {err}"))
+}
+
 pub(crate) fn block_on_current_thread<T>(
     future: impl Future<Output = std::result::Result<T, String>>,
     runtime_build_error: &'static str,
 ) -> std::result::Result<T, String> {
-    Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("{runtime_build_error}: {err}"))?
-        .block_on(future)
+    build_current_thread_runtime(runtime_build_error)?.block_on(future)
+}
+
+pub(crate) fn spawn_named_current_thread<T>(
+    thread_name: &'static str,
+    future: impl Future<Output = std::result::Result<T, String>> + Send + 'static,
+    runtime_build_error: &'static str,
+) -> io::Result<thread::JoinHandle<std::result::Result<T, String>>>
+where
+    T: Send + 'static,
+{
+    thread::Builder::new()
+        .name(thread_name.to_string())
+        .spawn(move || block_on_current_thread(future, runtime_build_error))
 }
 
 pub(crate) fn block_on_support_future<T, E>(

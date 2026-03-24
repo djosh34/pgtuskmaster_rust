@@ -34,8 +34,9 @@ use pgtuskmaster_rust::{
 };
 
 use crate::support::{
-    block_on_current_thread, block_on_support_future,
+    block_on_support_future,
     observer::pgtm::{PgtmObserver, PostgresRoutingTarget},
+    spawn_named_current_thread,
     topology::ClusterMember,
 };
 
@@ -446,20 +447,16 @@ fn spawn_authoritative_worker(
     stop_requested: Arc<AtomicBool>,
     poll_interval: Duration,
 ) -> Result<ThreadJoinHandle<Result<(), String>>, WriteConvergenceInvariantError> {
-    let thread = thread::Builder::new()
-        .name("write-convergence-authoritative".to_string())
-        .spawn(move || {
-            block_on_current_thread(
-                run_authoritative_worker(observer, write_gate, stop_requested, poll_interval),
-                "build runtime for write convergence worker failed",
-            )
-        })
-        .map_err(|err| {
-            WriteConvergenceInvariantError::Failed(format!(
-                "spawn authoritative write worker thread failed: {err}",
-            ))
-        })?;
-    Ok(thread)
+    spawn_named_current_thread(
+        "write-convergence-authoritative",
+        run_authoritative_worker(observer, write_gate, stop_requested, poll_interval),
+        "build runtime for write convergence worker failed",
+    )
+    .map_err(|err| {
+        WriteConvergenceInvariantError::Failed(format!(
+            "spawn authoritative write worker thread failed: {err}",
+        ))
+    })
 }
 
 async fn run_authoritative_worker(
@@ -923,7 +920,7 @@ mod tests {
         WriteConvergenceInvariantRunner, WriteGate, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
     use crate::support::{
-        block_on_current_thread, observer::pgtm::PostgresRoutingTarget, topology::ClusterMember,
+        observer::pgtm::PostgresRoutingTarget, spawn_named_current_thread, topology::ClusterMember,
     };
     use pgtuskmaster_rust::{
         pginfo::{
@@ -1284,19 +1281,20 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .map_err(|_| IoError::other("timed out waiting for detached worker to start"))?;
 
-        let ensure_thread = thread::spawn(move || {
-            let send_started = cleanup_started_tx.send(());
-            let result = send_started
-                .map_err(|_| IoError::other("cleanup start signal receiver dropped"))
-                .and_then(|()| {
-                    block_on_current_thread(
-                        async { runner.ensure_running().map_err(|err| err.to_string()) },
-                        "build cleanup runtime failed",
-                    )
-                    .map_err(IoError::other)
-                });
-            let _ = cleanup_done_tx.send(result);
-        });
+        let ensure_thread = spawn_named_current_thread(
+            "write-convergence-test-cleanup",
+            async move {
+                cleanup_started_tx
+                    .send(())
+                    .map_err(|_| "cleanup start signal receiver dropped".to_string())?;
+                let result = runner.ensure_running().map_err(|err| err.to_string());
+                cleanup_done_tx
+                    .send(result.map_err(IoError::other))
+                    .map_err(|_| "cleanup completion receiver dropped".to_string())?;
+                Ok(())
+            },
+            "build cleanup runtime failed",
+        )?;
 
         cleanup_started_rx
             .recv_timeout(Duration::from_secs(1))
@@ -1310,7 +1308,8 @@ mod tests {
             .map_err(|_| IoError::other("current-thread cleanup did not finish"))??;
         ensure_thread
             .join()
-            .map_err(|_| IoError::other("cleanup test thread panicked"))?;
+            .map_err(|_| IoError::other("cleanup test thread panicked"))?
+            .map_err(IoError::other)?;
         assert_eq!(committed_count.load(Ordering::SeqCst), 1);
         Ok(())
     }
@@ -1477,48 +1476,45 @@ mod tests {
         poll_interval: Duration,
     ) -> Result<ThreadJoinHandle<Result<(), String>>, Box<dyn Error + Send + Sync>> {
         let dsn = dsn.to_string();
-        let task = thread::Builder::new()
-            .name("write-convergence-test-authoritative".to_string())
-            .spawn(move || {
-                block_on_current_thread(
-                    async move {
-                        loop {
-                            if stop_requested.load(Ordering::SeqCst) {
-                                return Ok(());
-                            }
-                            let write_permit = match write_gate.try_start_write() {
-                                Some(write_permit) => write_permit,
-                                None => return Ok(()),
-                            };
-                            let write_result = match connect_session(dsn.as_str(), false).await {
-                                Ok(session) => {
-                                    let result = perform_authoritative_write(
-                                        session.client.as_ref(),
-                                        write_gate.as_ref(),
-                                        poll_interval,
-                                    )
-                                    .await
-                                    .map_err(|err| err.to_string());
-                                    drop(session);
-                                    result
-                                }
-                                Err(err) => Err(err.to_string()),
-                            };
-                            drop(write_permit);
-                            match write_result {
-                                Ok(()) => write_gate.clear_last_error(),
-                                Err(err) => write_gate.record_last_error(err),
-                            }
-                            if stop_requested.load(Ordering::SeqCst) {
-                                return Ok(());
-                            }
-                            tokio::time::sleep(poll_interval).await;
+        spawn_named_current_thread(
+            "write-convergence-test-authoritative",
+            async move {
+                loop {
+                    if stop_requested.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    let write_permit = match write_gate.try_start_write() {
+                        Some(write_permit) => write_permit,
+                        None => return Ok(()),
+                    };
+                    let write_result = match connect_session(dsn.as_str(), false).await {
+                        Ok(session) => {
+                            let result = perform_authoritative_write(
+                                session.client.as_ref(),
+                                write_gate.as_ref(),
+                                poll_interval,
+                            )
+                            .await
+                            .map_err(|err| err.to_string());
+                            drop(session);
+                            result
                         }
-                    },
-                    "build authoritative test write runtime failed",
-                )
-            })?;
-        Ok(task)
+                        Err(err) => Err(err.to_string()),
+                    };
+                    drop(write_permit);
+                    match write_result {
+                        Ok(()) => write_gate.clear_last_error(),
+                        Err(err) => write_gate.record_last_error(err),
+                    }
+                    if stop_requested.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(poll_interval).await;
+                }
+            },
+            "build authoritative test write runtime failed",
+        )
+        .map_err(Into::into)
     }
 
     fn build_blocked_write_worker(
@@ -1528,33 +1524,30 @@ mod tests {
         write_started_tx: SyncSender<()>,
         release_write_rx: oneshot::Receiver<()>,
     ) -> Result<ThreadJoinHandle<Result<(), String>>, Box<dyn Error + Send + Sync>> {
-        let task = thread::Builder::new()
-            .name("write-convergence-test-blocked".to_string())
-            .spawn(move || {
-                block_on_current_thread(
-                    async move {
-                        let write_permit = write_gate.try_start_write().ok_or_else(|| {
-                            "test worker gate was already closed before write start".to_string()
-                        })?;
-                        write_started_tx
-                            .send(())
-                            .map_err(|_| "test worker write-start receiver dropped".to_string())?;
-                        release_write_rx
-                            .await
-                            .map_err(|_| "test worker release signal sender dropped".to_string())?;
-                        committed_count.fetch_add(1, Ordering::SeqCst);
-                        drop(write_permit);
-                        loop {
-                            if stop_requested.load(Ordering::SeqCst) {
-                                return Ok(());
-                            }
-                            tokio::time::sleep(Duration::from_millis(10)).await;
-                        }
-                    },
-                    "build blocked test runtime failed",
-                )
-            })?;
-        Ok(task)
+        spawn_named_current_thread(
+            "write-convergence-test-blocked",
+            async move {
+                let write_permit = write_gate.try_start_write().ok_or_else(|| {
+                    "test worker gate was already closed before write start".to_string()
+                })?;
+                write_started_tx
+                    .send(())
+                    .map_err(|_| "test worker write-start receiver dropped".to_string())?;
+                release_write_rx
+                    .await
+                    .map_err(|_| "test worker release signal sender dropped".to_string())?;
+                committed_count.fetch_add(1, Ordering::SeqCst);
+                drop(write_permit);
+                loop {
+                    if stop_requested.load(Ordering::SeqCst) {
+                        return Ok(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            },
+            "build blocked test runtime failed",
+        )
+        .map_err(Into::into)
     }
 
     async fn initialize_fixture_row(
