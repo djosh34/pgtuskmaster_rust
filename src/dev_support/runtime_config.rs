@@ -88,6 +88,7 @@ fn sample_api_config() -> ApiConfig {
         listen_addr: SocketAddr::from(([127, 0, 0, 1], 8080)),
         transport: ApiTransport::Http,
         auth: ApiAuth::Disabled,
+        advertise: None,
     }
 }
 

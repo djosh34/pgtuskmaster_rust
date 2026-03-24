@@ -6,11 +6,11 @@ use std::{
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
-        DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, PostgresConfig, RoleConfig,
-        RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
+        DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, PgtmApiTransportExpectation,
+        PostgresConfig, RoleConfig, RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
-    state::{ClusterName, MemberId, PgRoute, ScopeName},
+    state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
 };
 
 use super::private_schema as raw;
@@ -240,6 +240,17 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
             DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
         )),
     };
+    let operator_advertise = document
+        .pgtm
+        .map(|operator| {
+            map_operator_api_route(
+                "pgtm.api.advertised_url",
+                operator.api.advertised_url,
+                operator.api.expected_transport.map(map_expected_transport),
+            )
+        })
+        .transpose()?
+        .flatten();
 
     Ok(RuntimeConfigV2 {
         cluster_name: ClusterName(document.cluster.name),
@@ -275,6 +286,7 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
             listen_addr: document.api.listen_addr,
             transport: map_api_transport(document.api.transport)?,
             auth: map_runtime_api_auth(document.api.auth)?,
+            advertise: operator_advertise,
         },
     })
 }
@@ -558,6 +570,42 @@ fn map_postgres_advertise(
     }
     PgRoute::tcp_hostaddr(host, advertise.port, advertise.hostaddr)
         .map_err(|message| validation_error(field, message))
+}
+
+fn map_operator_api_route(
+    field: &'static str,
+    advertise: Option<String>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<Option<ApiRoute>, ConfigErrorV2> {
+    advertise
+        .map(|advertise| {
+            let advertise = non_empty_owned(field, advertise)?;
+            let url = reqwest::Url::parse(advertise.as_str())
+                .map_err(|err| validation_error(field, format!("must be a valid URL: {err}")))?;
+            if let Some(expected_transport) = expected_transport {
+                if !expected_transport.matches_url(&url) {
+                    return Err(validation_error(
+                        field,
+                        format!(
+                            "operator config expects `{}` API transport, but resolved base URL uses `{}`",
+                            expected_transport.scheme(),
+                            url.scheme()
+                        ),
+                    ));
+                }
+            }
+            ApiRoute::from_url(url).map_err(|err| validation_error(field, err))
+        })
+        .transpose()
+}
+
+fn map_expected_transport(
+    expected_transport: raw::PgtmApiTransportExpectation,
+) -> PgtmApiTransportExpectation {
+    match expected_transport {
+        raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
+        raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
+    }
 }
 
 fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport, ConfigErrorV2> {
@@ -883,6 +931,77 @@ psql = "/bin/true"
         );
         assert_eq!(config.postgres.replicator.username, "replicator");
         assert_eq!(config.postgres.rewinder.username, "rewinder");
+        Ok(())
+    }
+
+    #[test]
+    fn load_runtime_config_preserves_operator_api_advertise_route() -> Result<(), String> {
+        let root = unique_test_dir("load-config", "runtime-config-v2-operator-api-route")?;
+        fs::create_dir_all(root.join("data")).map_err(|err| err.to_string())?;
+        let config_path = root.join("runtime.toml");
+        fs::write(
+            &config_path,
+            format!(
+                r#"
+[cluster]
+name = "cluster-a"
+scope = "scope-a"
+member_id = "node-a"
+
+[postgres.paths]
+data_dir = "{}"
+
+[postgres.roles.mandatory.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
+
+[postgres.roles.mandatory.replicator]
+username = "replicator"
+auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
+
+[postgres.roles.mandatory.rewinder]
+username = "rewinder"
+auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
+
+[postgres.access]
+hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+ident = {{ content = "" }}
+
+[dcs]
+endpoints = ["http://127.0.0.1:2379"]
+
+[process.binaries.overrides]
+postgres = "/bin/true"
+pg_ctl = "/bin/true"
+initdb = "/bin/true"
+pg_rewind = "/bin/true"
+pg_basebackup = "/bin/true"
+psql = "/bin/true"
+
+[pgtm.api]
+advertised_url = "https://127.0.0.1:18081"
+expected_transport = "https"
+"#,
+                root.join("data").display(),
+            ),
+        )
+        .map_err(|err| err.to_string())?;
+
+        let config = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
+
+        if config
+            .api
+            .advertise
+            .as_ref()
+            .map(crate::state::ApiRoute::as_str)
+            != Some("https://127.0.0.1:18081/")
+        {
+            return Err(format!(
+                "unexpected runtime advertised API route: {:?}",
+                config.api.advertise
+            ));
+        }
+
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 use crate::pginfo::conninfo::PgClientTls;
-use crate::state::{ClusterName, MemberId, PgRoute, ScopeName};
+use crate::state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName};
 use reqwest::Url;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -188,6 +188,7 @@ pub(crate) struct ApiConfig {
     pub listen_addr: SocketAddr,
     pub transport: ApiTransport,
     pub auth: ApiAuth,
+    pub advertise: Option<ApiRoute>,
 }
 
 #[derive(Clone, Debug)]
@@ -234,6 +235,7 @@ impl PgtmApiTransportExpectation {
 #[derive(Clone, Debug)]
 pub(crate) struct OperatorConfigV2 {
     pub base_url: Option<Url>,
+    pub advertised_url: Option<ApiRoute>,
     pub expected_transport: Option<PgtmApiTransportExpectation>,
     pub resolve_to: Option<SocketAddr>,
     pub client_tls: OperatorClientTlsConfig,

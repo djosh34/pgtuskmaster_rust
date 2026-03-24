@@ -17,7 +17,7 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
-        LeaseEpoch, MemberId, NodeIdentity, PgRoute, StatePublisher, StateSubscriber,
+        ApiRoute, LeaseEpoch, MemberId, NodeIdentity, PgRoute, StatePublisher, StateSubscriber,
         SwitchoverState, WorkerError,
     },
 };
@@ -487,9 +487,11 @@ impl ConnectedSession {
 
         let cluster_advertisement = advertised_cluster_postgres(cfg);
         let operator_advertisement = advertised_operator_postgres(cfg);
+        let operator_api_advertisement = advertised_operator_api(cfg);
         let local_member = build_local_member_state(
             &cluster_advertisement,
             operator_advertisement.as_ref(),
+            operator_api_advertisement.as_ref(),
             pg_snapshot,
         );
         let write = keys.write(member_key, &local_member)?;
@@ -993,6 +995,10 @@ fn advertised_cluster_postgres(cfg: &RuntimeConfigV2) -> PgRoute {
 
 fn advertised_operator_postgres(cfg: &RuntimeConfigV2) -> Option<PgRoute> {
     cfg.postgres.operator_advertise.clone()
+}
+
+fn advertised_operator_api(cfg: &RuntimeConfigV2) -> Option<ApiRoute> {
+    cfg.api.advertise.clone()
 }
 
 fn read_tls_file(path: &std::path::Path) -> Result<Vec<u8>, DcsError> {

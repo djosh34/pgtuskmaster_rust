@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     pginfo::state::PgInfoState,
-    state::{LeaseEpoch, MemberId, PgRoute, SwitchoverState},
+    state::{ApiRoute, LeaseEpoch, MemberId, PgRoute, SwitchoverState},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -12,6 +12,8 @@ pub struct DcsMemberState {
     pub cluster_postgres: PgRoute,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub operator_postgres: Option<PgRoute>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_api: Option<ApiRoute>,
     pub postgres: PgInfoState,
 }
 
@@ -28,6 +30,10 @@ impl DcsMemberState {
         self.operator_postgres
             .as_ref()
             .unwrap_or(&self.cluster_postgres)
+    }
+
+    pub fn operator_api_target(&self) -> Option<&ApiRoute> {
+        self.operator_api.as_ref()
     }
 
     pub fn postgres(&self) -> &PgInfoState {
@@ -163,11 +169,13 @@ impl DcsSnapshot {
 pub(crate) fn build_local_member_state(
     cluster_postgres: &PgRoute,
     operator_postgres: Option<&PgRoute>,
+    operator_api: Option<&ApiRoute>,
     pg_snapshot: &PgInfoState,
 ) -> DcsMemberState {
     DcsMemberState {
         cluster_postgres: cluster_postgres.clone(),
         operator_postgres: operator_postgres.cloned(),
+        operator_api: operator_api.cloned(),
         postgres: pg_snapshot.clone(),
     }
 }

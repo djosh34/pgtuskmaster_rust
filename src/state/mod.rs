@@ -13,6 +13,6 @@ pub use ids::{
     ClusterName, JobId, MemberId, NodeIdentity, ScopeName, SwitchoverRequestId, SystemIdentifier,
     TimelineId, WalLsn,
 };
-pub use net::{PgEndpoint, PgRoute};
+pub use net::{ApiRoute, PgEndpoint, PgRoute};
 pub use time::{UnixMillis, WorkerStatus};
 pub use watch_state::{new_state_channel, StatePublisher, StateSubscriber};

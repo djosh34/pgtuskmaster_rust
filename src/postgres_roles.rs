@@ -285,6 +285,7 @@ mod tests {
                 listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
                 transport: crate::config_v2::types::ApiTransport::Http,
                 auth: crate::config_v2::types::ApiAuth::Disabled,
+                advertise: None,
             },
         }
     }

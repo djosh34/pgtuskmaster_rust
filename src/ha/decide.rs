@@ -564,6 +564,7 @@ mod tests {
                 None,
             ),
             operator_postgres: None,
+            operator_api: None,
             postgres: pg,
         }
     }

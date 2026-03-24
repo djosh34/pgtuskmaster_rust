@@ -1133,6 +1133,7 @@ mod tests {
                     DcsMemberState {
                         cluster_postgres: endpoint_for(*member)?,
                         operator_postgres: None,
+                        operator_api: None,
                         postgres: replica_pg_info(readiness.clone()),
                     },
                 ))
@@ -1143,6 +1144,7 @@ mod tests {
             DcsMemberState {
                 cluster_postgres: endpoint_for(primary)?,
                 operator_postgres: None,
+                operator_api: None,
                 postgres: primary_pg_info(),
             },
         ))

@@ -84,9 +84,12 @@ fn resolve_base_url(
 
     match config {
         Some(config) => config.base_url.clone().ok_or_else(|| {
-            CliError::Config(
-                "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string(),
-            )
+            let message = if config.advertised_url.is_some() {
+                "set `api.base_url` in the operator config or pass `--base-url <URL>`; `api.advertised_url` only publishes this node for other operators".to_string()
+            } else {
+                "set `api.base_url` in the operator config or pass `--base-url <URL>`".to_string()
+            };
+            CliError::Config(message)
         }),
         None => Err(CliError::Config(
             "either `-c <PATH>` or `--base-url <URL>` must be provided".to_string(),

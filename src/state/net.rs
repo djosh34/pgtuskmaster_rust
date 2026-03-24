@@ -1,5 +1,6 @@
 use std::{net::IpAddr, path::PathBuf};
 
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,5 +93,59 @@ impl PgRoute {
 
     pub fn hostaddr(&self) -> Option<IpAddr> {
         self.hostaddr
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct ApiRoute(String);
+
+impl ApiRoute {
+    pub fn parse(raw: String) -> Result<Self, String> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return Err("operator API route must not be empty".to_string());
+        }
+
+        let url = Url::parse(trimmed)
+            .map_err(|err| format!("operator API route must be a valid URL: {err}"))?;
+        if url.host_str().is_none() {
+            return Err("operator API route must include a hostname".to_string());
+        }
+
+        Ok(Self(url.to_string()))
+    }
+
+    pub fn from_url(url: Url) -> Result<Self, String> {
+        Self::parse(url.to_string())
+    }
+
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn to_url(&self) -> Result<Url, String> {
+        Url::parse(self.0.as_str())
+            .map_err(|err| format!("stored operator API route is invalid: {err}"))
+    }
+}
+
+impl TryFrom<String> for ApiRoute {
+    type Error = String;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::parse(value)
+    }
+}
+
+impl From<ApiRoute> for String {
+    fn from(value: ApiRoute) -> Self {
+        value.0
+    }
+}
+
+impl std::fmt::Display for ApiRoute {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }

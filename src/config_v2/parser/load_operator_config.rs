@@ -3,6 +3,7 @@ use std::{path::Path, path::PathBuf};
 use crate::config_v2::types::{
     OperatorClientTlsConfig, OperatorConfigV2, PgtmApiTransportExpectation, Secret, TlsConfig,
 };
+use crate::state::ApiRoute;
 use reqwest::Url;
 
 use super::{
@@ -31,11 +32,8 @@ pub fn load_operator_config(
     if let Some(base_url) = operator.api.base_url.as_ref() {
         validate_non_empty("pgtm.api.base_url", base_url)?;
     }
-    if operator.api.advertised_url.is_some() {
-        return Err(validation_error(
-            "pgtm.api.advertised_url",
-            "is not supported by config_v2",
-        ));
+    if let Some(advertised_url) = operator.api.advertised_url.as_ref() {
+        validate_non_empty("pgtm.api.advertised_url", advertised_url)?;
     }
     let expected_transport =
         operator
@@ -50,6 +48,10 @@ pub fn load_operator_config(
     Ok(OperatorConfigV2 {
         base_url: parse_operator_base_url(
             normalize_optional_string(operator.api.base_url),
+            expected_transport,
+        )?,
+        advertised_url: parse_operator_api_route(
+            normalize_optional_string(operator.api.advertised_url),
             expected_transport,
         )?,
         expected_transport,
@@ -74,6 +76,29 @@ fn parse_operator_base_url(
             })?;
             validate_expected_transport(&url, expected_transport)?;
             Ok(url)
+        })
+        .transpose()
+}
+
+fn parse_operator_api_route(
+    advertised_url: Option<String>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<Option<ApiRoute>, crate::config_v2::ConfigErrorV2> {
+    advertised_url
+        .map(|advertised_url| {
+            let url = Url::parse(advertised_url.as_str()).map_err(|err| {
+                validation_error(
+                    "pgtm.api.advertised_url",
+                    format!("must be a valid URL: {err}"),
+                )
+            })?;
+            validate_expected_transport(&url, expected_transport).map_err(|err| match err {
+                crate::config_v2::ConfigErrorV2::Validation { message, .. } => {
+                    validation_error("pgtm.api.advertised_url", message)
+                }
+                other => other,
+            })?;
+            ApiRoute::from_url(url).map_err(|err| validation_error("pgtm.api.advertised_url", err))
         })
         .transpose()
 }
@@ -322,6 +347,36 @@ resolve_to = "127.0.0.1:18443"
         }
         if config.resolve_to != Some(SocketAddr::from(([127, 0, 0, 1], 18443))) {
             return Err(format!("unexpected resolve_to: {:?}", config.resolve_to));
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_preserves_advertised_url() -> Result<(), String> {
+        let path = write_temp_config(
+            r#"
+[api]
+base_url = "https://node-a:8443"
+advertised_url = "https://127.0.0.1:18081"
+expected_transport = "https"
+"#,
+        )?;
+
+        let config = load_operator_config(path.as_path()).map_err(|err| err.to_string())?;
+
+        let _ = std::fs::remove_file(path);
+
+        if config
+            .advertised_url
+            .as_ref()
+            .map(crate::state::ApiRoute::as_str)
+            != Some("https://127.0.0.1:18081/")
+        {
+            return Err(format!(
+                "unexpected advertised API route: {:?}",
+                config.advertised_url
+            ));
         }
 
         Ok(())

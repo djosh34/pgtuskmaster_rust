@@ -1931,6 +1931,7 @@ mod tests {
                                 WorkerError::Message(format!("test dcs target failed: {err}"))
                             })?,
                         operator_postgres: None,
+                        operator_api: None,
                         postgres: PgInfoState::Primary {
                             common: PgInfoCommon {
                                 worker: WorkerStatus::Running,

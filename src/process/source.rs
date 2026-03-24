@@ -82,6 +82,7 @@ mod tests {
         Ok(DcsMemberState {
             cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
             operator_postgres: None,
+            operator_api: None,
             postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,

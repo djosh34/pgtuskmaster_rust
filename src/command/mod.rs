@@ -493,6 +493,7 @@ mod tests {
                         DcsMemberState {
                             cluster_postgres: PgRoute::tcp("db.internal".to_string(), 5432)?,
                             operator_postgres: None,
+                            operator_api: None,
                             postgres: sample_pg_info(Readiness::Ready),
                         },
                     )]),
