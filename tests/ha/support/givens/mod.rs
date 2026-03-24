@@ -4,8 +4,7 @@ use std::{
 };
 
 use pgtuskmaster_test_support::config_v2::{
-    build_runtime_test_document_value, render_operator_test_config_toml,
-    validate_runtime_document_contents,
+    render_ha_member_runtime_test_config_toml, validate_runtime_document_contents,
 };
 
 use crate::support::{
@@ -157,13 +156,16 @@ impl HaGivenId {
     }
 
     pub fn render_runtime_config(self, member: ClusterMember) -> Result<String> {
-        build_ha_member_runtime_config(
+        let rendered = render_ha_member_runtime_test_config_toml(
             member.service_name(),
             self.local_dcs_service_for(member).client_url(),
             self.replicator_role(),
             self.rewinder_role(),
         )
-        .map_err(|err| HarnessError::message(err.to_string()))
+        .map_err(HarnessError::message)?;
+        validate_runtime_document_contents(rendered.as_str())
+            .map_err(|source| HarnessError::message(source.to_string()))?;
+        Ok(rendered)
     }
 
     pub fn materialize_fixture(self, repo_root: &Path, materialized_root: &Path) -> Result<()> {
@@ -200,166 +202,6 @@ fn shared_dcs_service_for(_: ClusterMember) -> DcsService {
 
 fn member_local_dcs_service_for(member: ClusterMember) -> DcsService {
     member.local_dcs_service()
-}
-
-fn build_ha_member_runtime_config(
-    member_name: &str,
-    dcs_endpoint: &str,
-    replicator: &str,
-    rewinder: &str,
-) -> Result<String> {
-    let mut document = build_runtime_test_document_value(
-        "ha-cucumber-cluster",
-        "ha-cucumber-cluster",
-        member_name,
-        (
-            Path::new("/var/lib/postgresql/data"),
-            Path::new("/var/lib/pgtuskmaster/socket"),
-            Path::new("/var/log/pgtuskmaster/postgres.log"),
-        ),
-        [dcs_endpoint],
-    )
-    .map_err(HarnessError::message)?;
-    let pgtm = render_operator_test_config_toml(
-        Some(format!("https://{member_name}:8443").as_str()),
-        None,
-        None,
-        None,
-        [
-            r#"[api.auth]
-type = "role_tokens"
-[api.auth.tokens]
-read_token = { type = "file", path = "/run/secrets/api-read-token" }
-admin_token = { type = "file", path = "/run/secrets/api-admin-token" }"#,
-            r#"[api.tls]
-ca_cert = { path = "/etc/pgtuskmaster/tls/ca.crt" }
-[postgres.tls]
-ca_cert = { path = "/etc/pgtuskmaster/tls/ca.crt" }"#,
-        ],
-    )
-    .map_err(HarnessError::message)?;
-    let pgtm = toml::from_str::<toml::Value>(pgtm.as_str()).map_err(|source| {
-        HarnessError::message(format!(
-            "HA fixture operator config serialization should round-trip: {source}"
-        ))
-    })?;
-    let mut overlay = toml::from_str::<toml::Value>(
-        format!(
-            r#"[postgres.network]
-listen_host = "{member_name}"
-
-[postgres.rewind]
-database = "postgres"
-
-[postgres.rewind.transport]
-ssl_mode = "verify_full"
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-
-[postgres.tls]
-mode = "enabled"
-identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member_name}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member_name}.key" }} }}
-client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/postgres-superuser-password" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "{replicator}"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/replicator-password" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "{rewinder}"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/rewinder-password" }} }}
-
-[postgres.access]
-hba = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }}
-ident = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }}
-
-[postgres.extra_gucs]
-wal_keep_size = "128MB"
-
-[process.binaries.overrides]
-pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup"
-
-[logging.postgres.cleanup]
-max_files = 20
-max_age_seconds = 86400
-
-[logging.sinks.file]
-enabled = true
-path = "/var/log/pgtuskmaster/runtime.jsonl"
-mode = "append"
-
-[api]
-listen_addr = "0.0.0.0:8443"
-
-[api.transport]
-transport = "https"
-
-[api.transport.tls]
-identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member_name}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member_name}.key" }} }}
-client_auth = {{ client_certificate = "disabled" }}
-
-[api.auth]
-type = "role_tokens"
-
-[api.auth.tokens]
-read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}
-admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }}
-
-[debug]
-enabled = true
-"#
-        )
-        .as_str(),
-    )
-    .map_err(|source| HarnessError::message(format!("HA runtime overlay should parse: {source}")))?;
-    overlay
-        .as_table_mut()
-        .ok_or_else(|| HarnessError::message("HA runtime overlay should be a TOML table"))?
-        .insert("pgtm".to_string(), pgtm);
-    merge_toml_value(&mut document, overlay)?;
-
-    let rendered = toml::to_string(&document).map_err(|source| {
-        HarnessError::message(format!(
-            "HA member runtime config serialization failed: {source}"
-        ))
-    })?;
-    validate_runtime_document_contents(rendered.as_str())
-        .map_err(|source| HarnessError::message(source.to_string()))?;
-    Ok(rendered)
-}
-
-fn merge_toml_value(base: &mut toml::Value, overlay: toml::Value) -> Result<()> {
-    match (base, overlay) {
-        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
-            merge_toml_tables(base, overlay);
-            Ok(())
-        }
-        _ => Err(HarnessError::message(
-            "expected TOML tables while merging HA runtime overlay",
-        )),
-    }
-}
-
-fn merge_toml_tables(
-    base: &mut toml::map::Map<String, toml::Value>,
-    overlay: toml::map::Map<String, toml::Value>,
-) {
-    for (key, overlay_value) in overlay {
-        match (base.get_mut(&key), overlay_value) {
-            (Some(toml::Value::Table(base_table)), toml::Value::Table(overlay_table)) => {
-                merge_toml_tables(base_table, overlay_table);
-            }
-            (_, overlay_value) => {
-                base.insert(key, overlay_value);
-            }
-        }
-    }
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {

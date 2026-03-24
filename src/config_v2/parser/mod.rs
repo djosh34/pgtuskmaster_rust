@@ -10,6 +10,6 @@ pub use load_config::{
 };
 #[cfg(any(test, feature = "internal-test-support"))]
 pub use private_schema::{
-    build_runtime_test_document_value, render_operator_test_config_toml,
+    render_ha_member_runtime_test_config_toml, render_operator_test_config_toml,
     render_runtime_test_config_toml, toml_path_source, toml_string_secret,
 };

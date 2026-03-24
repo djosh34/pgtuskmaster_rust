@@ -51,4 +51,9 @@ That is a wrong boundary. Input-default normalization belongs at the TOML/input 
 - Prefer a few local serde/default helpers over a broad abstraction if that keeps total code lower.
 - If parser-local normalization for these fields expands into more adapter code than the repeated constants and mapper glue it deletes, switch this plan back to `TO BE VERIFIED`.
 
-NOW EXECUTE
+### Attempted execution note
+
+- 2026-03-24: Moving the defaults into per-field serde deserializers compiled and passed the focused zero-default parser regression, but it increased tracked `src/` lines by 36 and worsened the story baseline from `+8109 -11146 diff: -3037` to `+8148 -11149 diff: -3001`.
+- The deleted `RuntimeDocument::normalize()` pass is smaller than the adapter/deserializer glue needed to preserve the current TOML surface, so this exact approach fails the reduction gate and should not be re-applied as-is.
+
+TO BE VERIFIED
