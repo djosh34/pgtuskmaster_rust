@@ -1,0 +1,1 @@
+- Collapse `build_api_server_transport_v2`, `build_api_server_config_v2`, and `build_api_rustls_config_v2` in `src/tls.rs`; three layers rewrap the same HTTPS config into `ServerConfig`, `RustlsConfig`, and `ApiServerTransport`.

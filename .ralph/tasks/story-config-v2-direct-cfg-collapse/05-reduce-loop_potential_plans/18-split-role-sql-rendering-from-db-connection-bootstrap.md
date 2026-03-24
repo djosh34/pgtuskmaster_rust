@@ -1,0 +1,1 @@
+- Split `reconcile_managed_roles_v2` in `src/postgres_roles.rs`; it mixes tokio-postgres connection bootstrap with pure SQL generation and hides a fake boundary behind one function.

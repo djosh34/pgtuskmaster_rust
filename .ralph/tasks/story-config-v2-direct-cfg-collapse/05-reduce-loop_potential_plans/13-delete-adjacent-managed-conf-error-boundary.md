@@ -1,0 +1,1 @@
+- Delete the `ManagedPostgresConfError -> ManagedPostgresError` wrapper boundary between `src/postgres_managed_conf.rs` and `src/postgres_managed.rs`; adjacent modules are laundering the same validation failures into a second error type.

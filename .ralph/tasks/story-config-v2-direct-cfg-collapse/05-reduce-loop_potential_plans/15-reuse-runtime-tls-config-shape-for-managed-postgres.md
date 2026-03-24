@@ -1,0 +1,1 @@
+- Reuse `config_v2::types::TlsConfig` instead of `ManagedPostgresTlsConfig` in `src/postgres_managed_conf.rs`; the managed-postgres path copies the same `cert/key/ca` shape into a second enum before rendering.

@@ -1,0 +1,1 @@
+- Move `allowed_client_common_names` enforcement out of `src/tls.rs`; `AllowedCommonNamesClientCertVerifier` is API authorization policy embedded inside the PEM/rustls loader.

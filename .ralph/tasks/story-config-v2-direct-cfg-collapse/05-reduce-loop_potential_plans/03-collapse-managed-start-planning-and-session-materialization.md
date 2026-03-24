@@ -1,0 +1,1 @@
+- Collapse `ManagedStartPlan`, `DesiredManagedPostgresSession`, and `PreparedManagedPostgresSession` into one owning start operation instead of a second start-only planning/materialization pass.

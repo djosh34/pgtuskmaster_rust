@@ -1,0 +1,1 @@
+- Move `ProcessWorkerCtx` bootstrapping and `ensure_start_paths` out of `src/process/state.rs`; the state module currently owns runtime wiring and filesystem prep.

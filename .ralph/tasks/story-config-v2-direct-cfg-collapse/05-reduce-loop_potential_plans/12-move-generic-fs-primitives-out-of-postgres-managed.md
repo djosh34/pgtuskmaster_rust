@@ -1,0 +1,1 @@
+- Move `absolutize_path`, `write_atomic`, `file_exists`, and `remove_file_if_exists` out of `src/postgres_managed.rs`; the managed-postgres module currently owns generic filesystem primitives plus domain materialization.

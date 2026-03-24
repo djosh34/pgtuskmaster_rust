@@ -34,11 +34,12 @@ Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/05-
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
-- [x] Choose one improvement and write a plan, add the path to that plan inside task_file
+- [ ] Find a potential plan if it exists, otherwise find new ones
+- [x] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
 - [ ] Do improvement
 - [ ] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
 - [ ] test&validate new code
-- [ ] task_switch
+- [ ] task_switch + commit everything (including .ralph etc) + push
 - [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
