@@ -13,7 +13,7 @@ use pgtuskmaster_rust::{
 
 use crate::support::{
     error::{HarnessError, Result},
-    faults::BlockerKind,
+    faults::{BlockerKind, TrafficPath},
     givens::HaGivenId,
     invariants::probe_routing_target_connectivity,
     observer::{pgtm::ClusterStateObservation, sql},
@@ -302,7 +302,15 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
 #[when(regex = r#"^I cut the node named "([^"]+)" off from DCS$"#)]
 async fn i_cut_the_node_named_off_from_dcs(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.cut_member_off_from_dcs(member_id)
+    let harness = world.harness()?;
+    harness.block_member_path_to_host(
+        member_id,
+        TrafficPath::Dcs,
+        harness
+            .given
+            .local_dcs_service_for(member_id)
+            .service_name(),
+    )
 }
 
 #[when(regex = r#"^I isolate the node named "([^"]+)" from observer API access$"#)]

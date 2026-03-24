@@ -98,7 +98,12 @@ impl HaWorld {
 
     pub fn kill_nodes(&mut self, members: impl IntoIterator<Item = ClusterMember>) -> Result<()> {
         for member in members {
-            self.harness()?.kill_node(member)?;
+            self.harness()?.run_container_action(
+                member.service_name(),
+                "docker.kill",
+                format!("killing `{member}`"),
+                DockerCli::kill_container,
+            )?;
             let _ = self.stopped_members.insert(member);
         }
         Ok(())
@@ -106,7 +111,12 @@ impl HaWorld {
 
     pub fn start_nodes(&mut self, members: impl IntoIterator<Item = ClusterMember>) -> Result<()> {
         for member in members {
-            self.harness()?.start_node(member)?;
+            self.harness()?.run_container_action(
+                member.service_name(),
+                "docker.start",
+                format!("starting `{member}`"),
+                DockerCli::start_container,
+            )?;
             let _ = self.stopped_members.remove(&member);
         }
         Ok(())
@@ -117,16 +127,31 @@ impl HaWorld {
         for path in [TrafficPath::Dcs, TrafficPath::Api, TrafficPath::Postgres] {
             harness.isolate_member_from_all_peers_on_path(member, path)?;
         }
-        harness.cut_member_off_from_dcs(member)?;
-        harness.isolate_member_from_observer_on_api(member)?;
-        harness.isolate_member_from_observer_on_postgres(member)?;
+        harness.block_member_path_to_host(
+            member,
+            TrafficPath::Dcs,
+            harness.given.local_dcs_service_for(member).service_name(),
+        )?;
+        let gateway_ip = harness.member_network_gateway_ipv4(member)?;
+        for (path, peer_label) in [
+            (TrafficPath::Api, "host-operator"),
+            (TrafficPath::Postgres, "host-observer-postgres"),
+        ] {
+            harness.block_member_path_to_address(member, path, gateway_ip.as_str(), peer_label)?;
+        }
         let _ = self.observer_unreachable_members.insert(member);
         Ok(())
     }
 
     pub fn isolate_node_from_observer_api_access(&mut self, member: ClusterMember) -> Result<()> {
-        self.harness()?
-            .isolate_member_from_observer_on_api(member)?;
+        let harness = self.harness()?;
+        let gateway_ip = harness.member_network_gateway_ipv4(member)?;
+        harness.block_member_path_to_address(
+            member,
+            TrafficPath::Api,
+            gateway_ip.as_str(),
+            "host-operator",
+        )?;
         let _ = self.observer_unreachable_members.insert(member);
         Ok(())
     }
@@ -420,16 +445,16 @@ impl HarnessShared {
         self.record_note(phase.as_str(), detail)
     }
 
-    pub fn kill_node(&self, member: ClusterMember) -> Result<()> {
-        let container_id = self.service_container_id(member.service_name())?;
-        self.record_note("docker.kill", format!("killing `{member}`"))?;
-        self.docker.kill_container(container_id.as_str())
-    }
-
-    pub fn start_node(&self, member: ClusterMember) -> Result<()> {
-        let container_id = self.service_container_id(member.service_name())?;
-        self.record_note("docker.start", format!("starting `{member}`"))?;
-        self.docker.start_container(container_id.as_str())
+    fn run_container_action(
+        &self,
+        service_name: &str,
+        phase: &str,
+        detail: impl Into<String>,
+        action: fn(&DockerCli, &str) -> Result<()>,
+    ) -> Result<()> {
+        let container_id = self.service_container_id(service_name)?;
+        self.record_note(phase, detail)?;
+        action(&self.docker, container_id.as_str())
     }
 
     pub fn record_note(&self, phase: &str, detail: impl Into<String>) -> Result<()> {
@@ -462,28 +487,6 @@ impl HarnessShared {
                     self.compose_project
                 ))
             })
-    }
-
-    fn stop_service(&self, service_name: &str) -> Result<()> {
-        let container_id = self.service_container_id(service_name)?;
-        self.record_note("docker.stop_service", format!("stopping `{service_name}`"))?;
-        self.docker.kill_container(container_id.as_str())
-    }
-
-    fn start_service(&self, service_name: &str) -> Result<()> {
-        let container_id = self.service_container_id(service_name)?;
-        self.record_note("docker.start_service", format!("starting `{service_name}`"))?;
-        self.docker.start_container(container_id.as_str())
-    }
-
-    fn apply_dcs_services(
-        &self,
-        services: impl IntoIterator<Item = DcsService>,
-        service_action: fn(&Self, &str) -> Result<()>,
-    ) -> Result<()> {
-        services
-            .into_iter()
-            .try_for_each(|service| service_action(self, service.service_name()))
     }
 
     fn run_shell_as_root(&self, service_name: &str, script: &str) -> Result<String> {
@@ -546,10 +549,7 @@ impl HarnessShared {
         path: TrafficPath,
         peer_service_name: &str,
     ) -> Result<()> {
-        let peer_container_id = self.service_container_id(peer_service_name)?;
-        let peer_ip = self
-            .docker
-            .container_ipv4_address(peer_container_id.as_str())?;
+        let peer_ip = self.service_ipv4_address(peer_service_name)?;
         self.block_member_path_to_address(member, path, peer_ip.as_str(), peer_service_name)
     }
 
@@ -569,10 +569,7 @@ impl HarnessShared {
             )?;
             return Ok(());
         }
-        let peer_container_id = self.service_container_id(peer_service_name)?;
-        let peer_ip = self
-            .docker
-            .container_ipv4_address(peer_container_id.as_str())?;
+        let peer_ip = self.service_ipv4_address(peer_service_name)?;
         let script = remove_fault_rule_script(peer_ip.as_str(), path.port());
         let _ = self.run_shell_as_root(member.service_name(), script.as_str())?;
         self.record_note(
@@ -602,16 +599,6 @@ impl HarnessShared {
         Ok(())
     }
 
-    pub fn isolate_member_from_peer_on_path(
-        &self,
-        member: ClusterMember,
-        peer: ClusterMember,
-        path: TrafficPath,
-    ) -> Result<()> {
-        self.block_member_path_to_host(member, path, peer.service_name())?;
-        self.block_member_path_to_host(peer, path, member.service_name())
-    }
-
     pub fn isolate_member_from_all_peers_on_path(
         &self,
         member: ClusterMember,
@@ -620,43 +607,32 @@ impl HarnessShared {
         DATABASE_MEMBERS
             .into_iter()
             .filter(|peer| *peer != member)
-            .try_for_each(|peer| self.isolate_member_from_peer_on_path(member, peer, path))
-    }
-
-    pub fn isolate_member_from_observer_on_api(&self, member: ClusterMember) -> Result<()> {
-        let gateway_ip = self.member_network_gateway_ipv4(member)?;
-        self.block_member_path_to_address(
-            member,
-            TrafficPath::Api,
-            gateway_ip.as_str(),
-            "host-operator",
-        )
-    }
-
-    pub fn isolate_member_from_observer_on_postgres(&self, member: ClusterMember) -> Result<()> {
-        let gateway_ip = self.member_network_gateway_ipv4(member)?;
-        self.block_member_path_to_address(
-            member,
-            TrafficPath::Postgres,
-            gateway_ip.as_str(),
-            "host-observer-postgres",
-        )
-    }
-
-    pub fn cut_member_off_from_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.block_member_path_to_host(
-            member,
-            TrafficPath::Dcs,
-            self.given.local_dcs_service_for(member).service_name(),
-        )
+            .try_for_each(|peer| {
+                self.block_member_path_to_host(member, path, peer.service_name())?;
+                self.block_member_path_to_host(peer, path, member.service_name())
+            })
     }
 
     pub fn stop_dcs_services(&self, services: impl IntoIterator<Item = DcsService>) -> Result<()> {
-        self.apply_dcs_services(services, Self::stop_service)
+        services.into_iter().try_for_each(|service| {
+            self.run_container_action(
+                service.service_name(),
+                "docker.stop_service",
+                format!("stopping `{service}`"),
+                DockerCli::kill_container,
+            )
+        })
     }
 
     pub fn start_dcs_services(&self, services: impl IntoIterator<Item = DcsService>) -> Result<()> {
-        self.apply_dcs_services(services, Self::start_service)
+        services.into_iter().try_for_each(|service| {
+            self.run_container_action(
+                service.service_name(),
+                "docker.start_service",
+                format!("starting `{service}`"),
+                DockerCli::start_container,
+            )
+        })
     }
 
     pub fn set_blocker(
@@ -711,6 +687,11 @@ impl HarnessShared {
     fn service_is_running(&self, service_name: &str) -> Result<bool> {
         let container_id = self.service_container_id(service_name)?;
         Ok(self.docker.container_state_status(container_id.as_str())? == "running")
+    }
+
+    fn service_ipv4_address(&self, service_name: &str) -> Result<String> {
+        let container_id = self.service_container_id(service_name)?;
+        self.docker.container_ipv4_address(container_id.as_str())
     }
 
     fn member_network_gateway_ipv4(&self, member: ClusterMember) -> Result<String> {
