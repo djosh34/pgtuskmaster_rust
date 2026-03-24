@@ -19,8 +19,8 @@ use crate::{
 
 use super::{
     jobs::{
-        ActiveJob, ProcessCommandSpec, ProcessError, ProcessExecutionKind, ProcessExit,
-        ProcessHandle, ProcessIntent, ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
+        ActiveJob, ProcessCommandSpec, ProcessError, ProcessExit, ProcessHandle, ProcessIntent,
+        ProcessJobKind, ProcessOutputLine, ProcessOutputStream,
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     state::{
@@ -614,8 +614,7 @@ pub(crate) async fn start_job(
         }
     };
     let execution_request = prepared_launch.request;
-    let timeout_ms = timeout_for_kind(ctx, &execution_request.kind);
-    let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
+    let deadline_at = UnixMillis(now.0.saturating_add(execution_request.timeout_ms));
     let command = prepared_launch.command;
 
     let tracked_job_kind = execution_request.tracked_job_kind;
@@ -882,29 +881,6 @@ pub(crate) fn system_now_unix_millis() -> Result<UnixMillis, WorkerError> {
     Ok(UnixMillis(millis))
 }
 
-fn timeout_for_kind(ctx: &ProcessWorkerCtx<'_>, kind: &ProcessExecutionKind) -> u64 {
-    match kind {
-        ProcessExecutionKind::Bootstrap(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
-        ProcessExecutionKind::BaseBackup(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
-        ProcessExecutionKind::PgRewind(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.pg_rewind_timeout)),
-        ProcessExecutionKind::Promote(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
-        ProcessExecutionKind::Demote(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.fencing_timeout)),
-        ProcessExecutionKind::StartPostgres(_) => {
-            duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)
-        }
-    }
-}
-
 fn log_prepare_failure(
     ctx: &mut ProcessWorkerCtx<'_>,
     request: &ProcessIntentRequest,
@@ -935,10 +911,6 @@ fn log_prepare_failure(
                 WorkerError::Message(format!("process build command log send failed: {err}"))
             }),
     }
-}
-
-fn duration_millis_u64(duration: std::time::Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

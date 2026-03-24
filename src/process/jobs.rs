@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config_v2::types::Secret;
-use crate::pginfo::state::PgConnInfo;
 use crate::state::{JobId, MemberId, UnixMillis};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,86 +52,6 @@ impl PostgresStartIntent {
             Self::Primary => ProcessJobKind::StartPrimary,
             Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
             Self::Replica { .. } => ProcessJobKind::StartReplica,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BootstrapSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) superuser: String,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MandatorySourceRole {
-    Replicator,
-    Rewinder,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MandatoryRoleSourceConn {
-    pub(crate) role: MandatorySourceRole,
-    pub(crate) conninfo: PgConnInfo,
-    pub(crate) auth: Secret,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PgRewindSpec {
-    pub(crate) target_data_dir: PathBuf,
-    pub(crate) source: MandatoryRoleSourceConn,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct BaseBackupSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) source: MandatoryRoleSourceConn,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PromoteSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) wait_seconds: Option<u64>,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DemoteSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) mode: ShutdownMode,
-    pub(crate) timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct StartPostgresSpec {
-    pub(crate) data_dir: PathBuf,
-    pub(crate) config_file: PathBuf,
-    pub(crate) log_file: PathBuf,
-    pub(crate) primary_conninfo: Option<PgConnInfo>,
-    pub(crate) primary_slot_name: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ProcessExecutionKind {
-    Bootstrap(BootstrapSpec),
-    BaseBackup(BaseBackupSpec),
-    PgRewind(PgRewindSpec),
-    Promote(PromoteSpec),
-    Demote(DemoteSpec),
-    StartPostgres(StartPostgresSpec),
-}
-
-impl ProcessExecutionKind {
-    pub(crate) fn job_kind(&self) -> ProcessJobKind {
-        match self {
-            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
-            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
-            Self::PgRewind(_) => ProcessJobKind::PgRewind,
-            Self::Promote(_) => ProcessJobKind::Promote,
-            Self::Demote(_) => ProcessJobKind::Demote,
-            Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
         }
     }
 }

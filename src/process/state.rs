@@ -13,8 +13,7 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, ProcessCommandRunner, ProcessError, ProcessExecutionKind, ProcessHandle,
-    ProcessIntent, ProcessJobKind,
+    ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
@@ -38,7 +37,7 @@ pub(crate) struct ProcessIntentRequest {
 pub(crate) struct ProcessExecutionRequest {
     pub(crate) id: JobId,
     pub(crate) tracked_job_kind: ProcessJobKind,
-    pub(crate) kind: ProcessExecutionKind,
+    pub(crate) timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
