@@ -15,12 +15,9 @@ use crate::{
             PostgresStartIntent, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
             ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, ShutdownMode,
         },
-        state::{
-            ProcessExecutionRequest, ProcessIntentRequest, ProcessObservedSnapshot,
-            ProcessWorkerCtx,
-        },
+        state::{ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx},
     },
-    state::MemberId,
+    state::{JobId, MemberId},
 };
 
 const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
@@ -49,7 +46,9 @@ enum SourceMaterializationError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedProcessLaunch {
-    pub(crate) request: ProcessExecutionRequest,
+    pub(crate) id: JobId,
+    pub(crate) tracked_job_kind: ProcessJobKind,
+    pub(crate) timeout_ms: u64,
     pub(crate) command: ProcessCommandSpec,
 }
 
@@ -215,17 +214,15 @@ fn observed_snapshot_from_ctx(
 }
 
 fn prepared_launch(
-    request_id: crate::state::JobId,
+    id: JobId,
     tracked_job_kind: ProcessJobKind,
     timeout_ms: u64,
     command: ProcessCommandSpec,
 ) -> PreparedProcessLaunch {
     PreparedProcessLaunch {
-        request: ProcessExecutionRequest {
-            id: request_id,
-            tracked_job_kind,
-            timeout_ms,
-        },
+        id,
+        tracked_job_kind,
+        timeout_ms,
         command,
     }
 }
@@ -725,13 +722,13 @@ mod tests {
                 prepared.command.job_kind
             ));
         }
-        if prepared.request.tracked_job_kind != ProcessJobKind::StartReplica {
+        if prepared.tracked_job_kind != ProcessJobKind::StartReplica {
             return Err(format!(
                 "unexpected tracked job kind: {:?}",
-                prepared.request.tracked_job_kind
+                prepared.tracked_job_kind
             ));
         }
-        if prepared.request.timeout_ms == 0 {
+        if prepared.timeout_ms == 0 {
             return Err("replica start should carry a non-zero timeout".to_string());
         }
         let options = prepared
@@ -864,10 +861,10 @@ mod tests {
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
-        if prepared.request.tracked_job_kind != ProcessJobKind::BaseBackup {
+        if prepared.tracked_job_kind != ProcessJobKind::BaseBackup {
             return Err(format!(
                 "unexpected tracked job kind: {:?}",
-                prepared.request.tracked_job_kind
+                prepared.tracked_job_kind
             ));
         }
         if stale.exists() {
@@ -896,10 +893,10 @@ mod tests {
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare non-start plan failed: {err}"))?;
-        if prepared.request.tracked_job_kind != ProcessJobKind::Promote {
+        if prepared.tracked_job_kind != ProcessJobKind::Promote {
             return Err(format!(
                 "unexpected tracked job kind for promote: {:?}",
-                prepared.request.tracked_job_kind
+                prepared.tracked_job_kind
             ));
         }
         let passfile_path = managed_standby_passfile_path(&cfg.postgres.data_dir);
@@ -1010,9 +1007,9 @@ mod tests {
                 },
             )
             .map_err(|err| format!("prepare {} failed: {err}", tracked_job_kind.as_str()))?;
-            assert_eq!(prepared.request.tracked_job_kind, tracked_job_kind);
+            assert_eq!(prepared.tracked_job_kind, tracked_job_kind);
             assert_eq!(prepared.command.job_kind, command_job_kind);
-            assert!(prepared.request.timeout_ms > 0);
+            assert!(prepared.timeout_ms > 0);
         }
 
         Ok(())

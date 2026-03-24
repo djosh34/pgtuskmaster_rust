@@ -477,11 +477,9 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
-    let execution_request = prepared_launch.request;
-    let deadline_at = UnixMillis(now.0.saturating_add(execution_request.timeout_ms));
-    let command = prepared_launch.command;
-
-    let tracked_job_kind = execution_request.tracked_job_kind;
+    let deadline_at = UnixMillis(now.0.saturating_add(prepared_launch.timeout_ms));
+    let tracked_job_kind = prepared_launch.tracked_job_kind;
+    let command = prepared_launch.command.clone();
     let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
@@ -510,17 +508,15 @@ pub(crate) async fn start_job(
     };
 
     let active = ActiveJob {
-        id: request.id.clone(),
+        id: prepared_launch.id.clone(),
         kind: tracked_job_kind,
         started_at: now,
         deadline_at,
     };
     ctx.control.active_runtime = Some(ActiveRuntime {
-        request: execution_request,
+        launch: prepared_launch,
         deadline_at,
         handle,
-        job_kind,
-        tracked_job_kind,
     });
     ctx.state_channel.current = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -536,33 +532,38 @@ pub(crate) async fn start_job(
 }
 
 pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
-    let mut runtime = match ctx.control.active_runtime.take() {
+    let ActiveRuntime {
+        launch,
+        deadline_at,
+        mut handle,
+    } = match ctx.control.active_runtime.take() {
         Some(runtime) => runtime,
         None => return Ok(()),
     };
+    let command_job_kind = launch.command.job_kind;
 
     let now = current_time(ctx)?;
-    flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
-    if now.0 >= runtime.deadline_at.0 {
+    flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
+    if now.0 >= deadline_at.0 {
         ctx.runtime
             .log
             .send(ProcessLogEvent::Timeout {
-                job_kind: runtime.job_kind,
+                job_kind: command_job_kind,
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process timeout log send failed: {err}"))
             })?;
-        let cancel_result = runtime.handle.cancel().await;
-        flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
+        let cancel_result = handle.cancel().await;
+        flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
-                id: runtime.request.id,
-                job_kind: runtime.tracked_job_kind,
+                id: launch.id,
+                job_kind: launch.tracked_job_kind,
                 finished_at: now,
             },
             Err(error) => JobOutcome::Failure {
-                id: runtime.request.id,
-                job_kind: runtime.tracked_job_kind,
+                id: launch.id,
+                job_kind: launch.tracked_job_kind,
                 error,
                 finished_at: now,
             },
@@ -571,24 +572,27 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
         return Ok(());
     }
 
-    let poll = runtime.handle.poll_exit();
+    let poll = handle.poll_exit();
     match poll {
         Ok(None) => {
-            ctx.control.active_runtime = Some(runtime);
+            ctx.control.active_runtime = Some(ActiveRuntime {
+                launch,
+                deadline_at,
+                handle,
+            });
             Ok(())
         }
         Ok(Some(ProcessExit::Success)) => {
-            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
-            let job_id = runtime.request.id.clone();
+            flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let outcome = JobOutcome::Success {
-                id: job_id,
-                job_kind: runtime.tracked_job_kind,
+                id: launch.id,
+                job_kind: launch.tracked_job_kind,
                 finished_at: now,
             };
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedSuccessfully {
-                    job_kind: runtime.job_kind,
+                    job_kind: command_job_kind,
                 })
                 .map_err(|err| {
                     WorkerError::Message(format!("process exit log send failed: {err}"))
@@ -596,18 +600,18 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             transition_to_idle(ctx, outcome, now)
         }
         Ok(Some(exit)) => {
-            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
+            flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let exit_error = ProcessError::from_exit(exit);
             let outcome = JobOutcome::Failure {
-                id: runtime.request.id.clone(),
-                job_kind: runtime.tracked_job_kind,
+                id: launch.id,
+                job_kind: launch.tracked_job_kind,
                 error: exit_error.clone(),
                 finished_at: now,
             };
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::ExitedUnsuccessfully {
-                    job_kind: runtime.job_kind,
+                    job_kind: command_job_kind,
                     cause: exit_error.to_string(),
                 })
                 .map_err(|err| {
@@ -616,17 +620,17 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             transition_to_idle(ctx, outcome, now)
         }
         Err(error) => {
-            flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
+            flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let outcome = JobOutcome::Failure {
-                id: runtime.request.id.clone(),
-                job_kind: runtime.tracked_job_kind,
+                id: launch.id,
+                job_kind: launch.tracked_job_kind,
                 error,
                 finished_at: now,
             };
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::PollFailed {
-                    job_kind: runtime.job_kind,
+                    job_kind: command_job_kind,
                     cause: outcome_error_string(&outcome),
                 })
                 .map_err(|err| {

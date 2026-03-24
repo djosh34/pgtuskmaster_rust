@@ -12,8 +12,11 @@ use crate::{
     state::{JobId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::jobs::{
-    ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
+use super::{
+    cluster::PreparedProcessLaunch,
+    jobs::{
+        ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
+    },
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
@@ -31,13 +34,6 @@ pub enum ProcessState {
 pub(crate) struct ProcessIntentRequest {
     pub(crate) id: JobId,
     pub(crate) intent: ProcessIntent,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ProcessExecutionRequest {
-    pub(crate) id: JobId,
-    pub(crate) tracked_job_kind: ProcessJobKind,
-    pub(crate) timeout_ms: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,11 +64,9 @@ pub enum JobOutcome {
 }
 
 pub(crate) struct ActiveRuntime {
-    pub(crate) request: ProcessExecutionRequest,
+    pub(crate) launch: PreparedProcessLaunch,
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
-    pub(crate) job_kind: ProcessJobKind,
-    pub(crate) tracked_job_kind: ProcessJobKind,
 }
 
 pub(crate) struct ProcessWorkerCtx<'a> {
