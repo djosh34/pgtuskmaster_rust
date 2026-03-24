@@ -284,6 +284,72 @@ impl PostgresIngestWorkerState {
     }
 }
 
+fn encode_path_token(path: &Path) -> String {
+    path.display().to_string().replace(' ', "%20")
+}
+
+fn file_name_best_effort(path: &Path) -> String {
+    match path.file_name() {
+        Some(name) => name.to_string_lossy().to_string(),
+        None => "log".to_string(),
+    }
+}
+
+fn postgres_log_dir_origin(path: &Path) -> String {
+    format!("postgres_log_dir:{}", file_name_best_effort(path))
+}
+
+fn ingestable_postgres_log_start(path: &Path) -> Option<StartPosition> {
+    let matches = matches!(
+        path.extension().and_then(|ext| ext.to_str()),
+        Some("log") | Some("json")
+    );
+    if !matches {
+        return None;
+    }
+
+    Some(match path.file_name().and_then(|name| name.to_str()) {
+        Some("postgres.stderr.log") | Some("postgres.stdout.log") => StartPosition::Beginning,
+        _ => StartPosition::End,
+    })
+}
+
+fn ingest_issue(stage: &str, kind: &str, path: &Path, error: impl std::fmt::Display) -> String {
+    format!(
+        "stage={stage} kind={kind} path={} error={error}",
+        encode_path_token(path),
+    )
+}
+
+async fn emit_tailer_lines(
+    log: &LogSender,
+    tailer: &mut FileTailer,
+    origin: &str,
+    read_stage: &str,
+    emit_stage: &str,
+    max_bytes_per_file: usize,
+) -> Result<u64, String> {
+    let lines = tailer
+        .read_new_lines(max_bytes_per_file)
+        .await
+        .map_err(|err| ingest_issue(read_stage, "tailer.read_new_lines", tailer.path(), err))?;
+
+    let mut emitted = 0u64;
+    for line in lines {
+        log.send(postgres_line_event(
+            LogProducer::Postgres,
+            LogTransport::FileTail,
+            origin,
+            tailer.path(),
+            line,
+        ))
+        .map_err(|err| ingest_issue(emit_stage, "log.emit_record", tailer.path(), err))?;
+        emitted = emitted.saturating_add(1);
+    }
+
+    Ok(emitted)
+}
+
 async fn step_once(
     ctx: &PostgresIngestWorkerCtx<'_>,
     state: &mut PostgresIngestWorkerState,
@@ -293,114 +359,48 @@ async fn step_once(
     let mut log_dir_lines_emitted: u64 = 0;
     let mut log_dir_files_tailed: u64 = 0;
 
-    #[derive(Clone, Debug)]
-    struct IterationIssue {
-        stage: &'static str,
-        kind: &'static str,
-        path: String,
-        error: String,
-    }
+    let mut issues = Vec::new();
 
-    fn encode_path_token(path: &Path) -> String {
-        path.display().to_string().replace(' ', "%20")
-    }
-
-    fn file_name_best_effort(path: &Path) -> String {
-        match path.file_name() {
-            Some(name) => name.to_string_lossy().to_string(),
-            None => "log".to_string(),
+    match emit_tailer_lines(
+        &ctx.log,
+        &mut state.pg_ctl_log,
+        "pg_ctl_log_file",
+        "pg_ctl_log_file.read",
+        "pg_ctl_log_file.emit",
+        max_bytes_per_file,
+    )
+    .await
+    {
+        Ok(emitted) => {
+            pg_ctl_lines_emitted = emitted;
         }
-    }
-
-    fn push_issue(
-        issues: &mut Vec<IterationIssue>,
-        stage: &'static str,
-        kind: &'static str,
-        path: &Path,
-        error: WorkerError,
-    ) {
-        issues.push(IterationIssue {
-            stage,
-            kind,
-            path: encode_path_token(path),
-            error: error.to_string(),
-        });
-    }
-
-    let mut issues: Vec<IterationIssue> = Vec::new();
-
-    match state.pg_ctl_log.read_new_lines(max_bytes_per_file).await {
-        Ok(pg_lines) => {
-            for line in pg_lines {
-                if let Err(err) = ctx.log.send(postgres_line_event(
-                    LogProducer::Postgres,
-                    LogTransport::FileTail,
-                    "pg_ctl_log_file",
-                    state.pg_ctl_log.path(),
-                    line,
-                )) {
-                    push_issue(
-                        &mut issues,
-                        "pg_ctl_log_file.emit",
-                        "log.emit_record",
-                        state.pg_ctl_log.path(),
-                        WorkerError::Message(format!("{err}")),
-                    );
-                } else {
-                    pg_ctl_lines_emitted = pg_ctl_lines_emitted.saturating_add(1);
-                }
-            }
-        }
-        Err(err) => {
-            push_issue(
-                &mut issues,
-                "pg_ctl_log_file.read",
-                "tailer.read_new_lines",
-                state.pg_ctl_log.path(),
-                err,
-            );
-        }
+        Err(issue) => issues.push(issue),
     }
 
     if ctx.cfg.logging.postgres_logs_enabled {
         let dir = ctx.cfg.logging.postgres_log_dir.as_path();
         if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
-            push_issue(&mut issues, "log_dir.discover", "read_dir", dir, err);
+            issues.push(ingest_issue("log_dir.discover", "read_dir", dir, err));
         }
 
         for (path, tailer) in state.dir_tailers.iter_mut() {
             log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
-            let origin = format!("postgres_log_dir:{}", file_name_best_effort(path));
-            match tailer.read_new_lines(max_bytes_per_file).await {
-                Ok(lines) => {
-                    for line in lines {
-                        if let Err(err) = ctx.log.send(postgres_line_event(
-                            LogProducer::Postgres,
-                            LogTransport::FileTail,
-                            origin.as_str(),
-                            tailer.path(),
-                            line,
-                        )) {
-                            push_issue(
-                                &mut issues,
-                                "log_dir.emit",
-                                "log.emit_record",
-                                tailer.path(),
-                                WorkerError::Message(format!("{err}")),
-                            );
-                        } else {
-                            log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(1);
-                        }
-                    }
+            let origin = postgres_log_dir_origin(path);
+            match emit_tailer_lines(
+                &ctx.log,
+                tailer,
+                origin.as_str(),
+                "log_dir.read",
+                "log_dir.emit",
+                max_bytes_per_file,
+            )
+            .await
+            {
+                Ok(emitted) => {
+                    log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(emitted);
                 }
-                Err(err) => {
-                    push_issue(
-                        &mut issues,
-                        "log_dir.read",
-                        "tailer.read_new_lines",
-                        tailer.path(),
-                        err,
-                    );
+                Err(issue) => {
+                    issues.push(issue);
                 }
             }
         }
@@ -418,20 +418,8 @@ async fn step_once(
             )
             .await
             {
-                Ok(report) => {
-                    if report.issue_count > 0 {
-                        let stage = "log_dir.cleanup";
-                        let kind = "cleanup.issues";
-                        let error = WorkerError::Message(format!(
-                            "cleanup had issues: issue_count={} first={}",
-                            report.issue_count, report.first_issue
-                        ));
-                        push_issue(&mut issues, stage, kind, dir, error);
-                    }
-                }
-                Err(err) => {
-                    push_issue(&mut issues, "log_dir.cleanup", "cleanup.fatal", dir, err);
-                }
+                Ok(cleanup_issues) => issues.extend(cleanup_issues),
+                Err(err) => issues.push(ingest_issue("log_dir.cleanup", "cleanup.fatal", dir, err)),
             }
         }
     }
@@ -451,20 +439,11 @@ async fn step_once(
     }
 
     let first = match issues.first() {
-        Some(first) => format!(
-            "stage={} kind={} path={} error={}",
-            first.stage, first.kind, first.path, first.error
-        ),
+        Some(first) => first.clone(),
         None => "stage=unknown kind=unknown path=unknown error=unknown".to_string(),
     };
 
-    let mut extra = Vec::new();
-    for issue in issues.iter().skip(1).take(2) {
-        extra.push(format!(
-            "stage={} kind={} path={} error={}",
-            issue.stage, issue.kind, issue.path, issue.error
-        ));
-    }
+    let extra = issues.iter().skip(1).take(2).cloned().collect::<Vec<_>>();
     let extra_suffix = if extra.is_empty() {
         String::new()
     } else {
@@ -510,17 +489,9 @@ async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), Wo
             continue;
         }
 
-        let matches = matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("log") | Some("json")
-        );
-        if !matches {
-            continue;
-        }
-
-        let start = match path.file_name().and_then(|s| s.to_str()) {
-            Some("postgres.stderr.log") | Some("postgres.stdout.log") => StartPosition::Beginning,
-            _ => StartPosition::End,
+        let start = match ingestable_postgres_log_start(path.as_path()) {
+            Some(start) => start,
+            None => continue,
         };
         tailers.ensure_file(path, start);
     }
@@ -534,10 +505,10 @@ async fn cleanup_log_dir(
     protect_recent: Duration,
     protected_paths: &[&Path],
     now: SystemTime,
-) -> Result<CleanupReport, WorkerError> {
+) -> Result<Vec<String>, WorkerError> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(CleanupReport::empty()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => {
             return Err(WorkerError::Message(format!(
                 "cleanup read_dir failed for {}: {err}",
@@ -573,11 +544,7 @@ async fn cleanup_log_dir(
             continue;
         }
 
-        let matches = matches!(
-            path.extension().and_then(|s| s.to_str()),
-            Some("log") | Some("json")
-        );
-        if !matches {
+        if ingestable_postgres_log_start(path.as_path()).is_none() {
             continue;
         }
 
@@ -702,34 +669,7 @@ async fn cleanup_log_dir(
         }
     }
 
-    Ok(CleanupReport::from_issues(issues))
-}
-
-#[derive(Clone, Debug)]
-struct CleanupReport {
-    issue_count: usize,
-    first_issue: String,
-}
-
-impl CleanupReport {
-    fn empty() -> Self {
-        Self {
-            issue_count: 0,
-            first_issue: "<none>".to_string(),
-        }
-    }
-
-    fn from_issues(issues: Vec<String>) -> Self {
-        let issue_count = issues.len();
-        let first_issue = match issues.first() {
-            Some(first) => first.to_string(),
-            None => "<none>".to_string(),
-        };
-        Self {
-            issue_count,
-            first_issue,
-        }
-    }
+    Ok(issues)
 }
 
 fn postgres_line_event(
@@ -1158,7 +1098,7 @@ mod tests {
             std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
         }
 
-        let report = cleanup_log_dir(
+        let issues = cleanup_log_dir(
             dir.as_path(),
             2,
             Duration::from_secs(365 * 24 * 60 * 60),
@@ -1167,7 +1107,7 @@ mod tests {
             SystemTime::now() + Duration::from_secs(3600),
         )
         .await?;
-        assert_eq!(report.issue_count, 0);
+        assert!(issues.is_empty());
 
         assert!(protected.exists());
         let mut remaining = 0usize;
@@ -1202,7 +1142,7 @@ mod tests {
             std::fs::write(&path, b"x\n").map_err(|err| WorkerError::Message(err.to_string()))?;
         }
 
-        let report = cleanup_log_dir(
+        let issues = cleanup_log_dir(
             dir.as_path(),
             1,
             Duration::from_secs(365 * 24 * 60 * 60),
@@ -1211,7 +1151,7 @@ mod tests {
             SystemTime::now() + Duration::from_secs(3600),
         )
         .await?;
-        assert_eq!(report.issue_count, 0);
+        assert!(issues.is_empty());
 
         assert!(json.exists());
         assert!(stderr.exists());
@@ -1240,7 +1180,7 @@ mod tests {
         std::fs::set_permissions(&dir, perms)
             .map_err(|err| WorkerError::Message(err.to_string()))?;
 
-        let report = cleanup_log_dir(
+        let issues = cleanup_log_dir(
             dir.as_path(),
             1,
             Duration::from_secs(1),
@@ -1249,7 +1189,10 @@ mod tests {
             SystemTime::now() + Duration::from_secs(3600),
         )
         .await?;
-        assert!(report.issue_count > 0);
+        assert!(!issues.is_empty());
+        assert!(issues
+            .iter()
+            .any(|issue| issue.contains("stage=cleanup.remove_file kind=remove_file")));
         assert!(old.exists());
 
         let mut perms = std::fs::metadata(&dir)
