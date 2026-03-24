@@ -3,8 +3,7 @@
 <description>
 Your only goal is to reduce code and clean up the codebase.
 
-use just-reduce-code skill
-use other skills
+use improve-code-boundaries skill to find improvements
 
 Be BOLD! Do LARGE refactors for improvements.
 YOU MUST REDUCE CODE. WE KNOW FROM ANALYSIS THAT MORE THAN 50% IS OVER-ABSTRACTION AND DUPLICATIVE CODE
@@ -31,20 +30,20 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/03-collapse-handwritten-test-config-toml.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/05-collapse-config-document-boundaries.md`
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
 - [x] Choose one improvement and write a plan, add the path to that plan inside task_file
-- [x] Do improvement
-- [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
-- [x] test&validate new code
+- [ ] Do improvement
+- [ ] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
+- [ ] test&validate new code
 - [ ] task_switch
 - [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
-- [x] `make check`
-- [x] `make lint`
-- [x] `make test`
-- [x] `make test-long`
+- [ ] `make check`
+- [ ] `make lint`
+- [ ] `make test`
+- [ ] `make test-long`
 </acceptance_criteria>

@@ -1,13 +1,9 @@
----
-name: cfg-reduce-loop
-description: Reduce code by merging into cfg fields
----
-
+# Config not reduced smell
 
 I'll show you the cfg reduce loop.
 
 1) Detect the wrong field
-Have this code:
+   Have this code:
 
 
 ```rust
@@ -26,7 +22,7 @@ I know for a fact that identity is part of cfg. Many of such variables (think ti
 
 
 2) Alter name of field without the uses of it
-3) 
+3)
 ```rust
 pub(crate) struct HaRuntimeCtx<'a> {
     pub(crate) cfg: &'a RuntimeConfigV2,
