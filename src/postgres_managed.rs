@@ -7,7 +7,7 @@ use std::{
 use thiserror::Error;
 
 use crate::{
-    config_v2::RuntimeConfigV2,
+    config_v2::{types::TlsConfig, RuntimeConfigV2},
     pginfo::{conninfo::render_conninfo_value, state::PgConnInfo},
     process::jobs::{ProcessJobKind, StartPostgresSpec},
 };
@@ -84,16 +84,6 @@ pub(crate) enum ManagedRecoverySignal {
     Recovery,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ManagedPostgresTlsConfig {
-    Disabled,
-    Enabled {
-        cert_file: PathBuf,
-        key_file: PathBuf,
-        ca_file: Option<PathBuf>,
-    },
-}
-
 pub(crate) fn materialize_managed_postgres_config(
     cfg: &RuntimeConfigV2,
     tracked_job_kind: ProcessJobKind,
@@ -147,7 +137,7 @@ pub(crate) fn materialize_managed_postgres_config(
         start_spec,
         managed_hba.as_path(),
         managed_ident.as_path(),
-        &managed_tls_config,
+        managed_tls_config.as_ref(),
         managed_standby_passfile.as_path(),
     )?;
     write_atomic(
@@ -181,21 +171,19 @@ pub(crate) fn inspect_managed_recovery_state(
     existing_recovery_signal(data_dir).map(|state| state.unwrap_or(ManagedRecoverySignal::None))
 }
 
-fn managed_tls_config(
-    cfg: &RuntimeConfigV2,
-) -> Result<ManagedPostgresTlsConfig, ManagedPostgresError> {
+fn managed_tls_config(cfg: &RuntimeConfigV2) -> Result<Option<TlsConfig>, ManagedPostgresError> {
     match &cfg.postgres.tls {
-        None => Ok(ManagedPostgresTlsConfig::Disabled),
-        Some(tls) => Ok(ManagedPostgresTlsConfig::Enabled {
-            cert_file: resolve_existing_configured_file(
+        None => Ok(None),
+        Some(tls) => Ok(Some(TlsConfig {
+            cert: resolve_existing_configured_file(
                 "postgres.tls.identity.cert_chain",
                 tls.cert.as_path(),
             )?,
-            key_file: resolve_existing_configured_file(
+            key: resolve_existing_configured_file(
                 "postgres.tls.identity.private_key",
                 tls.key.as_path(),
             )?,
-            ca_file: tls
+            ca_cert: tls
                 .ca_cert
                 .as_ref()
                 .map(|path| {
@@ -205,7 +193,7 @@ fn managed_tls_config(
                     )
                 })
                 .transpose()?,
-        }),
+        })),
     }
 }
 
@@ -322,7 +310,7 @@ fn render_managed_postgres_conf(
     start_spec: &StartPostgresSpec,
     managed_hba: &Path,
     managed_ident: &Path,
-    managed_tls_config: &ManagedPostgresTlsConfig,
+    managed_tls_config: Option<&TlsConfig>,
     managed_standby_passfile_path: &Path,
 ) -> Result<String, ManagedPostgresError> {
     let mut rendered = String::from(MANAGED_POSTGRESQL_CONF_HEADER);
@@ -344,18 +332,14 @@ fn render_managed_postgres_conf(
     push_string_setting(&mut rendered, "log_destination", "jsonlog,stderr");
 
     match managed_tls_config {
-        ManagedPostgresTlsConfig::Disabled => {
+        None => {
             push_bool_setting(&mut rendered, "ssl", false);
         }
-        ManagedPostgresTlsConfig::Enabled {
-            cert_file,
-            key_file,
-            ca_file,
-        } => {
+        Some(tls) => {
             push_bool_setting(&mut rendered, "ssl", true);
-            push_path_setting(&mut rendered, "ssl_cert_file", cert_file.as_path());
-            push_path_setting(&mut rendered, "ssl_key_file", key_file.as_path());
-            if let Some(path) = ca_file.as_ref() {
+            push_path_setting(&mut rendered, "ssl_cert_file", tls.cert.as_path());
+            push_path_setting(&mut rendered, "ssl_key_file", tls.key.as_path());
+            if let Some(path) = tls.ca_cert.as_ref() {
                 push_path_setting(&mut rendered, "ssl_ca_file", path.as_path());
             }
         }
@@ -777,7 +761,7 @@ mod tests {
     use tokio_postgres::NoTls;
 
     use crate::{
-        config_v2::{managed_postgres_test_config, RuntimeConfigV2},
+        config_v2::{managed_postgres_test_config, types::TlsConfig, RuntimeConfigV2},
         dev_support::{
             binaries::require_pg16_bin_for_real_tests,
             namespace::NamespaceGuard,
@@ -796,8 +780,8 @@ mod tests {
         inspect_managed_recovery_state, managed_recovery_signal_for_start_job,
         managed_standby_passfile_path, materialize_managed_postgres_config,
         render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresError,
-        ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
-        MANAGED_POSTGRESQL_CONF_NAME, MANAGED_RECOVERY_SIGNAL_NAME, POSTGRESQL_AUTO_CONF_NAME,
+        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_POSTGRESQL_CONF_NAME,
+        MANAGED_RECOVERY_SIGNAL_NAME, POSTGRESQL_AUTO_CONF_NAME,
         QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
 
@@ -869,16 +853,17 @@ mod tests {
         })
     }
 
-    fn sample_render_tls_config() -> ManagedPostgresTlsConfig {
-        ManagedPostgresTlsConfig::Enabled {
-            cert_file: PathBuf::from("/etc/pgtuskmaster/tls/server.crt"),
-            key_file: PathBuf::from("/etc/pgtuskmaster/tls/server.key"),
-            ca_file: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
+    fn sample_render_tls_config() -> TlsConfig {
+        TlsConfig {
+            cert: PathBuf::from("/etc/pgtuskmaster/tls/server.crt"),
+            key: PathBuf::from("/etc/pgtuskmaster/tls/server.key"),
+            ca_cert: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
         }
     }
 
     fn render_sample_conf() -> Result<String, String> {
         let cfg = sample_render_config()?;
+        let tls = sample_render_tls_config();
         render_managed_postgres_conf(
             &cfg,
             ProcessJobKind::StartReplica,
@@ -889,7 +874,7 @@ mod tests {
             ),
             cfg.postgres.pg_hba_file.as_path(),
             cfg.postgres.pg_ident_file.as_path(),
-            &sample_render_tls_config(),
+            Some(&tls),
             managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
         )
         .map_err(|err| format!("render failed: {err}"))
@@ -994,7 +979,7 @@ mod tests {
             &primary_start_spec(&cfg),
             cfg.postgres.pg_hba_file.as_path(),
             cfg.postgres.pg_ident_file.as_path(),
-            &ManagedPostgresTlsConfig::Disabled,
+            None,
             managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
         )
         .map_err(|err| format!("render failed: {err}"))?;
@@ -1016,13 +1001,14 @@ mod tests {
     fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
     ) -> Result<(), String> {
         let cfg = sample_render_config()?;
+        let tls = sample_render_tls_config();
         let rendered = render_managed_postgres_conf(
             &cfg,
             ProcessJobKind::StartDetachedStandby,
             &primary_start_spec(&cfg),
             cfg.postgres.pg_hba_file.as_path(),
             cfg.postgres.pg_ident_file.as_path(),
-            &sample_render_tls_config(),
+            Some(&tls),
             managed_standby_passfile_path(cfg.postgres.data_dir.as_path()).as_path(),
         )
         .map_err(|err| format!("render failed: {err}"))?;
