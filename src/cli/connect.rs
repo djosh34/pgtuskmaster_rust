@@ -7,7 +7,6 @@ use crate::{
         CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionTargetDto,
         StateProjectionDto,
     },
-    config_v2::types::OperatorClientTlsConfig,
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
         state::PgConnInfo,
@@ -49,7 +48,7 @@ pub(crate) async fn run_primary(
                 application_name: None,
                 connect_timeout_s: None,
                 options: None,
-                tls: build_connection_tls(&context.postgres_client_tls, options.tls),
+                tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
             },
         }],
     };
@@ -61,7 +60,7 @@ pub(crate) async fn run_replicas(
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
     let (state, queried_via) = fetch_seed_state(context).await?;
-    let connection_tls = build_connection_tls(&context.postgres_client_tls, options.tls);
+    let connection_tls = build_connection_tls(context.postgres_client_tls.as_ref(), options.tls);
     let targets = state
         .dcs
         .members()
@@ -104,7 +103,7 @@ pub(crate) async fn run_replicas(
     CommandOutputDto::Replicas { output: view }.render(options.json)
 }
 
-fn build_connection_tls(tls: &OperatorClientTlsConfig, emit_tls: bool) -> PgClientTls {
+fn build_connection_tls(tls: Option<&PgClientTls>, emit_tls: bool) -> PgClientTls {
     if !emit_tls {
         return PgClientTls {
             mode: PgSslMode::Disable,
@@ -114,10 +113,10 @@ fn build_connection_tls(tls: &OperatorClientTlsConfig, emit_tls: bool) -> PgClie
         };
     }
 
-    PgClientTls {
+    tls.cloned().unwrap_or(PgClientTls {
         mode: PgSslMode::VerifyFull,
-        root_cert: tls.ca_cert.clone(),
-        client_cert: tls.identity.as_ref().map(|identity| identity.cert.clone()),
-        client_key: tls.identity.as_ref().map(|identity| identity.key.clone()),
-    }
+        root_cert: None,
+        client_cert: None,
+        client_key: None,
+    })
 }

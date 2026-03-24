@@ -7,7 +7,7 @@ use serde::Serialize;
 pub(crate) use crate::api::{AcceptedResponse, NodeState as NodeStateResponse};
 use crate::{
     cli::error::CliError,
-    config_v2::types::OperatorClientTlsConfig,
+    pginfo::conninfo::PgClientTls,
     state::{MemberId, SwitchoverTarget},
 };
 
@@ -22,7 +22,7 @@ pub(crate) struct CliApiClientConfig {
     pub(crate) base_url: Url,
     pub(crate) timeout_ms: u64,
     pub(crate) auth: CliAuthConfig,
-    pub(crate) tls: OperatorClientTlsConfig,
+    pub(crate) tls: Option<PgClientTls>,
     pub(crate) resolve_to: Option<SocketAddr>,
 }
 
@@ -58,7 +58,7 @@ impl CliApiClient {
             }
             None => http,
         };
-        let http = apply_tls_config(http, &config.tls)?;
+        let http = apply_tls_config(http, config.tls.as_ref())?;
         let http = http
             .build()
             .map_err(|err| CliError::RequestBuild(format!("build http client failed: {err}")))?;
@@ -189,9 +189,13 @@ impl CliApiClient {
 
 fn apply_tls_config(
     builder: reqwest::ClientBuilder,
-    config: &OperatorClientTlsConfig,
+    config: Option<&PgClientTls>,
 ) -> Result<reqwest::ClientBuilder, CliError> {
-    let builder = if let Some(ca_cert_path) = config.ca_cert.as_ref() {
+    let Some(config) = config else {
+        return Ok(builder);
+    };
+
+    let builder = if let Some(ca_cert_path) = config.root_cert.as_ref() {
         let ca_cert_bytes = read_tls_bytes("api.tls.ca_cert", ca_cert_path.as_path())?;
         let certificate = reqwest::Certificate::from_pem(ca_cert_bytes.as_slice())
             .map_err(|err| CliError::RequestBuild(format!("parse CA certificate failed: {err}")))?;
@@ -200,12 +204,14 @@ fn apply_tls_config(
         builder
     };
 
-    let Some(identity) = config.identity.as_ref() else {
+    let Some((client_cert_path, client_key_path)) =
+        config.client_cert.as_ref().zip(config.client_key.as_ref())
+    else {
         return Ok(builder);
     };
 
-    let client_cert_bytes = read_tls_bytes("api.tls.identity.cert", identity.cert.as_path())?;
-    let client_key_bytes = read_tls_bytes("api.tls.identity.key", identity.key.as_path())?;
+    let client_cert_bytes = read_tls_bytes("api.tls.identity.cert", client_cert_path.as_path())?;
+    let client_key_bytes = read_tls_bytes("api.tls.identity.key", client_key_path.as_path())?;
     let mut client_identity_pem = Vec::with_capacity(
         client_cert_bytes
             .len()
@@ -267,11 +273,11 @@ mod tests {
     use super::{AuthRole, CliApiClient, CliApiClientConfig};
     use crate::{
         cli::client::CliAuthConfig,
-        config_v2::types::{OperatorClientTlsConfig, TlsConfig},
         dev_support::{
             test_fs::{unique_test_dir, write_text_file},
             tls::{build_adversarial_tls_fixture, build_server_config_with_client_auth},
         },
+        pginfo::conninfo::{PgClientTls, PgSslMode},
     };
 
     #[tokio::test(flavor = "current_thread")]
@@ -294,14 +300,12 @@ mod tests {
             fixture.trusted_client.key_pem.as_str(),
         )?;
 
-        let tls = OperatorClientTlsConfig {
-            ca_cert: Some(ca_cert),
-            identity: Some(TlsConfig {
-                cert: client_cert,
-                key: client_key,
-                ca_cert: None,
-            }),
-        };
+        let tls = Some(PgClientTls {
+            mode: PgSslMode::VerifyFull,
+            root_cert: Some(ca_cert),
+            client_cert: Some(client_cert),
+            client_key: Some(client_key),
+        });
 
         let server_config = build_server_config_with_client_auth(
             &fixture.valid_server,

@@ -6,11 +6,10 @@ use std::{
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
-        DcsEndpoint, LoggingConfig, OperatorClientTlsConfig, OperatorConfigV2,
-        PgtmApiTransportExpectation, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret,
-        TimingConfig, TlsConfig,
+        DcsEndpoint, LoggingConfig, OperatorConfigV2, PgtmApiTransportExpectation, PostgresConfig,
+        RoleConfig, RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
     },
-    pginfo::conninfo::PgClientTls,
+    pginfo::conninfo::{PgClientTls, PgSslMode},
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
 };
 use reqwest::Url;
@@ -750,16 +749,7 @@ fn map_operator_document(
         .transpose()?,
         expected_transport,
         resolve_to,
-        client_tls: OperatorClientTlsConfig {
-            ca_cert: merge_optional_path(
-                "pgtm.api.tls.ca_cert",
-                api_tls.ca_cert,
-                "pgtm.postgres.tls.ca_cert",
-                postgres_tls.ca_cert,
-                "pgtm.client_tls.ca_cert",
-            )?,
-            identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
-        },
+        client_tls: merge_operator_client_tls(api_tls, postgres_tls)?,
         read_token,
         admin_token,
     })
@@ -770,23 +760,35 @@ fn resolve_operator_client_tls(
     ca_field: &'static str,
     cert_field: &'static str,
     key_field: &'static str,
-) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
-    Ok(OperatorClientTlsConfig {
-        ca_cert: tls
-            .ca_cert
-            .map(|ca_cert| resolve_path_only(ca_field, ca_cert))
-            .transpose()?,
-        identity: tls
-            .identity
-            .map(|identity| {
-                Ok(TlsConfig {
-                    cert: resolve_path_only(cert_field, identity.cert)?,
-                    key: resolve_path_only(key_field, identity.key)?,
-                    ca_cert: None,
-                })
-            })
-            .transpose()?,
-    })
+) -> Result<Option<PgClientTls>, ConfigErrorV2> {
+    let root_cert = tls
+        .ca_cert
+        .map(|ca_cert| resolve_path_only(ca_field, ca_cert))
+        .transpose()?;
+    let identity = tls
+        .identity
+        .map(|identity| {
+            Ok((
+                resolve_path_only(cert_field, identity.cert)?,
+                resolve_path_only(key_field, identity.key)?,
+            ))
+        })
+        .transpose()?;
+    let (client_cert, client_key) = match identity {
+        Some((cert, key)) => (Some(cert), Some(key)),
+        None => (None, None),
+    };
+
+    Ok(
+        (root_cert.is_some() || client_cert.is_some() || client_key.is_some()).then_some(
+            PgClientTls {
+                mode: PgSslMode::VerifyFull,
+                root_cert,
+                client_cert,
+                client_key,
+            },
+        ),
+    )
 }
 
 fn parse_operator_url(
@@ -844,22 +846,39 @@ fn merge_optional_path(
     }
 }
 
-fn merge_optional_identity(
-    left: Option<TlsConfig>,
-    right: Option<TlsConfig>,
-) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+fn merge_operator_client_tls(
+    left: Option<PgClientTls>,
+    right: Option<PgClientTls>,
+) -> Result<Option<PgClientTls>, ConfigErrorV2> {
     match (left, right) {
-        (Some(left), Some(right))
-            if left.cert != right.cert || left.key != right.key || left.ca_cert != right.ca_cert =>
-        {
-            Err(validation_error(
-                "pgtm.client_tls.identity",
-                "`pgtm.api.tls.identity` and `pgtm.postgres.tls.identity` must match when both are configured",
-            ))
+        (Some(left), Some(right)) => {
+            let left_identity = left.client_cert.as_ref().zip(left.client_key.as_ref());
+            let right_identity = right.client_cert.as_ref().zip(right.client_key.as_ref());
+            if let (Some((left_cert, left_key)), Some((right_cert, right_key))) =
+                (left_identity, right_identity)
+            {
+                if left_cert != right_cert || left_key != right_key {
+                    return Err(validation_error(
+                        "pgtm.client_tls.identity",
+                        "`pgtm.api.tls.identity` and `pgtm.postgres.tls.identity` must match when both are configured",
+                    ));
+                }
+            }
+
+            Ok(Some(PgClientTls {
+                mode: PgSslMode::VerifyFull,
+                root_cert: merge_optional_path(
+                    "pgtm.api.tls.ca_cert",
+                    left.root_cert,
+                    "pgtm.postgres.tls.ca_cert",
+                    right.root_cert,
+                    "pgtm.client_tls.ca_cert",
+                )?,
+                client_cert: left.client_cert.or(right.client_cert),
+                client_key: left.client_key.or(right.client_key),
+            }))
         }
-        (Some(identity), Some(_)) | (Some(identity), None) | (None, Some(identity)) => {
-            Ok(Some(identity))
-        }
+        (Some(tls), None) | (None, Some(tls)) => Ok(Some(tls)),
         (None, None) => Ok(None),
     }
 }
@@ -1456,13 +1475,25 @@ identity = {{ cert = {}, key = {} }}"#,
             config.admin_token.as_ref().map(|token| token.as_str()),
             Some("admin-token")
         );
-        assert_eq!(config.client_tls.ca_cert.as_ref(), Some(&api_ca_path));
         assert_eq!(
-            config.client_tls.identity.as_ref().map(|tls| &tls.cert),
+            config
+                .client_tls
+                .as_ref()
+                .and_then(|tls| tls.root_cert.as_ref()),
+            Some(&api_ca_path)
+        );
+        assert_eq!(
+            config
+                .client_tls
+                .as_ref()
+                .and_then(|tls| tls.client_cert.as_ref()),
             Some(&identity_cert_path)
         );
         assert_eq!(
-            config.client_tls.identity.as_ref().map(|tls| &tls.key),
+            config
+                .client_tls
+                .as_ref()
+                .and_then(|tls| tls.client_key.as_ref()),
             Some(&identity_key_path)
         );
         Ok(())

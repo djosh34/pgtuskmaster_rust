@@ -158,7 +158,6 @@ mod tests {
             client::{CliApiClientConfig, CliAuthConfig},
             config::OperatorContext,
         },
-        config_v2::types::OperatorClientTlsConfig,
         dcs::{DcsMemberState, DcsSnapshot},
         ha::{
             state::HaState,
@@ -197,10 +196,10 @@ mod tests {
                     read_token: Some("read-token".to_string()),
                     admin_token: Some("admin-token".to_string()),
                 },
-                tls: OperatorClientTlsConfig::default(),
+                tls: None,
                 resolve_to: None,
             },
-            postgres_client_tls: OperatorClientTlsConfig::default(),
+            postgres_client_tls: None,
             api_auth_enabled: true,
         };
 
@@ -273,13 +272,13 @@ mod tests {
                     read_token: Some("read-token".to_string()),
                     admin_token: Some("admin-token".to_string()),
                 },
-                tls: OperatorClientTlsConfig::default(),
+                tls: None,
                 resolve_to: Some(std::net::SocketAddr::from((
                     [127, 0, 0, 1],
                     seed_addr.port(),
                 ))),
             },
-            postgres_client_tls: OperatorClientTlsConfig::default(),
+            postgres_client_tls: None,
             api_auth_enabled: true,
         };
 

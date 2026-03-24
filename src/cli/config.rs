@@ -4,16 +4,14 @@ use crate::{
         client::{CliApiClientConfig, CliAuthConfig},
         error::CliError,
     },
-    config_v2::{
-        load_operator_config, types::OperatorClientTlsConfig, OperatorConfigV2,
-        PgtmApiTransportExpectation,
-    },
+    config_v2::{load_operator_config, OperatorConfigV2, PgtmApiTransportExpectation},
+    pginfo::conninfo::PgClientTls,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OperatorContext {
     pub(crate) api_client: CliApiClientConfig,
-    pub(crate) postgres_client_tls: OperatorClientTlsConfig,
+    pub(crate) postgres_client_tls: Option<PgClientTls>,
     pub(crate) api_auth_enabled: bool,
 }
 
@@ -56,7 +54,7 @@ fn resolve_operator_context_from_config(
     let api_client_tls = if base_url.scheme() == "https" {
         resolve_client_tls(config)
     } else {
-        OperatorClientTlsConfig::default()
+        None
     };
     let postgres_client_tls = resolve_client_tls(config);
 
@@ -121,10 +119,10 @@ fn validate_expected_transport(
     )))
 }
 
-fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> OperatorClientTlsConfig {
+fn resolve_client_tls(config: Option<&OperatorConfigV2>) -> Option<PgClientTls> {
     config
         .map(|config| config.client_tls.clone())
-        .unwrap_or_default()
+        .unwrap_or(None)
 }
 
 fn normalize_optional_token(value: Option<&str>) -> Option<String> {
@@ -276,7 +274,13 @@ ca_cert = {}"#,
         if admin_token != "admin-token" {
             return Err("admin token did not resolve".to_string());
         }
-        if ctx.api_client.tls.ca_cert.is_none() {
+        if ctx
+            .api_client
+            .tls
+            .as_ref()
+            .and_then(|tls| tls.root_cert.as_ref())
+            .is_none()
+        {
             return Err("ca cert path did not resolve".to_string());
         }
         Ok(())
@@ -323,23 +327,26 @@ identity = {{ cert = {}, key = {} }}"#,
         let _ = std::fs::remove_file(identity_cert_path);
         let _ = std::fs::remove_file(identity_key_path);
 
-        if ctx.postgres_client_tls.ca_cert.is_none() {
+        if ctx
+            .postgres_client_tls
+            .as_ref()
+            .and_then(|tls| tls.root_cert.as_ref())
+            .is_none()
+        {
             return Err("expected postgres CA path to be preserved".to_string());
         }
         if ctx
             .postgres_client_tls
-            .identity
             .as_ref()
-            .map(|tls| &tls.cert)
+            .and_then(|tls| tls.client_cert.as_ref())
             .is_none()
         {
             return Err("expected postgres client cert path to be preserved".to_string());
         }
         if ctx
             .postgres_client_tls
-            .identity
             .as_ref()
-            .map(|tls| &tls.key)
+            .and_then(|tls| tls.client_key.as_ref())
             .is_none()
         {
             return Err("expected postgres client key path to be preserved".to_string());
