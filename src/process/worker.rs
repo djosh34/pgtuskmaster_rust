@@ -369,7 +369,7 @@ pub(crate) async fn step_once(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), Work
         ctx.runtime
             .log
             .send(ProcessLogEvent::RequestReceived {
-                job_kind: request.intent.process_job_kind(),
+                job_kind: request.intent.job_kind(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process request log send failed: {err}"))
@@ -530,7 +530,7 @@ pub(crate) async fn start_job(
         ctx.runtime
             .log
             .send(ProcessLogEvent::BusyRejected {
-                job_kind: request.intent.process_job_kind(),
+                job_kind: request.intent.job_kind(),
             })
             .map_err(|err| {
                 WorkerError::Message(format!("process busy reject log send failed: {err}"))
@@ -562,7 +562,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Success {
                         id: request.id,
-                        job_kind: request.intent.active_job_kind(),
+                        job_kind: request.intent.job_kind(),
                         finished_at: now,
                     },
                     now,
@@ -585,7 +585,7 @@ pub(crate) async fn start_job(
                     ctx,
                     JobOutcome::Failure {
                         id: request.id,
-                        job_kind: request.intent.active_job_kind(),
+                        job_kind: request.intent.job_kind(),
                         error,
                         finished_at: now,
                     },
@@ -604,7 +604,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: request.intent.active_job_kind(),
+                    job_kind: request.intent.job_kind(),
                     error: error.into_process_error(),
                     finished_at: now,
                 },
@@ -618,6 +618,7 @@ pub(crate) async fn start_job(
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
     let command = prepared_launch.command;
 
+    let tracked_job_kind = execution_request.kind.tracked_job_kind();
     let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
@@ -625,7 +626,7 @@ pub(crate) async fn start_job(
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::SpawnFailed {
-                    job_kind: execution_request.kind.process_job_kind(),
+                    job_kind: execution_request.kind.job_kind(),
                     cause: error.to_string(),
                 })
                 .map_err(|err| {
@@ -635,7 +636,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: execution_request.kind.active_job_kind(),
+                    job_kind: tracked_job_kind,
                     error,
                     finished_at: now,
                 },
@@ -647,7 +648,7 @@ pub(crate) async fn start_job(
 
     let active = ActiveJob {
         id: request.id.clone(),
-        kind: execution_request.kind.active_job_kind(),
+        kind: tracked_job_kind,
         started_at: now,
         deadline_at,
     };
@@ -656,6 +657,7 @@ pub(crate) async fn start_job(
         deadline_at,
         handle,
         job_kind,
+        tracked_job_kind,
     });
     ctx.state_channel.current = ProcessState::Running {
         worker: WorkerStatus::Running,
@@ -692,12 +694,12 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
                 id: runtime.request.id,
-                job_kind: runtime.request.kind.active_job_kind(),
+                job_kind: runtime.tracked_job_kind,
                 finished_at: now,
             },
             Err(error) => JobOutcome::Failure {
                 id: runtime.request.id,
-                job_kind: runtime.request.kind.active_job_kind(),
+                job_kind: runtime.tracked_job_kind,
                 error,
                 finished_at: now,
             },
@@ -717,7 +719,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             let job_id = runtime.request.id.clone();
             let outcome = JobOutcome::Success {
                 id: job_id,
-                job_kind: runtime.request.kind.active_job_kind(),
+                job_kind: runtime.tracked_job_kind,
                 finished_at: now,
             };
             ctx.runtime
@@ -735,7 +737,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             let exit_error = ProcessError::from_exit(exit);
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id.clone(),
-                job_kind: runtime.request.kind.active_job_kind(),
+                job_kind: runtime.tracked_job_kind,
                 error: exit_error.clone(),
                 finished_at: now,
             };
@@ -754,7 +756,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             flush_subprocess_output(ctx, runtime.handle.as_mut(), runtime.job_kind).await?;
             let outcome = JobOutcome::Failure {
                 id: runtime.request.id.clone(),
-                job_kind: runtime.request.kind.active_job_kind(),
+                job_kind: runtime.tracked_job_kind,
                 error,
                 finished_at: now,
             };
@@ -914,7 +916,7 @@ fn log_prepare_failure(
             .runtime
             .log
             .send(ProcessLogEvent::IntentMaterializationFailed {
-                job_kind: request.intent.process_job_kind(),
+                job_kind: request.intent.job_kind(),
                 cause: inner.to_string(),
             })
             .map_err(|err| {
@@ -926,7 +928,7 @@ fn log_prepare_failure(
             .runtime
             .log
             .send(ProcessLogEvent::BuildCommandFailed {
-                job_kind: request.intent.process_job_kind(),
+                job_kind: request.intent.job_kind(),
                 cause: inner.to_string(),
             })
             .map_err(|err| {
@@ -959,8 +961,8 @@ mod tests {
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
             jobs::{
-                ActiveJob, ActiveJobKind, PostgresStartIntent, ProcessCommandRunner,
-                ProcessCommandSpec, ProcessIntent, ReplicaProvisionIntent,
+                ActiveJob, PostgresStartIntent, ProcessCommandRunner, ProcessCommandSpec,
+                ProcessIntent, ProcessJobKind, ReplicaProvisionIntent,
             },
             state::{
                 ProcessCadence, ProcessIntentRequest, ProcessObservedState, ProcessRuntime,
@@ -1170,10 +1172,10 @@ mod tests {
                         request.id.0, id.0
                     ));
                 }
-                if *job_kind != crate::process::jobs::ActiveJobKind::StartDetachedStandby {
+                if *job_kind != crate::process::jobs::ProcessJobKind::StartDetachedStandby {
                     return Err(format!(
                         "unexpected job kind after noop: expected={:?} actual={job_kind:?}",
-                        crate::process::jobs::ActiveJobKind::StartDetachedStandby
+                        crate::process::jobs::ProcessJobKind::StartDetachedStandby
                     ));
                 }
             }
@@ -1223,7 +1225,7 @@ mod tests {
             worker: WorkerStatus::Running,
             active: ActiveJob {
                 id: JobId("active-job".to_string()),
-                kind: ActiveJobKind::Bootstrap,
+                kind: ProcessJobKind::Bootstrap,
                 started_at: UnixMillis(10),
                 deadline_at: UnixMillis(20),
             },

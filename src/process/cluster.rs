@@ -165,7 +165,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
         ProcessExecutionKind::BaseBackup(spec) => {
@@ -197,7 +197,7 @@ fn build_command(
                 ],
                 env: role_auth_env(&spec.source.auth),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
         ProcessExecutionKind::PgRewind(spec) => {
@@ -227,7 +227,7 @@ fn build_command(
                 ],
                 env: role_auth_env(&spec.source.auth),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
         ProcessExecutionKind::Promote(spec) => {
@@ -253,7 +253,7 @@ fn build_command(
                 args,
                 env: Vec::new(),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
         ProcessExecutionKind::Demote(spec) => {
@@ -271,7 +271,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
         ProcessExecutionKind::StartPostgres(spec) => {
@@ -300,7 +300,7 @@ fn build_command(
                 ],
                 env: Vec::new(),
                 capture_output: cfg.logging.capture_subprocess_output,
-                job_kind: kind.process_job_kind(),
+                job_kind: kind.job_kind(),
             })
         }
     }

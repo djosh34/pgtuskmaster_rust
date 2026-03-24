@@ -655,7 +655,7 @@ mod tests {
             worker: WorkerStatus::Running,
             last_outcome: Some(crate::process::state::JobOutcome::Success {
                 id: crate::state::JobId("job-1".to_string()),
-                job_kind: crate::process::jobs::ActiveJobKind::BaseBackup,
+                job_kind: crate::process::jobs::ProcessJobKind::BaseBackup,
                 finished_at: crate::state::UnixMillis(20),
             }),
         };

@@ -13,9 +13,8 @@ use crate::{
 };
 
 use super::jobs::{
-    ActiveJob, ActiveJobKind, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec,
-    ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec,
-    StartPostgresSpec,
+    ActiveJob, BaseBackupSpec, BootstrapSpec, DemoteSpec, PgRewindSpec, ProcessCommandRunner,
+    ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec, StartPostgresSpec,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
@@ -40,18 +39,7 @@ pub(crate) enum ProcessExecutionKind {
 }
 
 impl ProcessExecutionKind {
-    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
-        match self {
-            Self::Bootstrap(_) => ActiveJobKind::Bootstrap,
-            Self::BaseBackup(_) => ActiveJobKind::BaseBackup,
-            Self::PgRewind(_) => ActiveJobKind::PgRewind,
-            Self::Promote(_) => ActiveJobKind::Promote,
-            Self::Demote(_) => ActiveJobKind::Demote,
-            Self::StartPostgres(spec) => spec.mode.active_job_kind(),
-        }
-    }
-
-    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+    pub(crate) fn job_kind(&self) -> ProcessJobKind {
         match self {
             Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
             Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
@@ -59,6 +47,17 @@ impl ProcessExecutionKind {
             Self::Promote(_) => ProcessJobKind::Promote,
             Self::Demote(_) => ProcessJobKind::Demote,
             Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
+        }
+    }
+
+    pub(crate) fn tracked_job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
+            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
+            Self::PgRewind(_) => ProcessJobKind::PgRewind,
+            Self::Promote(_) => ProcessJobKind::Promote,
+            Self::Demote(_) => ProcessJobKind::Demote,
+            Self::StartPostgres(spec) => spec.mode.job_kind(),
         }
     }
 }
@@ -86,18 +85,18 @@ pub(crate) struct ProcessJobRejection {
 pub enum JobOutcome {
     Success {
         id: JobId,
-        job_kind: ActiveJobKind,
+        job_kind: ProcessJobKind,
         finished_at: UnixMillis,
     },
     Failure {
         id: JobId,
-        job_kind: ActiveJobKind,
+        job_kind: ProcessJobKind,
         error: ProcessError,
         finished_at: UnixMillis,
     },
     Timeout {
         id: JobId,
-        job_kind: ActiveJobKind,
+        job_kind: ProcessJobKind,
         finished_at: UnixMillis,
     },
 }
@@ -107,6 +106,7 @@ pub(crate) struct ActiveRuntime {
     pub(crate) deadline_at: UnixMillis,
     pub(crate) handle: Box<dyn ProcessHandle>,
     pub(crate) job_kind: ProcessJobKind,
+    pub(crate) tracked_job_kind: ProcessJobKind,
 }
 
 pub(crate) struct ProcessWorkerCtx<'a> {
@@ -233,7 +233,7 @@ impl ProcessState {
         }
     }
 
-    pub(crate) fn active_job(&self) -> Option<&ActiveJobKind> {
+    pub(crate) fn active_job(&self) -> Option<&ProcessJobKind> {
         match self {
             Self::Running { active, .. } => Some(&active.kind),
             Self::Idle { .. } => None,
@@ -243,7 +243,7 @@ impl ProcessState {
     pub(crate) fn waiting_for_pg_observation(
         &self,
         pg: &PgInfoState,
-        expected: ActiveJobKind,
+        expected: ProcessJobKind,
     ) -> bool {
         let Some(last_refresh_at) = pg.last_refresh_at() else {
             return false;
@@ -254,14 +254,14 @@ impl ProcessState {
     }
 
     pub(crate) fn basebackup_completed_awaiting_pg_start(&self, pg: &PgInfoState) -> bool {
-        let Some(basebackup_finished_at) = self.last_success(ActiveJobKind::BaseBackup) else {
+        let Some(basebackup_finished_at) = self.last_success(ProcessJobKind::BaseBackup) else {
             return false;
         };
 
         let last_start = [
-            ActiveJobKind::StartPrimary,
-            ActiveJobKind::StartDetachedStandby,
-            ActiveJobKind::StartReplica,
+            ProcessJobKind::StartPrimary,
+            ProcessJobKind::StartDetachedStandby,
+            ProcessJobKind::StartReplica,
         ]
         .into_iter()
         .filter_map(|job| self.last_success(job))
@@ -271,7 +271,7 @@ impl ProcessState {
             return false;
         }
 
-        !self.waiting_for_pg_observation(pg, ActiveJobKind::BaseBackup)
+        !self.waiting_for_pg_observation(pg, ProcessJobKind::BaseBackup)
     }
 
     pub(crate) fn rewind_failed_requires_basebackup(&self) -> bool {
@@ -280,10 +280,10 @@ impl ProcessState {
             Self::Idle {
                 last_outcome: Some(
                     JobOutcome::Failure {
-                        job_kind: ActiveJobKind::PgRewind,
+                        job_kind: ProcessJobKind::PgRewind,
                         ..
                     } | JobOutcome::Timeout {
-                        job_kind: ActiveJobKind::PgRewind,
+                        job_kind: ProcessJobKind::PgRewind,
                         ..
                     }
                 ),
@@ -292,7 +292,7 @@ impl ProcessState {
         )
     }
 
-    fn last_success(&self, expected: ActiveJobKind) -> Option<UnixMillis> {
+    fn last_success(&self, expected: ProcessJobKind) -> Option<UnixMillis> {
         match self {
             Self::Idle {
                 last_outcome:

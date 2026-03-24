@@ -31,22 +31,7 @@ impl ProcessIntent {
         }
     }
 
-    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
-        match self {
-            Self::Bootstrap => ActiveJobKind::Bootstrap,
-            Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
-                ActiveJobKind::BaseBackup
-            }
-            Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
-                ActiveJobKind::PgRewind
-            }
-            Self::Start(start) => start.active_job_kind(),
-            Self::Promote => ActiveJobKind::Promote,
-            Self::Demote(_) => ActiveJobKind::Demote,
-        }
-    }
-
-    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+    pub(crate) fn job_kind(&self) -> ProcessJobKind {
         match self {
             Self::Bootstrap => ProcessJobKind::Bootstrap,
             Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => {
@@ -55,7 +40,7 @@ impl ProcessIntent {
             Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => {
                 ProcessJobKind::PgRewind
             }
-            Self::Start(start) => start.process_job_kind(),
+            Self::Start(start) => start.job_kind(),
             Self::Promote => ProcessJobKind::Promote,
             Self::Demote(_) => ProcessJobKind::Demote,
         }
@@ -76,15 +61,7 @@ pub enum PostgresStartIntent {
 }
 
 impl PostgresStartIntent {
-    pub(crate) fn active_job_kind(&self) -> ActiveJobKind {
-        match self {
-            Self::Primary => ActiveJobKind::StartPrimary,
-            Self::DetachedStandby => ActiveJobKind::StartDetachedStandby,
-            Self::Replica { .. } => ActiveJobKind::StartReplica,
-        }
-    }
-
-    pub(crate) fn process_job_kind(&self) -> ProcessJobKind {
+    pub(crate) fn job_kind(&self) -> ProcessJobKind {
         match self {
             Self::Primary => ProcessJobKind::StartPrimary,
             Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
@@ -94,11 +71,11 @@ impl PostgresStartIntent {
 }
 
 impl PostgresStartMode {
-    pub(crate) fn active_job_kind(self) -> ActiveJobKind {
+    pub(crate) fn job_kind(self) -> ProcessJobKind {
         match self {
-            Self::Primary => ActiveJobKind::StartPrimary,
-            Self::DetachedStandby => ActiveJobKind::StartDetachedStandby,
-            Self::Replica => ActiveJobKind::StartReplica,
+            Self::Primary => ProcessJobKind::StartPrimary,
+            Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
+            Self::Replica => ProcessJobKind::StartReplica,
         }
     }
 }
@@ -181,21 +158,9 @@ impl ShutdownMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ActiveJobKind {
-    Bootstrap,
-    BaseBackup,
-    PgRewind,
-    Promote,
-    Demote,
-    StartPrimary,
-    StartDetachedStandby,
-    StartReplica,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
 #[log_value(rename_all = "snake_case")]
-pub(crate) enum ProcessJobKind {
+pub enum ProcessJobKind {
     Bootstrap,
     BaseBackup,
     PgRewind,
@@ -210,7 +175,7 @@ pub(crate) enum ProcessJobKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveJob {
     pub id: JobId,
-    pub kind: ActiveJobKind,
+    pub kind: ProcessJobKind,
     pub started_at: UnixMillis,
     pub deadline_at: UnixMillis,
 }

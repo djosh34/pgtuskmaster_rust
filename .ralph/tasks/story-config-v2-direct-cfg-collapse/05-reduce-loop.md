@@ -30,10 +30,10 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/26-collapse-process-launch-shell-and-start-wrapper-stack.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/27-collapse-process-job-kind-taxonomy-onto-processjobkind.md`
 
 <steps>
-- [ ] If fresh (based on progress history), untick all boxes, remove existing path to plan file
+- [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
 - [x] Find a potential plan if it exists, otherwise find new ones
 - [x] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
 - [x] Do improvement

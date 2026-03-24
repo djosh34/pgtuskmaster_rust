@@ -1,7 +1,7 @@
 use crate::{
     pginfo::state::{PgInfoState, SqlStatus},
     process::jobs::{
-        ActiveJobKind, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
+        PostgresStartIntent, ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, ShutdownMode,
     },
 };
 
@@ -34,16 +34,16 @@ pub(crate) fn reconcile(observation: &HaObservation, decision: &HaDecision) -> H
 
     let waiting_for_demote = observation
         .process
-        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::Demote);
+        .waiting_for_pg_observation(&observation.pg, ProcessJobKind::Demote);
     let waiting_for_start_primary = observation
         .process
-        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::StartPrimary);
+        .waiting_for_pg_observation(&observation.pg, ProcessJobKind::StartPrimary);
     let waiting_for_promote = observation
         .process
-        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::Promote);
+        .waiting_for_pg_observation(&observation.pg, ProcessJobKind::Promote);
     let waiting_for_start_replica = observation
         .process
-        .waiting_for_pg_observation(&observation.pg, ActiveJobKind::StartReplica);
+        .waiting_for_pg_observation(&observation.pg, ProcessJobKind::StartReplica);
 
     match &decision.mode {
         HaMode::Lead(_) => match observation.local_data {
@@ -365,7 +365,7 @@ mod tests {
             worker: WorkerStatus::Running,
             active: crate::process::jobs::ActiveJob {
                 id: crate::state::JobId("job-1".to_string()),
-                kind: ActiveJobKind::Promote,
+                kind: ProcessJobKind::Promote,
                 started_at: crate::state::UnixMillis(10),
                 deadline_at: crate::state::UnixMillis(20),
             },
