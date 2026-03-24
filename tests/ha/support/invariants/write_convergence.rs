@@ -19,7 +19,7 @@ use rustls::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    runtime::{Builder, Handle, RuntimeFlavor},
+    runtime::Builder,
     task::JoinHandle,
     time::Instant,
 };
@@ -35,6 +35,7 @@ use pgtuskmaster_rust::{
 };
 
 use crate::support::{
+    block_on_support_future,
     observer::pgtm::{PgtmObserver, PostgresRoutingTarget},
     topology::ClusterMember,
 };
@@ -163,28 +164,12 @@ impl WriteConvergenceInvariantRunner {
             .await
         };
 
-        match Handle::try_current() {
-            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            Ok(_) | Err(_) => thread::spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|err| {
-                        WriteConvergenceInvariantError::Failed(format!(
-                            "build runtime for write convergence invariant failed: {err}"
-                        ))
-                    })?
-                    .block_on(future)
-            })
-            .join()
-            .map_err(|_| {
-                WriteConvergenceInvariantError::Failed(
-                    "write convergence invariant health check thread panicked".to_string(),
-                )
-            })?,
-        }
+        block_on_support_future(
+            future,
+            "build runtime for write convergence invariant failed",
+            "write convergence invariant health check thread panicked",
+        )
+        .map_err(WriteConvergenceInvariantError::Failed)
     }
 
     pub fn ensure_running(&self) -> Result<(), WriteConvergenceInvariantError> {
@@ -201,28 +186,15 @@ pub fn probe_routing_target_connectivity(
     let future = async move {
         let (_client, connection_task) = connect_member(&routing_target, connect_timeout).await?;
         connection_task.abort();
-        Ok(())
+        Ok::<(), String>(())
     };
 
-    match Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| handle.block_on(future))
-        }
-        Ok(_) | Err(_) => thread::spawn(move || {
-            Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("build runtime for write convergence probe failed: {err}"))?
-                .block_on(future)
-        })
-        .join()
-        .map_err(|_| {
-            WriteConvergenceInvariantError::Failed(
-                "write convergence probe thread panicked".to_string(),
-            )
-        })?,
-    }
-    .map_err(|err: String| WriteConvergenceInvariantError::Failed(err))
+    block_on_support_future(
+        future,
+        "build runtime for write convergence probe failed",
+        "write convergence probe thread panicked",
+    )
+    .map_err(WriteConvergenceInvariantError::Failed)
 }
 
 impl std::fmt::Debug for WriteConvergenceInvariantRunner {

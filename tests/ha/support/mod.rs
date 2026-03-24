@@ -12,10 +12,15 @@ mod timeouts;
 mod topology;
 mod world;
 
-use std::sync::{Mutex, OnceLock};
+use std::{
+    future::Future,
+    sync::{Mutex, OnceLock},
+    thread,
+};
 
 use cucumber::{writer, World as _, WriterExt as _};
 use futures::FutureExt as _;
+use tokio::runtime::{Builder, Handle, RuntimeFlavor};
 
 use crate::support::{
     error::{HarnessError, Result},
@@ -159,5 +164,31 @@ fn record_cleanup_error(error: String) {
     match recorded.lock() {
         Ok(mut guard) => guard.push(error),
         Err(poisoned) => poisoned.into_inner().push(error),
+    }
+}
+
+pub(crate) fn block_on_support_future<T, E>(
+    future: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
+    runtime_build_error: &'static str,
+    thread_panic_error: &'static str,
+) -> std::result::Result<T, String>
+where
+    T: Send + 'static,
+    E: ToString + Send + 'static,
+{
+    let future = async move { future.await.map_err(|err| err.to_string()) };
+    match Handle::try_current() {
+        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(|| handle.block_on(future))
+        }
+        Ok(_) | Err(_) => thread::spawn(move || {
+            Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| format!("{runtime_build_error}: {err}"))?
+                .block_on(future)
+        })
+        .join()
+        .map_err(|_| thread_panic_error.to_string())?,
     }
 }

@@ -1,20 +1,16 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    future::Future,
     path::{Path, PathBuf},
     sync::Mutex,
-    thread,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use cucumber::World;
 use pgtuskmaster_rust::api::{authoritative_primary_member, NodeState};
-use tokio::{
-    runtime::{Builder, Handle, RuntimeFlavor},
-    task::JoinHandle,
-};
+use tokio::task::JoinHandle;
 
 use crate::support::{
+    block_on_support_future,
     docker::{cli::DockerCli, ryuk::RyukGuard},
     error::{HarnessError, Result},
     faults::{
@@ -1029,48 +1025,25 @@ fn wait_for_write_convergence_attachment(
             HarnessError::message("write-convergence invariant attachment task was missing")
         })
         .and_then(|task| {
-            block_on_harness_future(
+            block_on_support_future(
                 async move {
                     task.await
                         .map_err(|err| {
-                            HarnessError::message(format!(
+                            format!(
                                 "write-convergence invariant attachment task failed to join: {err}"
-                            ))
+                            )
                         })?
-                        .map_err(HarnessError::from)
+                        .map_err(|err| err.to_string())
                 },
-                "write-convergence invariant attachment",
+                "build runtime for write-convergence invariant attachment failed",
+                "write-convergence invariant attachment thread panicked",
             )
+            .map_err(HarnessError::message)
         }) {
         Ok(runner) => WriteConvergenceState::Running(runner),
         Err(err) => WriteConvergenceState::Failed(err.to_string()),
     };
     (settled_state, elapsed)
-}
-
-fn block_on_harness_future<T>(
-    future: impl Future<Output = Result<T>> + Send + 'static,
-    context: &'static str,
-) -> Result<T>
-where
-    T: Send + 'static,
-{
-    match Handle::try_current() {
-        Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-            tokio::task::block_in_place(|| handle.block_on(future))
-        }
-        Ok(_) | Err(_) => thread::spawn(move || {
-            Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| {
-                    HarnessError::message(format!("build runtime for {context} failed: {err}"))
-                })?
-                .block_on(future)
-        })
-        .join()
-        .map_err(|_| HarnessError::message(format!("{context} thread panicked")))?,
-    }
 }
 
 fn container_not_running_error(err: &HarnessError) -> bool {

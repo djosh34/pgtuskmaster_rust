@@ -5,19 +5,14 @@ use std::{
         atomic::{AtomicBool, AtomicI32, Ordering},
         Arc,
     },
-    thread,
     time::Duration,
 };
 
 use pgtuskmaster_rust::pginfo::state::PgInfoState;
-use tokio::{
-    runtime::{Builder, Handle, RuntimeFlavor},
-    sync::RwLock,
-    task::JoinHandle,
-    time::Instant,
-};
+use tokio::{sync::RwLock, task::JoinHandle, time::Instant};
 
 use crate::support::{
+    block_on_support_future,
     error::{HarnessError, Result},
     observer::pgtm::PgtmObserver,
     topology::ClusterMember,
@@ -177,24 +172,12 @@ impl PrimaryCountInvariantRunner {
             }
         };
 
-        match Handle::try_current() {
-            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            Ok(_) | Err(_) => thread::spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|err| {
-                        HarnessError::message(format!(
-                            "build runtime for primary-count invariant failed: {err}"
-                        ))
-                    })?
-                    .block_on(future)
-            })
-            .join()
-            .map_err(|_| HarnessError::message("primary-count health check thread panicked"))?,
-        }
+        block_on_support_future(
+            future,
+            "build runtime for primary-count invariant failed",
+            "primary-count health check thread panicked",
+        )
+        .map_err(HarnessError::message)
     }
 
     pub fn ensure_running(&self) -> Result<()> {
@@ -204,24 +187,12 @@ impl PrimaryCountInvariantRunner {
             ensure_task_running_state(fatal_error.as_ref(), task_stopped.as_ref()).await
         };
 
-        match Handle::try_current() {
-            Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(|| handle.block_on(future))
-            }
-            Ok(_) | Err(_) => thread::spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|err| {
-                        HarnessError::message(format!(
-                            "build runtime for primary-count invariant failed: {err}"
-                        ))
-                    })?
-                    .block_on(future)
-            })
-            .join()
-            .map_err(|_| HarnessError::message("primary-count health check thread panicked"))?,
-        }
+        block_on_support_future(
+            future,
+            "build runtime for primary-count invariant failed",
+            "primary-count health check thread panicked",
+        )
+        .map_err(HarnessError::message)
     }
 }
 
