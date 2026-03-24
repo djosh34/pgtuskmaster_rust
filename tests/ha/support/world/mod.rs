@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     future::Future,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -10,7 +9,6 @@ use std::{
 
 use cucumber::World;
 use pgtuskmaster_rust::api::{authoritative_primary_member, NodeState};
-use pgtuskmaster_test_support::runtime_config::validate_runtime_config_contents;
 use tokio::{
     runtime::{Builder, Handle, RuntimeFlavor},
     task::JoinHandle,
@@ -21,9 +19,11 @@ use crate::support::{
     error::{HarnessError, Result},
     faults::{
         append_fault_rule_script, clear_fault_rules_script, ensure_fault_plumbing_script,
-        remove_fault_rule_script, BlockerKind, TrafficPath, DATABASE_MEMBERS, FAULT_DIR,
+        remove_fault_marker, remove_fault_rule_script, write_fault_marker, BlockerKind,
+        TrafficPath, DATABASE_MEMBERS, WIPE_DATA_ON_START_MARKER_PATH,
     },
     feature_name,
+    files::{create_dir_all, write_text_file},
     givens::HaGivenId,
     invariants::{
         PrimaryCountInvariantRunner, WriteConvergenceInvariantError,
@@ -31,7 +31,7 @@ use crate::support::{
     },
     observer::pgtm::PgtmObserver,
     timeouts::TimeoutModel,
-    topology::ClusterMember,
+    topology::{ClusterMember, DcsService},
 };
 
 #[derive(Debug, Default, World)]
@@ -96,24 +96,54 @@ impl HaWorld {
             .or_else(|_| ClusterMember::parse(member_ref))
     }
 
-    pub fn add_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.stopped_members.insert(member);
+    pub fn kill_nodes(&mut self, members: impl IntoIterator<Item = ClusterMember>) -> Result<()> {
+        for member in members {
+            self.harness()?.kill_node(member)?;
+            let _ = self.stopped_members.insert(member);
+        }
+        Ok(())
     }
 
-    pub fn remove_stopped_node(&mut self, member: ClusterMember) {
-        let _ = self.stopped_members.remove(&member);
+    pub fn start_nodes(&mut self, members: impl IntoIterator<Item = ClusterMember>) -> Result<()> {
+        for member in members {
+            self.harness()?.start_node(member)?;
+            let _ = self.stopped_members.remove(&member);
+        }
+        Ok(())
     }
 
-    pub fn mark_observer_unreachable(&mut self, member: ClusterMember) {
+    pub fn fully_isolate_node_from_cluster(&mut self, member: ClusterMember) -> Result<()> {
+        let harness = self.harness()?;
+        for path in [TrafficPath::Dcs, TrafficPath::Api, TrafficPath::Postgres] {
+            harness.isolate_member_from_all_peers_on_path(member, path)?;
+        }
+        harness.cut_member_off_from_dcs(member)?;
+        harness.isolate_member_from_observer_on_api(member)?;
+        harness.isolate_member_from_observer_on_postgres(member)?;
         let _ = self.observer_unreachable_members.insert(member);
+        Ok(())
     }
 
-    pub fn clear_observer_unreachable(&mut self, member: ClusterMember) {
+    pub fn isolate_node_from_observer_api_access(&mut self, member: ClusterMember) -> Result<()> {
+        self.harness()?
+            .isolate_member_from_observer_on_api(member)?;
+        let _ = self.observer_unreachable_members.insert(member);
+        Ok(())
+    }
+
+    pub fn heal_node_network_faults(&mut self, member: ClusterMember) -> Result<()> {
+        self.harness()?.heal_member_network_faults(member)?;
         let _ = self.observer_unreachable_members.remove(&member);
+        Ok(())
     }
 
-    pub fn clear_observer_unreachable_members(&mut self) {
+    pub fn heal_all_network_faults(&mut self) -> Result<()> {
+        let harness = self.harness()?;
+        for service in DATABASE_MEMBERS {
+            harness.clear_network_faults(service.service_name())?;
+        }
         self.observer_unreachable_members.clear();
+        Ok(())
     }
 
     pub fn online_expected_count(&self) -> usize {
@@ -211,7 +241,7 @@ impl HarnessShared {
         create_dir_all(run_dir.as_path())?;
         create_dir_all(materialized_dir.as_path())?;
         create_dir_all(artifacts_dir.as_path())?;
-        materialize_given_fixture(repo_root.as_path(), given, materialized_dir.as_path())?;
+        given.materialize_fixture(repo_root.as_path(), materialized_dir.as_path())?;
         create_fault_directories(materialized_dir.as_path())?;
 
         let timeouts = TimeoutModel::from_runtime_config(
@@ -446,6 +476,16 @@ impl HarnessShared {
         self.docker.start_container(container_id.as_str())
     }
 
+    fn apply_dcs_services(
+        &self,
+        services: impl IntoIterator<Item = DcsService>,
+        service_action: fn(&Self, &str) -> Result<()>,
+    ) -> Result<()> {
+        services
+            .into_iter()
+            .try_for_each(|service| service_action(self, service.service_name()))
+    }
+
     fn run_shell_as_root(&self, service_name: &str, script: &str) -> Result<String> {
         let container_id = self.service_container_id(service_name)?;
         self.docker.exec_as_user(
@@ -611,44 +651,12 @@ impl HarnessShared {
         )
     }
 
-    pub fn stop_all_dcs_services(&self) -> Result<()> {
-        self.given
-            .dcs_services()
-            .iter()
-            .copied()
-            .try_for_each(|service| self.stop_service(service.service_name()))
+    pub fn stop_dcs_services(&self, services: impl IntoIterator<Item = DcsService>) -> Result<()> {
+        self.apply_dcs_services(services, Self::stop_service)
     }
 
-    pub fn start_all_dcs_services(&self) -> Result<()> {
-        self.given
-            .dcs_services()
-            .iter()
-            .copied()
-            .try_for_each(|service| self.start_service(service.service_name()))
-    }
-
-    pub fn stop_dcs_quorum_majority(&self) -> Result<()> {
-        self.given
-            .quorum_majority_dcs_services()
-            .iter()
-            .copied()
-            .try_for_each(|service| self.stop_service(service.service_name()))
-    }
-
-    pub fn start_dcs_quorum_majority(&self) -> Result<()> {
-        self.given
-            .quorum_majority_dcs_services()
-            .iter()
-            .copied()
-            .try_for_each(|service| self.start_service(service.service_name()))
-    }
-
-    pub fn stop_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.stop_service(self.given.local_dcs_service_for(member).service_name())
-    }
-
-    pub fn start_member_local_dcs(&self, member: ClusterMember) -> Result<()> {
-        self.start_service(self.given.local_dcs_service_for(member).service_name())
+    pub fn start_dcs_services(&self, services: impl IntoIterator<Item = DcsService>) -> Result<()> {
+        self.apply_dcs_services(services, Self::start_service)
     }
 
     pub fn set_blocker(
@@ -658,11 +666,27 @@ impl HarnessShared {
         enabled: bool,
     ) -> Result<()> {
         if enabled {
-            self.write_fault_marker(member, blocker.marker_path())?;
-            self.remove_fault_marker(member, blocker.clear_on_start_marker_path())?;
+            write_fault_marker(
+                self.materialized_dir.as_path(),
+                member,
+                blocker.marker_path(),
+            )?;
+            remove_fault_marker(
+                self.materialized_dir.as_path(),
+                member,
+                blocker.clear_on_start_marker_path(),
+            )?;
         } else {
-            self.remove_fault_marker(member, blocker.marker_path())?;
-            self.remove_fault_marker(member, blocker.clear_on_start_marker_path())?;
+            remove_fault_marker(
+                self.materialized_dir.as_path(),
+                member,
+                blocker.marker_path(),
+            )?;
+            remove_fault_marker(
+                self.materialized_dir.as_path(),
+                member,
+                blocker.clear_on_start_marker_path(),
+            )?;
         }
         self.record_note(
             "fault.blocker",
@@ -675,16 +699,12 @@ impl HarnessShared {
     }
 
     pub fn wipe_member_data_dir(&self, member: ClusterMember) -> Result<()> {
-        let marker_path = "/var/lib/pgtuskmaster/faults/wipe-data-on-start";
-        self.write_fault_marker(member, marker_path)?;
+        write_fault_marker(
+            self.materialized_dir.as_path(),
+            member,
+            WIPE_DATA_ON_START_MARKER_PATH,
+        )?;
         self.record_note("fault.wipe_data_dir", format!("member={member}"))?;
-        Ok(())
-    }
-
-    pub fn clear_all_network_faults(&self) -> Result<()> {
-        for service in DATABASE_MEMBERS {
-            self.clear_network_faults(service.service_name())?;
-        }
         Ok(())
     }
 
@@ -693,47 +713,9 @@ impl HarnessShared {
         Ok(self.docker.container_state_status(container_id.as_str())? == "running")
     }
 
-    fn host_fault_dir(&self, member: ClusterMember) -> PathBuf {
-        self.materialized_dir
-            .join("faults")
-            .join(member.service_name())
-    }
-
     fn member_network_gateway_ipv4(&self, member: ClusterMember) -> Result<String> {
         let container_id = self.service_container_id(member.service_name())?;
         self.docker.container_network_gateway(container_id.as_str())
-    }
-
-    fn host_fault_marker_path(&self, member: ClusterMember, marker_path: &str) -> Result<PathBuf> {
-        let relative_path = Path::new(marker_path)
-            .strip_prefix(FAULT_DIR)
-            .map_err(|_| {
-                HarnessError::message(format!(
-                    "fault marker `{marker_path}` does not live under `{FAULT_DIR}`"
-                ))
-            })?;
-        Ok(self.host_fault_dir(member).join(relative_path))
-    }
-
-    fn write_fault_marker(&self, member: ClusterMember, marker_path: &str) -> Result<()> {
-        let marker_file = self.host_fault_marker_path(member, marker_path)?;
-        if let Some(parent) = marker_file.parent() {
-            create_dir_all(parent)?;
-        }
-        write_text_file(marker_file.as_path(), "")?;
-        Ok(())
-    }
-
-    fn remove_fault_marker(&self, member: ClusterMember, marker_path: &str) -> Result<()> {
-        let marker_file = self.host_fault_marker_path(member, marker_path)?;
-        match fs::remove_file(marker_file.as_path()) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(HarnessError::Io {
-                path: marker_file,
-                source,
-            }),
-        }
     }
 
     async fn bootstrap_cluster(&self) -> Result<()> {
@@ -1161,267 +1143,6 @@ fn sanitize(value: &str) -> String {
         .collect::<String>()
 }
 
-fn create_dir_all(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).map_err(|source| HarnessError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-fn copy_file(from: &Path, to: &Path) -> Result<()> {
-    fs::copy(from, to)
-        .map(|_| ())
-        .map_err(|source| HarnessError::Io {
-            path: to.to_path_buf(),
-            source,
-        })?;
-    apply_private_key_permissions(to)
-}
-
-fn materialize_given_fixture(
-    repo_root: &Path,
-    given: HaGivenId,
-    materialized_root: &Path,
-) -> Result<()> {
-    let shared_root = repo_root.join("tests/ha/givens/three_node_shared");
-    for relative_path in given.shared_fixture_relative_paths() {
-        copy_shared_fixture_path(
-            shared_root.as_path(),
-            materialized_root,
-            Path::new(relative_path),
-        )?;
-    }
-    for member in ClusterMember::ALL {
-        materialize_runtime_config(materialized_root, given, member)?;
-    }
-    materialize_compose_include_file(materialized_root, given.compose_variant_relative_path())?;
-    Ok(())
-}
-
-fn write_text_file(path: &Path, content: &str) -> Result<()> {
-    fs::write(path, content).map_err(|source| HarnessError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-fn apply_private_key_permissions(path: &Path) -> Result<()> {
-    if path.extension().and_then(|extension| extension.to_str()) != Some("key") {
-        return Ok(());
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-
-        let permissions = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(path, permissions).map_err(|source| HarnessError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    }
-
-    Ok(())
-}
-
-fn copy_shared_fixture_path(
-    shared_root: &Path,
-    materialized_root: &Path,
-    relative_path: &Path,
-) -> Result<()> {
-    let source_path = shared_root.join(relative_path);
-    let target_path = materialized_root.join(relative_path);
-    if source_path.is_dir() {
-        return copy_directory(source_path.as_path(), target_path.as_path());
-    }
-
-    if let Some(parent) = target_path.parent() {
-        create_dir_all(parent)?;
-    }
-    copy_file(source_path.as_path(), target_path.as_path())
-}
-
-fn copy_directory(from: &Path, to: &Path) -> Result<()> {
-    if !from.is_dir() {
-        return Err(HarnessError::message(format!(
-            "source directory does not exist: {}",
-            from.display()
-        )));
-    }
-
-    let mut directories = vec![(from.to_path_buf(), to.to_path_buf())];
-    while let Some((current_from, current_to)) = directories.pop() {
-        create_dir_all(current_to.as_path())?;
-        for entry in fs::read_dir(current_from.as_path()).map_err(|source| HarnessError::Io {
-            path: current_from.clone(),
-            source,
-        })? {
-            let entry = entry.map_err(|source| HarnessError::Io {
-                path: current_from.clone(),
-                source,
-            })?;
-            let source_path = entry.path();
-            let destination_path = current_to.join(entry.file_name());
-            if source_path.is_dir() {
-                directories.push((source_path, destination_path));
-            } else {
-                copy_file(source_path.as_path(), destination_path.as_path())?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn materialize_runtime_config(
-    materialized_root: &Path,
-    given: HaGivenId,
-    member: ClusterMember,
-) -> Result<()> {
-    let target_path = materialized_root.join(member.runtime_config_relative_path());
-    if let Some(parent) = target_path.parent() {
-        create_dir_all(parent)?;
-    }
-    let rendered = render_member_runtime_config(given, member);
-    write_text_file(target_path.as_path(), rendered.as_str())
-}
-
-fn materialize_compose_include_file(
-    materialized_root: &Path,
-    compose_variant_relative_path: &str,
-) -> Result<()> {
-    let compose_variant_path = compose_variant_absolute_path(compose_variant_relative_path)?;
-    let rendered = format!(
-        "include:\n  - path: {}\n    project_directory: {}\n",
-        toml_path_string(compose_variant_path.as_path()),
-        toml_path_string(materialized_root),
-    );
-    write_text_file(
-        materialized_root.join("compose.yml").as_path(),
-        rendered.as_str(),
-    )
-}
-
-fn compose_variant_absolute_path(compose_variant_relative_path: &str) -> Result<PathBuf> {
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let absolute = repo_root
-        .join("tests/ha/givens")
-        .join(compose_variant_relative_path);
-    if absolute.is_file() {
-        Ok(absolute)
-    } else {
-        Err(HarnessError::message(format!(
-            "static compose variant is missing: {}",
-            absolute.display()
-        )))
-    }
-}
-
-fn toml_path_string(path: &Path) -> String {
-    format!("{:?}", path.display().to_string())
-}
-
-fn render_member_runtime_config(given: HaGivenId, member: ClusterMember) -> String {
-    let member_name = member.service_name();
-    let dcs_endpoint = given.local_dcs_service_for(member).client_url();
-    let replicator = given.replicator_role();
-    let rewinder = given.rewinder_role();
-    format!(
-        r#"[cluster]
-name = "ha-cucumber-cluster"
-scope = "ha-cucumber-cluster"
-member_id = "{member_name}"
-
-[postgres.paths]
-data_dir = "/var/lib/postgresql/data"
-socket_dir = "/var/lib/pgtuskmaster/socket"
-log_file = "/var/log/pgtuskmaster/postgres.log"
-
-[postgres.network]
-listen_host = "{member_name}"
-listen_port = 5432
-
-[postgres.rewind.transport]
-ssl_mode = "verify-full"
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-
-[postgres]
-tls = {{ mode = "enabled", identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member_name}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member_name}.key" }} }}, client_auth = {{ client_ca = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}, client_certificate = "optional" }} }}
-
-[postgres.access]
-hba = {{ path = "/etc/pgtuskmaster/pg_hba.conf" }}
-ident = {{ path = "/etc/pgtuskmaster/pg_ident.conf" }}
-
-[postgres.extra_gucs]
-wal_keep_size = "128MB"
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/postgres-superuser-password" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "{replicator}"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/replicator-password" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "{rewinder}"
-auth = {{ type = "password", password = {{ type = "file", path = "/run/secrets/rewinder-password" }} }}
-
-[dcs]
-endpoints = ["{dcs_endpoint}"]
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process.timeouts]
-pg_rewind_ms = 120000
-bootstrap_ms = 300000
-fencing_ms = 30000
-
-[process.binaries.overrides]
-postgres = "/usr/local/lib/pgtuskmaster/wrappers/postgres"
-pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup"
-psql = "/usr/lib/postgresql/16/bin/psql"
-
-[logging]
-level = "info"
-capture_subprocess_output = true
-
-[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-cleanup = {{ enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }}
-
-[logging.sinks.stderr]
-enabled = true
-
-[logging.sinks.file]
-enabled = true
-path = "/var/log/pgtuskmaster/runtime.jsonl"
-mode = "append"
-
-[api]
-listen_addr = "0.0.0.0:8443"
-transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {{ path = "/etc/pgtuskmaster/tls/{member}.crt" }}, private_key = {{ path = "/etc/pgtuskmaster/tls/{member}.key" }} }} }} }}
-auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}, admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }} }} }}
-
-[pgtm.api]
-base_url = "https://{member}:8443"
-auth = {{ type = "role_tokens", tokens = {{ read_token = {{ type = "file", path = "/run/secrets/api-read-token" }}, admin_token = {{ type = "file", path = "/run/secrets/api-admin-token" }} }} }}
-tls = {{ ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }} }}
-
-[pgtm.postgres.tls]
-ca_cert = {{ path = "/etc/pgtuskmaster/tls/ca.crt" }}
-
-[debug]
-enabled = true
-"#
-    )
-}
-
 fn create_fault_directories(root: &Path) -> Result<()> {
     let faults_root = root.join("faults");
     create_dir_all(faults_root.as_path())?;
@@ -1480,194 +1201,6 @@ mod tests {
     use crate::support::{
         docker::cli::DockerCli, invariants::WriteConvergenceInvariantError, timeouts::TimeoutModel,
     };
-
-    fn temporary_directory(name: &str) -> Result<PathBuf> {
-        let root = std::env::temp_dir().join(format!(
-            "pgtm-ha-world-{name}-{}-{}",
-            std::process::id(),
-            timestamp_millis()?
-        ));
-        match fs::remove_dir_all(root.as_path()) {
-            Ok(()) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(HarnessError::Io { path: root, source });
-            }
-        }
-        create_dir_all(root.as_path())?;
-        Ok(root)
-    }
-
-    fn cleanup_directory(path: &Path) -> Result<()> {
-        match fs::remove_dir_all(path) {
-            Ok(()) => Ok(()),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(source) => Err(HarnessError::Io {
-                path: path.to_path_buf(),
-                source,
-            }),
-        }
-    }
-
-    #[test]
-    fn materializes_plain_fixture_from_shared_assets_and_static_include_compose() -> Result<()> {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = HaGivenId::Plain;
-        let output_root = temporary_directory("plain")?;
-
-        let result = (|| -> Result<()> {
-            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
-
-            let compose =
-                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                    HarnessError::Io {
-                        path: output_root.join("compose.yml"),
-                        source,
-                    }
-                })?;
-            let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
-            assert!(compose.contains("include:"));
-            assert!(compose.contains(expected_variant.display().to_string().as_str()));
-            assert!(compose.contains(output_root.display().to_string().as_str()));
-
-            let runtime_path =
-                output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
-            let runtime =
-                fs::read_to_string(runtime_path.as_path()).map_err(|source| HarnessError::Io {
-                    path: runtime_path.clone(),
-                    source,
-                })?;
-            validate_runtime_config_contents(runtime.as_str()).map_err(|source| {
-                HarnessError::message(format!(
-                    "materialized node runtime config failed validation: {source}"
-                ))
-            })?;
-            assert!(runtime.contains(r#"username = "replicator""#));
-            assert!(runtime.contains(r#"username = "rewinder""#));
-            assert!(output_root.join("configs/tls/ca.crt").is_file());
-            assert!(output_root.join("secrets/replicator-password").is_file());
-            Ok(())
-        })();
-
-        let cleanup_result = cleanup_directory(output_root.as_path());
-        match (result, cleanup_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(cleanup)) => Err(cleanup),
-            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
-                "{err}\ncleanup also failed: {cleanup}"
-            ))),
-        }
-    }
-
-    #[test]
-    fn materializes_custom_roles_without_custom_compose_variant() -> Result<()> {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = HaGivenId::CustomRoles;
-        let output_root = temporary_directory("custom-roles")?;
-
-        let result = (|| -> Result<()> {
-            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
-
-            let compose =
-                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                    HarnessError::Io {
-                        path: output_root.join("compose.yml"),
-                        source,
-                    }
-                })?;
-            let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
-            assert!(compose.contains(expected_variant.display().to_string().as_str()));
-
-            let runtime = fs::read_to_string(
-                output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
-            )
-            .map_err(|source| HarnessError::Io {
-                path: output_root.join(ClusterMember::NodeB.runtime_config_relative_path()),
-                source,
-            })?;
-            assert!(runtime.contains(r#"username = "mirrorbot""#));
-            assert!(runtime.contains(r#"username = "rewindbot""#));
-            Ok(())
-        })();
-
-        let cleanup_result = cleanup_directory(output_root.as_path());
-        match (result, cleanup_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(cleanup)) => Err(cleanup),
-            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
-                "{err}\ncleanup also failed: {cleanup}"
-            ))),
-        }
-    }
-
-    #[test]
-    fn materializes_three_etcd_fixture_with_node_local_dcs_bindings() -> Result<()> {
-        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let given = HaGivenId::ThreeEtcd;
-        let output_root = temporary_directory("three-etcd")?;
-
-        let result = (|| -> Result<()> {
-            materialize_given_fixture(repo_root.as_path(), given, output_root.as_path())?;
-
-            let compose =
-                fs::read_to_string(output_root.join("compose.yml")).map_err(|source| {
-                    HarnessError::Io {
-                        path: output_root.join("compose.yml"),
-                        source,
-                    }
-                })?;
-            let expected_variant =
-                compose_variant_absolute_path(given.compose_variant_relative_path())?;
-            assert!(compose.contains(expected_variant.display().to_string().as_str()));
-
-            let node_a_runtime_path =
-                output_root.join(ClusterMember::NodeA.runtime_config_relative_path());
-            let node_a_runtime =
-                fs::read_to_string(node_a_runtime_path.as_path()).map_err(|source| {
-                    HarnessError::Io {
-                        path: node_a_runtime_path.clone(),
-                        source,
-                    }
-                })?;
-            validate_runtime_config_contents(node_a_runtime.as_str()).map_err(|source| {
-                HarnessError::message(format!(
-                    "materialized node-a runtime config failed validation: {source}"
-                ))
-            })?;
-            assert!(node_a_runtime.contains(r#"endpoints = ["http://etcd-a:2379"]"#));
-
-            let node_b_runtime_path =
-                output_root.join(ClusterMember::NodeB.runtime_config_relative_path());
-            let node_b_runtime =
-                fs::read_to_string(node_b_runtime_path.as_path()).map_err(|source| {
-                    HarnessError::Io {
-                        path: node_b_runtime_path.clone(),
-                        source,
-                    }
-                })?;
-            validate_runtime_config_contents(node_b_runtime.as_str()).map_err(|source| {
-                HarnessError::message(format!(
-                    "materialized node-b runtime config failed validation: {source}"
-                ))
-            })?;
-            assert!(node_b_runtime.contains(r#"endpoints = ["http://etcd-b:2379"]"#));
-            Ok(())
-        })();
-
-        let cleanup_result = cleanup_directory(output_root.as_path());
-        match (result, cleanup_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(err), Ok(())) => Err(err),
-            (Ok(()), Err(cleanup)) => Err(cleanup),
-            (Err(err), Err(cleanup)) => Err(HarnessError::message(format!(
-                "{err}\ncleanup also failed: {cleanup}"
-            ))),
-        }
-    }
 
     #[test]
     fn member_alias_round_trips() -> Result<()> {

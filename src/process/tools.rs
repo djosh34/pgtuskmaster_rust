@@ -43,14 +43,10 @@ impl ExternalToolLowerer {
                     )
                 })?;
                 ProcessExecutionKind::StartPostgres(StartPostgresSpec {
-                    mode: start.mode,
+                    mode: start.desired_session.mode(),
                     data_dir: cfg.postgres.data_dir.clone(),
-                    socket_dir: cfg.postgres.socket_dir.clone(),
-                    port: cfg.postgres.listen_port,
                     config_file: prepared_session.config.postgresql_conf_path.clone(),
                     log_file: cfg.postgres.log_file.clone(),
-                    wait_seconds: None,
-                    timeout_ms: None,
                 })
             }
             ClusterProcessPlan::Promote(spec) => ProcessExecutionKind::Promote(spec.clone()),
@@ -156,17 +152,22 @@ impl ExternalToolLowerer {
             }
             ProcessExecutionKind::Promote(spec) => {
                 validate_non_empty_path("promote.data_dir", &spec.data_dir)?;
-                let mut args = vec![
-                    "-D".to_string(),
-                    spec.data_dir.display().to_string(),
-                    "promote".to_string(),
-                    "-w".to_string(),
-                ];
-                if let Some(wait_seconds) = spec.wait_seconds {
-                    args.push("-t".to_string());
-                    args.push(wait_seconds.to_string());
-                }
+                let wait_args = spec
+                    .wait_seconds
+                    .into_iter()
+                    .flat_map(|wait_seconds| ["-t".to_string(), wait_seconds.to_string()])
+                    .collect::<Vec<_>>();
                 let program = cfg.binaries.pg_ctl.clone();
+                let args = [
+                    vec![
+                        "-D".to_string(),
+                        spec.data_dir.display().to_string(),
+                        "promote".to_string(),
+                        "-w".to_string(),
+                    ],
+                    wait_args,
+                ]
+                .concat();
                 Ok(ProcessCommandSpec {
                     program: program.clone(),
                     args,
@@ -197,7 +198,6 @@ impl ExternalToolLowerer {
                 validate_non_empty_path("start_postgres.data_dir", &spec.data_dir)?;
                 validate_non_empty_path("start_postgres.config_file", &spec.config_file)?;
                 validate_non_empty_path("start_postgres.log_file", &spec.log_file)?;
-                let wait_seconds = spec.wait_seconds.unwrap_or(PG_CTL_DEFAULT_WAIT_SECONDS);
                 let option_tokens = vec![
                     "-c".to_string(),
                     format!("config_file={}", spec.config_file.display()),
@@ -216,7 +216,7 @@ impl ExternalToolLowerer {
                         "start".to_string(),
                         "-w".to_string(),
                         "-t".to_string(),
-                        wait_seconds.to_string(),
+                        PG_CTL_DEFAULT_WAIT_SECONDS.to_string(),
                     ],
                     env: Vec::new(),
                     capture_output: cfg.logging.capture_subprocess_output,
@@ -361,10 +361,11 @@ fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::fs;
 
     use crate::{
-        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
+        config_v2::runtime_test_config_with_data_dir,
+        dev_support::test_fs::unique_test_dir,
         pginfo::{conninfo::PgClientTls, state::PgConnInfo},
         postgres_managed::ManagedPostgresConfig,
         postgres_managed_conf::ManagedRecoverySignal,
@@ -381,12 +382,6 @@ mod tests {
 
     use super::ExternalToolLowerer;
 
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
-        RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .build()
-    }
-
     #[test]
     fn lower_execution_request_for_basebackup_wipes_existing_data_dir_contents(
     ) -> Result<(), String> {
@@ -398,7 +393,8 @@ mod tests {
         fs::write(&stale, "stale")
             .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
 
-        let cfg = sample_runtime_config(data_dir.clone());
+        let cfg =
+            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
@@ -459,7 +455,8 @@ mod tests {
     fn build_command_for_start_postgres_uses_prepared_session_paths() -> Result<(), String> {
         let root = unique_test_dir("process-tools", "start-command")?;
         let data_dir = root.join("data");
-        let cfg = sample_runtime_config(data_dir.clone());
+        let cfg =
+            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
         let observed = ProcessObservedSnapshot {
             dcs: crate::dcs::DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::None,
@@ -479,7 +476,6 @@ mod tests {
             },
         };
         let plan = ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-            mode: crate::process::jobs::PostgresStartMode::Replica,
             desired_session: DesiredManagedPostgresSession::Follow(Box::new(ReplicaFollowPlan {
                 source: MandatoryRoleSourceConn {
                     role: MandatorySourceRole::Replicator,

@@ -9,9 +9,7 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgInfoState,
     postgres_managed_conf::ManagedRecoverySignal,
-    state::{
-        JobId, NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus,
-    },
+    state::{JobId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::jobs::{
@@ -19,7 +17,6 @@ use super::jobs::{
     ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind, PromoteSpec,
     StartPostgresSpec,
 };
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
     Idle {
@@ -115,7 +112,6 @@ pub(crate) struct ActiveRuntime {
 pub(crate) struct ProcessWorkerCtx<'a> {
     pub(crate) cfg: &'a RuntimeConfigV2,
     pub(crate) cadence: ProcessCadence,
-    pub(crate) identity: NodeIdentity,
     pub(crate) observed: ProcessObservedState,
     pub(crate) state_channel: ProcessStateChannel,
     pub(crate) control: ProcessControlPlane,

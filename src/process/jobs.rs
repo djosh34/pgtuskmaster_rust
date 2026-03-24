@@ -155,12 +155,8 @@ pub(crate) struct DemoteSpec {
 pub(crate) struct StartPostgresSpec {
     pub(crate) mode: PostgresStartMode,
     pub(crate) data_dir: PathBuf,
-    pub(crate) socket_dir: PathBuf,
-    pub(crate) port: u16,
     pub(crate) config_file: PathBuf,
     pub(crate) log_file: PathBuf,
-    pub(crate) wait_seconds: Option<u64>,
-    pub(crate) timeout_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

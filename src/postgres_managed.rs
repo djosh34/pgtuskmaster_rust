@@ -486,7 +486,7 @@ mod tests {
     use tokio_postgres::NoTls;
 
     use crate::{
-        config_v2::types::TimingConfig,
+        config_v2::{managed_postgres_test_config, RuntimeConfigV2},
         dev_support::{
             binaries::require_pg16_bin_for_real_tests,
             namespace::NamespaceGuard,
@@ -509,11 +509,15 @@ mod tests {
         POSTGRESQL_AUTO_CONF_NAME, QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
     };
 
+    fn sample_managed_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
+        managed_postgres_test_config(data_dir).map_err(|err| err.to_string())
+    }
+
     #[test]
     fn materialize_managed_postgres_config_creates_authoritative_postgresql_conf(
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("postgresql-conf");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
 
         let managed =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
@@ -569,7 +573,7 @@ mod tests {
     fn materialize_managed_postgres_config_uses_config_file_path_for_startup() -> Result<(), String>
     {
         let data_dir = unique_test_data_dir("config-file");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
 
         let managed =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
@@ -593,7 +597,7 @@ mod tests {
     fn materialize_managed_postgres_config_creates_and_removes_standby_signal() -> Result<(), String>
     {
         let data_dir = unique_test_data_dir("standby-signal");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
         let replica_start = ManagedPostgresStartIntent::replica(
             PgConnInfo {
                 route: crate::state::PgRoute::new(
@@ -654,7 +658,7 @@ mod tests {
     #[test]
     fn materialize_managed_postgres_config_writes_managed_standby_passfile() -> Result<(), String> {
         let data_dir = unique_test_data_dir("standby-passfile");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
 
         let managed = materialize_managed_postgres_config(
             &cfg,
@@ -703,7 +707,7 @@ mod tests {
     fn materialize_managed_postgres_config_removes_stale_standby_passfile_on_primary_start(
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("stale-standby-passfile");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
         let stale_path = managed_standby_passfile_path(&data_dir);
@@ -736,7 +740,7 @@ mod tests {
     fn materialize_managed_postgres_config_quarantines_postgresql_auto_conf() -> Result<(), String>
     {
         let data_dir = unique_test_data_dir("postgresql-auto-conf");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
         let active_auto_conf = data_dir.join(POSTGRESQL_AUTO_CONF_NAME);
         let quarantined_auto_conf = data_dir.join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME);
         fs::create_dir_all(&data_dir)
@@ -786,11 +790,10 @@ mod tests {
     #[test]
     fn materialize_managed_postgres_config_rejects_reserved_extra_guc() -> Result<(), String> {
         let data_dir = unique_test_data_dir("reserved-extra");
-        let mut cfg = sample_runtime_config(data_dir.clone());
+        let mut cfg = sample_managed_config(data_dir.clone())?;
         cfg.postgres
             .extra_gucs
             .insert("config_file".to_string(), "/tmp/override.conf".to_string());
-        let cfg = runtime_config_v2(cfg)?;
 
         assert_eq!(
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary()),
@@ -808,7 +811,7 @@ mod tests {
     fn materialize_managed_postgres_config_reuses_configured_tls_paths_without_copying(
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("tls");
-        let mut cfg = sample_runtime_config(data_dir.clone());
+        let mut cfg = sample_managed_config(data_dir.clone())?;
         let source_tls_dir = data_dir.join("source-tls");
         fs::create_dir_all(&source_tls_dir).map_err(|err| {
             format!(
@@ -829,7 +832,6 @@ mod tests {
             key: key.clone(),
             ca_cert: Some(ca_cert.clone()),
         });
-        let cfg = runtime_config_v2(cfg)?;
 
         let managed =
             materialize_managed_postgres_config(&cfg, &ManagedPostgresStartIntent::primary())
@@ -976,7 +978,8 @@ mod tests {
             let replica_port = replica_reservation.as_slice()[0];
             drop(replica_reservation);
 
-            let mut runtime_config = sample_runtime_config(replica_data.clone());
+            let mut runtime_config = sample_managed_config(replica_data.clone())
+                .map_err(real_test_error)?;
             runtime_config.postgres.listen_port = replica_port;
             runtime_config.postgres.cluster_advertise =
                 crate::state::PgRoute::tcp(
@@ -992,7 +995,6 @@ mod tests {
                 "host replication all 127.0.0.1/32 trust\n",
             )
             .to_string();
-            let runtime_config = runtime_config_v2(runtime_config).map_err(real_test_error)?;
 
             let managed = materialize_managed_postgres_config(
                 &runtime_config,
@@ -1169,7 +1171,7 @@ mod tests {
     #[test]
     fn inspect_managed_recovery_state_reports_replica_signal() -> Result<(), String> {
         let data_dir = unique_test_data_dir("inspect-managed-recovery");
-        let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
+        let cfg = sample_managed_config(data_dir.clone())?;
         let expected = ManagedPostgresStartIntent::replica(
             sample_replica_conninfo()?,
             Some("slot_a".to_string()),
@@ -1240,27 +1242,6 @@ mod tests {
             std::process::id(),
             crate::logging::system_now_unix_millis()
         ))
-    }
-
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .with_dcs_scope("cluster-a")
-            .with_timing(TimingConfig {
-                ha_loop_interval: Duration::from_millis(500),
-                ha_lease_ttl: Duration::from_secs(5),
-                bootstrap_timeout: Duration::from_secs(30),
-                pg_rewind_timeout: Duration::from_secs(30),
-                fencing_timeout: Duration::from_secs(10),
-            })
-            .with_binaries(crate::dev_support::runtime_config::sample_binary_paths())
-            .build()
-    }
-
-    fn runtime_config_v2(
-        cfg: crate::config_v2::RuntimeConfigV2,
-    ) -> Result<crate::config_v2::RuntimeConfigV2, String> {
-        Ok(cfg)
     }
 
     fn sample_replica_conninfo() -> Result<PgConnInfo, String> {

@@ -5,16 +5,15 @@ use std::{
 
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
-    api::{authoritative_primary_member, NodeState},
+    api::NodeState,
     dcs::DcsMemberState,
-    ha::types::{AuthorityProjection, PublicationState},
     pginfo::state::{PgInfoState, Readiness},
     state::ObservedWalPosition,
 };
 
 use crate::support::{
     error::{HarnessError, Result},
-    faults::{BlockerKind, TrafficPath},
+    faults::BlockerKind,
     givens::HaGivenId,
     invariants::probe_routing_target_connectivity,
     observer::{pgtm::ClusterStateObservation, sql},
@@ -125,9 +124,7 @@ async fn i_choose_the_two_non_primary_nodes_as(
 #[when(regex = r#"^I kill the node named "([^"]+)"$"#)]
 async fn i_kill_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.kill_node(member_id)?;
-    world.add_stopped_node(member_id);
-    Ok(())
+    world.kill_nodes([member_id])
 }
 
 #[when(regex = r#"^I kill the nodes named "([^"]+)" and "([^"]+)"$"#)]
@@ -136,29 +133,23 @@ async fn i_kill_the_nodes_named(
     member_ref_a: String,
     member_ref_b: String,
 ) -> Result<()> {
-    for member_ref in [member_ref_a.as_str(), member_ref_b.as_str()] {
-        let member_id = world.resolve_member_reference(member_ref)?;
-        world.harness()?.kill_node(member_id)?;
-        world.add_stopped_node(member_id);
-    }
-    Ok(())
+    world.kill_nodes(
+        [member_ref_a.as_str(), member_ref_b.as_str()]
+            .into_iter()
+            .map(|member_ref| world.resolve_member_reference(member_ref))
+            .collect::<Result<Vec<_>>>()?,
+    )
 }
 
 #[when("I kill all database nodes")]
 async fn i_kill_all_database_nodes(world: &mut HaWorld) -> Result<()> {
-    for member_id in all_cluster_members() {
-        world.harness()?.kill_node(member_id)?;
-        world.add_stopped_node(member_id);
-    }
-    Ok(())
+    world.kill_nodes(ClusterMember::ALL)
 }
 
 #[when(regex = r#"^I restart the node named "([^"]+)"$"#)]
 async fn i_restart_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.start_node(member_id)?;
-    world.remove_stopped_node(member_id);
-    Ok(())
+    world.start_nodes([member_id])
 }
 
 #[when(regex = r#"^I start only the fixed nodes "([^"]+)" and "([^"]+)"$"#)]
@@ -167,12 +158,12 @@ async fn i_start_only_the_fixed_nodes(
     member_ref_a: String,
     member_ref_b: String,
 ) -> Result<()> {
-    for member_ref in [member_ref_a.as_str(), member_ref_b.as_str()] {
-        let member_id = world.resolve_member_reference(member_ref)?;
-        world.harness()?.start_node(member_id)?;
-        world.remove_stopped_node(member_id);
-    }
-    Ok(())
+    world.start_nodes(
+        [member_ref_a.as_str(), member_ref_b.as_str()]
+            .into_iter()
+            .map(|member_ref| world.resolve_member_reference(member_ref))
+            .collect::<Result<Vec<_>>>()?,
+    )
 }
 
 #[when("I request a planned switchover")]
@@ -257,22 +248,26 @@ async fn quoted_member_becomes_primary(world: &mut HaWorld, member_ref: String) 
 
 #[when("I stop the DCS service")]
 async fn i_stop_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.stop_all_dcs_services()
+    let harness = world.harness()?;
+    harness.stop_dcs_services(harness.given.dcs_services().iter().copied())
 }
 
 #[when("I stop a DCS quorum majority")]
 async fn i_stop_a_dcs_quorum_majority(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.stop_dcs_quorum_majority()
+    let harness = world.harness()?;
+    harness.stop_dcs_services(harness.given.quorum_majority_dcs_services().iter().copied())
 }
 
 #[when("I start the DCS service")]
 async fn i_start_the_dcs_service(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.start_all_dcs_services()
+    let harness = world.harness()?;
+    harness.start_dcs_services(harness.given.dcs_services().iter().copied())
 }
 
 #[when("I restore DCS quorum")]
 async fn i_restore_dcs_quorum(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.start_dcs_quorum_majority()
+    let harness = world.harness()?;
+    harness.start_dcs_services(harness.given.quorum_majority_dcs_services().iter().copied())
 }
 
 #[when(regex = r#"^I stop the local DCS service for node named "([^"]+)"$"#)]
@@ -281,7 +276,8 @@ async fn i_stop_the_local_dcs_service_for_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.stop_member_local_dcs(member_id)
+    let harness = world.harness()?;
+    harness.stop_dcs_services([harness.given.local_dcs_service_for(member_id)])
 }
 
 #[when(regex = r#"^I start the local DCS service for node named "([^"]+)"$"#)]
@@ -290,7 +286,8 @@ async fn i_start_the_local_dcs_service_for_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.start_member_local_dcs(member_id)
+    let harness = world.harness()?;
+    harness.start_dcs_services([harness.given.local_dcs_service_for(member_id)])
 }
 
 #[when(regex = r#"^I fully isolate the node named "([^"]+)" from the cluster$"#)]
@@ -299,15 +296,7 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
     member_ref: String,
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let harness = world.harness()?;
-    for path in [TrafficPath::Dcs, TrafficPath::Api, TrafficPath::Postgres] {
-        harness.isolate_member_from_all_peers_on_path(member_id, path)?;
-    }
-    harness.cut_member_off_from_dcs(member_id)?;
-    harness.isolate_member_from_observer_on_api(member_id)?;
-    harness.isolate_member_from_observer_on_postgres(member_id)?;
-    world.mark_observer_unreachable(member_id);
-    Ok(())
+    world.fully_isolate_node_from_cluster(member_id)
 }
 
 #[when(regex = r#"^I cut the node named "([^"]+)" off from DCS$"#)]
@@ -322,11 +311,7 @@ async fn i_isolate_the_node_named_from_observer_api_access(
     member_ref: String,
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world
-        .harness()?
-        .isolate_member_from_observer_on_api(member_id)?;
-    world.mark_observer_unreachable(member_id);
-    Ok(())
+    world.isolate_node_from_observer_api_access(member_id)
 }
 
 #[when(regex = r#"^I heal network faults on the node named "([^"]+)"$"#)]
@@ -335,16 +320,12 @@ async fn i_heal_network_faults_on_the_node_named(
     member_ref: String,
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    world.harness()?.heal_member_network_faults(member_id)?;
-    world.clear_observer_unreachable(member_id);
-    Ok(())
+    world.heal_node_network_faults(member_id)
 }
 
 #[when("I heal all network faults")]
 async fn i_heal_all_network_faults(world: &mut HaWorld) -> Result<()> {
-    world.harness()?.clear_all_network_faults()?;
-    world.clear_observer_unreachable_members();
-    Ok(())
+    world.heal_all_network_faults()
 }
 
 #[given(regex = r#"^I enable the "([^"]+)" blocker on the node named "([^"]+)"$"#)]
@@ -387,14 +368,12 @@ async fn wait_for_replicas(
 ) -> Result<Vec<ClusterMember>> {
     let expected_members = world.online_member_ids();
     poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
-        let primary = compatible_primary_from_observation(
-            observation,
+        let primary = observation.compatible_primary(
             expected_members.as_slice(),
             expected_members.len(),
             None,
         )?;
-        let primary_state = require_observed_member_state(observation, primary)?;
-        let replicas = replica_members(primary_state);
+        let replicas = observation.replica_members(primary)?;
         if replicas.len() == expected_replicas {
             Ok(replicas)
         } else {
@@ -414,14 +393,12 @@ async fn wait_for_minimum_replicas(
 ) -> Result<Vec<ClusterMember>> {
     let expected_members = world.online_member_ids();
     poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
-        let primary = compatible_primary_from_observation(
-            observation,
+        let primary = observation.compatible_primary(
             expected_members.as_slice(),
             expected_members.len(),
             None,
         )?;
-        let primary_state = require_observed_member_state(observation, primary)?;
-        let replicas = replica_members(primary_state);
+        let replicas = observation.replica_members(primary)?;
         if replicas.len() >= minimum_replicas {
             Ok(replicas)
         } else {
@@ -445,24 +422,22 @@ async fn wait_for_authoritative_single_primary(
     let relevant_members = world.online_member_ids();
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + kind.deadline(harness)
+        kind.deadline(harness)
     };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
-    let mut last_error = None;
 
-    while Instant::now() < deadline {
-        let attempt: Result<(ClusterMember, Vec<ClusterMember>)> = (|| {
+    poll_until(
+        world,
+        deadline,
+        Some("authoritative primary polling failed"),
+        "no authoritative primary verification attempt ran",
+        |world| {
             let observation = {
                 let harness = world.harness()?;
                 let observation = harness.observer.observe_states()?;
                 record_cluster_observation(harness, phase, &observation)?;
                 observation
             };
-            let primary = compatible_primary_from_observation(
-                &observation,
+            let primary = observation.compatible_primary(
                 relevant_members.as_slice(),
                 expected_online,
                 exact_primary,
@@ -471,61 +446,36 @@ async fn wait_for_authoritative_single_primary(
             let primary_target = harness.observer.postgres_routing_target(primary)?;
             let primary_dsn = primary_target.conninfo.to_string();
             probe_writable_primary(harness, primary_dsn.as_str())?;
-            let primary_state = require_observed_member_state(&observation, primary)?;
             let healthy_members =
-                observed_healthy_members_from_poll(harness, primary, primary_state)?;
+                observed_healthy_members_from_poll(harness, &observation, primary)?;
             Ok((primary, healthy_members))
-        })();
-        match attempt {
-            Ok(primary) => {
-                return Ok(primary);
-            }
-            Err(err) => last_error = Some(err.to_string()),
-        }
-        let terminal_error = {
-            let harness = world.harness()?;
-            terminal_container_failure(harness, &world.stopped_members, kind)?
-        };
-        if let Some(terminal_error) = terminal_error {
-            return Err(HarnessError::message(format!(
-                "{}\nterminal container failure detected: {terminal_error}",
-                last_error.unwrap_or_else(|| "authoritative primary polling failed".to_string())
-            )));
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    Err(HarnessError::message(format!(
-        "{} deadline expired while waiting for a stable authoritative primary; last observed error: {}",
-        kind.label(),
-        last_error.unwrap_or_else(|| "no authoritative primary verification attempt ran".to_string())
-    )))
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "{} deadline expired while waiting for a stable authoritative primary; last observed error: {last_error}",
+                kind.label(),
+            ))
+        },
+    )
+    .await
 }
 
 async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
     let relevant_members = world.online_member_ids();
     let expected_online = relevant_members.len();
-    let deadline = {
-        let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
-    };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
-    let mut last_error = None;
+    let deadline = world.harness()?.timeouts.failover_deadline;
 
-    while Instant::now() < deadline {
-        let attempt: Result<()> = (|| {
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no no-primary verification attempt ran",
+        |world| {
             let harness = world.harness()?;
             let observation = harness.observer.observe_states()?;
             record_cluster_observation(harness, "primary.none", &observation)?;
-            match compatible_primary_from_observation(
-                &observation,
-                relevant_members.as_slice(),
-                expected_online,
-                None,
-            ) {
+            match observation.compatible_primary(relevant_members.as_slice(), expected_online, None)
+            {
                 Ok(primary) => {
                     let primary_target = harness.observer.postgres_routing_target(primary)?;
                     let primary_dsn = primary_target.conninfo.to_string();
@@ -538,18 +488,14 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
                 }
                 Err(_) => Ok(()),
             }
-        })();
-        match attempt {
-            Ok(()) => return Ok(()),
-            Err(err) => last_error = Some(err.to_string()),
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    Err(HarnessError::message(format!(
-        "timed out waiting for pgtm to expose no operator-visible primary; last observed error: {}",
-        last_error.unwrap_or_else(|| "no no-primary verification attempt ran".to_string())
-    )))
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for pgtm to expose no operator-visible primary; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await
 }
 
 async fn wait_for_targeted_switchover_rejection_precondition(
@@ -557,18 +503,14 @@ async fn wait_for_targeted_switchover_rejection_precondition(
     seed_member: ClusterMember,
     target_member: ClusterMember,
 ) -> Result<()> {
-    let deadline = {
-        let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
-    };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
-    let mut last_error = None;
+    let deadline = world.harness()?.timeouts.failover_deadline;
 
-    while Instant::now() < deadline {
-        let attempt: Result<()> = (|| {
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no ineligibility check ran",
+        |world| {
             let harness = world.harness()?;
             let status = harness.observer.state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
@@ -580,36 +522,28 @@ async fn wait_for_targeted_switchover_rejection_precondition(
                     member.postgres()
                 ))),
             }
-        })();
-        match attempt {
-            Ok(()) => return Ok(()),
-            Err(err) => last_error = Some(err.to_string()),
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    Err(HarnessError::message(format!(
-        "timed out waiting for `{target_member}` to become an ineligible targeted switchover target; last observed error: {}",
-        last_error.unwrap_or_else(|| "no ineligibility check ran".to_string())
-    )))
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for `{target_member}` to become an ineligible targeted switchover target; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await
 }
 
 async fn wait_for_planned_switchover_precondition(
     world: &mut HaWorld,
     seed_member: ClusterMember,
 ) -> Result<ClusterMember> {
-    let deadline = {
-        let harness = world.harness()?;
-        Instant::now() + harness.timeouts.failover_deadline
-    };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
-    let mut last_error = None;
+    let deadline = world.harness()?.timeouts.failover_deadline;
 
-    while Instant::now() < deadline {
-        let attempt: Result<ClusterMember> = (|| {
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no planned switchover precondition check ran",
+        |world| {
             let harness = world.harness()?;
             let status = harness.observer.state_via_member(seed_member)?;
             harness.record_status_snapshot("switchover.request.precondition", &status)?;
@@ -618,18 +552,14 @@ async fn wait_for_planned_switchover_precondition(
                     "no eligible planned switchover target is currently visible via `{seed_member}`"
                 ))
             })
-        })();
-        match attempt {
-            Ok(target_member) => return Ok(target_member),
-            Err(err) => last_error = Some(err.to_string()),
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
-
-    Err(HarnessError::message(format!(
-        "timed out waiting for an eligible planned switchover target via `{seed_member}`; last observed error: {}",
-        last_error.unwrap_or_else(|| "no planned switchover precondition check ran".to_string())
-    )))
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for an eligible planned switchover target via `{seed_member}`; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await
 }
 
 fn select_planned_switchover_target(
@@ -708,50 +638,75 @@ where
 {
     let deadline = {
         let harness = world.harness()?;
-        Instant::now() + kind.deadline(harness)
+        kind.deadline(harness)
     };
-    let poll_interval = {
-        let harness = world.harness()?;
-        harness.timeouts.poll_interval
-    };
+
+    poll_until(
+        world,
+        deadline,
+        Some("status polling failed"),
+        "no status observed",
+        |world| {
+            let observation = {
+                let harness = world.harness()?;
+                let observation = harness.observer.observe_states()?;
+                record_cluster_observation(harness, phase, &observation)?;
+                observation
+            };
+            check(&observation)
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "{} deadline expired; last observed error: {last_error}",
+                kind.label(),
+            ))
+        },
+    )
+    .await
+}
+
+async fn poll_until<T, F, G>(
+    world: &mut HaWorld,
+    deadline_window: Duration,
+    terminal_failure_fallback: Option<&str>,
+    no_attempt_fallback: &str,
+    mut attempt: F,
+    timeout_error: G,
+) -> Result<T>
+where
+    F: FnMut(&mut HaWorld) -> Result<T>,
+    G: FnOnce(String) -> HarnessError,
+{
+    let deadline = Instant::now() + deadline_window;
+    let poll_interval = world.harness()?.timeouts.poll_interval;
     let mut last_error = None;
 
     while Instant::now() < deadline {
-        let observation_result = {
-            let harness = world.harness()?;
-            harness.observer.observe_states()
-        };
-        match observation_result {
-            Ok(observation) => {
-                {
-                    let harness = world.harness()?;
-                    record_cluster_observation(harness, phase, &observation)?;
-                }
-                match check(&observation) {
-                    Ok(value) => return Ok(value),
-                    Err(err) => last_error = Some(err.to_string()),
-                }
-            }
+        match attempt(world) {
+            Ok(value) => return Ok(value),
             Err(err) => last_error = Some(err.to_string()),
         }
-        let terminal_error = {
-            let harness = world.harness()?;
-            terminal_container_failure(harness, &world.stopped_members, kind)?
-        };
-        if let Some(terminal_error) = terminal_error {
-            return Err(HarnessError::message(format!(
-                "{}\nterminal container failure detected: {terminal_error}",
-                last_error.unwrap_or_else(|| "status polling failed".to_string())
-            )));
+        if let Some(fallback) = terminal_failure_fallback {
+            let terminal_error = {
+                let harness = world.harness()?;
+                terminal_container_failure(harness, &world.stopped_members)?
+            };
+            if let Some(terminal_error) = terminal_error {
+                return Err(HarnessError::message(format!(
+                    "{}\nterminal container failure detected: {terminal_error}",
+                    last_error
+                        .as_ref()
+                        .cloned()
+                        .unwrap_or_else(|| fallback.to_string())
+                )));
+            }
         }
         tokio::time::sleep(poll_interval).await;
     }
 
-    Err(HarnessError::message(format!(
-        "{} deadline expired; last observed error: {}",
-        kind.label(),
-        last_error.unwrap_or_else(|| "no status observed".to_string())
-    )))
+    Err(timeout_error(
+        last_error.unwrap_or_else(|| no_attempt_fallback.to_string()),
+    ))
 }
 
 fn record_cluster_observation(
@@ -773,135 +728,12 @@ fn record_cluster_observation(
         })
 }
 
-fn compatible_primary_from_observation(
-    observation: &ClusterStateObservation,
-    relevant_members: &[ClusterMember],
-    expected_online: usize,
-    exact_primary: Option<ClusterMember>,
-) -> Result<ClusterMember> {
-    let states = relevant_member_states(observation, relevant_members)?;
-    let primary = compatible_authoritative_primary(states.as_slice())?;
-    let primary_state = require_observed_member_state(observation, primary)?;
-    match authoritative_primary(primary_state) {
-        Some(observed_primary) if observed_primary == primary => {}
-        Some(observed_primary) => {
-            return Err(HarnessError::message(format!(
-                "primary member `{primary}` self-reported `{observed_primary}` instead"
-            )));
-        }
-        None => {
-            return Err(HarnessError::message(format!(
-                "primary member `{primary}` did not self-report authoritative primary; authority={}",
-                format_authority(primary_state),
-            )));
-        }
-    }
-    require_visible_members(primary_state, expected_online)?;
-    if let Some(expected_primary) = exact_primary {
-        if primary != expected_primary {
-            return Err(HarnessError::message(format!(
-                "expected `{expected_primary}` to be primary, observed `{primary}`"
-            )));
-        }
-    }
-    Ok(primary)
-}
-
-fn relevant_member_states<'a>(
-    observation: &'a ClusterStateObservation,
-    relevant_members: &[ClusterMember],
-) -> Result<Vec<(ClusterMember, &'a NodeState)>> {
-    relevant_members
-        .iter()
-        .copied()
-        .map(|member| {
-            require_observed_member_state(observation, member).map(|state| (member, state))
-        })
-        .collect::<Result<Vec<_>>>()
-}
-
-fn require_observed_member_state(
-    observation: &ClusterStateObservation,
-    member: ClusterMember,
-) -> Result<&NodeState> {
-    observation
-        .get(&member)
-        .ok_or_else(|| {
-            HarnessError::message(format!(
-                "cluster observation did not include member `{member}`"
-            ))
-        })?
-        .as_ref()
-        .ok()
-        .ok_or_else(|| HarnessError::message(member_observation_failure(observation, member)))
-}
-
-fn member_observation_failure(
-    observation: &ClusterStateObservation,
-    member: ClusterMember,
-) -> String {
-    observation
-        .get(&member)
-        .and_then(|observation| observation.as_ref().err().map(String::as_str))
-        .map(|failure| {
-            format!(
-                "expected `pgtm status --json` via `{member}` to succeed, but it failed: {failure}"
-            )
-        })
-        .unwrap_or_else(|| format!("expected `pgtm status --json` via `{member}` to succeed"))
-}
-
-fn compatible_authoritative_primary(
-    states: &[(ClusterMember, &NodeState)],
-) -> Result<ClusterMember> {
-    let observed_primaries = states
-        .iter()
-        .filter_map(|(_member, state)| authoritative_primary(state))
-        .collect::<BTreeSet<_>>();
-    match observed_primaries.len() {
-        0 => Err(HarnessError::message(format!(
-            "cluster has no compatible authoritative primary; observations={}",
-            format_observed_authorities(states),
-        ))),
-        1 => observed_primaries.into_iter().next().ok_or_else(|| {
-            HarnessError::message("authoritative primary set disappeared unexpectedly")
-        }),
-        _ => Err(HarnessError::message(format!(
-            "cluster reports conflicting authoritative primaries; observations={}",
-            format_observed_authorities(states),
-        ))),
-    }
-}
-
-fn format_observed_authorities(states: &[(ClusterMember, &NodeState)]) -> String {
-    states
-        .iter()
-        .map(|(member, state)| format!("{member}={}", format_authority(state)))
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
-fn replica_members(status: &NodeState) -> Vec<ClusterMember> {
-    status
-        .dcs
-        .members()
-        .filter(|(_member_id, member)| {
-            matches!(
-                member.postgres(),
-                PgInfoState::Replica { common, .. }
-                    if common.readiness == Readiness::Ready
-            )
-        })
-        .filter_map(|(member_id, _member)| ClusterMember::parse(member_id.0.as_str()).ok())
-        .collect::<Vec<_>>()
-}
-
 fn observed_healthy_members_from_poll(
     harness: &HarnessShared,
+    observation: &ClusterStateObservation,
     primary: ClusterMember,
-    primary_state: &NodeState,
 ) -> Result<Vec<ClusterMember>> {
-    observed_healthy_members(primary, primary_state, |member| {
+    observed_healthy_members(primary, observation.replica_members(primary)?, |member| {
         if member == primary {
             return Ok(true);
         }
@@ -921,64 +753,17 @@ fn observed_healthy_members_from_poll(
 
 fn observed_healthy_members(
     primary: ClusterMember,
-    primary_state: &NodeState,
+    replicas: impl IntoIterator<Item = ClusterMember>,
     mut is_probeable: impl FnMut(ClusterMember) -> Result<bool>,
 ) -> Result<Vec<ClusterMember>> {
     std::iter::once(primary)
-        .chain(replica_members(primary_state))
+        .chain(replicas)
         .try_fold(Vec::new(), |mut members, member| {
             if is_probeable(member)? {
                 members.push(member);
             }
             Ok(members)
         })
-}
-
-fn require_visible_members(status: &NodeState, expected: usize) -> Result<()> {
-    let visible = status.dcs.member_count();
-    if visible >= expected {
-        Ok(())
-    } else {
-        Err(HarnessError::message(format!(
-            "expected at least {expected} visible members, observed {visible}; warnings={}",
-            format_warnings(status)
-        )))
-    }
-}
-
-fn format_warnings(status: &NodeState) -> String {
-    let mut warnings = Vec::new();
-    if !status.dcs.is_quorum() {
-        warnings.push("dcs_mode=not_trusted".to_string());
-    }
-    if authoritative_primary_member(status).is_none() {
-        warnings.push(format!("authority={}", format_authority(status)));
-    }
-    if status.dcs.member_count() == 0 {
-        warnings.push("no_members".to_string());
-    }
-    if warnings.is_empty() {
-        "none".to_string()
-    } else {
-        warnings.join("; ")
-    }
-}
-
-fn format_authority(status: &NodeState) -> String {
-    match &status.ha.publication {
-        PublicationState::Projected(AuthorityProjection::Primary(epoch)) => {
-            format!("primary({})", epoch.holder.0)
-        }
-        PublicationState::Projected(AuthorityProjection::NoPrimary(reason)) => {
-            format!("no_primary({reason:?})").to_lowercase()
-        }
-        PublicationState::Unknown => "unknown".to_string(),
-    }
-}
-
-fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
-    authoritative_primary_member(status)
-        .and_then(|member_id| ClusterMember::parse(member_id.as_str()).ok())
 }
 
 fn probe_writable_primary(harness: &HarnessShared, dsn: &str) -> Result<()> {
@@ -1006,16 +791,10 @@ fn probe_postgres(harness: &HarnessShared, dsn: &str, probe_sql: &str) -> Result
 fn terminal_container_failure(
     harness: &HarnessShared,
     expected_offline: &BTreeSet<ClusterMember>,
-    kind: PollKind,
 ) -> Result<Option<String>> {
-    let cluster_members = all_cluster_members();
-    let services = match kind {
-        PollKind::Startup | PollKind::Recovery => cluster_members.as_slice(),
-    };
-
     let mut failures = Vec::new();
-    for service in services {
-        if expected_offline.contains(service) {
+    for service in ClusterMember::ALL {
+        if expected_offline.contains(&service) {
             continue;
         }
         let container_id = match harness.service_container_id(service.service_name()) {
@@ -1038,10 +817,6 @@ fn terminal_container_failure(
     } else {
         Ok(Some(failures.join(", ")))
     }
-}
-
-fn all_cluster_members() -> [ClusterMember; 3] {
-    ClusterMember::ALL
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1079,168 +854,22 @@ fn parse_blocker_kind(raw_value: &str) -> Result<BlockerKind> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
-
-    use pgtuskmaster_rust::{
-        dcs::{DcsMemberState, DcsSnapshot},
-        ha::{
-            state::HaState,
-            types::{
-                AuthorityProjection, CandidateState, HaDecision, HaMode, HaObservation,
-                LocalDataState, PublicationState,
-            },
-        },
-        pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus, UpstreamInfo},
-        process::state::ProcessState,
-        state::{
-            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState,
-            TimelineId, UnixMillis, WalLsn, WorkerStatus,
-        },
-    };
+    use std::collections::BTreeSet;
 
     use super::{observed_healthy_members, ClusterMember};
 
     #[test]
     fn observed_healthy_members_skip_ready_replicas_without_fresh_probe() -> Result<(), String> {
-        let primary_state = sample_primary_state(
-            ClusterMember::NodeA,
-            &[
-                (ClusterMember::NodeB, Readiness::Ready),
-                (ClusterMember::NodeC, Readiness::Ready),
-            ],
-        )?;
         let probeable_members = BTreeSet::from([ClusterMember::NodeA, ClusterMember::NodeB]);
 
-        let selected = observed_healthy_members(ClusterMember::NodeA, &primary_state, |member| {
-            Ok(probeable_members.contains(&member))
-        })
+        let selected = observed_healthy_members(
+            ClusterMember::NodeA,
+            [ClusterMember::NodeB, ClusterMember::NodeC],
+            |member| Ok(probeable_members.contains(&member)),
+        )
         .map_err(|err| err.to_string())?;
 
         assert_eq!(selected, vec![ClusterMember::NodeA, ClusterMember::NodeB],);
         Ok(())
-    }
-
-    fn sample_primary_state(
-        primary: ClusterMember,
-        replicas: &[(ClusterMember, Readiness)],
-    ) -> Result<pgtuskmaster_rust::api::NodeState, String> {
-        let primary_member_id = member_id(primary);
-        let replica_members = replicas
-            .iter()
-            .map(|(member, readiness)| {
-                Ok((
-                    member_id(*member),
-                    DcsMemberState {
-                        cluster_postgres: endpoint_for(*member)?,
-                        operator_postgres: None,
-                        operator_api: None,
-                        postgres: replica_pg_info(readiness.clone()),
-                    },
-                ))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let members = std::iter::once((
-            primary_member_id.clone(),
-            DcsMemberState {
-                cluster_postgres: endpoint_for(primary)?,
-                operator_postgres: None,
-                operator_api: None,
-                postgres: primary_pg_info(),
-            },
-        ))
-        .chain(replica_members)
-        .collect::<BTreeMap<_, _>>();
-
-        Ok(pgtuskmaster_rust::api::NodeState {
-            identity: NodeIdentity {
-                cluster_name: ClusterName("cluster-a".to_string()),
-                scope: ScopeName("scope-a".to_string()),
-                member_id: primary_member_id.clone(),
-            },
-            pg: primary_pg_info(),
-            process: ProcessState::Idle {
-                worker: WorkerStatus::Running,
-                last_outcome: None,
-            },
-            dcs: DcsSnapshot::quorum(None, SwitchoverState::None, members),
-            ha: HaState {
-                worker: WorkerStatus::Running,
-                tick: 0,
-                managed_roles_reconciled: false,
-                publication: PublicationState::Projected(AuthorityProjection::Primary(
-                    LeaseEpoch {
-                        holder: primary_member_id,
-                        generation: 1,
-                    },
-                )),
-                decision: HaDecision {
-                    mode: HaMode::WaitForLeader,
-                    publication: None,
-                    clear_switchover: false,
-                },
-                observation: HaObservation {
-                    pg: primary_pg_info(),
-                    process: ProcessState::Idle {
-                        worker: WorkerStatus::Running,
-                        last_outcome: None,
-                    },
-                    dcs: DcsSnapshot::starting(),
-                    publication: PublicationState::Unknown,
-                    managed_roles_reconciled: false,
-                    local_data: LocalDataState::Missing,
-                    resolved_upstream: None,
-                    self_candidate: CandidateState::Ineligible,
-                    storage_stalled: false,
-                    ready_primary: None,
-                },
-                clear_switchover: false,
-                steps: Vec::new(),
-            },
-        })
-    }
-
-    fn endpoint_for(member: ClusterMember) -> Result<PgRoute, String> {
-        PgRoute::tcp(member.service_name().to_string(), 5432)
-    }
-
-    fn member_id(member: ClusterMember) -> MemberId {
-        MemberId(member.service_name().to_string())
-    }
-
-    fn primary_pg_info() -> PgInfoState {
-        PgInfoState::Primary {
-            common: common(Readiness::Ready),
-            wal_lsn: WalLsn(42),
-            slots: Vec::new(),
-        }
-    }
-
-    fn replica_pg_info(readiness: Readiness) -> PgInfoState {
-        PgInfoState::Replica {
-            common: common(readiness),
-            replay_lsn: WalLsn(41),
-            follow_lsn: Some(WalLsn(42)),
-            upstream: Some(UpstreamInfo {
-                member_id: MemberId("node-a".to_string()),
-            }),
-        }
-    }
-
-    fn common(readiness: Readiness) -> PgInfoCommon {
-        PgInfoCommon {
-            worker: WorkerStatus::Running,
-            sql: SqlStatus::Healthy,
-            readiness,
-            timeline: Some(TimelineId(1)),
-            system_identifier: None,
-            pg_config: PgConfig {
-                port: Some(5432),
-                hot_standby: Some(true),
-                primary_conninfo: None,
-                primary_slot_name: None,
-                extra: BTreeMap::new(),
-            },
-            last_refresh_at: Some(UnixMillis(1)),
-        }
     }
 }

@@ -889,9 +889,6 @@ mod tests {
     use serde_json::Value;
     use tokio::task::JoinHandle;
 
-    use crate::config_v2::types::{
-        LogLevel, LoggingConfig as RuntimeLoggingConfig, RuntimeConfigV2,
-    };
     use crate::logging::{
         LogContext, LogParser, LogProducer, LogSender, LogSeverity, LogSink, LogTransport, TestSink,
     };
@@ -913,22 +910,6 @@ mod tests {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(err) => Err(WorkerError::Message(err.to_string())),
         }
-    }
-
-    fn sample_runtime_config() -> RuntimeConfigV2 {
-        let baseline_logging = crate::dev_support::runtime_config::sample_logging_config();
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_pg_hba_contents(concat!(
-                "local all all trust\n",
-                "host all all 127.0.0.1/32 trust\n",
-            ))
-            .with_logging(RuntimeLoggingConfig {
-                level: LogLevel::Trace,
-                postgres_log_poll_interval: Duration::from_millis(50),
-                postgres_log_cleanup_enabled: false,
-                ..baseline_logging
-            })
-            .build()
     }
 
     struct RunningTestLog {
@@ -1287,7 +1268,6 @@ mod tests {
         use std::time::Duration;
 
         use tokio::process::Command;
-        use tokio::sync::mpsc;
         use tokio::time::Instant;
 
         use crate::dcs::{DcsMemberState, DcsSnapshot};
@@ -1305,21 +1285,20 @@ mod tests {
             PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
         };
         use crate::process::state::{
-            ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
-            ProcessRuntime, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
+            ProcessCadence, ProcessIntentRequest, ProcessObservedState, ProcessRuntime,
+            ProcessState, ProcessWorkerCtx,
         };
         use crate::process::worker::{step_once as process_step_once, TokioCommandRunner};
         use crate::state::{
-            new_state_channel, JobId, MemberId, NodeIdentity, TimelineId, WalLsn, WorkerError,
-            WorkerStatus,
+            new_state_channel, JobId, MemberId, TimelineId, WalLsn, WorkerError, WorkerStatus,
         };
 
         use super::super::{
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
         };
         use super::{
-            sample_runtime_config, start_test_log, REAL_INGEST_RETRY_SLEEP,
-            REAL_PROCESS_WORKER_POLL_INTERVAL, REAL_PSQL_RETRY_SLEEP,
+            start_test_log, REAL_INGEST_RETRY_SLEEP, REAL_PROCESS_WORKER_POLL_INTERVAL,
+            REAL_PSQL_RETRY_SLEEP,
         };
 
         async fn wait_for_process_idle_success(
@@ -1421,49 +1400,29 @@ mod tests {
             cfg: &crate::config_v2::RuntimeConfigV2,
             log: crate::logging::LogSender,
             dcs: DcsSnapshot,
-            inbox: tokio::sync::mpsc::UnboundedReceiver<ProcessIntentRequest>,
         ) -> Result<
             (
                 ProcessWorkerCtx<'static>,
                 crate::state::StateSubscriber<ProcessState>,
+                tokio::sync::mpsc::UnboundedSender<ProcessIntentRequest>,
             ),
             WorkerError,
         > {
             let cfg = Box::leak(Box::new(cfg.clone()));
-            let initial = ProcessState::starting();
-            let (publisher, subscriber) = new_state_channel(initial.clone());
             let (_dcs_publisher, dcs_subscriber) = new_state_channel(dcs);
-            Ok((
-                ProcessWorkerCtx {
-                    cfg,
-                    cadence: ProcessCadence {
-                        poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
-                        now: Box::new(crate::process::worker::system_now_unix_millis),
-                    },
-                    identity: NodeIdentity {
-                        cluster_name: cfg.cluster_name.clone(),
-                        scope: cfg.scope.clone(),
-                        member_id: cfg.member_id.clone(),
-                    },
-                    observed: ProcessObservedState {
-                        dcs: dcs_subscriber,
-                    },
-                    state_channel: ProcessStateChannel {
-                        current: initial,
-                        publisher,
-                        last_rejection: None,
-                    },
-                    control: ProcessControlPlane {
-                        inbox,
-                        inbox_disconnected_logged: false,
-                        active_runtime: None,
-                    },
-                    runtime: ProcessRuntime {
-                        log,
-                        command_runner: Box::new(TokioCommandRunner),
-                    },
+            Ok(crate::process::worker::bootstrap_with_runtime(
+                cfg,
+                ProcessObservedState {
+                    dcs: dcs_subscriber,
                 },
-                subscriber,
+                ProcessCadence {
+                    poll_interval: REAL_PROCESS_WORKER_POLL_INTERVAL,
+                    now: Box::new(crate::process::worker::system_now_unix_millis),
+                },
+                ProcessRuntime {
+                    log,
+                    command_runner: Box::new(TokioCommandRunner),
+                },
             ))
         }
 
@@ -1583,7 +1542,10 @@ mod tests {
             // vanilla-Postgres config exception path.
             let mut pg = spawn_pg16_for_vanilla_postgres(spec, &conf_lines).await?;
 
-            let mut cfg = sample_runtime_config();
+            let mut cfg = crate::config_v2::trace_logging_test_config()
+                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            cfg.postgres.pg_hba_contents =
+                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.logging.postgres_log_dir = log_dir;
             cfg.logging.postgres_log_cleanup_enabled = false;
             cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
@@ -1656,7 +1618,10 @@ mod tests {
             std::fs::write(&jsonlog_path, b"")
                 .map_err(|err| WorkerError::Message(format!("seed jsonlog failed: {err}")))?;
 
-            let mut cfg = sample_runtime_config();
+            let mut cfg = crate::config_v2::trace_logging_test_config()
+                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            cfg.postgres.pg_hba_contents =
+                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.binaries = binaries.clone();
             cfg.timing.bootstrap_timeout = Duration::from_secs(30);
             cfg.timing.fencing_timeout = Duration::from_secs(30);
@@ -1685,9 +1650,8 @@ mod tests {
 
             let test_log = start_test_log();
 
-            let (tx, rx) = mpsc::unbounded_channel();
-            let (mut process_ctx, _process_state_subscriber) =
-                build_process_worker_ctx(&cfg, test_log.sender(), DcsSnapshot::starting(), rx)?;
+            let (mut process_ctx, _process_state_subscriber, tx) =
+                build_process_worker_ctx(&cfg, test_log.sender(), DcsSnapshot::starting())?;
 
             let ingest_ctx = PostgresIngestWorkerCtx {
                 cfg: &cfg,
@@ -1914,12 +1878,14 @@ mod tests {
             std::fs::create_dir_all(&data_dir)
                 .map_err(|err| WorkerError::Message(format!("create data_dir failed: {err}")))?;
 
-            let mut cfg = sample_runtime_config();
+            let mut cfg = crate::config_v2::trace_logging_test_config()
+                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            cfg.postgres.pg_hba_contents =
+                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.binaries = binaries;
 
             let test_log = start_test_log();
 
-            let (tx, rx) = mpsc::unbounded_channel();
             let dcs = DcsSnapshot::quorum(
                 None,
                 crate::state::SwitchoverState::None,
@@ -1954,8 +1920,8 @@ mod tests {
                     },
                 )]),
             );
-            let (mut ctx, _process_state_subscriber) =
-                build_process_worker_ctx(&cfg, test_log.sender(), dcs, rx)?;
+            let (mut ctx, _process_state_subscriber, tx) =
+                build_process_worker_ctx(&cfg, test_log.sender(), dcs)?;
 
             let job_id = JobId("basebackup-fail".to_string());
             tx.send(ProcessIntentRequest {

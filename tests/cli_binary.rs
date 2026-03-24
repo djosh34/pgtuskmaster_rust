@@ -1,23 +1,13 @@
+use pgtuskmaster_test_support::config_v2::render_runtime_test_config_toml;
 use std::{
+    fs,
     io::{Read, Write},
     net::TcpListener,
+    path::{Path, PathBuf},
     process::Command,
     sync::mpsc,
+    time::{SystemTime, UNIX_EPOCH},
 };
-
-fn write_temp_config(label: &str, toml: &str) -> Result<std::path::PathBuf, String> {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|err| format!("system time error: {err}"))?
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!(
-        "pgtuskmaster-cli-config-{label}-{unique}-{}",
-        std::process::id()
-    ));
-
-    std::fs::write(&path, toml).map_err(|err| format!("write config failed: {err}"))?;
-    Ok(path)
-}
 
 fn spawn_single_request_server(
     response: &str,
@@ -75,6 +65,20 @@ fn binary_path(env_var: &str, binary_name: &str) -> Result<std::path::PathBuf, S
             candidate.display()
         ))
     }
+}
+
+fn write_temp_toml(label: &str, contents: impl AsRef<str>) -> Result<PathBuf, String> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("system clock before unix epoch: {err}"))?
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "pgtm-{label}-{}-{timestamp}.toml",
+        std::process::id()
+    ));
+    fs::write(&path, contents.as_ref())
+        .map_err(|err| format!("write config {} failed: {err}", path.display()))?;
+    Ok(path)
 }
 
 #[test]
@@ -218,14 +222,15 @@ fn node_help_exits_success() -> Result<(), String> {
 #[test]
 fn node_missing_incomplete_config_reports_parse_error() -> Result<(), String> {
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_config(
+    let path = write_temp_toml(
         "missing-config-version",
         r#"
 [cluster]
 name = "cluster-a"
 member_id = "member-a"
 "#,
-    )?;
+    )
+    .map_err(|err| format!("write config failed: {err}"))?;
 
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])
@@ -252,49 +257,36 @@ member_id = "member-a"
 #[test]
 fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_config(
+    let path = write_temp_toml(
         "missing-process-binaries",
-        r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "member-a"
-
-[postgres.paths]
-data_dir = "/var/lib/postgresql/data"
-
-[postgres.network]
-listen_host = "127.0.0.1"
-listen_port = 5432
-
-[postgres.access]
-hba = { content = "local all all trust" }
-ident = { content = "empty" }
-
-[postgres]
-tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-
-[process]
-[process.timeouts]
+        render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "member-a",
+            (
+                Path::new("/var/lib/postgresql/data"),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            ["http://127.0.0.1:2379"],
+            [
+                r#"[process.timeouts]
 pg_rewind_ms = 120000
 bootstrap_ms = 300000
-fencing_ms = 30000
-
-[process.binaries.overrides]
+fencing_ms = 30000"#,
+                r#"[process.binaries.overrides]
 initdb = "/definitely/missing/initdb"
 pg_basebackup = "/definitely/missing/pg_basebackup"
 pg_rewind = "/definitely/missing/pg_rewind"
-pg_ctl = "/definitely/missing/pg_ctl"
-
-[api]
+pg_ctl = "/definitely/missing/pg_ctl""#,
+                r#"[api]
 transport = { transport = "http" }
-auth = { type = "disabled" }
-"#,
-    )?;
+auth = { type = "disabled" }"#,
+            ],
+        )
+        .map_err(|err| format!("render config failed: {err}"))?,
+    )
+    .map_err(|err| format!("write config failed: {err}"))?;
 
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])
@@ -321,44 +313,36 @@ auth = { type = "disabled" }
 #[test]
 fn node_rejects_empty_dcs_basic_auth_username_with_stable_field_path() -> Result<(), String> {
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_config(
+    let path = write_temp_toml(
         "dcs-basic-auth-empty-username",
-        r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "member-a"
-
-[postgres.paths]
-data_dir = "/var/lib/postgresql/data"
-
-[postgres.network]
-listen_host = "127.0.0.1"
-listen_port = 5432
-
-[postgres.access]
-hba = { content = "local all all trust" }
-ident = { content = "empty" }
-
-[postgres]
-tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-client = { auth = { type = "basic", username = "", password = { type = "string", value = "secret-password" } } }
-
-[process.binaries.overrides]
+        render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "member-a",
+            (
+                Path::new("/var/lib/postgresql/data"),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            ["http://127.0.0.1:2379"],
+            [
+                r#"[dcs.client.auth]
+type = "basic"
+username = ""
+password = { type = "string", value = "secret-password" }"#,
+                r#"[process.binaries.overrides]
 initdb = "/usr/bin/initdb"
 pg_basebackup = "/usr/bin/pg_basebackup"
 pg_rewind = "/usr/bin/pg_rewind"
-pg_ctl = "/usr/bin/pg_ctl"
-
-[api]
+pg_ctl = "/usr/bin/pg_ctl""#,
+                r#"[api]
 transport = { transport = "http" }
-auth = { type = "disabled" }
-"#,
-    )?;
+auth = { type = "disabled" }"#,
+            ],
+        )
+        .map_err(|err| format!("render config failed: {err}"))?,
+    )
+    .map_err(|err| format!("write config failed: {err}"))?;
 
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])
@@ -381,43 +365,32 @@ auth = { type = "disabled" }
 #[test]
 fn node_rejects_https_dcs_without_tls_config() -> Result<(), String> {
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_config(
+    let path = write_temp_toml(
         "https-dcs-without-client-tls",
-        r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "member-a"
-
-[postgres.paths]
-data_dir = "/var/lib/postgresql/data"
-
-[postgres.network]
-listen_host = "127.0.0.1"
-listen_port = 5432
-
-[postgres.access]
-hba = { content = "local all all trust" }
-ident = { content = "empty" }
-
-[postgres]
-tls = { mode = "disabled" }
-roles = { mandatory = { superuser = { username = "postgres", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, replicator = { username = "replicator", auth = { type = "password", password = { type = "string", value = "secret-password" } } }, rewinder = { username = "rewinder", auth = { type = "password", password = { type = "string", value = "secret-password" } } } }, extra = {} }
-
-[dcs]
-endpoints = ["https://127.0.0.1:2379"]
-
-[process.binaries.overrides]
+        render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "member-a",
+            (
+                Path::new("/var/lib/postgresql/data"),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            ["https://127.0.0.1:2379"],
+            [
+                r#"[process.binaries.overrides]
 initdb = "/usr/bin/initdb"
 pg_basebackup = "/usr/bin/pg_basebackup"
 pg_rewind = "/usr/bin/pg_rewind"
-pg_ctl = "/usr/bin/pg_ctl"
-
-[api]
+pg_ctl = "/usr/bin/pg_ctl""#,
+                r#"[api]
 transport = { transport = "http" }
-auth = { type = "disabled" }
-"#,
-    )?;
+auth = { type = "disabled" }"#,
+            ],
+        )
+        .map_err(|err| format!("render config failed: {err}"))?,
+    )
+    .map_err(|err| format!("write config failed: {err}"))?;
 
     let output = Command::new(&bin)
         .args(["--config", path.to_string_lossy().as_ref()])

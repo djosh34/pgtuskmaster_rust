@@ -26,7 +26,7 @@ pub struct TimeoutModel {
 impl TimeoutModel {
     pub fn from_runtime_config(path: &Path) -> Result<Self> {
         let (ha_loop_interval, ha_lease_ttl, bootstrap_timeout, pg_rewind_timeout) =
-            pgtuskmaster_test_support::runtime_config::runtime_timing_values(path).map_err(
+            pgtuskmaster_test_support::config_v2::load_runtime_timing_values(path).map_err(
                 |err| {
                     HarnessError::message(format!(
                         "failed to derive timeout inputs from runtime config `{}`: {err}",

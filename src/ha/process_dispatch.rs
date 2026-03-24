@@ -22,8 +22,8 @@ pub(crate) fn dispatch_process_action(
     let request = ProcessIntentRequest {
         id: JobId(format!(
             "ha-{}-{}-{}-{}-{}",
-            ctx.identity.scope.as_str().trim_matches('/'),
-            ctx.identity.member_id.0,
+            ctx.cfg.scope.as_str().trim_matches('/'),
+            ctx.cfg.member_id.0,
             ha_tick,
             action_index,
             action.label(),

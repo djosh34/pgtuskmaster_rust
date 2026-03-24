@@ -12,7 +12,6 @@ use crate::{
         },
         tools::ExternalToolLowerer,
     },
-    state::NodeIdentity,
 };
 
 use super::jobs::{ProcessCommandSpec, ProcessError};
@@ -53,7 +52,6 @@ impl ProcessPreparationError {
 
 pub(crate) struct ProcessCluster<'a> {
     cfg: &'a RuntimeConfigV2,
-    identity: NodeIdentity,
     observed: ProcessObservedSnapshot,
     planner: ProcessIntentPlanner,
     sessions: ManagedPostgresSessionMaterializer,
@@ -68,7 +66,6 @@ impl<'a> ProcessCluster<'a> {
             })?;
         Ok(Self::from_snapshot(
             ctx.cfg,
-            ctx.identity.clone(),
             ProcessObservedSnapshot {
                 dcs: ctx.observed.dcs.latest(),
                 managed_recovery_state,
@@ -78,12 +75,10 @@ impl<'a> ProcessCluster<'a> {
 
     pub(crate) fn from_snapshot(
         cfg: &'a RuntimeConfigV2,
-        identity: NodeIdentity,
         observed: ProcessObservedSnapshot,
     ) -> Self {
         Self {
             cfg,
-            identity,
             observed,
             planner: ProcessIntentPlanner,
             sessions: ManagedPostgresSessionMaterializer,
@@ -97,7 +92,12 @@ impl<'a> ProcessCluster<'a> {
     ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
         let plan = self
             .planner
-            .plan(&self.identity, self.cfg, &self.observed, &request.intent)
+            .plan(
+                &self.cfg.member_id,
+                self.cfg,
+                &self.observed,
+                &request.intent,
+            )
             .map_err(ProcessPreparationError::Planning)?;
         let prepared_session = self
             .sessions
@@ -126,12 +126,15 @@ impl<'a> ProcessCluster<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
 
     use crate::{
-        config_v2::load_runtime_config,
+        config_v2::{
+            load_runtime_config_contents, render_runtime_test_config_toml,
+            runtime_test_config_with_data_dir, toml_path_source, RuntimeConfigV2,
+        },
         dcs::{DcsMemberState, DcsSnapshot},
-        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
+        dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgConnInfo,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
@@ -140,89 +143,53 @@ mod tests {
             state::{ProcessIntentRequest, ProcessObservedSnapshot},
         },
         state::{
-            ClusterName, JobId, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState,
-            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+            JobId, MemberId, PgRoute, SwitchoverState, SystemIdentifier, TimelineId, UnixMillis,
+            WalLsn, WorkerStatus,
         },
     };
 
     use super::ProcessCluster;
 
-    fn sample_identity() -> NodeIdentity {
-        NodeIdentity {
-            cluster_name: ClusterName("cluster-a".to_string()),
-            scope: ScopeName("scope-a".to_string()),
-            member_id: MemberId("node-a".to_string()),
-        }
-    }
-
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
-        RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .build()
-    }
-
-    fn write_runtime_config_v2_with_source_ca(root: &std::path::Path) -> Result<PathBuf, String> {
+    fn runtime_config_v2_with_source_ca(
+        root: &std::path::Path,
+    ) -> Result<(RuntimeConfigV2, PathBuf), String> {
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
         let ca_cert = root.join("source-ca.crt");
-        fs::write(&ca_cert, "test ca")
-            .map_err(|err| format!("write ca cert {} failed: {err}", ca_cert.display()))?;
-        let config_path = root.join("runtime.toml");
-        fs::write(
-            &config_path,
-            format!(
-                r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "node-a"
-
-[postgres.paths]
-data_dir = "{}"
-
-[postgres.rewind.transport]
+        let cfg = load_runtime_config_contents(
+            render_runtime_test_config_toml(
+                "cluster-a",
+                "scope-a",
+                "node-a",
+                (
+                    data_dir.as_path(),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [
+                    format!(
+                        r#"[postgres.rewind.transport]
 ssl_mode = "verify-full"
-ca_cert = {{ path = "{}" }}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
-
-[postgres.access]
-hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-ident = {{ content = "" }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-
-[process.binaries.overrides]
+ca_cert = {}"#,
+                        toml_path_source(ca_cert.as_path()),
+                    ),
+                    r#"[process.binaries.overrides]
 postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
 pg_basebackup = "/bin/true"
-psql = "/bin/true"
-"#,
-                data_dir.display(),
-                ca_cert.display()
-            ),
-        )
-        .map_err(|err| {
-            format!(
-                "write runtime config {} failed: {err}",
-                config_path.display()
+psql = "/bin/true""#
+                        .to_string(),
+                ],
             )
-        })?;
-        Ok(config_path)
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+        Ok((cfg, ca_cert))
     }
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
@@ -256,7 +223,8 @@ psql = "/bin/true"
     fn prepare_replica_start_runs_through_planner_session_and_tool_layers() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "replica-start")?;
         let data_dir = root.join("data");
-        let cfg = sample_runtime_config(data_dir.clone());
+        let cfg =
+            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
             dcs: DcsSnapshot::quorum(
@@ -266,7 +234,7 @@ psql = "/bin/true"
             ),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
-        let cluster = ProcessCluster::from_snapshot(&cfg, sample_identity(), snapshot);
+        let cluster = ProcessCluster::from_snapshot(&cfg, snapshot);
         let request = ProcessIntentRequest {
             id: JobId("job-start-replica".to_string()),
             intent: ProcessIntent::Start(PostgresStartIntent::Replica { leader }),
@@ -303,8 +271,7 @@ psql = "/bin/true"
     #[test]
     fn prepare_basebackup_from_config_v2_preserves_sslrootcert_in_conninfo() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "basebackup-source-ca")?;
-        let config_path = write_runtime_config_v2_with_source_ca(root.as_path())?;
-        let cfg = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
+        let (cfg, expected_root_cert) = runtime_config_v2_with_source_ca(root.as_path())?;
         let leader = MemberId("node-b".to_string());
         let snapshot = ProcessObservedSnapshot {
             dcs: DcsSnapshot::quorum(
@@ -314,7 +281,7 @@ psql = "/bin/true"
             ),
             managed_recovery_state: ManagedRecoverySignal::None,
         };
-        let cluster = ProcessCluster::from_snapshot(&cfg, sample_identity(), snapshot);
+        let cluster = ProcessCluster::from_snapshot(&cfg, snapshot);
         let request = ProcessIntentRequest {
             id: JobId("job-basebackup".to_string()),
             intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
@@ -343,15 +310,6 @@ psql = "/bin/true"
             })
             .ok_or_else(|| "basebackup command did not include --dbname".to_string())?;
         let conninfo: PgConnInfo = conninfo_arg.parse()?;
-        let expected_root_cert = config_path
-            .parent()
-            .ok_or_else(|| {
-                format!(
-                    "config path {} unexpectedly had no parent directory",
-                    config_path.display()
-                )
-            })?
-            .join("source-ca.crt");
         if conninfo.tls.root_cert != Some(expected_root_cert.clone()) {
             return Err(format!(
                 "basebackup conninfo lost sslrootcert, expected {}, observed {:?}",

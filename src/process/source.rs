@@ -67,8 +67,8 @@ pub(crate) fn source_from_member(
 #[cfg(test)]
 mod tests {
     use crate::{
+        config_v2::{runtime_test_config, RuntimeConfigV2},
         dcs::DcsMemberState,
-        dev_support::runtime_config::RuntimeConfigBuilder,
         pginfo::conninfo::{PgClientTls, PgSslMode},
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::{
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn source_from_member_selects_role_specific_credentials() -> Result<(), String> {
-        let cfg = RuntimeConfigBuilder::new().build();
+        let cfg = runtime_test_config().map_err(|err| err.to_string())?;
         let member_id = MemberId("node-b".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
@@ -146,17 +146,19 @@ mod tests {
 
     #[test]
     fn source_from_member_uses_shared_source_client_tls_for_all_roles() -> Result<(), String> {
-        let cfg = RuntimeConfigBuilder::new()
-            .transform_postgres(|postgres| crate::config_v2::types::PostgresConfig {
+        let config = runtime_test_config().map_err(|err| err.to_string())?;
+        let cfg = RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
                 source_client_tls: PgClientTls {
                     mode: PgSslMode::VerifyFull,
                     root_cert: Some("/tmp/pgtm/source-ca.crt".into()),
                     client_cert: None,
                     client_key: None,
                 },
-                ..postgres
-            })
-            .build();
+                ..config.postgres
+            },
+            ..config
+        };
         let member_id = MemberId("node-b".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
@@ -189,7 +191,7 @@ mod tests {
 
     #[test]
     fn source_from_member_rejects_self_target() -> Result<(), String> {
-        let cfg = RuntimeConfigBuilder::new().build();
+        let cfg = runtime_test_config().map_err(|err| err.to_string())?;
         let member_id = MemberId("node-a".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 

@@ -56,10 +56,9 @@ impl ManagedPostgresSessionMaterializer {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use crate::{
-        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
+        config_v2::runtime_test_config_with_data_dir,
+        dev_support::test_fs::unique_test_dir,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
             jobs::{MandatoryRoleSourceConn, MandatorySourceRole},
@@ -72,18 +71,13 @@ mod tests {
 
     use super::ManagedPostgresSessionMaterializer;
 
-    fn sample_runtime_config(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
-        RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .build()
-    }
-
     #[test]
     fn materialize_follow_session_writes_managed_files_without_tool_lowering() -> Result<(), String>
     {
         let root = unique_test_dir("process-session", "follow")?;
         let data_dir = root.join("data");
-        let cfg = sample_runtime_config(data_dir.clone());
+        let cfg =
+            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
         let source = MandatoryRoleSourceConn {
             role: MandatorySourceRole::Replicator,
             conninfo: crate::pginfo::state::PgConnInfo {
@@ -103,7 +97,6 @@ mod tests {
             auth: cfg.postgres.replicator.password.clone(),
         };
         let plan = ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-            mode: crate::process::jobs::PostgresStartMode::Replica,
             desired_session: DesiredManagedPostgresSession::Follow(Box::new(ReplicaFollowPlan {
                 source,
                 primary_slot_name: None,
@@ -146,7 +139,8 @@ mod tests {
     #[test]
     fn materialize_skips_non_start_plans() -> Result<(), String> {
         let root = unique_test_dir("process-session", "skip-non-start")?;
-        let cfg = sample_runtime_config(root.join("data"));
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
         let plan = ClusterProcessPlan::Promote(crate::process::jobs::PromoteSpec {
             data_dir: cfg.postgres.data_dir.clone(),
             wait_seconds: None,

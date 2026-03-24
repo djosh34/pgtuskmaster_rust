@@ -29,16 +29,16 @@ pub enum ConfigErrorV2 {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct RuntimeConfigV2 {
-    pub cluster_name: ClusterName,
-    pub scope: ScopeName,
-    pub member_id: MemberId,
-    pub postgres: PostgresConfig,
-    pub dcs: DcsConfig,
-    pub timing: TimingConfig,
-    pub binaries: BinariesConfig,
-    pub logging: LoggingConfig,
-    pub api: ApiConfig,
+pub struct RuntimeConfigV2 {
+    pub(crate) cluster_name: ClusterName,
+    pub(crate) scope: ScopeName,
+    pub(crate) member_id: MemberId,
+    pub(crate) postgres: PostgresConfig,
+    pub(crate) dcs: DcsConfig,
+    pub(crate) timing: TimingConfig,
+    pub(crate) binaries: BinariesConfig,
+    pub(crate) logging: LoggingConfig,
+    pub(crate) api: ApiConfig,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -214,7 +214,7 @@ pub(crate) enum ApiAuth {
 // === OPERATOR CONFIG ===
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum PgtmApiTransportExpectation {
+pub enum PgtmApiTransportExpectation {
     Http,
     Https,
 }
@@ -233,14 +233,14 @@ impl PgtmApiTransportExpectation {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct OperatorConfigV2 {
-    pub base_url: Option<Url>,
-    pub advertised_url: Option<ApiRoute>,
-    pub expected_transport: Option<PgtmApiTransportExpectation>,
-    pub resolve_to: Option<SocketAddr>,
-    pub client_tls: OperatorClientTlsConfig,
-    pub read_token: Option<Secret>,
-    pub admin_token: Option<Secret>,
+pub struct OperatorConfigV2 {
+    pub(crate) base_url: Option<Url>,
+    pub(crate) advertised_url: Option<ApiRoute>,
+    pub(crate) expected_transport: Option<PgtmApiTransportExpectation>,
+    pub(crate) resolve_to: Option<SocketAddr>,
+    pub(crate) client_tls: OperatorClientTlsConfig,
+    pub(crate) read_token: Option<Secret>,
+    pub(crate) admin_token: Option<Secret>,
 }
 
 impl OperatorConfigV2 {

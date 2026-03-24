@@ -54,4 +54,10 @@ That is a boundary problem, not just a helper problem. The same config/document 
 - Preserve current config semantics, defaults, and field names exactly; this slice is about ownership and duplication, not a config-format redesign.
 - If deriving/annotating serialization on the raw schema creates more compatibility glue than it deletes, switch this plan back to `TO BE VERIFIED`, document the blocking raw-shape mismatch, update the task file to point at that state, and stop immediately.
 
-NOW EXECUTE
+### Validation Outcome
+
+- Functional validation passed: `make check`, `make lint`, `make test`, and `make test-long` all succeeded on March 24, 2026.
+- Reduction validation failed: repo diff moved from `+3506 -5626 diff: -2120` before this slice to `+4028 -5876 diff: -1848` after it, so the raw-schema test-document builder path added more lines than it removed.
+- `bash .ralph/git_current_lines.sh` still fails on deleted tracked files (`src/api/startup.rs`, `src/ha/startup.rs`, `src/pginfo/startup.rs`, `src/process/startup.rs`), so total current lines must still be computed manually until that helper is fixed.
+
+TO BE VERIFIED

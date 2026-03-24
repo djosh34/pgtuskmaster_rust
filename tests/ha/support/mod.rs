@@ -2,6 +2,7 @@ mod config;
 mod docker;
 mod error;
 mod faults;
+mod files;
 mod givens;
 mod invariants;
 mod observer;

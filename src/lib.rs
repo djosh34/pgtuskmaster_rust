@@ -1,7 +1,7 @@
 pub mod api;
 pub mod cli;
 pub mod command;
-mod config_v2;
+pub mod config_v2;
 pub mod dcs;
 #[cfg(test)]
 #[allow(dead_code)]

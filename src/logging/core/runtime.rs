@@ -723,9 +723,6 @@ impl LogSink for TestSink {
 mod tests {
     use super::*;
 
-    use std::time::Duration;
-
-    use crate::config_v2::types::{LogLevel, LoggingConfig, RuntimeConfigV2};
     use crate::process::jobs::ProcessJobKind;
     use crate::process::log_event::{CapturedStream, SubprocessLogEvent};
     use crate::runtime::log_event::RuntimeLogEvent;
@@ -780,18 +777,6 @@ mod tests {
             .map(|line| line.to_string())
             .filter(|line| !line.trim().is_empty())
             .collect())
-    }
-
-    fn sample_runtime_config() -> RuntimeConfigV2 {
-        let baseline = crate::dev_support::runtime_config::sample_logging_config();
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_logging(LoggingConfig {
-                level: LogLevel::Trace,
-                postgres_log_poll_interval: Duration::from_millis(50),
-                postgres_log_cleanup_enabled: false,
-                ..baseline
-            })
-            .build()
     }
 
     fn sample_runtime_event() -> RuntimeLogEvent {
@@ -1104,7 +1089,8 @@ mod tests {
 
         let path = root.join("app.jsonl");
 
-        let mut cfg = sample_runtime_config();
+        let mut cfg =
+            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
         cfg.logging.stderr_enabled = false;
         cfg.logging.file_enabled = true;
         cfg.logging.file_path = path.clone();
@@ -1135,7 +1121,8 @@ mod tests {
 
         let path = root.join("app.jsonl");
 
-        let mut cfg = sample_runtime_config();
+        let mut cfg =
+            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
         cfg.logging.stderr_enabled = true;
         cfg.logging.file_enabled = true;
         cfg.logging.file_path = path.clone();
@@ -1156,7 +1143,8 @@ mod tests {
 
     #[test]
     fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), String> {
-        let mut cfg = sample_runtime_config();
+        let mut cfg =
+            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
         cfg.logging.stderr_enabled = false;
         cfg.logging.file_enabled = false;
 

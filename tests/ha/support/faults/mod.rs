@@ -1,9 +1,19 @@
-use crate::support::topology::{ClusterMember, DcsService};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+use crate::support::{
+    error::{HarnessError, Result},
+    files::{create_dir_all, write_text_file},
+    topology::{ClusterMember, DcsService},
+};
 
 pub const DATABASE_MEMBERS: [ClusterMember; 3] = ClusterMember::ALL;
 pub const DCS_SERVICES: [DcsService; 3] = DcsService::COLOCATED_ALL;
 pub const IPTABLES_CHAIN: &str = "PGTM_HA_FAULTS";
 pub const FAULT_DIR: &str = "/var/lib/pgtuskmaster/faults";
+pub const WIPE_DATA_ON_START_MARKER_PATH: &str = "/var/lib/pgtuskmaster/faults/wipe-data-on-start";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrafficPath {
@@ -14,18 +24,18 @@ pub enum TrafficPath {
 
 impl TrafficPath {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::Dcs => "dcs",
-            Self::Api => "api",
-            Self::Postgres => "postgres",
-        }
+        self.spec().0
     }
 
     pub fn port(self) -> u16 {
+        self.spec().1
+    }
+
+    fn spec(self) -> (&'static str, u16) {
         match self {
-            Self::Dcs => 2379,
-            Self::Api => 8443,
-            Self::Postgres => 5432,
+            Self::Dcs => ("dcs", 2379),
+            Self::Api => ("api", 8443),
+            Self::Postgres => ("postgres", 5432),
         }
     }
 }
@@ -39,28 +49,34 @@ pub enum BlockerKind {
 
 impl BlockerKind {
     pub fn label(self) -> &'static str {
-        match self {
-            Self::PgBasebackup => "pg_basebackup",
-            Self::PgRewind => "pg_rewind",
-            Self::PostgresStart => "postgres_start",
-        }
+        self.spec().0
     }
 
     pub fn marker_path(self) -> &'static str {
-        match self {
-            Self::PgBasebackup => "/var/lib/pgtuskmaster/faults/block-pg-basebackup",
-            Self::PgRewind => "/var/lib/pgtuskmaster/faults/fail-pg-rewind",
-            Self::PostgresStart => "/var/lib/pgtuskmaster/faults/fail-postgres-start",
-        }
+        self.spec().1
     }
 
     pub fn clear_on_start_marker_path(self) -> &'static str {
+        self.spec().2
+    }
+
+    fn spec(self) -> (&'static str, &'static str, &'static str) {
         match self {
-            Self::PgBasebackup => "/var/lib/pgtuskmaster/faults/clear-block-pg-basebackup-on-start",
-            Self::PgRewind => "/var/lib/pgtuskmaster/faults/clear-fail-pg-rewind-on-start",
-            Self::PostgresStart => {
-                "/var/lib/pgtuskmaster/faults/clear-fail-postgres-start-on-start"
-            }
+            Self::PgBasebackup => (
+                "pg_basebackup",
+                "/var/lib/pgtuskmaster/faults/block-pg-basebackup",
+                "/var/lib/pgtuskmaster/faults/clear-block-pg-basebackup-on-start",
+            ),
+            Self::PgRewind => (
+                "pg_rewind",
+                "/var/lib/pgtuskmaster/faults/fail-pg-rewind",
+                "/var/lib/pgtuskmaster/faults/clear-fail-pg-rewind-on-start",
+            ),
+            Self::PostgresStart => (
+                "postgres_start",
+                "/var/lib/pgtuskmaster/faults/fail-postgres-start",
+                "/var/lib/pgtuskmaster/faults/clear-fail-postgres-start-on-start",
+            ),
         }
     }
 }
@@ -113,41 +129,97 @@ while iptables -w -D {chain} -p tcp -s {peer} --sport {port} -j REJECT 2>/dev/nu
     )
 }
 
+pub fn write_fault_marker(
+    materialized_dir: &Path,
+    member: ClusterMember,
+    marker_path: &str,
+) -> Result<()> {
+    let marker_file = materialized_fault_marker_path(materialized_dir, member, marker_path)?;
+    if let Some(parent) = marker_file.parent() {
+        create_dir_all(parent)?;
+    }
+    write_text_file(marker_file.as_path(), "")?;
+    Ok(())
+}
+
+pub fn remove_fault_marker(
+    materialized_dir: &Path,
+    member: ClusterMember,
+    marker_path: &str,
+) -> Result<()> {
+    let marker_file = materialized_fault_marker_path(materialized_dir, member, marker_path)?;
+    match fs::remove_file(marker_file.as_path()) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(HarnessError::Io {
+            path: marker_file,
+            source,
+        }),
+    }
+}
+
 pub fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+fn materialized_fault_dir(materialized_dir: &Path, member: ClusterMember) -> PathBuf {
+    materialized_dir.join("faults").join(member.service_name())
+}
+
+fn materialized_fault_marker_path(
+    materialized_dir: &Path,
+    member: ClusterMember,
+    marker_path: &str,
+) -> Result<PathBuf> {
+    let relative_path = Path::new(marker_path)
+        .strip_prefix(FAULT_DIR)
+        .map_err(|_| {
+            HarnessError::message(format!(
+                "fault marker `{marker_path}` does not live under `{FAULT_DIR}`"
+            ))
+        })?;
+    Ok(materialized_fault_dir(materialized_dir, member).join(relative_path))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{append_fault_rule_script, remove_fault_rule_script};
+    use crate::support::{error::Result, files::with_temporary_directory, topology::ClusterMember};
+
+    use super::{
+        append_fault_rule_script, remove_fault_marker, remove_fault_rule_script,
+        write_fault_marker, WIPE_DATA_ON_START_MARKER_PATH,
+    };
 
     #[test]
-    fn remove_fault_rule_script_targets_all_rule_shapes_for_peer_and_port() {
-        let script = remove_fault_rule_script("10.0.0.7", 5432);
-
+    fn fault_rule_scripts_quote_peer_hosts_and_cover_remove_shapes() {
+        let append = append_fault_rule_script("node-a.example", 8443);
+        let remove = remove_fault_rule_script("node-a.example", 8443);
         for fragment in [
-            "-d '10.0.0.7' --dport 5432 -j REJECT",
-            "-d '10.0.0.7' --sport 5432 -j REJECT",
-            "-s '10.0.0.7' --dport 5432 -j REJECT",
-            "-s '10.0.0.7' --sport 5432 -j REJECT",
+            "-d 'node-a.example' --dport 8443 -j REJECT",
+            "-d 'node-a.example' --sport 8443 -j REJECT",
+            "-s 'node-a.example' --dport 8443 -j REJECT",
+            "-s 'node-a.example' --sport 8443 -j REJECT",
         ] {
-            assert!(
-                script.contains(fragment),
-                "expected remove script to contain `{fragment}`, got: {script}"
-            );
+            assert!(remove.contains(fragment));
+        }
+
+        for script in [append, remove] {
+            assert!(script.contains("'node-a.example'"));
         }
     }
 
     #[test]
-    fn append_and_remove_scripts_quote_peer_hosts_consistently() {
-        let append = append_fault_rule_script("node-a.example", 8443);
-        let remove = remove_fault_rule_script("node-a.example", 8443);
+    fn write_and_remove_fault_marker_manage_member_marker_file() -> Result<()> {
+        with_temporary_directory("pgtm-ha-faults", "marker-round-trip", |root| {
+            let marker = root.join("faults/node-c/wipe-data-on-start");
+            write_fault_marker(root, ClusterMember::NodeC, WIPE_DATA_ON_START_MARKER_PATH)?;
+            assert!(marker.is_file());
 
-        for script in [append, remove] {
-            assert!(
-                script.contains("'node-a.example'"),
-                "expected quoted peer host in script: {script}"
-            );
-        }
+            remove_fault_marker(root, ClusterMember::NodeC, WIPE_DATA_ON_START_MARKER_PATH)?;
+            assert!(!marker.exists());
+
+            remove_fault_marker(root, ClusterMember::NodeC, WIPE_DATA_ON_START_MARKER_PATH)?;
+            Ok(())
+        })
     }
 }

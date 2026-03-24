@@ -6,7 +6,7 @@ use crate::{
     dcs::{DcsHandle, DcsSnapshot},
     pginfo::state::PgInfoState,
     process::state::{ProcessIntentRequest, ProcessState},
-    state::{NodeIdentity, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
+    state::{StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::types::{HaDecision, HaObservation, HaPlan, PublicationState};
@@ -29,7 +29,6 @@ pub(crate) struct HaRuntimeCtx<'a> {
     pub(crate) state_channel: HaStateChannel,
     pub(crate) observed: HaObservedState,
     pub(crate) control: HaControlPlane,
-    pub(crate) identity: NodeIdentity,
 }
 
 pub(crate) struct HaStateChannel {

@@ -5,7 +5,6 @@ use thiserror::Error;
 use crate::{
     config_v2::{load_runtime_config, ConfigErrorV2, RuntimeConfigV2},
     process::state::ensure_start_paths,
-    state::NodeIdentity,
 };
 
 use super::log_event::RuntimeLogEvent;
@@ -66,20 +65,13 @@ async fn run_workers(
     log: crate::logging::LogSender,
     log_worker: crate::logging::LogWorker,
 ) -> Result<(), RuntimeError> {
-    let identity = NodeIdentity {
-        cluster_name: cfg.cluster_name.clone(),
-        scope: cfg.scope.clone(),
-        member_id: cfg.member_id.clone(),
-    };
-
-    let pginfo = crate::pginfo::startup::bootstrap(identity.clone(), cfg, log.clone());
+    let (pginfo_worker, pginfo_state) = crate::pginfo::worker::bootstrap(cfg, log.clone());
 
     let (dcs_state, dcs_handle, dcs_worker) =
-        crate::dcs::bootstrap(identity.clone(), cfg, pginfo.state.clone(), log.clone())
+        crate::dcs::worker::bootstrap(cfg, pginfo_state.clone(), log.clone())
             .map_err(|err| RuntimeError::Worker(format!("dcs store connect failed: {err}")))?;
 
-    let process = crate::process::startup::bootstrap(
-        identity.clone(),
+    let (process_worker, process_state, process_intents) = crate::process::worker::bootstrap(
         cfg,
         crate::process::state::ProcessObservedState {
             dcs: dcs_state.clone(),
@@ -87,29 +79,27 @@ async fn run_workers(
         log.clone(),
     );
 
-    let ha = crate::ha::startup::bootstrap(
-        identity.clone(),
+    let (ha_worker, ha_state) = crate::ha::worker::bootstrap(
         cfg,
         crate::ha::state::HaObservedState {
-            pg: pginfo.state.clone(),
+            pg: pginfo_state.clone(),
             dcs: dcs_state.clone(),
-            process: process.state.clone(),
+            process: process_state.clone(),
         },
         crate::ha::state::HaControlPlane {
-            process_intent_inbox: process.control.intents.clone(),
+            process_intent_inbox: process_intents.clone(),
             dcs_handle: dcs_handle.clone(),
         },
     );
 
-    let api = crate::api::startup::bootstrap(
-        identity,
+    let api = crate::api::worker::ApiRuntimeCtx::new(
         cfg,
         dcs_handle.clone(),
         crate::api::worker::ApiObservedState::Live {
-            pg: pginfo.state.clone(),
-            process: process.state.clone(),
+            pg: pginfo_state.clone(),
+            process: process_state.clone(),
             dcs: dcs_state.clone(),
-            ha: ha.state.clone(),
+            ha: ha_state.clone(),
         },
         log.clone(),
     )
@@ -117,15 +107,15 @@ async fn run_workers(
 
     let ((), pginfo_result, dcs_result, process_result, ingest_result, ha_result, api_result) = tokio::join!(
         log_worker.run(),
-        crate::pginfo::startup::run(pginfo.worker),
+        crate::pginfo::worker::run(pginfo_worker),
         crate::dcs::run(dcs_worker),
-        crate::process::startup::run(process.worker),
+        crate::process::worker::run(process_worker),
         crate::logging::postgres_ingest::run(crate::logging::postgres_ingest::build_ctx(
             cfg,
             log.clone()
         )),
-        crate::ha::worker::run(ha.worker),
-        crate::api::startup::run(api),
+        crate::ha::worker::run(ha_worker),
+        crate::api::worker::run(api),
     );
 
     pginfo_result.map_err(|err| RuntimeError::Worker(err.to_string()))?;

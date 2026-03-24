@@ -17,8 +17,8 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
-        ApiRoute, LeaseEpoch, MemberId, NodeIdentity, PgRoute, StatePublisher, StateSubscriber,
-        SwitchoverState, WorkerError,
+        new_state_channel, ApiRoute, LeaseEpoch, MemberId, PgRoute, StatePublisher,
+        StateSubscriber, SwitchoverState, WorkerError,
     },
 };
 
@@ -48,7 +48,6 @@ pub(crate) enum DcsError {
 
 pub(crate) struct DcsWorker<'a> {
     cfg: &'a RuntimeConfigV2,
-    identity: NodeIdentity,
     keys: DcsKeySpace,
     pg: StateSubscriber<PgInfoState>,
     publisher: StatePublisher<DcsSnapshot>,
@@ -115,10 +114,27 @@ pub(crate) async fn run(worker: DcsWorker<'_>) -> Result<(), WorkerError> {
     worker.run().await
 }
 
+pub(crate) fn bootstrap<'a>(
+    cfg: &'a RuntimeConfigV2,
+    pg: StateSubscriber<PgInfoState>,
+    log: LogSender,
+) -> Result<
+    (
+        StateSubscriber<DcsSnapshot>,
+        super::DcsHandle,
+        DcsWorker<'a>,
+    ),
+    DcsError,
+> {
+    let (publisher, state) = new_state_channel(DcsSnapshot::starting());
+    let (handle, command_inbox) = super::command::dcs_command_channel();
+    let worker = DcsWorker::new(cfg, pg, publisher, command_inbox, log);
+    Ok((state, handle, worker))
+}
+
 impl<'a> DcsWorker<'a> {
     pub(crate) fn new(
         cfg: &'a RuntimeConfigV2,
-        identity: NodeIdentity,
         pg: StateSubscriber<PgInfoState>,
         publisher: StatePublisher<DcsSnapshot>,
         command_inbox: DcsCommandInbox,
@@ -126,8 +142,7 @@ impl<'a> DcsWorker<'a> {
     ) -> Self {
         Self {
             cfg,
-            keys: DcsKeySpace::new(identity.scope.as_str()),
-            identity,
+            keys: DcsKeySpace::new(cfg.scope.as_str()),
             pg,
             publisher,
             command_inbox,
@@ -202,7 +217,7 @@ impl<'a> DcsWorker<'a> {
                         };
                         session
                             .sync_local_member(
-                                &self.identity,
+                                &self.cfg.member_id,
                                 &self.keys,
                                 self.cfg,
                                 lease_ttl_ms(self.cfg),
@@ -219,7 +234,7 @@ impl<'a> DcsWorker<'a> {
                         };
                         session
                             .apply_command(
-                                &self.identity,
+                                &self.cfg.member_id,
                                 &self.keys,
                                 lease_ttl_ms(self.cfg),
                                 command,
@@ -310,7 +325,7 @@ impl<'a> DcsWorker<'a> {
                         };
                         let outcome = session
                             .sync_local_member(
-                                &self.identity,
+                                &self.cfg.member_id,
                                 &self.keys,
                                 self.cfg,
                                 lease_ttl_ms(self.cfg),
@@ -381,7 +396,7 @@ impl<'a> DcsWorker<'a> {
     fn publish_current_view(&mut self, etcd_reachable: bool) -> Result<(), WorkerError> {
         let next = current_snapshot(
             etcd_reachable,
-            &self.identity.member_id,
+            &self.cfg.member_id,
             &self.cluster.leadership,
             &self.cluster.switchover,
             &self.cluster.members,
@@ -459,7 +474,7 @@ impl ConnectedSession {
 
     async fn sync_local_member(
         &mut self,
-        identity: &NodeIdentity,
+        member_id: &MemberId,
         keys: &DcsKeySpace,
         cfg: &RuntimeConfigV2,
         member_ttl_ms: u64,
@@ -467,7 +482,7 @@ impl ConnectedSession {
         cluster: &mut DcsClusterState,
     ) -> Result<(), DcsError> {
         let now = EtcdRuntime::unix_millis().map_err(|err| DcsError::Io(err.to_string()))?;
-        let member_key = DcsKey::Member(identity.member_id.clone());
+        let member_key = DcsKey::Member(member_id.clone());
         let member_path = keys.path(&member_key);
         let pg_snapshot_stale = pg_snapshot
             .last_refresh_at()
@@ -479,8 +494,8 @@ impl ConnectedSession {
                 self.client.delete(member_path.as_str(), None),
             )
             .await?;
-            cluster.members.remove(&identity.member_id);
-            self.release_local_leadership(keys, &identity.member_id, cluster)
+            cluster.members.remove(member_id);
+            self.release_local_leadership(keys, member_id, cluster)
                 .await?;
             return Ok(());
         }
@@ -508,15 +523,13 @@ impl ConnectedSession {
                 .put(write.path.as_str(), write.value, Some(options)),
         )
         .await?;
-        cluster
-            .members
-            .insert(identity.member_id.clone(), local_member);
+        cluster.members.insert(member_id.clone(), local_member);
         Ok(())
     }
 
     async fn apply_command(
         &mut self,
-        identity: &NodeIdentity,
+        member_id: &MemberId,
         keys: &DcsKeySpace,
         member_ttl_ms: u64,
         command: DcsCommand,
@@ -524,11 +537,11 @@ impl ConnectedSession {
     ) -> Result<(), DcsError> {
         match command {
             DcsCommand::AcquireLeadership => {
-                self.acquire_local_leadership(identity, keys, member_ttl_ms, cluster)
+                self.acquire_local_leadership(member_id, keys, member_ttl_ms, cluster)
                     .await
             }
             DcsCommand::ReleaseLeadership => {
-                self.release_local_leadership(keys, &identity.member_id, cluster)
+                self.release_local_leadership(keys, member_id, cluster)
                     .await
             }
             DcsCommand::PublishSwitchover(request) => {
@@ -544,21 +557,23 @@ impl ConnectedSession {
 
     async fn acquire_local_leadership(
         &mut self,
-        identity: &NodeIdentity,
+        member_id: &MemberId,
         keys: &DcsKeySpace,
         member_ttl_ms: u64,
         cluster: &mut DcsClusterState,
     ) -> Result<(), DcsError> {
         let leader_key = DcsKey::Leader;
         let leader_path = keys.path(&leader_key);
-        if self.leader_lease.as_ref().is_some_and(|lease| {
-            lease.leader_path == leader_path && lease.member_id == identity.member_id
-        }) {
+        if self
+            .leader_lease
+            .as_ref()
+            .is_some_and(|lease| lease.leader_path == leader_path && lease.member_id == *member_id)
+        {
             return Ok(());
         }
 
         let epoch = LeaseEpoch {
-            holder: identity.member_id.clone(),
+            holder: member_id.clone(),
             generation: EtcdRuntime::unix_millis()
                 .map_err(|err| DcsError::Io(err.to_string()))?
                 .0,
@@ -596,7 +611,7 @@ impl ConnectedSession {
                         .ok()
                         .and_then(|raw| serde_json::from_str::<LeaseEpoch>(raw).ok())
                 })
-                .is_some_and(|existing_epoch| existing_epoch.holder == identity.member_id)
+                .is_some_and(|existing_epoch| existing_epoch.holder == *member_id)
             {
                 return Ok(());
             }
@@ -611,7 +626,7 @@ impl ConnectedSession {
         self.leader_lease = Some(OwnedLeaderLease {
             lease_id,
             leader_path,
-            member_id: identity.member_id.clone(),
+            member_id: member_id.clone(),
             ttl_seconds,
             keeper,
             stream,

@@ -6,20 +6,64 @@ use std::{
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
-        DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, PgtmApiTransportExpectation,
-        PostgresConfig, RoleConfig, RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
+        DcsEndpoint, FileSinkMode, LogLevel, LoggingConfig, OperatorClientTlsConfig,
+        OperatorConfigV2, PgtmApiTransportExpectation, PostgresConfig, RoleConfig, RuntimeConfigV2,
+        Secret, TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
 };
+use reqwest::Url;
 
 use super::private_schema as raw;
 
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let contents = read_config_file(path)?;
-    let document: raw::RuntimeDocument =
-        toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
+    load_runtime_config_contents_at(contents.as_str(), path)
+}
 
+pub fn load_operator_config(path: &Path) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    let contents = read_config_file(path)?;
+    load_operator_config_contents_at(contents.as_str(), path)
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn load_runtime_config_contents(contents: &str) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    load_runtime_config_contents_at(contents, Path::new("<runtime-config>"))
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn load_operator_config_contents(contents: &str) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    load_operator_config_contents_at(contents, Path::new("<operator-config>"))
+}
+
+fn load_runtime_config_contents_at(
+    contents: &str,
+    path: &Path,
+) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    let document: raw::RuntimeDocument =
+        toml::from_str(contents).map_err(|source| parse_error(path, source))?;
+    map_runtime_document(document)
+}
+
+fn load_operator_config_contents_at(
+    contents: &str,
+    path: &Path,
+) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    let document: raw::OperatorConfigDocument =
+        toml::from_str(contents).map_err(|source| parse_error(path, source))?;
+
+    let operator = match document {
+        raw::OperatorConfigDocument::Operator(operator) => *operator,
+        raw::OperatorConfigDocument::Runtime(runtime) => runtime.pgtm.ok_or_else(|| {
+            validation_error("pgtm", "missing operator config block in runtime document")
+        })?,
+    };
+
+    map_operator_document(operator)
+}
+
+fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     validate_non_empty("cluster.name", document.cluster.name.as_str())?;
     validate_non_empty("cluster.scope", document.cluster.scope.as_str())?;
     validate_non_empty("cluster.member_id", document.cluster.member_id.as_str())?;
@@ -242,15 +286,9 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
     };
     let operator_advertise = document
         .pgtm
-        .map(|operator| {
-            map_operator_api_route(
-                "pgtm.api.advertised_url",
-                operator.api.advertised_url,
-                operator.api.expected_transport.map(map_expected_transport),
-            )
-        })
+        .map(map_operator_document)
         .transpose()?
-        .flatten();
+        .and_then(|config| config.advertised_url);
 
     Ok(RuntimeConfigV2 {
         cluster_name: ClusterName(document.cluster.name),
@@ -292,15 +330,57 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn validate_runtime_document(path: &Path) -> Result<(), ConfigErrorV2> {
-    let contents = read_config_file(path)?;
-    let _: raw::RuntimeDocument =
-        toml::from_str(&contents).map_err(|source| parse_error(path, source))?;
+pub fn validate_runtime_document_contents(contents: &str) -> Result<(), ConfigErrorV2> {
+    let _: raw::RuntimeDocument = toml::from_str(contents)
+        .map_err(|source| parse_error(Path::new("<runtime-config>"), source))?;
     Ok(())
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn load_runtime_timing_values(
+pub fn runtime_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    load_runtime_test_config_from_paths(PathBuf::from("/tmp/pgdata"), "scope-a")
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn runtime_test_config_with_data_dir(
+    data_dir: impl Into<PathBuf>,
+) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    load_runtime_test_config_from_paths(data_dir.into(), "scope-a")
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn managed_postgres_test_config(
+    data_dir: impl Into<PathBuf>,
+) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    let config = load_runtime_test_config_from_paths(data_dir.into(), "cluster-a")?;
+    Ok(RuntimeConfigV2 {
+        timing: TimingConfig {
+            ha_loop_interval: Duration::from_millis(500),
+            ha_lease_ttl: Duration::from_secs(5),
+            bootstrap_timeout: Duration::from_secs(30),
+            pg_rewind_timeout: Duration::from_secs(30),
+            fencing_timeout: Duration::from_secs(10),
+        },
+        ..config
+    })
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    let config = runtime_test_config()?;
+    Ok(RuntimeConfigV2 {
+        logging: LoggingConfig {
+            level: LogLevel::Trace,
+            postgres_log_poll_interval: Duration::from_millis(50),
+            postgres_log_cleanup_enabled: false,
+            ..config.logging
+        },
+        ..config
+    })
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn load_runtime_timing_values(
     path: &Path,
 ) -> Result<(Duration, Duration, Duration, Duration), ConfigErrorV2> {
     let contents = read_config_file(path)?;
@@ -312,6 +392,30 @@ pub(crate) fn load_runtime_timing_values(
         Duration::from_millis(document.process.timeouts.bootstrap_ms),
         Duration::from_millis(document.process.timeouts.pg_rewind_ms),
     ))
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn load_runtime_test_config_from_paths(
+    data_dir: PathBuf,
+    scope: &str,
+) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+    let socket_dir = Path::new("/tmp/pgtuskmaster/socket");
+    let log_file = Path::new("/tmp/pgtuskmaster/postgres.log");
+    let contents = raw::render_runtime_test_config_toml(
+        "cluster-a",
+        scope,
+        "node-a",
+        (data_dir.as_path(), socket_dir, log_file),
+        ["http://127.0.0.1:2379"],
+        std::iter::empty::<&str>(),
+    )
+    .map_err(|message| validation_error("runtime_test_config", message))?;
+    let mut config = load_runtime_config_contents(contents.as_str())?;
+    let password = Secret::new("secret-password".to_string());
+    config.postgres.superuser.password = password.clone();
+    config.postgres.replicator.password = password.clone();
+    config.postgres.rewinder.password = password;
+    Ok(config)
 }
 
 const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
@@ -572,39 +676,204 @@ fn map_postgres_advertise(
         .map_err(|message| validation_error(field, message))
 }
 
-fn map_operator_api_route(
-    field: &'static str,
-    advertise: Option<String>,
+pub(super) fn map_operator_document(
+    operator: raw::OperatorDocument,
+) -> Result<OperatorConfigV2, ConfigErrorV2> {
+    let expected_transport = operator.api.expected_transport.map(map_expected_transport);
+    let (read_token, admin_token) = map_operator_auth(operator.api.auth)?;
+
+    Ok(OperatorConfigV2 {
+        base_url: parse_operator_base_url(operator.api.base_url, expected_transport)?,
+        advertised_url: map_operator_api_route(
+            "pgtm.api.advertised_url",
+            operator.api.advertised_url,
+            expected_transport,
+        )?,
+        expected_transport,
+        resolve_to: operator.api.resolve_to,
+        client_tls: merge_operator_client_tls(
+            map_operator_client_tls("pgtm.api.tls", operator.api.tls)?,
+            map_operator_client_tls("pgtm.postgres.tls", operator.postgres.tls)?,
+        )?,
+        read_token,
+        admin_token,
+    })
+}
+
+fn parse_operator_base_url(
+    base_url: Option<String>,
     expected_transport: Option<PgtmApiTransportExpectation>,
-) -> Result<Option<ApiRoute>, ConfigErrorV2> {
-    advertise
-        .map(|advertise| {
-            let advertise = non_empty_owned(field, advertise)?;
-            let url = reqwest::Url::parse(advertise.as_str())
+) -> Result<Option<Url>, ConfigErrorV2> {
+    parse_operator_url("pgtm.api.base_url", base_url, expected_transport)
+}
+
+fn parse_operator_url(
+    field: &'static str,
+    value: Option<String>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<Option<Url>, ConfigErrorV2> {
+    normalize_optional_string(value)
+        .map(|value| {
+            let url = Url::parse(value.as_str())
                 .map_err(|err| validation_error(field, format!("must be a valid URL: {err}")))?;
-            if let Some(expected_transport) = expected_transport {
-                if !expected_transport.matches_url(&url) {
-                    return Err(validation_error(
-                        field,
-                        format!(
-                            "operator config expects `{}` API transport, but resolved base URL uses `{}`",
-                            expected_transport.scheme(),
-                            url.scheme()
-                        ),
-                    ));
-                }
-            }
-            ApiRoute::from_url(url).map_err(|err| validation_error(field, err))
+            validate_expected_transport(field, &url, expected_transport)?;
+            Ok(url)
         })
         .transpose()
 }
 
-fn map_expected_transport(
+fn validate_expected_transport(
+    field: &'static str,
+    url: &Url,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<(), ConfigErrorV2> {
+    let Some(expected_transport) = expected_transport else {
+        return Ok(());
+    };
+
+    if expected_transport.matches_url(url) {
+        return Ok(());
+    }
+
+    Err(validation_error(
+        field,
+        format!(
+            "operator config expects `{}` API transport, but resolved base URL uses `{}`",
+            expected_transport.scheme(),
+            url.scheme()
+        ),
+    ))
+}
+
+pub(super) fn map_operator_api_route(
+    field: &'static str,
+    advertise: Option<String>,
+    expected_transport: Option<PgtmApiTransportExpectation>,
+) -> Result<Option<ApiRoute>, ConfigErrorV2> {
+    parse_operator_url(field, advertise, expected_transport)?
+        .map(|url| ApiRoute::from_url(url).map_err(|err| validation_error(field, err)))
+        .transpose()
+}
+
+pub(super) fn map_expected_transport(
     expected_transport: raw::PgtmApiTransportExpectation,
 ) -> PgtmApiTransportExpectation {
     match expected_transport {
         raw::PgtmApiTransportExpectation::Http => PgtmApiTransportExpectation::Http,
         raw::PgtmApiTransportExpectation::Https => PgtmApiTransportExpectation::Https,
+    }
+}
+
+fn map_operator_auth(
+    auth: raw::TokenAuthConfig,
+) -> Result<(Option<Secret>, Option<Secret>), ConfigErrorV2> {
+    let mode = token_auth_mode(&auth);
+    let (read_token, admin_token) = take_token_sources(auth);
+    match mode {
+        TokenAuthMode::Disabled => Ok((None, None)),
+        TokenAuthMode::RoleTokens => Ok((
+            resolve_secret_optional("pgtm.api.auth.read_token", read_token)?,
+            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token)?,
+        )),
+    }
+}
+
+pub(super) fn map_operator_client_tls(
+    field_prefix: &'static str,
+    tls: raw::OperatorClientTlsConfig,
+) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
+    Ok(OperatorClientTlsConfig {
+        ca_cert: tls
+            .ca_cert
+            .map(|ca_cert| resolve_path_only(operator_ca_field(field_prefix), ca_cert))
+            .transpose()?,
+        identity: tls
+            .identity
+            .map(|identity| {
+                Ok(TlsConfig {
+                    cert: resolve_path_only(operator_cert_field(field_prefix), identity.cert)?,
+                    key: resolve_path_only(operator_key_field(field_prefix), identity.key)?,
+                    ca_cert: None,
+                })
+            })
+            .transpose()?,
+    })
+}
+
+pub(super) fn merge_operator_client_tls(
+    api_tls: OperatorClientTlsConfig,
+    postgres_tls: OperatorClientTlsConfig,
+) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
+    Ok(OperatorClientTlsConfig {
+        ca_cert: merge_optional_path(
+            "pgtm.api.tls.ca_cert",
+            api_tls.ca_cert,
+            "pgtm.postgres.tls.ca_cert",
+            postgres_tls.ca_cert,
+            "pgtm.client_tls.ca_cert",
+        )?,
+        identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
+    })
+}
+
+fn merge_optional_path(
+    left_field: &'static str,
+    left: Option<PathBuf>,
+    right_field: &'static str,
+    right: Option<PathBuf>,
+    merged_field: &'static str,
+) -> Result<Option<PathBuf>, ConfigErrorV2> {
+    match (left, right) {
+        (Some(left), Some(right)) if left != right => Err(validation_error(
+            merged_field,
+            format!("`{left_field}` and `{right_field}` must match when both are configured"),
+        )),
+        (Some(path), Some(_)) | (Some(path), None) | (None, Some(path)) => Ok(Some(path)),
+        (None, None) => Ok(None),
+    }
+}
+
+fn merge_optional_identity(
+    left: Option<TlsConfig>,
+    right: Option<TlsConfig>,
+) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+    match (left, right) {
+        (Some(left), Some(right))
+            if left.cert != right.cert || left.key != right.key || left.ca_cert != right.ca_cert =>
+        {
+            Err(validation_error(
+                "pgtm.client_tls.identity",
+                "`pgtm.api.tls.identity` and `pgtm.postgres.tls.identity` must match when both are configured",
+            ))
+        }
+        (Some(identity), Some(_)) | (Some(identity), None) | (None, Some(identity)) => {
+            Ok(Some(identity))
+        }
+        (None, None) => Ok(None),
+    }
+}
+
+fn operator_ca_field(field_prefix: &'static str) -> &'static str {
+    match field_prefix {
+        "pgtm.api.tls" => "pgtm.api.tls.ca_cert",
+        "pgtm.postgres.tls" => "pgtm.postgres.tls.ca_cert",
+        _ => field_prefix,
+    }
+}
+
+fn operator_cert_field(field_prefix: &'static str) -> &'static str {
+    match field_prefix {
+        "pgtm.api.tls" => "pgtm.api.tls.identity.cert",
+        "pgtm.postgres.tls" => "pgtm.postgres.tls.identity.cert",
+        _ => field_prefix,
+    }
+}
+
+fn operator_key_field(field_prefix: &'static str) -> &'static str {
+    match field_prefix {
+        "pgtm.api.tls" => "pgtm.api.tls.identity.key",
+        "pgtm.postgres.tls" => "pgtm.postgres.tls.identity.key",
+        _ => field_prefix,
     }
 }
 
@@ -856,70 +1125,56 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{load_runtime_config, validate_runtime_document};
+    use super::{
+        load_operator_config_contents, load_runtime_config_contents,
+        validate_runtime_document_contents,
+    };
     use crate::{
-        config_v2::ConfigErrorV2, dev_support::test_fs::unique_test_dir,
+        config_v2::{
+            render_operator_test_config_toml, render_runtime_test_config_toml, toml_path_source,
+            toml_string_secret, ConfigErrorV2, PgtmApiTransportExpectation,
+        },
+        dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgSslMode,
     };
-    use std::fs;
+    use std::{net::SocketAddr, path::Path};
 
     #[test]
     fn load_runtime_config_preserves_shared_source_client_tls() -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-source-client-tls")?;
-        fs::create_dir_all(root.join("data")).map_err(|err| err.to_string())?;
         let ca_cert = root.join("source-ca.crt");
-        fs::write(&ca_cert, "test ca").map_err(|err| err.to_string())?;
-        let config_path = root.join("runtime.toml");
-        fs::write(
-            &config_path,
-            format!(
-                r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "node-a"
-
-[postgres.paths]
-data_dir = "{}"
-
-[postgres.rewind.transport]
+        let config = load_runtime_config_contents(
+            render_runtime_test_config_toml(
+                "cluster-a",
+                "scope-a",
+                "node-a",
+                (
+                    root.join("data").as_path(),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [
+                    format!(
+                        r#"[postgres.rewind.transport]
 ssl_mode = "verify_full"
-ca_cert = {{ path = "{}" }}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
-
-[postgres.access]
-hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-ident = {{ content = "" }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-
-[process.binaries.overrides]
+ca_cert = {}"#,
+                        toml_path_source(ca_cert.as_path()),
+                    ),
+                    r#"[process.binaries.overrides]
 postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
 pg_basebackup = "/bin/true"
-psql = "/bin/true"
-"#,
-                root.join("data").display(),
-                ca_cert.display()
-            ),
+psql = "/bin/true""#
+                        .to_string(),
+                ],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
         )
         .map_err(|err| err.to_string())?;
-
-        let config = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
 
         assert_eq!(
             config.postgres.source_client_tls.mode,
@@ -937,57 +1192,36 @@ psql = "/bin/true"
     #[test]
     fn load_runtime_config_preserves_operator_api_advertise_route() -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-operator-api-route")?;
-        fs::create_dir_all(root.join("data")).map_err(|err| err.to_string())?;
-        let config_path = root.join("runtime.toml");
-        fs::write(
-            &config_path,
-            format!(
-                r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "node-a"
-
-[postgres.paths]
-data_dir = "{}"
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
-
-[postgres.access]
-hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-ident = {{ content = "" }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-
-[process.binaries.overrides]
+        let config = load_runtime_config_contents(
+            render_runtime_test_config_toml(
+                "cluster-a",
+                "scope-a",
+                "node-a",
+                (
+                    root.join("data").as_path(),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [
+                    r#"[process.binaries.overrides]
 postgres = "/bin/true"
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
 pg_basebackup = "/bin/true"
-psql = "/bin/true"
-
-[pgtm.api]
+psql = "/bin/true""#
+                        .to_string(),
+                    r#"[pgtm.api]
 advertised_url = "https://127.0.0.1:18081"
-expected_transport = "https"
-"#,
-                root.join("data").display(),
-            ),
+expected_transport = "https""#
+                        .to_string(),
+                ],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
         )
         .map_err(|err| err.to_string())?;
-
-        let config = load_runtime_config(config_path.as_path()).map_err(|err| err.to_string())?;
 
         if config
             .api
@@ -1009,52 +1243,231 @@ expected_transport = "https"
     fn validate_runtime_document_rejects_inline_postgres_tls_sources_at_parse_boundary(
     ) -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-inline-tls")?;
-        fs::create_dir_all(&root).map_err(|err| err.to_string())?;
-        let config_path = root.join("runtime.toml");
-        fs::write(
-            &config_path,
-            format!(
-                r#"
-[cluster]
-name = "cluster-a"
-scope = "scope-a"
-member_id = "node-a"
-
-[postgres.paths]
-data_dir = "{}"
-
-[postgres.tls]
+        match validate_runtime_document_contents(
+            render_runtime_test_config_toml(
+                "cluster-a",
+                "scope-a",
+                "node-a",
+                (
+                    root.join("data").as_path(),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [r#"[postgres.tls]
 mode = "enabled"
-identity = {{ cert_chain = {{ content = "CERT" }}, private_key = {{ content = "KEY" }} }}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
-
-[postgres.access]
-hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-ident = {{ content = "" }}
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-"#,
-                root.join("data").display(),
-            ),
-        )
-        .map_err(|err| err.to_string())?;
-
-        match validate_runtime_document(config_path.as_path()) {
+identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" } }"#],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        ) {
             Err(ConfigErrorV2::Parse { .. }) => Ok(()),
             Err(err) => Err(format!("expected parse error, got {err}")),
             Ok(()) => Err("expected inline TLS parse rejection".to_string()),
+        }
+    }
+
+    #[test]
+    fn load_operator_config_preserves_expected_transport_for_operator_documents(
+    ) -> Result<(), String> {
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                Some("https"),
+                None,
+                std::iter::empty::<String>(),
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            config.expected_transport,
+            Some(PgtmApiTransportExpectation::Https)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_preserves_expected_transport_for_runtime_documents(
+    ) -> Result<(), String> {
+        let runtime_document = render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "node-a",
+            (
+                Path::new("/tmp/data"),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            ["http://127.0.0.1:2379"],
+            [r#"[pgtm.api]
+base_url = "https://127.0.0.1:8443"
+expected_transport = "https""#],
+        )
+        .map_err(|err| err.to_string())?;
+
+        let runtime = load_runtime_config_contents(runtime_document.as_str())
+            .map_err(|err| err.to_string())?;
+        assert_eq!(
+            runtime
+                .api
+                .advertise
+                .as_ref()
+                .map(crate::state::ApiRoute::as_str),
+            None
+        );
+
+        let operator = load_operator_config_contents(runtime_document.as_str())
+            .map_err(|err| err.to_string())?;
+        assert_eq!(
+            operator.expected_transport,
+            Some(PgtmApiTransportExpectation::Https)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_keeps_resolve_to_on_validated_api_endpoint() -> Result<(), String> {
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://node-b:8443"),
+                None,
+                Some("https"),
+                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
+                std::iter::empty::<String>(),
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            config.base_url.as_ref().map(reqwest::Url::as_str),
+            Some("https://node-b:8443/")
+        );
+        assert_eq!(
+            config.expected_transport,
+            Some(PgtmApiTransportExpectation::Https)
+        );
+        assert_eq!(
+            config.resolve_to,
+            Some(SocketAddr::from(([127, 0, 0, 1], 18443)))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_preserves_advertised_url() -> Result<(), String> {
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://node-a:8443"),
+                Some("https://127.0.0.1:18081"),
+                Some("https"),
+                None,
+                std::iter::empty::<String>(),
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            config
+                .advertised_url
+                .as_ref()
+                .map(crate::state::ApiRoute::as_str),
+            Some("https://127.0.0.1:18081/")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_flattens_tokens_and_merges_client_tls() -> Result<(), String> {
+        let dir = unique_test_dir("load-operator-config", "merge")?;
+        let api_ca_path = dir.join("api-ca.pem");
+        let identity_cert_path = dir.join("client.crt");
+        let identity_key_path = dir.join("client.key");
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                None,
+                None,
+                [
+                    format!(
+                        r#"[api.auth]
+type = "role_tokens"
+read_token = {}
+admin_token = {}"#,
+                        toml_string_secret("read-token"),
+                        toml_string_secret("admin-token"),
+                    ),
+                    format!(
+                        r#"[api.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}
+
+[postgres.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}"#,
+                        toml_path_source(api_ca_path.as_path()),
+                        toml_path_source(identity_cert_path.as_path()),
+                        toml_path_source(identity_key_path.as_path()),
+                        toml_path_source(api_ca_path.as_path()),
+                        toml_path_source(identity_cert_path.as_path()),
+                        toml_path_source(identity_key_path.as_path()),
+                    ),
+                ],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+        let _ = std::fs::remove_dir_all(dir);
+
+        assert_eq!(
+            config.read_token.as_ref().map(|token| token.as_str()),
+            Some("read-token")
+        );
+        assert_eq!(
+            config.admin_token.as_ref().map(|token| token.as_str()),
+            Some("admin-token")
+        );
+        assert_eq!(config.client_tls.ca_cert.as_ref(), Some(&api_ca_path));
+        assert_eq!(
+            config.client_tls.identity.as_ref().map(|tls| &tls.cert),
+            Some(&identity_cert_path)
+        );
+        assert_eq!(
+            config.client_tls.identity.as_ref().map(|tls| &tls.key),
+            Some(&identity_key_path)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn load_operator_config_rejects_non_path_tls_identity_sources_at_parse_boundary(
+    ) -> Result<(), String> {
+        let result = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                None,
+                None,
+                [r#"[api.tls]
+identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }"#],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        );
+
+        match result {
+            Err(ConfigErrorV2::Parse { .. }) => Ok(()),
+            Err(err) => Err(format!("expected parse error, got {err}")),
+            Ok(_) => Err("expected non-path TLS identity rejection".to_string()),
         }
     }
 }

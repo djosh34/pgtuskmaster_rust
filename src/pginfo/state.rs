@@ -8,8 +8,7 @@ use crate::config_v2::RuntimeConfigV2;
 use crate::logging::LogSender;
 use crate::state::StatePublisher;
 use crate::state::{
-    MemberId, NodeIdentity, ObservedWalPosition, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
-    WorkerStatus,
+    MemberId, ObservedWalPosition, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]
@@ -207,7 +206,6 @@ impl PgInfoState {
 #[derive(Clone, Debug)]
 pub(crate) struct PgInfoWorkerCtx<'a> {
     pub(crate) cfg: &'a RuntimeConfigV2,
-    pub(crate) identity: NodeIdentity,
     pub(crate) state_channel: PgInfoStateChannel,
     pub(crate) runtime: PgInfoRuntime,
 }

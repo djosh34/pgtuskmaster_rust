@@ -5,7 +5,6 @@ pub(crate) mod planner;
 pub(crate) mod postmaster;
 pub(crate) mod session;
 pub(crate) mod source;
-pub(crate) mod startup;
 pub mod state;
 pub(crate) mod tools;
 pub(crate) mod worker;

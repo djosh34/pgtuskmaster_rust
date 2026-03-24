@@ -3,15 +3,18 @@ use std::{fs, path::Path, process::Stdio};
 use tokio::{
     io::{AsyncRead, AsyncReadExt},
     process::{Child, Command},
+    sync::mpsc,
     sync::mpsc::error::TryRecvError,
 };
 
 use crate::{
+    config_v2::RuntimeConfigV2,
+    logging::LogSender,
     process::{
         cluster::{ProcessCluster, ProcessPreparationError},
         postmaster::{lookup_managed_postmaster, ManagedPostmasterError, ManagedPostmasterTarget},
     },
-    state::{UnixMillis, WorkerError, WorkerStatus},
+    state::{new_state_channel, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
 use super::{
@@ -21,8 +24,9 @@ use super::{
     },
     log_event::{CapturedStream, ProcessLogEvent, SubprocessLogEvent},
     state::{
-        ActiveRuntime, JobOutcome, ProcessExecutionKind, ProcessIntentRequest, ProcessJobRejection,
-        ProcessState, ProcessWorkerCtx,
+        ActiveRuntime, JobOutcome, ProcessCadence, ProcessControlPlane, ProcessExecutionKind,
+        ProcessIntentRequest, ProcessJobRejection, ProcessObservedState, ProcessRuntime,
+        ProcessState, ProcessStateChannel, ProcessWorkerCtx,
     },
 };
 
@@ -31,6 +35,65 @@ const PROCESS_OUTPUT_READ_TIMEOUT: std::time::Duration = std::time::Duration::fr
 const PROCESS_OUTPUT_DRAIN_MAX_BYTES: usize = 256 * 1024;
 #[derive(Default)]
 pub(crate) struct TokioCommandRunner;
+
+pub(crate) fn bootstrap<'a>(
+    cfg: &'a RuntimeConfigV2,
+    observed: ProcessObservedState,
+    log: LogSender,
+) -> (
+    ProcessWorkerCtx<'a>,
+    StateSubscriber<ProcessState>,
+    tokio::sync::mpsc::UnboundedSender<ProcessIntentRequest>,
+) {
+    bootstrap_with_runtime(
+        cfg,
+        observed,
+        ProcessCadence {
+            poll_interval: std::time::Duration::from_millis(10),
+            now: Box::new(system_now_unix_millis),
+        },
+        ProcessRuntime {
+            log,
+            command_runner: Box::new(TokioCommandRunner),
+        },
+    )
+}
+
+pub(crate) fn bootstrap_with_runtime<'a>(
+    cfg: &'a RuntimeConfigV2,
+    observed: ProcessObservedState,
+    cadence: ProcessCadence,
+    runtime: ProcessRuntime,
+) -> (
+    ProcessWorkerCtx<'a>,
+    StateSubscriber<ProcessState>,
+    tokio::sync::mpsc::UnboundedSender<ProcessIntentRequest>,
+) {
+    let initial_state = ProcessState::starting();
+    let (publisher, state) = new_state_channel(initial_state.clone());
+    let (intents, inbox) = mpsc::unbounded_channel();
+
+    (
+        ProcessWorkerCtx {
+            cfg,
+            cadence,
+            observed,
+            state_channel: ProcessStateChannel {
+                current: initial_state,
+                publisher,
+                last_rejection: None,
+            },
+            control: ProcessControlPlane {
+                inbox,
+                inbox_disconnected_logged: false,
+                active_runtime: None,
+            },
+            runtime,
+        },
+        state,
+        intents,
+    )
+}
 
 struct TokioProcessHandle {
     child: Child,
@@ -861,9 +924,9 @@ fn timeout_for_kind(ctx: &ProcessWorkerCtx<'_>, kind: &ProcessExecutionKind) -> 
         ProcessExecutionKind::Demote(spec) => spec
             .timeout_ms
             .unwrap_or(duration_millis_u64(ctx.cfg.timing.fencing_timeout)),
-        ProcessExecutionKind::StartPostgres(spec) => spec
-            .timeout_ms
-            .unwrap_or(duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)),
+        ProcessExecutionKind::StartPostgres(_) => {
+            duration_millis_u64(ctx.cfg.timing.bootstrap_timeout)
+        }
     }
 }
 
@@ -912,15 +975,13 @@ mod tests {
         time::Duration,
     };
 
-    use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+    use tokio::sync::mpsc::UnboundedSender;
 
     use crate::{
-        config_v2::types::{PostgresConfig, TimingConfig},
+        config_v2::types::PostgresConfig,
+        config_v2::{managed_postgres_test_config, RuntimeConfigV2},
         dcs::DcsSnapshot,
-        dev_support::{
-            runtime_config::{sample_binary_paths, RuntimeConfigBuilder},
-            test_fs::unique_test_dir,
-        },
+        dev_support::test_fs::unique_test_dir,
         logging::LogSender,
         postgres_managed_conf::{managed_standby_passfile_path, MANAGED_POSTGRESQL_CONF_NAME},
         process::{
@@ -929,17 +990,14 @@ mod tests {
                 ProcessCommandSpec, ProcessIntent, ReplicaProvisionIntent,
             },
             state::{
-                ProcessCadence, ProcessControlPlane, ProcessIntentRequest, ProcessObservedState,
-                ProcessRuntime, ProcessState, ProcessStateChannel, ProcessWorkerCtx,
+                ProcessCadence, ProcessIntentRequest, ProcessObservedState, ProcessRuntime,
+                ProcessState, ProcessWorkerCtx,
             },
         },
-        state::{
-            new_state_channel, JobId, MemberId, NodeIdentity, StateSubscriber, UnixMillis,
-            WorkerStatus,
-        },
+        state::{new_state_channel, JobId, MemberId, StateSubscriber, UnixMillis, WorkerStatus},
     };
 
-    use super::{start_job, step_once};
+    use super::{bootstrap_with_runtime, start_job, step_once};
     use crate::process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget};
 
     struct UnexpectedSpawnRunner;
@@ -1056,61 +1114,31 @@ mod tests {
         ),
         String,
     > {
-        let cfg = RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir.clone())
-            .transform_postgres(move |postgres| PostgresConfig {
+        let config =
+            managed_postgres_test_config(data_dir.clone()).map_err(|err| err.to_string())?;
+        let cfg = RuntimeConfigV2 {
+            postgres: PostgresConfig {
                 socket_dir: socket_dir.clone(),
                 log_file: log_file.clone(),
-                ..postgres
-            })
-            .with_dcs_scope("cluster-a")
-            .with_timing(TimingConfig {
-                ha_loop_interval: Duration::from_millis(500),
-                ha_lease_ttl: Duration::from_secs(5),
-                bootstrap_timeout: Duration::from_secs(30),
-                pg_rewind_timeout: Duration::from_secs(30),
-                fencing_timeout: Duration::from_secs(10),
-            })
-            .with_binaries(sample_binary_paths())
-            .build();
-        let cfg = Box::leak(Box::new(cfg));
-        let initial = ProcessState::starting();
-        let (publisher, subscriber) = new_state_channel(initial.clone());
-        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsSnapshot::starting());
-        let (_tx, inbox) = unbounded_channel();
-
-        Ok((
-            ProcessWorkerCtx {
-                cfg,
-                cadence: ProcessCadence {
-                    poll_interval: Duration::from_millis(10),
-                    now: Box::new(super::system_now_unix_millis),
-                },
-                identity: NodeIdentity {
-                    cluster_name: cfg.cluster_name.clone(),
-                    scope: cfg.scope.clone(),
-                    member_id: cfg.member_id.clone(),
-                },
-                observed: ProcessObservedState {
-                    dcs: dcs_subscriber,
-                },
-                state_channel: ProcessStateChannel {
-                    current: initial,
-                    publisher,
-                    last_rejection: None,
-                },
-                control: ProcessControlPlane {
-                    inbox,
-                    inbox_disconnected_logged: false,
-                    active_runtime: None,
-                },
-                runtime: ProcessRuntime {
-                    log: LogSender::disabled(),
-                    command_runner: Box::new(UnexpectedSpawnRunner),
-                },
+                ..config.postgres
             },
-            subscriber,
-            _tx,
+            ..config
+        };
+        let cfg = Box::leak(Box::new(cfg));
+        let (_dcs_publisher, dcs_subscriber) = new_state_channel(DcsSnapshot::starting());
+        Ok(bootstrap_with_runtime(
+            cfg,
+            ProcessObservedState {
+                dcs: dcs_subscriber,
+            },
+            ProcessCadence {
+                poll_interval: Duration::from_millis(10),
+                now: Box::new(super::system_now_unix_millis),
+            },
+            ProcessRuntime {
+                log: LogSender::disabled(),
+                command_runner: Box::new(UnexpectedSpawnRunner),
+            },
         ))
     }
 

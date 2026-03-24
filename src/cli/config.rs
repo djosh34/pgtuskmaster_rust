@@ -25,8 +25,13 @@ pub(crate) fn resolve_operator_context(cli: &Cli) -> Result<OperatorContext, Cli
             load_operator_config(path.as_path()).map_err(|err| CliError::Config(err.to_string()))
         })
         .transpose()?;
-    let config = config.as_ref();
+    resolve_operator_context_from_config(cli, config.as_ref())
+}
 
+fn resolve_operator_context_from_config(
+    cli: &Cli,
+    config: Option<&OperatorConfigV2>,
+) -> Result<OperatorContext, CliError> {
     let base_url = resolve_base_url(cli.base_url.as_deref(), config)?;
     let read_token = normalize_optional_token(cli.read_token.as_deref()).or_else(|| {
         config.and_then(|config| {
@@ -135,15 +140,19 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::PathBuf, time::Duration};
+    use std::{net::SocketAddr, time::Duration};
 
     use axum::{routing::get, Json, Router};
     use axum_server::tls_rustls::RustlsConfig;
 
-    use super::resolve_operator_context;
+    use super::{resolve_base_url, resolve_operator_context, resolve_operator_context_from_config};
     use crate::api::NodeState;
     use crate::cli::args::{Cli, Command};
     use crate::cli::client::CliApiClient;
+    use crate::config_v2::{
+        load_operator_config_contents, render_operator_test_config_toml, toml_path_source,
+        toml_string_secret,
+    };
     use crate::dcs::DcsSnapshot;
     use crate::dev_support::{
         test_fs::{unique_test_dir, write_text_file},
@@ -171,6 +180,15 @@ mod tests {
         }
     }
 
+    fn load_test_operator_context(
+        cli: &Cli,
+        rendered: String,
+    ) -> Result<super::OperatorContext, String> {
+        let config =
+            load_operator_config_contents(rendered.as_str()).map_err(|err| err.to_string())?;
+        resolve_operator_context_from_config(cli, Some(&config)).map_err(|err| err.to_string())
+    }
+
     #[test]
     fn resolve_context_uses_cli_overrides_without_config() -> Result<(), String> {
         let cli = base_cli();
@@ -183,25 +201,14 @@ mod tests {
 
     #[test]
     fn resolve_context_requires_base_url_when_config_omits_it() -> Result<(), String> {
-        let path = write_temp_config(
-            r##"
-[api]
-"##,
-        )?;
-        let cli = Cli {
-            config: Some(path.clone()),
-            base_url: None,
-            read_token: None,
-            admin_token: None,
-            timeout_ms: 5_000,
-            json: false,
-            verbose: false,
-            watch: false,
-            command: Some(Command::Status),
-        };
-        let err = resolve_operator_context(&cli);
-        let _ = std::fs::remove_file(path);
-        match err {
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(None, None, None, None, std::iter::empty::<String>())
+                .map_err(|err| err.to_string())?
+                .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+
+        match resolve_base_url(None, Some(&config)) {
             Err(err) if err.to_string().contains("set `api.base_url`") => Ok(()),
             Err(err) => Err(format!("unexpected error: {err}")),
             Ok(_) => Err("expected resolution failure".to_string()),
@@ -212,23 +219,8 @@ mod tests {
     fn resolve_context_loads_tokens_and_tls_from_config() -> Result<(), String> {
         let dir = unique_test_dir("cli-config", "api-tls")?;
         let ca_path = write_text_file(dir.as_path(), "api-ca.pem", "ca-cert")?;
-        let path = write_temp_config(format!(
-            r##"
-[api]
-base_url = "https://127.0.0.1:8443"
-
-[api.auth]
-type = "role_tokens"
-read_token = {{ type = "string", value = "read-token" }}
-admin_token = {{ type = "string", value = "admin-token" }}
-
-[api.tls]
-ca_cert = {{ path = "{}" }}
-"##,
-            ca_path.display()
-        ))?;
         let cli = Cli {
-            config: Some(path.clone()),
+            config: None,
             base_url: None,
             read_token: None,
             admin_token: None,
@@ -238,8 +230,31 @@ ca_cert = {{ path = "{}" }}
             watch: false,
             command: Some(Command::Status),
         };
-        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
-        let _ = std::fs::remove_file(path);
+        let ctx = load_test_operator_context(
+            &cli,
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                None,
+                None,
+                [
+                    format!(
+                        r#"[api.auth]
+type = "role_tokens"
+read_token = {}
+admin_token = {}"#,
+                        toml_string_secret("read-token"),
+                        toml_string_secret("admin-token"),
+                    ),
+                    format!(
+                        r#"[api.tls]
+ca_cert = {}"#,
+                        toml_path_source(ca_path.as_path()),
+                    ),
+                ],
+            )
+            .map_err(|err| err.to_string())?,
+        )?;
         let _ = std::fs::remove_file(ca_path);
         let read_token = ctx
             .api_client
@@ -275,21 +290,8 @@ ca_cert = {{ path = "{}" }}
             write_text_file(dir.as_path(), "postgres-cert.pem", "client-cert")?;
         let identity_key_path = write_text_file(dir.as_path(), "postgres-key.pem", "client-key")?;
 
-        let path = write_temp_config(format!(
-            r#"
-[api]
-base_url = "https://127.0.0.1:8443"
-
-[api.tls]
-ca_cert = {{ path = "{}" }}
-identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
-"#,
-            ca_path.display(),
-            identity_cert_path.display(),
-            identity_key_path.display()
-        ))?;
         let cli = Cli {
-            config: Some(path.clone()),
+            config: None,
             base_url: None,
             read_token: None,
             admin_token: None,
@@ -299,9 +301,24 @@ identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
             watch: false,
             command: Some(Command::Status),
         };
-        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
-
-        let _ = std::fs::remove_file(path);
+        let ctx = load_test_operator_context(
+            &cli,
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                None,
+                None,
+                [format!(
+                    r#"[api.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}"#,
+                    toml_path_source(ca_path.as_path()),
+                    toml_path_source(identity_cert_path.as_path()),
+                    toml_path_source(identity_key_path.as_path()),
+                )],
+            )
+            .map_err(|err| err.to_string())?,
+        )?;
         let _ = std::fs::remove_file(ca_path);
         let _ = std::fs::remove_file(identity_cert_path);
         let _ = std::fs::remove_file(identity_key_path);
@@ -332,29 +349,19 @@ identity = {{ cert = {{ path = "{}" }}, key = {{ path = "{}" }} }}
 
     #[test]
     fn resolve_context_rejects_base_url_that_violates_expected_transport() -> Result<(), String> {
-        let path = write_temp_config(
-            r#"
-[api]
-base_url = "http://127.0.0.1:8443"
-expected_transport = "https"
-"#,
-        )?;
-        let cli = Cli {
-            config: Some(path.clone()),
-            base_url: None,
-            read_token: None,
-            admin_token: None,
-            timeout_ms: 5_000,
-            json: false,
-            verbose: false,
-            watch: false,
-            command: Some(Command::Status),
-        };
-
-        let err = resolve_operator_context(&cli);
-        let _ = std::fs::remove_file(path);
-
-        match err {
+        let config = load_operator_config_contents(
+            render_operator_test_config_toml(
+                Some("https://127.0.0.1:8443"),
+                None,
+                Some("https"),
+                None,
+                std::iter::empty::<String>(),
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
+        match resolve_base_url(Some("http://127.0.0.1:8443"), Some(&config)) {
             Err(err) if err.to_string().contains("expects `https` API transport") => Ok(()),
             Err(err) => Err(format!("unexpected error: {err}")),
             Ok(_) => Err("expected transport mismatch failure".to_string()),
@@ -425,24 +432,8 @@ expected_transport = "https"
                 .await
         });
 
-        let path = write_temp_config(format!(
-            r#"
-[api]
-base_url = "https://node-b:{port}"
-expected_transport = "https"
-resolve_to = "127.0.0.1:{port}"
-
-[api.tls]
-ca_cert = {{ path = "{ca_path}" }}
-identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ path = "{client_key_path}" }} }}
-"#,
-            port = listen_addr.port(),
-            ca_path = ca_cert.display(),
-            client_cert_path = client_cert_path.display(),
-            client_key_path = client_key_path.display(),
-        ))?;
         let cli = Cli {
-            config: Some(path.clone()),
+            config: None,
             base_url: None,
             read_token: None,
             admin_token: None,
@@ -452,8 +443,24 @@ identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ path = "{client
             watch: false,
             command: Some(Command::Status),
         };
-
-        let ctx = resolve_operator_context(&cli).map_err(|err| err.to_string())?;
+        let ctx = load_test_operator_context(
+            &cli,
+            render_operator_test_config_toml(
+                Some(format!("https://node-b:{}", listen_addr.port()).as_str()),
+                None,
+                Some("https"),
+                Some(SocketAddr::from(([127, 0, 0, 1], listen_addr.port()))),
+                [format!(
+                    r#"[api.tls]
+ca_cert = {}
+identity = {{ cert = {}, key = {} }}"#,
+                    toml_path_source(ca_cert.as_path()),
+                    toml_path_source(client_cert_path.as_path()),
+                    toml_path_source(client_key_path.as_path()),
+                )],
+            )
+            .map_err(|err| err.to_string())?,
+        )?;
         let client = CliApiClient::from_config(ctx.api_client).map_err(|err| err.to_string())?;
         let state = {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -470,7 +477,6 @@ identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ path = "{client
 
         server.abort();
         let _ = server.await;
-        let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_dir_all(dir);
 
         if state.identity.member_id.0 != "node-b" {
@@ -481,18 +487,5 @@ identity = {{ cert = {{ path = "{client_cert_path}" }}, key = {{ path = "{client
         }
 
         Ok(())
-    }
-
-    fn write_temp_config(contents: impl AsRef<str>) -> Result<PathBuf, String> {
-        let path = std::env::temp_dir().join(format!(
-            "pgtm-config-{}-{}.toml",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        std::fs::write(&path, contents.as_ref()).map_err(|err| err.to_string())?;
-        Ok(path)
     }
 }

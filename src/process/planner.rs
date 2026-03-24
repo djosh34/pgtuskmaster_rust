@@ -11,7 +11,7 @@ use crate::{
         source::source_from_member,
         state::ProcessObservedSnapshot,
     },
-    state::{MemberId, NodeIdentity},
+    state::MemberId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,7 +26,6 @@ pub(crate) enum ClusterProcessPlan {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ManagedStartPlan {
-    pub(crate) mode: PostgresStartMode,
     pub(crate) desired_session: DesiredManagedPostgresSession,
 }
 
@@ -35,6 +34,16 @@ pub(crate) enum DesiredManagedPostgresSession {
     Primary,
     DetachedStandby,
     Follow(Box<ReplicaFollowPlan>),
+}
+
+impl DesiredManagedPostgresSession {
+    pub(crate) fn mode(&self) -> PostgresStartMode {
+        match self {
+            Self::Primary => PostgresStartMode::Primary,
+            Self::DetachedStandby => PostgresStartMode::DetachedStandby,
+            Self::Follow(_) => PostgresStartMode::Replica,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,7 +58,7 @@ pub(crate) struct ProcessIntentPlanner;
 impl ProcessIntentPlanner {
     pub(crate) fn plan(
         &self,
-        identity: &NodeIdentity,
+        self_id: &MemberId,
         cfg: &RuntimeConfigV2,
         observed: &ProcessObservedSnapshot,
         intent: &ProcessIntent,
@@ -61,8 +70,7 @@ impl ProcessIntentPlanner {
                 timeout_ms: None,
             })),
             ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-                let source =
-                    basebackup_source_from_leader(&identity.member_id, cfg, &observed.dcs, leader)?;
+                let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
                 Ok(ClusterProcessPlan::BaseBackup(BaseBackupSpec {
                     data_dir: cfg.postgres.data_dir.clone(),
                     source,
@@ -73,7 +81,7 @@ impl ProcessIntentPlanner {
                 let (source_member_id, source_member) =
                     resolve_source_member(&observed.dcs, leader)?;
                 let source = source_from_member(
-                    &identity.member_id,
+                    self_id,
                     cfg,
                     source_member_id,
                     source_member,
@@ -93,21 +101,17 @@ impl ProcessIntentPlanner {
                     ));
                 }
                 Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    mode: PostgresStartMode::Primary,
                     desired_session: DesiredManagedPostgresSession::Primary,
                 }))
             }
             ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
                 Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    mode: PostgresStartMode::DetachedStandby,
                     desired_session: DesiredManagedPostgresSession::DetachedStandby,
                 }))
             }
             ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
-                let source =
-                    basebackup_source_from_leader(&identity.member_id, cfg, &observed.dcs, leader)?;
+                let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
                 Ok(ClusterProcessPlan::StartManagedPostgres(ManagedStartPlan {
-                    mode: PostgresStartMode::Replica,
                     desired_session: DesiredManagedPostgresSession::Follow(Box::new(
                         ReplicaFollowPlan {
                             source,
@@ -178,11 +182,12 @@ fn duration_millis_u64(duration: std::time::Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::collections::BTreeMap;
 
     use crate::{
+        config_v2::runtime_test_config_with_data_dir,
         dcs::{DcsMemberState, DcsSnapshot},
-        dev_support::{runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir},
+        dev_support::test_fs::unique_test_dir,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         postgres_managed_conf::ManagedRecoverySignal,
         process::{
@@ -193,26 +198,12 @@ mod tests {
             state::ProcessObservedSnapshot,
         },
         state::{
-            ClusterName, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState,
-            SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
+            MemberId, PgRoute, SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn,
+            WorkerStatus,
         },
     };
 
     use super::{ClusterProcessPlan, DesiredManagedPostgresSession, ProcessIntentPlanner};
-
-    fn sample_identity() -> NodeIdentity {
-        NodeIdentity {
-            cluster_name: ClusterName("cluster-a".to_string()),
-            scope: ScopeName("scope-a".to_string()),
-            member_id: MemberId("node-a".to_string()),
-        }
-    }
-
-    fn sample_runtime(data_dir: PathBuf) -> crate::config_v2::RuntimeConfigV2 {
-        RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .build()
-    }
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
@@ -254,7 +245,8 @@ mod tests {
     #[test]
     fn planner_maps_process_intents_to_expected_plan_variants() -> Result<(), String> {
         let root = unique_test_dir("process-planner", "intent-variants")?;
-        let cfg = sample_runtime(root.join("data"));
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,
@@ -263,7 +255,7 @@ mod tests {
         );
         let snapshot = observed_snapshot(dcs, ManagedRecoverySignal::None);
         let planner = ProcessIntentPlanner;
-        let identity = sample_identity();
+        let self_id = cfg.member_id.clone();
 
         let cases = [
             (ProcessIntent::Bootstrap, "bootstrap"),
@@ -299,7 +291,7 @@ mod tests {
 
         for (intent, label) in cases {
             let plan = planner
-                .plan(&identity, &cfg, &snapshot, &intent)
+                .plan(&self_id, &cfg, &snapshot, &intent)
                 .map_err(|err| format!("planning {label} failed: {err}"))?;
             let matches_expected = matches!(
                 (&plan, label),
@@ -326,12 +318,13 @@ mod tests {
     #[test]
     fn planner_rejects_primary_start_with_existing_managed_replica_state() -> Result<(), String> {
         let root = unique_test_dir("process-planner", "primary-reject")?;
-        let cfg = sample_runtime(root.join("data"));
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
         let snapshot = observed_snapshot(DcsSnapshot::starting(), ManagedRecoverySignal::Standby);
         let planner = ProcessIntentPlanner;
         let error = planner
             .plan(
-                &sample_identity(),
+                &cfg.member_id,
                 &cfg,
                 &snapshot,
                 &ProcessIntent::Start(PostgresStartIntent::Primary),
@@ -349,7 +342,8 @@ mod tests {
     #[test]
     fn planner_uses_distinct_source_roles_for_basebackup_and_rewind() -> Result<(), String> {
         let root = unique_test_dir("process-planner", "source-roles")?;
-        let cfg = sample_runtime(root.join("data"));
+        let cfg =
+            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
         let leader = MemberId("node-b".to_string());
         let dcs = DcsSnapshot::quorum(
             None,
@@ -358,11 +352,11 @@ mod tests {
         );
         let snapshot = observed_snapshot(dcs, ManagedRecoverySignal::None);
         let planner = ProcessIntentPlanner;
-        let identity = sample_identity();
+        let self_id = cfg.member_id.clone();
 
         let basebackup_plan = planner
             .plan(
-                &identity,
+                &self_id,
                 &cfg,
                 &snapshot,
                 &ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
@@ -372,7 +366,7 @@ mod tests {
             .map_err(|err| format!("plan basebackup failed: {err}"))?;
         let rewind_plan = planner
             .plan(
-                &identity,
+                &self_id,
                 &cfg,
                 &snapshot,
                 &ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }),
@@ -401,7 +395,7 @@ mod tests {
 
         let replica_plan = planner
             .plan(
-                &identity,
+                &self_id,
                 &cfg,
                 &snapshot,
                 &ProcessIntent::Start(PostgresStartIntent::Replica {

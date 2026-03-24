@@ -54,7 +54,11 @@ def load_tracked_rust_files(repo_root: Path) -> set[Path]:
         for line in result.stdout.splitlines()
         if line.endswith(".rs") or line == "build.rs"
     }
-    return {path for path in tracked_files if is_tracked_candidate(path)}
+    return {
+        path
+        for path in tracked_files
+        if is_tracked_candidate(path) and (repo_root / path).exists()
+    }
 
 
 def iter_dep_info_files(target_dir: Path) -> list[Path]:

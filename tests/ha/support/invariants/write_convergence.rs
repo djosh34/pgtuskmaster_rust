@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
+    future::Future,
     io::Cursor,
     path::PathBuf,
     sync::{
@@ -17,11 +18,12 @@ use rustls::{
     RootCertStore,
 };
 use tokio::{
+    io::{AsyncRead, AsyncWrite},
     runtime::{Builder, Handle, RuntimeFlavor},
     task::JoinHandle,
     time::Instant,
 };
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::{Client, Connection, NoTls, Socket};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use pgtuskmaster_rust::{
@@ -404,68 +406,53 @@ async fn connect_member(
     let connect_dsn = connectable_conninfo(&routing_target.conninfo).to_string();
     if conninfo_uses_tls_files(&routing_target.conninfo) {
         let tls = build_tls_connector(&routing_target.conninfo).map_err(|err| err.to_string())?;
-        let (client, connection) = tokio::time::timeout(
+        return connect_and_probe_member(
+            &routing_target.member,
             connect_timeout,
             tokio_postgres::connect(connect_dsn.as_str(), tls),
         )
-        .await
-        .map_err(|_| {
-            format!(
-                "connect to `{}` timed out after {:?}",
-                routing_target.member, connect_timeout
-            )
-        })?
-        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
-        let client: Arc<Client> = Arc::new(client);
-        let connection_task = tokio::spawn(connection);
-        match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(err)) => {
-                connection_task.abort();
-                return Err(format!(
-                    "connect to `{}` failed: {err}",
-                    routing_target.member
-                ));
-            }
-            Err(_) => {
-                connection_task.abort();
-                return Err(format!(
-                    "connect to `{}` probe timed out after {:?}",
-                    routing_target.member, connect_timeout
-                ));
-            }
-        }
-        return Ok((client, connection_task));
+        .await;
     }
 
-    let (client, connection) = tokio::time::timeout(
+    connect_and_probe_member(
+        &routing_target.member,
         connect_timeout,
         tokio_postgres::connect(connect_dsn.as_str(), NoTls),
     )
     .await
-    .map_err(|_| {
-        format!(
-            "connect to `{}` timed out after {:?}",
-            routing_target.member, connect_timeout
-        )
-    })?
-    .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+}
+
+async fn connect_and_probe_member<S, F>(
+    member: &ClusterMember,
+    connect_timeout: Duration,
+    connect_future: F,
+) -> Result<(Arc<Client>, ConnectionTask), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    F: Future<Output = std::result::Result<(Client, Connection<Socket, S>), tokio_postgres::Error>>,
+{
+    let (client, connection) = tokio::time::timeout(connect_timeout, connect_future)
+        .await
+        .map_err(|_| {
+            format!(
+                "connect to `{}` timed out after {:?}",
+                member, connect_timeout
+            )
+        })?
+        .map_err(|err| format!("connect to `{}` failed: {err}", member))?;
     let client: Arc<Client> = Arc::new(client);
     let connection_task = tokio::spawn(connection);
     match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
         Ok(Ok(_)) => {}
         Ok(Err(err)) => {
             connection_task.abort();
-            return Err(format!(
-                "connect to `{}` failed: {err}",
-                routing_target.member
-            ));
+            return Err(format!("connect to `{}` failed: {err}", member));
         }
         Err(_) => {
             connection_task.abort();
             return Err(format!(
                 "connect to `{}` probe timed out after {:?}",
-                routing_target.member, connect_timeout
+                member, connect_timeout
             ));
         }
     }
@@ -675,37 +662,36 @@ async fn read_member_count_via_fresh_connection(
             };
         }
     };
-    match connect_member(&routing_target, connect_timeout).await {
-        Ok((client, connection_task)) => {
-            let count_result = read_count(client.as_ref(), connect_timeout).await;
-            connection_task.abort();
-            match count_result {
-                Ok(count) => MemberCountObservation::Observed {
-                    member: member.member,
-                    count,
-                },
-                Err(err) => MemberCountObservation::Failed {
-                    member: member.member,
-                    message: previous_error.map_or_else(
-                        || err.to_string(),
-                        |previous| format!(
-                            "existing observation failed: {previous}; fresh reconnect read failed: {err}"
-                        ),
-                    ),
-                },
-            }
-        }
-        Err(err) => MemberCountObservation::Failed {
+    match read_count_via_fresh_connection_target(&routing_target, connect_timeout).await {
+        Ok(count) => MemberCountObservation::Observed {
+            member: member.member,
+            count,
+        },
+        Err((stage, err)) => MemberCountObservation::Failed {
             member: member.member,
             message: previous_error.map_or_else(
                 || err.clone(),
                 |previous| {
-                    format!(
-                        "existing observation failed: {previous}; fresh reconnect failed: {err}"
-                    )
+                    format!("existing observation failed: {previous}; {stage} failed: {err}")
                 },
             ),
         },
+    }
+}
+
+async fn read_count_via_fresh_connection_target(
+    routing_target: &PostgresRoutingTarget,
+    query_timeout: Duration,
+) -> Result<u64, (&'static str, String)> {
+    match connect_member(routing_target, query_timeout).await {
+        Ok((client, connection_task)) => {
+            let read_result = read_count(client.as_ref(), query_timeout)
+                .await
+                .map_err(|err| ("fresh reconnect read", err.to_string()));
+            connection_task.abort();
+            read_result
+        }
+        Err(err) => Err(("fresh reconnect", err)),
     }
 }
 
@@ -796,12 +782,9 @@ async fn read_count_via_target(
     routing_target: &PostgresRoutingTarget,
     query_timeout: Duration,
 ) -> Result<u64, WriteConvergenceInvariantError> {
-    let (client, connection_task) = connect_member(routing_target, query_timeout)
+    read_count_via_fresh_connection_target(routing_target, query_timeout)
         .await
-        .map_err(WriteConvergenceInvariantError::Failed)?;
-    let read_result = read_count(client.as_ref(), query_timeout).await;
-    connection_task.abort();
-    read_result
+        .map_err(|(_, err)| WriteConvergenceInvariantError::Failed(err))
 }
 
 async fn read_count(

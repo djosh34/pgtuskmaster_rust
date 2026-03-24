@@ -24,7 +24,7 @@ use crate::{
     pginfo::state::PgInfoState,
     process::postmaster::{reload_managed_postmaster, ManagedPostmasterTarget},
     process::state::ProcessState,
-    state::{NodeIdentity, StateSubscriber, WorkerError},
+    state::{StateSubscriber, WorkerError},
 };
 
 #[derive(Clone, Debug)]
@@ -126,13 +126,34 @@ enum ReloadCertificatesError {
 #[derive(Clone)]
 pub(crate) struct ApiRuntimeCtx<'a> {
     pub(crate) cfg: &'a RuntimeConfigV2,
-    pub(crate) identity: NodeIdentity,
     pub(crate) observed: ApiObservedState,
     pub(crate) dcs_handle: DcsHandle,
     pub(crate) transport: ApiServerTransport,
     pub(crate) reload_certificates: ApiReloadCertificatesHandle,
     pub(crate) _log: LogSender,
 }
+
+impl<'a> ApiRuntimeCtx<'a> {
+    pub(crate) fn new(
+        cfg: &'a RuntimeConfigV2,
+        dcs_handle: DcsHandle,
+        observed: ApiObservedState,
+        log: LogSender,
+    ) -> Result<Self, WorkerError> {
+        let transport = crate::tls::build_api_server_transport_v2(&cfg.api.transport)
+            .map_err(|err| WorkerError::Message(format!("api tls config build failed: {err}")))?;
+
+        Ok(Self {
+            cfg,
+            observed,
+            dcs_handle,
+            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
+            transport,
+            _log: log,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RequiredRole {
     Read,
@@ -215,7 +236,7 @@ fn router_from_state(app_state: ApiRuntimeCtx<'static>) -> Router {
         .with_state(app_state)
 }
 
-pub(super) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> {
+pub(crate) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> {
     let (listen_addr, transport, app_state) = build_app_state(ctx)?;
     let app = router_from_state(app_state);
 
@@ -248,7 +269,11 @@ async fn get_state(
         ));
     };
     Ok(Json(NodeState {
-        identity: state.identity.clone(),
+        identity: crate::state::NodeIdentity {
+            cluster_name: state.cfg.cluster_name.clone(),
+            scope: state.cfg.scope.clone(),
+            member_id: state.cfg.member_id.clone(),
+        },
         pg: pg.latest(),
         process: process.latest(),
         dcs: dcs.latest(),
@@ -266,8 +291,8 @@ async fn post_switchover_handler(
         ));
     };
     let response = post_switchover(
-        state.identity.scope.as_str(),
-        &state.identity.member_id,
+        state.cfg.scope.as_str(),
+        &state.cfg.member_id,
         &state.dcs_handle,
         &dcs.latest(),
         &ha.latest(),
@@ -280,7 +305,7 @@ async fn post_switchover_handler(
 async fn delete_switchover_handler(
     State(state): State<ApiRuntimeCtx<'_>>,
 ) -> Result<(StatusCode, Json<crate::api::AcceptedResponse>), ApiHttpError> {
-    let response = delete_switchover(state.identity.scope.as_str(), &state.dcs_handle).await?;
+    let response = delete_switchover(state.cfg.scope.as_str(), &state.dcs_handle).await?;
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
@@ -403,12 +428,13 @@ mod tests {
     use crate::{
         api::{ApiCertificateReloadStep, PostgresReloadSignal, ReloadCertificatesResponse},
         config_v2::{
+            runtime_test_config_with_data_dir,
             types::{ApiTransport, TlsConfig},
             RuntimeConfigV2,
         },
         dcs::DcsHandle,
         dev_support::{
-            runtime_config::RuntimeConfigBuilder, test_fs::unique_test_dir,
+            api::api_auth_from_optional_tokens, test_fs::unique_test_dir,
             tls::build_adversarial_tls_fixture,
         },
         logging::LogSender,
@@ -478,14 +504,18 @@ mod tests {
 
     fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
-            Some("read-secret"),
-            Some("admin-secret"),
-        )?;
-        let mut cfg = RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(&data_dir)
-            .with_api_auth(auth)
-            .build();
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let mut cfg = RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                data_dir: data_dir.clone(),
+                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
+                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
+                ..config.postgres
+            },
+            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+            ..config
+        };
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(
                 data_dir.as_path(),
@@ -500,14 +530,18 @@ mod tests {
     }
 
     fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
-            Some("read-secret"),
-            Some("admin-secret"),
-        )?;
-        let mut cfg = RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(&data_dir)
-            .with_api_auth(auth)
-            .build();
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let mut cfg = RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                data_dir: data_dir.clone(),
+                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
+                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
+                ..config.postgres
+            },
+            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+            ..config
+        };
         cfg.api.transport = ApiTransport::Https {
             tls: write_test_tls_files(data_dir.as_path(), "not a certificate", "not a key")?,
             client_ca: None,
@@ -518,14 +552,18 @@ mod tests {
     }
 
     fn sample_http_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let auth = crate::dev_support::runtime_config::api_auth_from_optional_tokens(
-            Some("read-secret"),
-            Some("admin-secret"),
-        )?;
-        Ok(RuntimeConfigBuilder::new()
-            .with_postgres_data_dir(data_dir)
-            .with_api_auth(auth)
-            .build())
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        Ok(RuntimeConfigV2 {
+            postgres: crate::config_v2::types::PostgresConfig {
+                data_dir: data_dir.clone(),
+                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
+                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
+                ..config.postgres
+            },
+            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+            ..config
+        })
     }
 
     fn build_test_app(cfg: RuntimeConfigV2) -> Result<Router, String> {
@@ -548,11 +586,6 @@ mod tests {
         ));
         let app = build_router(ApiRuntimeCtx {
             cfg,
-            identity: crate::state::NodeIdentity {
-                cluster_name: cfg.cluster_name.clone(),
-                scope: cfg.scope.clone(),
-                member_id: cfg.member_id.clone(),
-            },
             observed: ApiObservedState::Live {
                 pg,
                 process,

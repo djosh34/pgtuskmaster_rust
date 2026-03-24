@@ -1,10 +1,32 @@
 use crate::config_v2::RuntimeConfigV2;
 use crate::state::PgRoute;
-use crate::state::{UnixMillis, WorkerError, WorkerStatus};
+use crate::state::{new_state_channel, StateSubscriber, UnixMillis, WorkerError, WorkerStatus};
 
 use super::log_event::PgInfoLogEvent;
 use super::query::poll_state_once;
-use super::state::{PgConnInfo, PgInfoState, PgInfoWorkerCtx, PgSslMode, SqlStatus};
+use super::state::{
+    PgConnInfo, PgInfoRuntime, PgInfoState, PgInfoStateChannel, PgInfoWorkerCtx, PgSslMode,
+    SqlStatus,
+};
+
+pub(crate) fn bootstrap<'a>(
+    cfg: &'a RuntimeConfigV2,
+    log: crate::logging::LogSender,
+) -> (PgInfoWorkerCtx<'a>, StateSubscriber<PgInfoState>) {
+    let (publisher, state) = new_state_channel(PgInfoState::starting());
+
+    (
+        PgInfoWorkerCtx {
+            cfg,
+            state_channel: PgInfoStateChannel {
+                publisher,
+                last_emitted_sql_status: None,
+            },
+            runtime: PgInfoRuntime { log },
+        },
+        state,
+    )
+}
 
 pub(crate) async fn run(mut ctx: PgInfoWorkerCtx<'_>) -> Result<(), WorkerError> {
     loop {
@@ -61,7 +83,7 @@ pub(crate) async fn step_once(ctx: &mut PgInfoWorkerCtx<'_>) -> Result<(), Worke
         .map_err(|err| {
             WorkerError::Message(format!(
                 "pginfo publish failed for {:?}: {err}",
-                ctx.identity.member_id
+                ctx.cfg.member_id
             ))
         })?;
     Ok(())
@@ -110,18 +132,58 @@ fn probe_conninfo(cfg: &RuntimeConfigV2) -> PgConnInfo {
 #[cfg(test)]
 mod tests {
     use super::probe_conninfo;
-    use crate::{config_v2::load_runtime_config, pginfo::state::PgSslMode, state::PgEndpoint};
-    use std::{
-        path::{Path, PathBuf},
-        time::SystemTime,
+    use crate::{
+        config_v2::{load_runtime_config_contents, render_runtime_test_config_toml},
+        pginfo::state::PgSslMode,
+        state::PgEndpoint,
     };
+    use std::path::Path;
 
     #[test]
     fn probe_conninfo_uses_local_socket_without_tls() -> Result<(), String> {
-        let path = write_temp_runtime_config()?;
-        let cfg = load_runtime_config(path.as_path()).map_err(|err| err.to_string())?;
+        let cfg = load_runtime_config_contents(
+            render_runtime_test_config_toml(
+                "cluster",
+                "cluster",
+                "node-a",
+                (
+                    Path::new("/tmp/pgtm-data"),
+                    Path::new("/tmp/pgtm-socket"),
+                    Path::new("/tmp/pgtm.log"),
+                ),
+                ["http://127.0.0.1:2379"],
+                [
+                    r#"[ha]
+loop_interval_ms = 1000
+lease_ttl_ms = 10000"#,
+                    r#"[process.timeouts]
+pg_rewind_ms = 120000
+bootstrap_ms = 300000
+fencing_ms = 30000"#,
+                    r#"[logging]
+level = "info"
+capture_subprocess_output = true"#,
+                    r#"[logging.postgres]
+enabled = true
+poll_interval_ms = 200
+cleanup = { enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }"#,
+                    r#"[logging.sinks.stderr]
+enabled = true"#,
+                    r#"[logging.sinks.file]
+enabled = false"#,
+                    r#"[api]
+listen_addr = "127.0.0.1:8443"
+transport = { transport = "http" }
+auth = { type = "disabled" }"#,
+                    r#"[debug]
+enabled = false"#,
+                ],
+            )
+            .map_err(|err| err.to_string())?
+            .as_str(),
+        )
+        .map_err(|err| err.to_string())?;
         let conninfo = probe_conninfo(&cfg);
-        let _ = std::fs::remove_file(path);
 
         match conninfo.route.endpoint() {
             PgEndpoint::UnixSocket { socket_dir, port } => {
@@ -152,90 +214,5 @@ mod tests {
         }
 
         Ok(())
-    }
-
-    fn write_temp_runtime_config() -> Result<PathBuf, String> {
-        let path = std::env::temp_dir().join(format!(
-            "pginfo-probe-runtime-{}-{}.toml",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|err| err.to_string())?
-                .as_nanos()
-        ));
-        std::fs::write(
-            &path,
-            r#"
-[cluster]
-name = "cluster"
-scope = "cluster"
-member_id = "node-a"
-
-[postgres]
-local_database = "postgres"
-
-[postgres.paths]
-data_dir = "/tmp/pgtm-data"
-socket_dir = "/tmp/pgtm-socket"
-log_file = "/tmp/pgtm.log"
-
-[postgres.network]
-listen_host = "127.0.0.1"
-listen_port = 5432
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = { type = "password", password = { type = "string", value = "secret" } }
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = { type = "password", password = { type = "string", value = "secret" } }
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = { type = "password", password = { type = "string", value = "secret" } }
-
-[postgres.access]
-hba = { content = "local all all trust" }
-ident = { content = "" }
-
-[dcs]
-endpoints = ["http://127.0.0.1:2379"]
-
-[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000
-
-[process.timeouts]
-pg_rewind_ms = 120000
-bootstrap_ms = 300000
-fencing_ms = 30000
-
-[logging]
-level = "info"
-capture_subprocess_output = true
-
-[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-cleanup = { enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }
-
-[logging.sinks.stderr]
-enabled = true
-
-[logging.sinks.file]
-enabled = false
-
-[api]
-listen_addr = "127.0.0.1:8443"
-transport = { transport = "http" }
-auth = { type = "disabled" }
-
-[debug]
-enabled = false
-"#,
-        )
-        .map_err(|err| err.to_string())?;
-        Ok(path)
     }
 }

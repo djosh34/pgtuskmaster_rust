@@ -4,12 +4,13 @@ use axum::Router;
 
 use crate::{
     api::worker::{build_router, ApiObservedState},
-    config_v2::RuntimeConfigV2,
+    config_v2::types::{ApiAuth, Secret},
+    config_v2::{runtime_test_config, RuntimeConfigV2},
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
     process::state::ProcessState,
-    state::{new_state_channel, NodeIdentity, WorkerStatus},
+    state::{new_state_channel, WorkerStatus},
 };
 
 use super::HarnessError;
@@ -48,14 +49,14 @@ fn build_test_runtime_config(
     read_token: Option<&str>,
     admin_token: Option<&str>,
 ) -> Result<RuntimeConfigV2, HarnessError> {
-    let auth =
-        crate::dev_support::runtime_config::api_auth_from_optional_tokens(read_token, admin_token)
-            .map_err(HarnessError::InvalidInput)?;
-    Ok(
-        crate::dev_support::runtime_config::RuntimeConfigBuilder::new()
-            .with_api_auth(auth)
-            .build(),
-    )
+    let auth = api_auth_from_optional_tokens(read_token, admin_token)
+        .map_err(HarnessError::InvalidInput)?;
+    let config =
+        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
+    Ok(RuntimeConfigV2 {
+        api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+        ..config
+    })
 }
 
 fn build_test_router_with_state(
@@ -63,12 +64,7 @@ fn build_test_router_with_state(
     observed: ApiObservedState,
 ) -> Result<Router, HarnessError> {
     let cfg = Box::leak(Box::new(cfg));
-    let runtime = crate::api::startup::bootstrap(
-        NodeIdentity {
-            cluster_name: cfg.cluster_name.clone(),
-            scope: cfg.scope.clone(),
-            member_id: cfg.member_id.clone(),
-        },
+    let runtime = crate::api::worker::ApiRuntimeCtx::new(
         cfg,
         crate::dcs::DcsHandle::closed(),
         observed,
@@ -102,5 +98,29 @@ fn sample_process_state() -> ProcessState {
     ProcessState::Idle {
         worker: WorkerStatus::Running,
         last_outcome: None,
+    }
+}
+
+pub(crate) fn api_auth_from_optional_tokens(
+    read_token: Option<&str>,
+    admin_token: Option<&str>,
+) -> Result<ApiAuth, String> {
+    match (read_token, admin_token) {
+        (None, None) => Ok(ApiAuth::Disabled),
+        (Some(read_token), Some(admin_token)) => {
+            let read_token = read_token.trim();
+            let admin_token = admin_token.trim();
+            if read_token.is_empty() {
+                return Err("read token must not be empty".to_string());
+            }
+            if admin_token.is_empty() {
+                return Err("admin token must not be empty".to_string());
+            }
+            Ok(ApiAuth::Tokens {
+                read_token: Secret::new(read_token.to_string()),
+                admin_token: Secret::new(admin_token.to_string()),
+            })
+        }
+        _ => Err("read and admin tokens must either both be set or both be absent".to_string()),
     }
 }
