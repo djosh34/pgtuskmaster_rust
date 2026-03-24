@@ -622,22 +622,10 @@ async fn increment_fixture_row(
     })
 }
 
-async fn read_monitored_member_counts(
-    members: &[PostgresRoutingTarget],
-    observer: Option<&PgtmObserver>,
-    query_timeout: Duration,
-) -> Vec<MemberCountObservation> {
-    futures::future::join_all(members.iter().map(|member| {
-        read_member_count_via_fresh_connection(member, observer, query_timeout, None)
-    }))
-    .await
-}
-
 async fn read_member_count_via_fresh_connection(
     member: &PostgresRoutingTarget,
     observer: Option<&PgtmObserver>,
-    connect_timeout: Duration,
-    previous_error: Option<String>,
+    query_timeout: Duration,
 ) -> MemberCountObservation {
     let routing_target = match observer.map_or_else(
         || Ok(member.clone()),
@@ -651,27 +639,18 @@ async fn read_member_count_via_fresh_connection(
         Err(err) => {
             return MemberCountObservation::Failed {
                 member: member.member,
-                message: previous_error.map_or(err.clone(), |previous| {
-                    format!(
-                        "existing observation failed: {previous}; refresh routing failed: {err}"
-                    )
-                }),
+                message: err,
             };
         }
     };
-    match read_count_via_fresh_connection_target(&routing_target, connect_timeout).await {
+    match read_count_via_fresh_connection_target(&routing_target, query_timeout).await {
         Ok(count) => MemberCountObservation::Observed {
             member: member.member,
             count,
         },
-        Err((stage, err)) => MemberCountObservation::Failed {
+        Err(err) => MemberCountObservation::Failed {
             member: member.member,
-            message: previous_error.map_or_else(
-                || err.clone(),
-                |previous| {
-                    format!("existing observation failed: {previous}; {stage} failed: {err}")
-                },
-            ),
+            message: err,
         },
     }
 }
@@ -679,16 +658,16 @@ async fn read_member_count_via_fresh_connection(
 async fn read_count_via_fresh_connection_target(
     routing_target: &PostgresRoutingTarget,
     query_timeout: Duration,
-) -> Result<u64, (&'static str, String)> {
+) -> Result<u64, String> {
     match connect_member(routing_target, query_timeout).await {
         Ok((client, connection_task)) => {
             let read_result = read_count(client.as_ref(), query_timeout)
                 .await
-                .map_err(|err| ("fresh reconnect read", err.to_string()));
+                .map_err(|err| err.to_string());
             connection_task.abort();
             read_result
         }
-        Err(err) => Err(("fresh reconnect", err)),
+        Err(err) => Err(err),
     }
 }
 
@@ -702,7 +681,11 @@ async fn wait_for_convergence(
 ) -> Result<(), WriteConvergenceInvariantError> {
     let deadline = Instant::now() + write_deadline;
     loop {
-        let observations = read_monitored_member_counts(members, observer, poll_interval).await;
+        let observations =
+            futures::future::join_all(members.iter().map(|member| {
+                read_member_count_via_fresh_connection(member, observer, poll_interval)
+            }))
+            .await;
         if observations_are_converged(observations.as_slice(), expected_count) {
             return Ok(());
         }
@@ -741,7 +724,7 @@ async fn convergence_expectation(
         let authoritative_count =
             read_count_via_fresh_connection_target(&routing_target, query_timeout)
                 .await
-                .map_err(|(_, err)| WriteConvergenceInvariantError::Failed(err))?;
+                .map_err(WriteConvergenceInvariantError::Failed)?;
         Some(accepted_count.map_or(authoritative_count, |count| count.max(authoritative_count)))
     } else {
         accepted_count
