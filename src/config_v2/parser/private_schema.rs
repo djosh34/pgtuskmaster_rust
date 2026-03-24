@@ -165,16 +165,9 @@ pub(super) struct RuntimeDocument {
     #[serde(default)]
     pub api: ApiConfig,
     #[serde(default)]
-    pub pgtm: Option<OperatorDocument>,
+    pub pgtm: Option<OperatorConfigInput>,
     #[serde(default)]
     pub debug: DebugConfig,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(untagged)]
-pub(super) enum OperatorConfigDocument {
-    Operator(Box<OperatorDocument>),
-    Runtime(Box<RuntimeDocument>),
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -574,16 +567,16 @@ pub(super) struct RoleTokens {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorDocument {
+pub(super) struct OperatorConfigInput {
     #[serde(default)]
-    pub api: OperatorApiConfig,
+    pub api: OperatorApiInput,
     #[serde(default)]
-    pub postgres: OperatorPostgresConfig,
+    pub postgres: OperatorPostgresInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorApiConfig {
+pub(super) struct OperatorApiInput {
     pub base_url: Option<String>,
     pub advertised_url: Option<String>,
     pub expected_transport: Option<PgtmApiTransportExpectation>,
@@ -591,19 +584,19 @@ pub(super) struct OperatorApiConfig {
     #[serde(default)]
     pub auth: TokenAuthConfig,
     #[serde(default)]
-    pub tls: OperatorClientTlsConfig,
+    pub tls: OperatorClientTlsInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorPostgresConfig {
+pub(super) struct OperatorPostgresInput {
     #[serde(default)]
-    pub tls: OperatorClientTlsConfig,
+    pub tls: OperatorClientTlsInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorClientTlsConfig {
+pub(super) struct OperatorClientTlsInput {
     pub ca_cert: Option<PathSource>,
     pub identity: Option<TlsClientIdentityConfig>,
 }
@@ -730,31 +723,6 @@ fn trim_runtime_test_document(value: &mut toml::Value) -> Result<(), String> {
     if let Some(dcs) = root.get_mut("dcs").and_then(toml::Value::as_table_mut) {
         let _ = dcs.remove("client");
         let _ = dcs.remove("init");
-    }
-
-    Ok(())
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn trim_operator_test_document(value: &mut toml::Value) -> Result<(), String> {
-    let root = value
-        .as_table_mut()
-        .ok_or_else(|| "operator test document should serialize as a TOML table".to_string())?;
-    if let Some(api) = root.get_mut("api").and_then(toml::Value::as_table_mut) {
-        let _ = api.remove("auth");
-        let _ = api.remove("tls");
-    }
-
-    let drop_postgres = root
-        .get_mut("postgres")
-        .and_then(toml::Value::as_table_mut)
-        .map(|postgres| {
-            let _ = postgres.remove("tls");
-            postgres.is_empty()
-        })
-        .unwrap_or(false);
-    if drop_postgres {
-        let _ = root.remove("postgres");
     }
 
     Ok(())
@@ -911,7 +879,7 @@ pub(crate) fn build_ha_member_runtime_document_value(
         cert_chain: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.crt")),
         private_key: path_source(format!("/etc/pgtuskmaster/tls/{member_name}.key")),
     };
-    let mut pgtm = operator_test_document(
+    let mut pgtm = base_operator_test_config(
         Some(format!("https://{member_name}:8443").as_str()),
         None,
         None,
@@ -1044,22 +1012,22 @@ pub fn render_ha_member_runtime_config_toml(
 fn operator_tls_config(
     ca_cert_path: impl Into<PathBuf>,
     identity: Option<TlsClientIdentityConfig>,
-) -> OperatorClientTlsConfig {
-    OperatorClientTlsConfig {
+) -> OperatorClientTlsInput {
+    OperatorClientTlsInput {
         ca_cert: Some(path_source(ca_cert_path)),
         identity,
     }
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn operator_test_document(
+fn base_operator_test_config(
     base_url: Option<&str>,
     advertised_url: Option<&str>,
     expected_transport: Option<&str>,
     resolve_to: Option<SocketAddr>,
-) -> Result<OperatorDocument, String> {
-    Ok(OperatorDocument {
-        api: OperatorApiConfig {
+) -> Result<OperatorConfigInput, String> {
+    Ok(OperatorConfigInput {
+        api: OperatorApiInput {
             base_url: base_url.map(str::to_string),
             advertised_url: advertised_url.map(str::to_string),
             expected_transport: expected_transport
@@ -1067,23 +1035,10 @@ fn operator_test_document(
                 .transpose()?,
             resolve_to,
             auth: TokenAuthConfig::default(),
-            tls: OperatorClientTlsConfig::default(),
+            tls: OperatorClientTlsInput::default(),
         },
-        postgres: OperatorPostgresConfig::default(),
+        postgres: OperatorPostgresInput::default(),
     })
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn build_operator_test_document_value(
-    base_url: Option<&str>,
-    advertised_url: Option<&str>,
-    expected_transport: Option<&str>,
-    resolve_to: Option<SocketAddr>,
-) -> Result<toml::Value, String> {
-    toml_value(
-        "operator test document",
-        operator_test_document(base_url, advertised_url, expected_transport, resolve_to)?,
-    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -1098,13 +1053,28 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let mut value = build_operator_test_document_value(
-        base_url,
-        advertised_url,
-        expected_transport,
-        resolve_to,
+    let mut value = toml_value(
+        "operator test document",
+        base_operator_test_config(base_url, advertised_url, expected_transport, resolve_to)?,
     )?;
-    trim_operator_test_document(&mut value)?;
+    let root = value
+        .as_table_mut()
+        .ok_or_else(|| "operator test document should serialize as a TOML table".to_string())?;
+    if let Some(api) = root.get_mut("api").and_then(toml::Value::as_table_mut) {
+        let _ = api.remove("auth");
+        let _ = api.remove("tls");
+    }
+    let drop_postgres = root
+        .get_mut("postgres")
+        .and_then(toml::Value::as_table_mut)
+        .map(|postgres| {
+            let _ = postgres.remove("tls");
+            postgres.is_empty()
+        })
+        .unwrap_or(false);
+    if drop_postgres {
+        let _ = root.remove("postgres");
+    }
     Ok(join_rendered_sections(
         render_toml_value("operator test config", &value)?,
         extra_sections,
@@ -1112,7 +1082,7 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub(crate) fn build_host_observer_operator_document_value(
+pub fn render_host_observer_operator_config_toml(
     member_name: &str,
     resolve_to: SocketAddr,
     ca_cert_path: &std::path::Path,
@@ -1120,12 +1090,12 @@ pub(crate) fn build_host_observer_operator_document_value(
     admin_token_path: &std::path::Path,
     observer_cert_path: &std::path::Path,
     observer_key_path: &std::path::Path,
-) -> Result<toml::Value, String> {
+) -> Result<String, String> {
     let identity = TlsClientIdentityConfig {
         cert: path_source(observer_cert_path.to_path_buf()),
         key: path_source(observer_key_path.to_path_buf()),
     };
-    let mut document = operator_test_document(
+    let mut document = base_operator_test_config(
         Some(format!("https://{member_name}:{}", resolve_to.port()).as_str()),
         None,
         Some("https"),
@@ -1143,30 +1113,8 @@ pub(crate) fn build_host_observer_operator_document_value(
     };
     document.api.tls = operator_tls_config(ca_cert_path.to_path_buf(), Some(identity.clone()));
     document.postgres.tls = operator_tls_config(ca_cert_path.to_path_buf(), Some(identity));
-
-    toml_value("host observer operator document", document)
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_host_observer_operator_config_toml(
-    member_name: &str,
-    resolve_to: SocketAddr,
-    ca_cert_path: &std::path::Path,
-    read_token_path: &std::path::Path,
-    admin_token_path: &std::path::Path,
-    observer_cert_path: &std::path::Path,
-    observer_key_path: &std::path::Path,
-) -> Result<String, String> {
     render_toml_value(
         "host observer operator config",
-        &build_host_observer_operator_document_value(
-            member_name,
-            resolve_to,
-            ca_cert_path,
-            read_token_path,
-            admin_token_path,
-            observer_cert_path,
-            observer_key_path,
-        )?,
+        &toml_value("host observer operator document", document)?,
     )
 }

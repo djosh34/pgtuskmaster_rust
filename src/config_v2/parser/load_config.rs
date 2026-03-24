@@ -50,17 +50,22 @@ fn load_operator_config_contents_at(
     contents: &str,
     path: &Path,
 ) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    let document: raw::OperatorConfigDocument =
+    let document: toml::Value =
         toml::from_str(contents).map_err(|source| parse_error(path, source))?;
-
-    let operator = match document {
-        raw::OperatorConfigDocument::Operator(operator) => *operator,
-        raw::OperatorConfigDocument::Runtime(runtime) => runtime.pgtm.ok_or_else(|| {
-            validation_error("pgtm", "missing operator config block in runtime document")
-        })?,
-    };
-
-    map_operator_document(operator)
+    if looks_like_runtime_operator_source(&document) {
+        return document
+            .try_into::<raw::RuntimeDocument>()
+            .map_err(|source| parse_error(path, source))?
+            .pgtm
+            .ok_or_else(|| {
+                validation_error("pgtm", "missing operator config block in runtime document")
+            })?
+            .into_config();
+    }
+    document
+        .try_into::<raw::OperatorConfigInput>()
+        .map_err(|source| parse_error(path, source))?
+        .into_config()
 }
 
 fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV2, ConfigErrorV2> {
@@ -286,7 +291,7 @@ fn map_runtime_document(document: raw::RuntimeDocument) -> Result<RuntimeConfigV
     };
     let operator_advertise = document
         .pgtm
-        .map(map_operator_document)
+        .map(raw::OperatorConfigInput::into_config)
         .transpose()?
         .and_then(|config| config.advertised_url);
 
@@ -676,35 +681,95 @@ fn map_postgres_advertise(
         .map_err(|message| validation_error(field, message))
 }
 
-pub(super) fn map_operator_document(
-    operator: raw::OperatorDocument,
-) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    let expected_transport = operator.api.expected_transport;
-    let (read_token, admin_token) = map_operator_auth(operator.api.auth)?;
-
-    Ok(OperatorConfigV2 {
-        base_url: parse_operator_base_url(operator.api.base_url, expected_transport)?,
-        advertised_url: map_operator_api_route(
-            "pgtm.api.advertised_url",
-            operator.api.advertised_url,
-            expected_transport,
-        )?,
-        expected_transport,
-        resolve_to: operator.api.resolve_to,
-        client_tls: merge_operator_client_tls(
-            map_operator_client_tls("pgtm.api.tls", operator.api.tls)?,
-            map_operator_client_tls("pgtm.postgres.tls", operator.postgres.tls)?,
-        )?,
-        read_token,
-        admin_token,
+fn looks_like_runtime_operator_source(document: &toml::Value) -> bool {
+    document.as_table().is_some_and(|table| {
+        [
+            "cluster", "dcs", "ha", "process", "logging", "debug", "pgtm",
+        ]
+        .into_iter()
+        .any(|field| table.contains_key(field))
     })
 }
 
-fn parse_operator_base_url(
-    base_url: Option<String>,
-    expected_transport: Option<PgtmApiTransportExpectation>,
-) -> Result<Option<Url>, ConfigErrorV2> {
-    parse_operator_url("pgtm.api.base_url", base_url, expected_transport)
+impl raw::OperatorConfigInput {
+    fn into_config(self) -> Result<OperatorConfigV2, ConfigErrorV2> {
+        let raw::OperatorConfigInput { api, postgres } = self;
+        let raw::OperatorApiInput {
+            base_url,
+            advertised_url,
+            expected_transport,
+            resolve_to,
+            auth,
+            tls: api_tls,
+        } = api;
+        let (read_token_source, admin_token_source) = take_token_sources(auth.clone());
+        let (read_token, admin_token) = match token_auth_mode(&auth) {
+            TokenAuthMode::Disabled => (None, None),
+            TokenAuthMode::RoleTokens => (
+                resolve_secret_optional("pgtm.api.auth.read_token", read_token_source)?,
+                resolve_secret_optional("pgtm.api.auth.admin_token", admin_token_source)?,
+            ),
+        };
+        let api_tls = resolve_operator_client_tls(
+            api_tls,
+            "pgtm.api.tls.ca_cert",
+            "pgtm.api.tls.identity.cert",
+            "pgtm.api.tls.identity.key",
+        )?;
+        let postgres_tls = resolve_operator_client_tls(
+            postgres.tls,
+            "pgtm.postgres.tls.ca_cert",
+            "pgtm.postgres.tls.identity.cert",
+            "pgtm.postgres.tls.identity.key",
+        )?;
+
+        Ok(OperatorConfigV2 {
+            base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?,
+            advertised_url: map_operator_api_route(
+                "pgtm.api.advertised_url",
+                advertised_url,
+                expected_transport,
+            )?,
+            expected_transport,
+            resolve_to,
+            client_tls: OperatorClientTlsConfig {
+                ca_cert: merge_optional_path(
+                    "pgtm.api.tls.ca_cert",
+                    api_tls.ca_cert,
+                    "pgtm.postgres.tls.ca_cert",
+                    postgres_tls.ca_cert,
+                    "pgtm.client_tls.ca_cert",
+                )?,
+                identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
+            },
+            read_token,
+            admin_token,
+        })
+    }
+}
+
+fn resolve_operator_client_tls(
+    tls: raw::OperatorClientTlsInput,
+    ca_field: &'static str,
+    cert_field: &'static str,
+    key_field: &'static str,
+) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
+    Ok(OperatorClientTlsConfig {
+        ca_cert: tls
+            .ca_cert
+            .map(|ca_cert| resolve_path_only(ca_field, ca_cert))
+            .transpose()?,
+        identity: tls
+            .identity
+            .map(|identity| {
+                Ok(TlsConfig {
+                    cert: resolve_path_only(cert_field, identity.cert)?,
+                    key: resolve_path_only(key_field, identity.key)?,
+                    ca_cert: None,
+                })
+            })
+            .transpose()?,
+    })
 }
 
 fn parse_operator_url(
@@ -755,58 +820,6 @@ pub(super) fn map_operator_api_route(
         .transpose()
 }
 
-fn map_operator_auth(
-    auth: raw::TokenAuthConfig,
-) -> Result<(Option<Secret>, Option<Secret>), ConfigErrorV2> {
-    let mode = token_auth_mode(&auth);
-    let (read_token, admin_token) = take_token_sources(auth);
-    match mode {
-        TokenAuthMode::Disabled => Ok((None, None)),
-        TokenAuthMode::RoleTokens => Ok((
-            resolve_secret_optional("pgtm.api.auth.read_token", read_token)?,
-            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token)?,
-        )),
-    }
-}
-
-pub(super) fn map_operator_client_tls(
-    field_prefix: &'static str,
-    tls: raw::OperatorClientTlsConfig,
-) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
-    Ok(OperatorClientTlsConfig {
-        ca_cert: tls
-            .ca_cert
-            .map(|ca_cert| resolve_path_only(operator_ca_field(field_prefix), ca_cert))
-            .transpose()?,
-        identity: tls
-            .identity
-            .map(|identity| {
-                Ok(TlsConfig {
-                    cert: resolve_path_only(operator_cert_field(field_prefix), identity.cert)?,
-                    key: resolve_path_only(operator_key_field(field_prefix), identity.key)?,
-                    ca_cert: None,
-                })
-            })
-            .transpose()?,
-    })
-}
-
-pub(super) fn merge_operator_client_tls(
-    api_tls: OperatorClientTlsConfig,
-    postgres_tls: OperatorClientTlsConfig,
-) -> Result<OperatorClientTlsConfig, ConfigErrorV2> {
-    Ok(OperatorClientTlsConfig {
-        ca_cert: merge_optional_path(
-            "pgtm.api.tls.ca_cert",
-            api_tls.ca_cert,
-            "pgtm.postgres.tls.ca_cert",
-            postgres_tls.ca_cert,
-            "pgtm.client_tls.ca_cert",
-        )?,
-        identity: merge_optional_identity(api_tls.identity, postgres_tls.identity)?,
-    })
-}
-
 fn merge_optional_path(
     left_field: &'static str,
     left: Option<PathBuf>,
@@ -841,30 +854,6 @@ fn merge_optional_identity(
             Ok(Some(identity))
         }
         (None, None) => Ok(None),
-    }
-}
-
-fn operator_ca_field(field_prefix: &'static str) -> &'static str {
-    match field_prefix {
-        "pgtm.api.tls" => "pgtm.api.tls.ca_cert",
-        "pgtm.postgres.tls" => "pgtm.postgres.tls.ca_cert",
-        _ => field_prefix,
-    }
-}
-
-fn operator_cert_field(field_prefix: &'static str) -> &'static str {
-    match field_prefix {
-        "pgtm.api.tls" => "pgtm.api.tls.identity.cert",
-        "pgtm.postgres.tls" => "pgtm.postgres.tls.identity.cert",
-        _ => field_prefix,
-    }
-}
-
-fn operator_key_field(field_prefix: &'static str) -> &'static str {
-    match field_prefix {
-        "pgtm.api.tls" => "pgtm.api.tls.identity.key",
-        "pgtm.postgres.tls" => "pgtm.postgres.tls.identity.key",
-        _ => field_prefix,
     }
 }
 
