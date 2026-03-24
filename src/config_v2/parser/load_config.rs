@@ -1056,7 +1056,7 @@ mod tests {
     use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
     fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> Result<String, String> {
-        Ok(render_runtime_test_config_toml(
+        render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
             "node-a",
@@ -1066,34 +1066,23 @@ mod tests {
                 Path::new("/tmp/pgtm.log"),
             ),
             ["http://127.0.0.1:2379"],
-            [
-                r#"[ha]
-loop_interval_ms = 0
-lease_ttl_ms = 0"#,
-                r#"[process.timeouts]
-pg_rewind_ms = 0
-bootstrap_ms = 0
-fencing_ms = 0"#,
-                r#"[process.binaries.overrides]
-pg_ctl = "/bin/true"
-initdb = "/bin/true"
-pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true""#,
-                r#"[logging]
-capture_subprocess_output = true"#,
-                r#"[logging.postgres]
-enabled = true
-poll_interval_ms = 0"#,
-                r#"[logging.postgres.cleanup]
-enabled = true
-max_files = 0
-max_age_seconds = 0
-protect_recent_seconds = 0"#,
-            ],
-        )?
-        .replacen("[postgres]\n", "[postgres]\nconnect_timeout_s = 0\n", 1)
-        .replacen("listen_host = \"127.0.0.1\"", "listen_host = \"   \"", 1)
-        .replacen("listen_port = 5432", "listen_port = 0", 1))
+            [r#"postgres.connect_timeout_s = 0
+postgres.network.listen_host = "   "
+postgres.network.listen_port = 0
+ha.loop_interval_ms = 0
+ha.lease_ttl_ms = 0
+process.timeouts.pg_rewind_ms = 0
+process.timeouts.bootstrap_ms = 0
+process.timeouts.fencing_ms = 0
+process.binaries.overrides.pg_ctl = "/bin/true"
+process.binaries.overrides.initdb = "/bin/true"
+process.binaries.overrides.pg_rewind = "/bin/true"
+process.binaries.overrides.pg_basebackup = "/bin/true"
+logging.postgres.poll_interval_ms = 0
+logging.postgres.cleanup.max_files = 0
+logging.postgres.cleanup.max_age_seconds = 0
+logging.postgres.cleanup.protect_recent_seconds = 0"#],
+        )
     }
 
     #[test]
@@ -1111,24 +1100,23 @@ protect_recent_seconds = 0"#,
                     Path::new("/tmp/pgtm.log"),
                 ),
                 ["http://127.0.0.1:2379"],
-                [
-                    format!(
-                        r#"[postgres.rewind.transport]
-ssl_mode = "verify_full"
-ca_cert = {}"#,
-                        toml_path_source(ca_cert.as_path()),
-                    ),
-                    r#"[process.binaries.overrides]
+                [format!(
+                    r#"[postgres.rewind.transport]
+ssl_mode = "verify-full"
+ca_cert = {}
+
+[process.binaries.overrides]
 pg_ctl = "/bin/true"
 initdb = "/bin/true"
 pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true""#
-                        .to_string(),
-                    r#"[pgtm.api]
+pg_basebackup = "/bin/true"
+
+[pgtm.api]
 advertised_url = "https://127.0.0.1:18081"
-expected_transport = "https""#
-                        .to_string(),
-                ],
+expected_transport = "{}""#,
+                    toml_path_source(ca_cert.as_path()),
+                    PgtmApiTransportExpectation::Https.scheme(),
+                )],
             )
             .map_err(|err| err.to_string())?
             .as_str(),
@@ -1222,9 +1210,6 @@ expected_transport = "https""#
             fs::Permissions::from_mode(0o000),
         )
         .map_err(|err| err.to_string())?;
-        let unreadable_token_toml =
-            toml::Value::String(unreadable_token.display().to_string()).to_string();
-
         let result = load_runtime_config_contents(
             render_runtime_test_config_toml(
                 "cluster-a",
@@ -1243,10 +1228,9 @@ base_url = "https://127.0.0.1:8443"
 [pgtm.api.auth]
 type = "role_tokens"
 
-[pgtm.api.auth.tokens.admin_token]
-type = "file"
-path = {}"#,
-                    unreadable_token_toml,
+[pgtm.api.auth.tokens]
+admin_token = {{ type = "file", path = "{}" }}"#,
+                    unreadable_token.display()
                 )],
             )
             .map_err(|err| err.to_string())?
@@ -1351,9 +1335,12 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
                 Path::new("/tmp/pgtm.log"),
             ),
             ["http://127.0.0.1:2379"],
-            [r#"[pgtm.api]
+            [format!(
+                r#"[pgtm.api]
 base_url = "https://127.0.0.1:8443"
-expected_transport = "https""#],
+expected_transport = "{}""#,
+                PgtmApiTransportExpectation::Https.scheme(),
+            )],
         )
         .map_err(|err| err.to_string())?;
 
@@ -1389,31 +1376,28 @@ expected_transport = "https""#],
                 None,
                 None,
                 None,
-                [
-                    format!(
-                        r#"[api.auth]
+                [format!(
+                    r#"[api.auth]
 type = "role_tokens"
 read_token = {}
-admin_token = {}"#,
-                        toml_string_secret("read-token"),
-                        toml_string_secret("admin-token"),
-                    ),
-                    format!(
-                        r#"[api.tls]
+admin_token = {}
+
+[api.tls]
 ca_cert = {}
 identity = {{ cert = {}, key = {} }}
 
 [postgres.tls]
 ca_cert = {}
 identity = {{ cert = {}, key = {} }}"#,
-                        toml_path_source(api_ca_path.as_path()),
-                        toml_path_source(identity_cert_path.as_path()),
-                        toml_path_source(identity_key_path.as_path()),
-                        toml_path_source(api_ca_path.as_path()),
-                        toml_path_source(identity_cert_path.as_path()),
-                        toml_path_source(identity_key_path.as_path()),
-                    ),
-                ],
+                    toml_string_secret("read-token"),
+                    toml_string_secret("admin-token"),
+                    toml_path_source(api_ca_path.as_path()),
+                    toml_path_source(identity_cert_path.as_path()),
+                    toml_path_source(identity_key_path.as_path()),
+                    toml_path_source(api_ca_path.as_path()),
+                    toml_path_source(identity_cert_path.as_path()),
+                    toml_path_source(identity_key_path.as_path()),
+                )],
             )
             .map_err(|err| err.to_string())?
             .as_str(),

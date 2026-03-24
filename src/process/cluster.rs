@@ -588,10 +588,7 @@ mod tests {
     use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
 
     use crate::{
-        config_v2::{
-            load_runtime_config_contents, render_runtime_test_config_toml,
-            runtime_test_config_with_data_dir, toml_path_source, RuntimeConfigV2,
-        },
+        config_v2::{runtime_test_config_with_data_dir, RuntimeConfigV2},
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
         pginfo::{
@@ -626,36 +623,18 @@ mod tests {
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
         let ca_cert = root.join("source-ca.crt");
-        let cfg = load_runtime_config_contents(
-            render_runtime_test_config_toml(
-                "cluster-a",
-                "scope-a",
-                "node-a",
-                (
-                    data_dir.as_path(),
-                    Path::new("/tmp/pgtm-socket"),
-                    Path::new("/tmp/pgtm.log"),
-                ),
-                ["http://127.0.0.1:2379"],
-                [
-                    format!(
-                        r#"[postgres.rewind.transport]
-ssl_mode = "verify-full"
-ca_cert = {}"#,
-                        toml_path_source(ca_cert.as_path()),
-                    ),
-                    r#"[process.binaries.overrides]
-pg_ctl = "/bin/true"
-initdb = "/bin/true"
-pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true""#
-                        .to_string(),
-                ],
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
+        let mut cfg = runtime_test_config_with_data_dir(data_dir).map_err(|err| err.to_string())?;
+        let true_path = Path::new("/bin/true");
+        cfg.postgres.source_client_tls = PgClientTls {
+            mode: PgSslMode::VerifyFull,
+            root_cert: Some(ca_cert.clone()),
+            client_cert: None,
+            client_key: None,
+        };
+        cfg.binaries.pg_ctl = true_path.to_path_buf();
+        cfg.binaries.initdb = true_path.to_path_buf();
+        cfg.binaries.pg_rewind = true_path.to_path_buf();
+        cfg.binaries.pg_basebackup = true_path.to_path_buf();
         Ok((cfg, ca_cert))
     }
 

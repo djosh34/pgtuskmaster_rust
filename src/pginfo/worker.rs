@@ -133,61 +133,19 @@ fn probe_conninfo(cfg: &RuntimeConfigV2) -> PgConnInfo {
 mod tests {
     use super::probe_conninfo;
     use crate::{
-        config_v2::{load_runtime_config_contents, render_runtime_test_config_toml},
-        pginfo::state::PgSslMode,
-        state::PgEndpoint,
+        config_v2::runtime_test_config_with_data_dir, pginfo::state::PgSslMode, state::PgEndpoint,
     };
     use std::path::Path;
 
     #[test]
     fn probe_conninfo_uses_local_socket_without_tls() -> Result<(), String> {
-        let cfg = load_runtime_config_contents(
-            render_runtime_test_config_toml(
-                "cluster",
-                "cluster",
-                "node-a",
-                (
-                    Path::new("/tmp/pgtm-data"),
-                    Path::new("/tmp/pgtm-socket"),
-                    Path::new("/tmp/pgtm.log"),
-                ),
-                ["http://127.0.0.1:2379"],
-                [
-                    r#"[ha]
-loop_interval_ms = 1000
-lease_ttl_ms = 10000"#,
-                    r#"[process.timeouts]
-pg_rewind_ms = 120000
-bootstrap_ms = 300000
-fencing_ms = 30000"#,
-                    r#"[logging]
-level = "info"
-capture_subprocess_output = true"#,
-                    r#"[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-cleanup = { enabled = true, max_files = 20, max_age_seconds = 86400, protect_recent_seconds = 300 }"#,
-                    r#"[logging.sinks.stderr]
-enabled = true"#,
-                    r#"[logging.sinks.file]
-enabled = false"#,
-                    r#"[api]
-listen_addr = "127.0.0.1:8443"
-transport = { transport = "http" }
-auth = { type = "disabled" }"#,
-                    r#"[debug]
-enabled = false"#,
-                ],
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
+        let cfg = runtime_test_config_with_data_dir(Path::new("/tmp/pgtm-data"))
+            .map_err(|err| format!("build runtime test config for local probe failed: {err}"))?;
         let conninfo = probe_conninfo(&cfg);
 
         match conninfo.route.endpoint() {
             PgEndpoint::UnixSocket { socket_dir, port } => {
-                if socket_dir != Path::new("/tmp/pgtm-socket") {
+                if socket_dir != Path::new("/tmp/pgtuskmaster/socket") {
                     return Err(format!("unexpected socket dir {}", socket_dir.display()));
                 }
                 if *port != 5432 {

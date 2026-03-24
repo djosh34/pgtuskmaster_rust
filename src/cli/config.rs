@@ -138,19 +138,17 @@ fn normalize_optional_token(value: Option<&str>) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, time::Duration};
+    use std::{net::SocketAddr, path::PathBuf, time::Duration};
 
     use axum::{routing::get, Json, Router};
     use axum_server::tls_rustls::RustlsConfig;
+    use reqwest::Url;
 
     use super::{resolve_base_url, resolve_operator_context, resolve_operator_context_from_config};
     use crate::api::NodeState;
     use crate::cli::args::{Cli, Command};
     use crate::cli::client::CliApiClient;
-    use crate::config_v2::{
-        load_operator_config_contents, render_operator_test_config_toml, toml_path_source,
-        toml_string_secret,
-    };
+    use crate::config_v2::{types::Secret, OperatorConfigV2, PgtmApiTransportExpectation};
     use crate::dcs::DcsSnapshot;
     use crate::dev_support::{
         test_fs::{unique_test_dir, write_text_file},
@@ -160,9 +158,9 @@ mod tests {
         },
     };
     use crate::ha::state::HaState;
-    use crate::pginfo::state::PgInfoState;
+    use crate::pginfo::{conninfo::PgClientTls, state::PgInfoState};
     use crate::process::state::ProcessState;
-    use crate::state::{ClusterName, MemberId, NodeIdentity, ScopeName, WorkerStatus};
+    use crate::state::{ApiRoute, ClusterName, MemberId, NodeIdentity, ScopeName, WorkerStatus};
 
     fn base_cli() -> Cli {
         Cli {
@@ -178,13 +176,19 @@ mod tests {
         }
     }
 
-    fn load_test_operator_context(
-        cli: &Cli,
-        rendered: String,
-    ) -> Result<super::OperatorContext, String> {
-        let config =
-            load_operator_config_contents(rendered.as_str()).map_err(|err| err.to_string())?;
-        resolve_operator_context_from_config(cli, Some(&config)).map_err(|err| err.to_string())
+    fn test_operator_config(base_url: Option<&str>) -> Result<OperatorConfigV2, String> {
+        Ok(OperatorConfigV2 {
+            base_url: base_url
+                .map(Url::parse)
+                .transpose()
+                .map_err(|err| err.to_string())?,
+            advertised_url: None,
+            expected_transport: None,
+            resolve_to: None,
+            client_tls: None,
+            read_token: None,
+            admin_token: None,
+        })
     }
 
     #[test]
@@ -199,12 +203,7 @@ mod tests {
 
     #[test]
     fn resolve_context_requires_base_url_when_config_omits_it() -> Result<(), String> {
-        let config = load_operator_config_contents(
-            render_operator_test_config_toml(None, None, None, None, std::iter::empty::<String>())
-                .map_err(|err| err.to_string())?
-                .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
+        let config = test_operator_config(None)?;
 
         match resolve_base_url(None, Some(&config)) {
             Err(err) if err.to_string().contains("set `api.base_url`") => Ok(()),
@@ -228,31 +227,17 @@ mod tests {
             watch: false,
             command: Some(Command::Status),
         };
-        let ctx = load_test_operator_context(
-            &cli,
-            render_operator_test_config_toml(
-                Some("https://127.0.0.1:8443"),
-                None,
-                None,
-                None,
-                [
-                    format!(
-                        r#"[api.auth]
-type = "role_tokens"
-read_token = {}
-admin_token = {}"#,
-                        toml_string_secret("read-token"),
-                        toml_string_secret("admin-token"),
-                    ),
-                    format!(
-                        r#"[api.tls]
-ca_cert = {}"#,
-                        toml_path_source(ca_path.as_path()),
-                    ),
-                ],
-            )
-            .map_err(|err| err.to_string())?,
-        )?;
+        let mut config = test_operator_config(Some("https://127.0.0.1:8443"))?;
+        config.read_token = Some(Secret::new("read-token".to_string()));
+        config.admin_token = Some(Secret::new("admin-token".to_string()));
+        config.client_tls = Some(PgClientTls {
+            mode: crate::pginfo::conninfo::PgSslMode::VerifyFull,
+            root_cert: Some(ca_path.clone()),
+            client_cert: None,
+            client_key: None,
+        });
+        let ctx = resolve_operator_context_from_config(&cli, Some(&config))
+            .map_err(|err| err.to_string())?;
         let _ = std::fs::remove_file(ca_path);
         let read_token = ctx
             .api_client
@@ -305,24 +290,15 @@ ca_cert = {}"#,
             watch: false,
             command: Some(Command::Status),
         };
-        let ctx = load_test_operator_context(
-            &cli,
-            render_operator_test_config_toml(
-                Some("https://127.0.0.1:8443"),
-                None,
-                None,
-                None,
-                [format!(
-                    r#"[api.tls]
-ca_cert = {}
-identity = {{ cert = {}, key = {} }}"#,
-                    toml_path_source(ca_path.as_path()),
-                    toml_path_source(identity_cert_path.as_path()),
-                    toml_path_source(identity_key_path.as_path()),
-                )],
-            )
-            .map_err(|err| err.to_string())?,
-        )?;
+        let mut config = test_operator_config(Some("https://127.0.0.1:8443"))?;
+        config.client_tls = Some(PgClientTls {
+            mode: crate::pginfo::conninfo::PgSslMode::VerifyFull,
+            root_cert: Some(ca_path.clone()),
+            client_cert: Some(identity_cert_path.clone()),
+            client_key: Some(identity_key_path.clone()),
+        });
+        let ctx = resolve_operator_context_from_config(&cli, Some(&config))
+            .map_err(|err| err.to_string())?;
         let _ = std::fs::remove_file(ca_path);
         let _ = std::fs::remove_file(identity_cert_path);
         let _ = std::fs::remove_file(identity_key_path);
@@ -356,18 +332,8 @@ identity = {{ cert = {}, key = {} }}"#,
 
     #[test]
     fn resolve_context_rejects_base_url_that_violates_expected_transport() -> Result<(), String> {
-        let config = load_operator_config_contents(
-            render_operator_test_config_toml(
-                Some("https://127.0.0.1:8443"),
-                None,
-                Some("https"),
-                None,
-                std::iter::empty::<String>(),
-            )
-            .map_err(|err| err.to_string())?
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
+        let mut config = test_operator_config(Some("https://127.0.0.1:8443"))?;
+        config.expected_transport = Some(PgtmApiTransportExpectation::Https);
         match resolve_base_url(Some("http://127.0.0.1:8443"), Some(&config)) {
             Err(err) if err.to_string().contains("expects `https` API transport") => Ok(()),
             Err(err) => Err(format!("unexpected error: {err}")),
@@ -450,24 +416,20 @@ identity = {{ cert = {}, key = {} }}"#,
             watch: false,
             command: Some(Command::Status),
         };
-        let ctx = load_test_operator_context(
-            &cli,
-            render_operator_test_config_toml(
-                Some(format!("https://node-b:{}", listen_addr.port()).as_str()),
-                None,
-                Some("https"),
-                Some(SocketAddr::from(([127, 0, 0, 1], listen_addr.port()))),
-                [format!(
-                    r#"[api.tls]
-ca_cert = {}
-identity = {{ cert = {}, key = {} }}"#,
-                    toml_path_source(ca_cert.as_path()),
-                    toml_path_source(client_cert_path.as_path()),
-                    toml_path_source(client_key_path.as_path()),
-                )],
-            )
-            .map_err(|err| err.to_string())?,
-        )?;
+        let mut config = test_operator_config(Some(
+            format!("https://node-b:{}", listen_addr.port()).as_str(),
+        ))?;
+        config.advertised_url = Some(ApiRoute::parse("https://127.0.0.1:18081".to_string())?);
+        config.expected_transport = Some(PgtmApiTransportExpectation::Https);
+        config.resolve_to = Some(SocketAddr::from(([127, 0, 0, 1], listen_addr.port())));
+        config.client_tls = Some(PgClientTls {
+            mode: crate::pginfo::conninfo::PgSslMode::VerifyFull,
+            root_cert: Some(PathBuf::from(ca_cert.as_path())),
+            client_cert: Some(PathBuf::from(client_cert_path.as_path())),
+            client_key: Some(PathBuf::from(client_key_path.as_path())),
+        });
+        let ctx = resolve_operator_context_from_config(&cli, Some(&config))
+            .map_err(|err| err.to_string())?;
         let client = CliApiClient::from_config(ctx.api_client).map_err(|err| err.to_string())?;
         let state = {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(5);

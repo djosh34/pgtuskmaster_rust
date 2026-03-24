@@ -1038,6 +1038,40 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
+fn build_operator_test_document(
+    base_url: Option<&str>,
+    advertised_url: Option<&str>,
+    expected_transport: Option<&str>,
+    resolve_to: Option<SocketAddr>,
+    auth: Option<TokenAuthConfig>,
+    api_tls: Option<OperatorClientTlsInput>,
+    postgres_tls: Option<OperatorClientTlsInput>,
+) -> Result<OperatorDocument, String> {
+    Ok(OperatorDocument {
+        api: OperatorApiConfig {
+            base_url: base_url.map(str::to_string),
+            advertised_url: advertised_url.map(str::to_string),
+            expected_transport: match expected_transport {
+                Some("http") => Some(PgtmApiTransportExpectation::Http),
+                Some("https") => Some(PgtmApiTransportExpectation::Https),
+                Some(other) => {
+                    return Err(format!(
+                        "unsupported operator test transport expectation `{other}`"
+                    ))
+                }
+                None => None,
+            },
+            resolve_to,
+            auth: auth.unwrap_or_default(),
+            tls: api_tls.unwrap_or_default(),
+        },
+        postgres: OperatorPostgresConfig {
+            tls: postgres_tls.unwrap_or_default(),
+        },
+    })
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
 fn build_operator_test_document_value(
     base_url: Option<&str>,
     advertised_url: Option<&str>,
@@ -1049,28 +1083,15 @@ fn build_operator_test_document_value(
 ) -> Result<toml::Value, String> {
     toml_value(
         "operator test document",
-        OperatorDocument {
-            api: OperatorApiConfig {
-                base_url: base_url.map(str::to_string),
-                advertised_url: advertised_url.map(str::to_string),
-                expected_transport: match expected_transport {
-                    Some("http") => Some(PgtmApiTransportExpectation::Http),
-                    Some("https") => Some(PgtmApiTransportExpectation::Https),
-                    Some(other) => {
-                        return Err(format!(
-                            "unsupported operator test transport expectation `{other}`"
-                        ))
-                    }
-                    None => None,
-                },
-                resolve_to,
-                auth: auth.unwrap_or_default(),
-                tls: api_tls.unwrap_or_default(),
-            },
-            postgres: OperatorPostgresConfig {
-                tls: postgres_tls.unwrap_or_default(),
-            },
-        },
+        build_operator_test_document(
+            base_url,
+            advertised_url,
+            expected_transport,
+            resolve_to,
+            auth,
+            api_tls,
+            postgres_tls,
+        )?,
     )
 }
 
