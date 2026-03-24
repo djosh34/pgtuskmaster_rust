@@ -18,19 +18,6 @@ pub enum ProcessIntent {
 }
 
 impl ProcessIntent {
-    pub(crate) fn label(&self) -> &'static str {
-        match self {
-            Self::Bootstrap => "bootstrap",
-            Self::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { .. }) => "basebackup",
-            Self::ProvisionReplica(ReplicaProvisionIntent::PgRewind { .. }) => "pg_rewind",
-            Self::Start(PostgresStartIntent::Primary) => "start_primary",
-            Self::Start(PostgresStartIntent::DetachedStandby) => "start_detached_standby",
-            Self::Start(PostgresStartIntent::Replica { .. }) => "start_replica",
-            Self::Promote => "promote",
-            Self::Demote(_) => "demote",
-        }
-    }
-
     pub(crate) fn job_kind(&self) -> ProcessJobKind {
         match self {
             Self::Bootstrap => ProcessJobKind::Bootstrap,
@@ -66,16 +53,6 @@ impl PostgresStartIntent {
             Self::Primary => ProcessJobKind::StartPrimary,
             Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
             Self::Replica { .. } => ProcessJobKind::StartReplica,
-        }
-    }
-}
-
-impl PostgresStartMode {
-    pub(crate) fn job_kind(self) -> ProcessJobKind {
-        match self {
-            Self::Primary => ProcessJobKind::StartPrimary,
-            Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
-            Self::Replica => ProcessJobKind::StartReplica,
         }
     }
 }
@@ -170,6 +147,22 @@ pub enum ProcessJobKind {
     StartPrimary,
     StartDetachedStandby,
     StartReplica,
+}
+
+impl ProcessJobKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Bootstrap => "bootstrap",
+            Self::BaseBackup => "basebackup",
+            Self::PgRewind => "pg_rewind",
+            Self::Promote => "promote",
+            Self::Demote => "demote",
+            Self::StartPostgres => "start_postgres",
+            Self::StartPrimary => "start_primary",
+            Self::StartDetachedStandby => "start_detached_standby",
+            Self::StartReplica => "start_replica",
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

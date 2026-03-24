@@ -618,7 +618,7 @@ pub(crate) async fn start_job(
     let deadline_at = UnixMillis(now.0.saturating_add(timeout_ms));
     let command = prepared_launch.command;
 
-    let tracked_job_kind = execution_request.kind.tracked_job_kind();
+    let tracked_job_kind = execution_request.tracked_job_kind;
     let job_kind = command.job_kind;
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
@@ -626,7 +626,7 @@ pub(crate) async fn start_job(
             ctx.runtime
                 .log
                 .send(ProcessLogEvent::SpawnFailed {
-                    job_kind: execution_request.kind.job_kind(),
+                    job_kind,
                     cause: error.to_string(),
                 })
                 .map_err(|err| {

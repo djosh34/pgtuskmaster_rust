@@ -49,17 +49,6 @@ impl ProcessExecutionKind {
             Self::StartPostgres(_) => ProcessJobKind::StartPostgres,
         }
     }
-
-    pub(crate) fn tracked_job_kind(&self) -> ProcessJobKind {
-        match self {
-            Self::Bootstrap(_) => ProcessJobKind::Bootstrap,
-            Self::BaseBackup(_) => ProcessJobKind::BaseBackup,
-            Self::PgRewind(_) => ProcessJobKind::PgRewind,
-            Self::Promote(_) => ProcessJobKind::Promote,
-            Self::Demote(_) => ProcessJobKind::Demote,
-            Self::StartPostgres(spec) => spec.mode.job_kind(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,6 +60,7 @@ pub(crate) struct ProcessIntentRequest {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProcessExecutionRequest {
     pub(crate) id: JobId,
+    pub(crate) tracked_job_kind: ProcessJobKind,
     pub(crate) kind: ProcessExecutionKind,
 }
 

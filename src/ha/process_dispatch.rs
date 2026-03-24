@@ -19,6 +19,7 @@ pub(crate) fn dispatch_process_action(
     action_index: usize,
     action: &ProcessIntent,
 ) -> Result<(), ProcessDispatchError> {
+    let action_kind = action.job_kind();
     let request = ProcessIntentRequest {
         id: JobId(format!(
             "ha-{}-{}-{}-{}-{}",
@@ -26,7 +27,7 @@ pub(crate) fn dispatch_process_action(
             ctx.cfg.member_id.0,
             ha_tick,
             action_index,
-            action.label(),
+            action_kind.as_str(),
         )),
         intent: action.clone(),
     };
@@ -34,7 +35,7 @@ pub(crate) fn dispatch_process_action(
         .process_intent_inbox
         .send(request)
         .map_err(|err| ProcessDispatchError::ProcessSend {
-            action: action.label().to_string(),
+            action: action_kind.as_str().to_string(),
             message: err.to_string(),
         })
 }

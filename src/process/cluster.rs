@@ -9,7 +9,7 @@ use crate::{
     process::{
         jobs::{
             PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
-            StartPostgresSpec,
+            ProcessJobKind, StartPostgresSpec,
         },
         planner::{ClusterProcessPlan, ProcessIntentPlanner},
         state::{
@@ -63,8 +63,9 @@ pub(crate) fn prepare_process_launch(
     let plan = ProcessIntentPlanner
         .plan(&cfg.member_id, cfg, observed, &request.intent)
         .map_err(ProcessPreparationError::IntentMaterialization)?;
-    let execution_request = execution_request_from_plan(request.id.clone(), cfg, &plan)
-        .map_err(ProcessPreparationError::IntentMaterialization)?;
+    let execution_request =
+        execution_request_from_plan(request.id.clone(), request.intent.job_kind(), cfg, &plan)
+            .map_err(ProcessPreparationError::IntentMaterialization)?;
     let command = build_command(cfg, &execution_request.kind)
         .map_err(ProcessPreparationError::BuildCommand)?;
     Ok(PreparedProcessLaunch {
@@ -90,6 +91,7 @@ fn observed_snapshot_from_ctx(
 
 fn execution_request_from_plan(
     request_id: crate::state::JobId,
+    tracked_job_kind: ProcessJobKind,
     cfg: &RuntimeConfigV2,
     plan: &ClusterProcessPlan,
 ) -> Result<ProcessExecutionRequest, ProcessError> {
@@ -118,6 +120,7 @@ fn execution_request_from_plan(
 
     Ok(ProcessExecutionRequest {
         id: request_id,
+        tracked_job_kind,
         kind,
     })
 }
@@ -458,7 +461,7 @@ mod tests {
             MANAGED_POSTGRESQL_CONF_NAME,
         },
         process::{
-            jobs::{PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent},
+            jobs::{PostgresStartIntent, ProcessIntent, ProcessJobKind, ReplicaProvisionIntent},
             state::ProcessIntentRequest,
         },
         state::{
@@ -800,7 +803,8 @@ psql = "/bin/true""#
 
         let prepared = super::PreparedProcessLaunch {
             request: super::execution_request_from_plan(
-                request.id,
+                request.id.clone(),
+                request.intent.job_kind(),
                 &cfg,
                 &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(start_intent),
             )
@@ -809,6 +813,7 @@ psql = "/bin/true""#
                 &cfg,
                 &super::execution_request_from_plan(
                     JobId("job-start".to_string()),
+                    ProcessJobKind::StartReplica,
                     &cfg,
                     &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(
                         ManagedPostgresStartIntent::replica(
@@ -874,6 +879,7 @@ psql = "/bin/true""#
             runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
         let execution_request = super::execution_request_from_plan(
             JobId("job-start".to_string()),
+            ProcessJobKind::StartReplica,
             &cfg,
             &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(
                 ManagedPostgresStartIntent::replica(
