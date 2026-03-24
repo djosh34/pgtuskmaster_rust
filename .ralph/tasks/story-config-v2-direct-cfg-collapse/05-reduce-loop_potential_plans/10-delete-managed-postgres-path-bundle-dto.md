@@ -1,1 +1,0 @@
-- Delete `ManagedPostgresConfig` in `src/postgres_managed.rs`; it is a path-bundle DTO that `src/process/session.rs` and `src/process/tools.rs` immediately peel apart again instead of owning one canonical managed-start artifact.

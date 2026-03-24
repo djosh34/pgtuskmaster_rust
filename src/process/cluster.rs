@@ -118,11 +118,9 @@ fn materialize_start_config(
     start_spec: &StartPostgresSpec,
 ) -> Result<(), ProcessError> {
     ensure_start_paths(cfg)?;
-    materialize_managed_postgres_config(cfg, tracked_job_kind, start_spec)
-        .map(|_| ())
-        .map_err(|err| {
-            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
-        })
+    materialize_managed_postgres_config(cfg, tracked_job_kind, start_spec).map_err(|err| {
+        ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
+    })
 }
 
 fn build_command(

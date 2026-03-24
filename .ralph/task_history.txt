@@ -380,3 +380,4 @@ NONE
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
+.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md

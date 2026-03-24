@@ -55,18 +55,6 @@ const RESERVED_EXTRA_GUC_KEYS: &[&str] = &[
     "unix_socket_directories",
 ];
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedPostgresConfig {
-    pub(crate) postgresql_conf_path: PathBuf,
-    pub(crate) hba_path: PathBuf,
-    pub(crate) ident_path: PathBuf,
-    pub(crate) standby_passfile_path: Option<PathBuf>,
-    pub(crate) standby_signal_path: PathBuf,
-    pub(crate) recovery_signal_path: PathBuf,
-    pub(crate) postgresql_auto_conf_path: PathBuf,
-    pub(crate) quarantined_postgresql_auto_conf_path: PathBuf,
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresError {
     #[error("io error: {message}")]
@@ -88,7 +76,7 @@ pub(crate) fn materialize_managed_postgres_config(
     cfg: &RuntimeConfigV2,
     tracked_job_kind: ProcessJobKind,
     start_spec: &StartPostgresSpec,
-) -> Result<ManagedPostgresConfig, ManagedPostgresError> {
+) -> Result<(), ManagedPostgresError> {
     let data_dir = cfg.postgres.data_dir.as_path();
     if data_dir.as_os_str().is_empty() {
         return Err(ManagedPostgresError::InvalidConfig {
@@ -98,20 +86,13 @@ pub(crate) fn materialize_managed_postgres_config(
 
     let managed_hba = absolutize_path(&cfg.postgres.pg_hba_file)?;
     let managed_ident = absolutize_path(&cfg.postgres.pg_ident_file)?;
-    let managed_postgresql_conf =
-        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME))?;
-    let managed_standby_passfile =
-        absolutize_path(&managed_standby_passfile_path(&cfg.postgres.data_dir))?;
-    let standby_signal = absolutize_path(&cfg.postgres.data_dir.join(MANAGED_STANDBY_SIGNAL_NAME))?;
-    let recovery_signal =
-        absolutize_path(&cfg.postgres.data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME))?;
-    let postgresql_auto_conf =
-        absolutize_path(&cfg.postgres.data_dir.join(POSTGRESQL_AUTO_CONF_NAME))?;
-    let quarantined_postgresql_auto_conf = absolutize_path(
-        &cfg.postgres
-            .data_dir
-            .join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME),
-    )?;
+    let managed_postgresql_conf = absolutize_path(&managed_postgresql_conf_path(data_dir))?;
+    let managed_standby_passfile = absolutize_path(&managed_standby_passfile_path(data_dir))?;
+    let standby_signal = absolutize_path(&managed_standby_signal_path(data_dir))?;
+    let recovery_signal = absolutize_path(&managed_recovery_signal_path(data_dir))?;
+    let postgresql_auto_conf = absolutize_path(&managed_postgresql_auto_conf_path(data_dir))?;
+    let quarantined_postgresql_auto_conf =
+        absolutize_path(&quarantined_postgresql_auto_conf_path(data_dir))?;
 
     write_atomic(
         &managed_hba,
@@ -125,7 +106,7 @@ pub(crate) fn materialize_managed_postgres_config(
     )?;
 
     let managed_tls_config = managed_tls_config(cfg)?;
-    let standby_passfile_path = materialize_managed_standby_passfile(
+    materialize_managed_standby_passfile(
         cfg,
         tracked_job_kind,
         start_spec,
@@ -153,16 +134,7 @@ pub(crate) fn materialize_managed_postgres_config(
         &recovery_signal,
     )?;
 
-    Ok(ManagedPostgresConfig {
-        postgresql_conf_path: managed_postgresql_conf,
-        hba_path: managed_hba,
-        ident_path: managed_ident,
-        standby_passfile_path,
-        standby_signal_path: standby_signal,
-        recovery_signal_path: recovery_signal,
-        postgresql_auto_conf_path: postgresql_auto_conf,
-        quarantined_postgresql_auto_conf_path: quarantined_postgresql_auto_conf,
-    })
+    Ok(())
 }
 
 pub(crate) fn inspect_managed_recovery_state(
@@ -413,8 +385,28 @@ fn managed_recovery_signal_for_start_job(
     }
 }
 
+fn managed_postgresql_conf_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MANAGED_POSTGRESQL_CONF_NAME)
+}
+
 pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
+}
+
+fn managed_standby_signal_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MANAGED_STANDBY_SIGNAL_NAME)
+}
+
+fn managed_recovery_signal_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(MANAGED_RECOVERY_SIGNAL_NAME)
+}
+
+fn managed_postgresql_auto_conf_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(POSTGRESQL_AUTO_CONF_NAME)
+}
+
+fn quarantined_postgresql_auto_conf_path(data_dir: &Path) -> PathBuf {
+    data_dir.join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME)
 }
 
 fn validate_extra_guc_entry(key: &str, value: &str) -> Result<(), ManagedPostgresError> {
@@ -777,12 +769,12 @@ mod tests {
     };
 
     use super::{
-        inspect_managed_recovery_state, managed_recovery_signal_for_start_job,
-        managed_standby_passfile_path, materialize_managed_postgres_config,
+        inspect_managed_recovery_state, managed_postgresql_auto_conf_path,
+        managed_postgresql_conf_path, managed_recovery_signal_for_start_job,
+        managed_recovery_signal_path, managed_standby_passfile_path, managed_standby_signal_path,
+        materialize_managed_postgres_config, quarantined_postgresql_auto_conf_path,
         render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresError,
-        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_POSTGRESQL_CONF_NAME,
-        MANAGED_RECOVERY_SIGNAL_NAME, POSTGRESQL_AUTO_CONF_NAME,
-        QUARANTINED_POSTGRESQL_AUTO_CONF_NAME,
+        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_RECOVERY_SIGNAL_NAME,
     };
 
     fn sample_managed_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
@@ -792,7 +784,7 @@ mod tests {
     fn primary_start_spec(cfg: &RuntimeConfigV2) -> StartPostgresSpec {
         StartPostgresSpec {
             data_dir: cfg.postgres.data_dir.clone(),
-            config_file: cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME),
+            config_file: managed_postgresql_conf_path(cfg.postgres.data_dir.as_path()),
             log_file: cfg.postgres.log_file.clone(),
             primary_conninfo: None,
             primary_slot_name: None,
@@ -1108,18 +1100,19 @@ mod tests {
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("postgresql-conf");
         let cfg = sample_managed_config(data_dir.clone())?;
+        let postgresql_conf_path = managed_postgresql_conf_path(data_dir.as_path());
 
-        let managed = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartPrimary,
             &primary_start_spec(&cfg),
         )
         .map_err(|err| format!("materialize managed config failed: {err}"))?;
 
-        let postgresql_conf = fs::read_to_string(&managed.postgresql_conf_path).map_err(|err| {
+        let postgresql_conf = fs::read_to_string(&postgresql_conf_path).map_err(|err| {
             format!(
                 "read managed postgresql conf {} failed: {err}",
-                managed.postgresql_conf_path.display()
+                postgresql_conf_path.display()
             )
         })?;
 
@@ -1167,6 +1160,8 @@ mod tests {
     {
         let data_dir = unique_test_data_dir("standby-signal");
         let cfg = sample_managed_config(data_dir.clone())?;
+        let standby_signal_path = managed_standby_signal_path(data_dir.as_path());
+        let recovery_signal_path = managed_recovery_signal_path(data_dir.as_path());
         let replica_start = replica_start_spec(
             &cfg,
             PgConnInfo {
@@ -1189,38 +1184,37 @@ mod tests {
             None,
         );
 
-        let managed_replica =
-            materialize_managed_postgres_config(&cfg, ProcessJobKind::StartReplica, &replica_start)
-                .map_err(|err| format!("materialize replica config failed: {err}"))?;
-        if !managed_replica.standby_signal_path.exists() {
+        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartReplica, &replica_start)
+            .map_err(|err| format!("materialize replica config failed: {err}"))?;
+        if !standby_signal_path.exists() {
             return Err(format!(
                 "expected standby.signal to exist at {}",
-                managed_replica.standby_signal_path.display()
+                standby_signal_path.display()
             ));
         }
-        if managed_replica.recovery_signal_path.exists() {
+        if recovery_signal_path.exists() {
             return Err(format!(
                 "expected recovery.signal to be absent at {}",
-                managed_replica.recovery_signal_path.display()
+                recovery_signal_path.display()
             ));
         }
 
-        let managed_primary = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartPrimary,
             &primary_start_spec(&cfg),
         )
         .map_err(|err| format!("materialize primary config failed: {err}"))?;
-        if managed_primary.standby_signal_path.exists() {
+        if standby_signal_path.exists() {
             return Err(format!(
                 "expected standby.signal to be removed at {}",
-                managed_primary.standby_signal_path.display()
+                standby_signal_path.display()
             ));
         }
-        if managed_primary.recovery_signal_path.exists() {
+        if recovery_signal_path.exists() {
             return Err(format!(
                 "expected recovery.signal to be removed at {}",
-                managed_primary.recovery_signal_path.display()
+                recovery_signal_path.display()
             ));
         }
 
@@ -1233,17 +1227,15 @@ mod tests {
     fn materialize_managed_postgres_config_writes_managed_standby_passfile() -> Result<(), String> {
         let data_dir = unique_test_data_dir("standby-passfile");
         let cfg = sample_managed_config(data_dir.clone())?;
+        let passfile_path = managed_standby_passfile_path(data_dir.as_path());
 
-        let managed = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartReplica,
             &replica_start_spec(&cfg, sample_replica_conninfo()?, None),
         )
         .map_err(|err| format!("materialize replica config failed: {err}"))?;
 
-        let passfile_path = managed
-            .standby_passfile_path
-            .ok_or_else(|| "missing standby passfile path".to_string())?;
         let contents = fs::read_to_string(&passfile_path).map_err(|err| {
             format!(
                 "read standby passfile {} failed: {err}",
@@ -1293,7 +1285,7 @@ mod tests {
             )
         })?;
 
-        let managed = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartPrimary,
             &primary_start_spec(&cfg),
@@ -1304,9 +1296,6 @@ mod tests {
                 "expected stale standby passfile to be removed at {}",
                 stale_path.display()
             ));
-        }
-        if managed.standby_passfile_path.is_some() {
-            return Err("primary start should not report a standby passfile path".to_string());
         }
 
         fs::remove_dir_all(&data_dir)
@@ -1319,8 +1308,8 @@ mod tests {
     {
         let data_dir = unique_test_data_dir("postgresql-auto-conf");
         let cfg = sample_managed_config(data_dir.clone())?;
-        let active_auto_conf = data_dir.join(POSTGRESQL_AUTO_CONF_NAME);
-        let quarantined_auto_conf = data_dir.join(QUARANTINED_POSTGRESQL_AUTO_CONF_NAME);
+        let active_auto_conf = managed_postgresql_auto_conf_path(data_dir.as_path());
+        let quarantined_auto_conf = quarantined_postgresql_auto_conf_path(data_dir.as_path());
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create test dir {} failed: {err}", data_dir.display()))?;
         fs::write(&active_auto_conf, "primary_conninfo = 'stale'\n").map_err(|err| {
@@ -1336,30 +1325,29 @@ mod tests {
             )
         })?;
 
-        let managed = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartPrimary,
             &primary_start_spec(&cfg),
         )
         .map_err(|err| format!("materialize primary config failed: {err}"))?;
 
-        if managed.postgresql_auto_conf_path.exists() {
+        if active_auto_conf.exists() {
             return Err(format!(
                 "expected active postgresql.auto.conf to be absent at {}",
-                managed.postgresql_auto_conf_path.display()
+                active_auto_conf.display()
             ));
         }
-        let quarantined = fs::read_to_string(&managed.quarantined_postgresql_auto_conf_path)
-            .map_err(|err| {
-                format!(
-                    "read quarantined auto conf {} failed: {err}",
-                    managed.quarantined_postgresql_auto_conf_path.display()
-                )
-            })?;
+        let quarantined = fs::read_to_string(&quarantined_auto_conf).map_err(|err| {
+            format!(
+                "read quarantined auto conf {} failed: {err}",
+                quarantined_auto_conf.display()
+            )
+        })?;
         if quarantined != "primary_conninfo = 'stale'\n" {
             return Err(format!(
                 "unexpected quarantined auto conf contents at {}: {quarantined}",
-                managed.quarantined_postgresql_auto_conf_path.display()
+                quarantined_auto_conf.display()
             ));
         }
 
@@ -1397,6 +1385,7 @@ mod tests {
     ) -> Result<(), String> {
         let data_dir = unique_test_data_dir("tls");
         let mut cfg = sample_managed_config(data_dir.clone())?;
+        let managed_conf_path = managed_postgresql_conf_path(data_dir.as_path());
         let source_tls_dir = data_dir.join("source-tls");
         fs::create_dir_all(&source_tls_dir).map_err(|err| {
             format!(
@@ -1418,16 +1407,16 @@ mod tests {
             ca_cert: Some(ca_cert.clone()),
         });
 
-        let managed = materialize_managed_postgres_config(
+        materialize_managed_postgres_config(
             &cfg,
             ProcessJobKind::StartPrimary,
             &primary_start_spec(&cfg),
         )
         .map_err(|err| format!("materialize managed config failed: {err}"))?;
-        let managed_conf = fs::read_to_string(&managed.postgresql_conf_path).map_err(|err| {
+        let managed_conf = fs::read_to_string(&managed_conf_path).map_err(|err| {
             format!(
                 "read managed postgresql conf {} failed: {err}",
-                managed.postgresql_conf_path.display()
+                managed_conf_path.display()
             )
         })?;
 
@@ -1554,7 +1543,15 @@ mod tests {
                 )));
             }
 
-            fs::write(replica_data.join(POSTGRESQL_AUTO_CONF_NAME), "port = 1\n")?;
+            let active_auto_conf = managed_postgresql_auto_conf_path(replica_data.as_path());
+            let quarantined_auto_conf =
+                quarantined_postgresql_auto_conf_path(replica_data.as_path());
+            let standby_signal_path = managed_standby_signal_path(replica_data.as_path());
+            let recovery_signal_path = managed_recovery_signal_path(replica_data.as_path());
+            let managed_conf_path = managed_postgresql_conf_path(replica_data.as_path());
+            let standby_passfile = managed_standby_passfile_path(replica_data.as_path());
+
+            fs::write(&active_auto_conf, "port = 1\n")?;
             fs::write(replica_data.join(MANAGED_RECOVERY_SIGNAL_NAME), b"")?;
 
             let replica_socket = namespace.child_dir("run/replica");
@@ -1584,7 +1581,7 @@ mod tests {
             )
             .to_string();
 
-            let managed = materialize_managed_postgres_config(
+            materialize_managed_postgres_config(
                 &runtime_config,
                 ProcessJobKind::StartReplica,
                 &replica_start_spec(
@@ -1612,28 +1609,28 @@ mod tests {
             )
             .map_err(|err| real_test_error(format!("materialize managed config failed: {err}")))?;
 
-            if managed.postgresql_auto_conf_path.exists() {
+            if active_auto_conf.exists() {
                 return Err(real_test_error(format!(
                     "expected active postgresql.auto.conf to be absent at {}",
-                    managed.postgresql_auto_conf_path.display()
+                    active_auto_conf.display()
                 )));
             }
-            if !managed.quarantined_postgresql_auto_conf_path.exists() {
+            if !quarantined_auto_conf.exists() {
                 return Err(real_test_error(format!(
                     "expected quarantined postgresql.auto.conf to exist at {}",
-                    managed.quarantined_postgresql_auto_conf_path.display()
+                    quarantined_auto_conf.display()
                 )));
             }
-            if !managed.standby_signal_path.exists() {
+            if !standby_signal_path.exists() {
                 return Err(real_test_error(format!(
                     "expected standby.signal to exist at {}",
-                    managed.standby_signal_path.display()
+                    standby_signal_path.display()
                 )));
             }
-            if managed.recovery_signal_path.exists() {
+            if recovery_signal_path.exists() {
                 return Err(real_test_error(format!(
                     "expected recovery.signal to be absent at {}",
-                    managed.recovery_signal_path.display()
+                    recovery_signal_path.display()
                 )));
             }
 
@@ -1643,10 +1640,7 @@ mod tests {
                 .arg("-D")
                 .arg(&replica_data)
                 .arg("-c")
-                .arg(format!(
-                    "config_file={}",
-                    managed.postgresql_conf_path.display()
-                ))
+                .arg(format!("config_file={}", managed_conf_path.display()))
                 .stdout(stdout_file)
                 .stderr(stderr_file)
                 .spawn()?;
@@ -1683,10 +1677,6 @@ mod tests {
                         primary_conninfo_text
                     )));
                 }
-                let standby_passfile = managed
-                    .standby_passfile_path
-                    .clone()
-                    .ok_or_else(|| real_test_error("expected managed standby passfile path"))?;
                 if !primary_conninfo_text.contains(standby_passfile.display().to_string().as_str())
                 {
                     return Err(real_test_error(format!(
