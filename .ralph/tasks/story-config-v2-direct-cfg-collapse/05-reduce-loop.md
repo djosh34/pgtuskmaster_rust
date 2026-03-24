@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/44-collapse-process-start-path-validation-onto-validated-config.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/45-collapse-process-cluster-start-and-source-duplication.md`
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file

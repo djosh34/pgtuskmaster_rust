@@ -86,44 +86,73 @@ pub(crate) fn prepare_process_launch(
     observed: &ProcessObservedSnapshot,
     request: &ProcessIntentRequest,
 ) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
-    let tracked_job_kind = request.intent.job_kind();
     match &request.intent {
         ProcessIntent::Bootstrap => {
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command = build_bootstrap_command(cfg);
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
+            Ok(prepared_launch_for_request(
+                cfg,
+                request,
+                build_bootstrap_command(cfg),
             ))
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
-            let source = basebackup_source_from_leader(&cfg.member_id, cfg, &observed.dcs, leader)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
+            let source = source_from_leader(
+                &cfg.member_id,
+                cfg,
+                &observed.dcs,
+                leader,
+                SourceCredentialKind::Replicator,
+            )
+            .map_err(ProcessPreparationError::IntentMaterialization)?;
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command = build_basebackup_command(cfg, &source);
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
+            Ok(prepared_launch_for_request(
+                cfg,
+                request,
+                build_basebackup_command(cfg, &source),
             ))
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
-            let source = rewind_source_from_leader(&cfg.member_id, cfg, &observed.dcs, leader)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command = build_pg_rewind_command(cfg, &source);
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
+            let source = source_from_leader(
+                &cfg.member_id,
+                cfg,
+                &observed.dcs,
+                leader,
+                SourceCredentialKind::Rewinder,
+            )
+            .map_err(ProcessPreparationError::IntentMaterialization)?;
+            Ok(prepared_launch_for_request(
+                cfg,
+                request,
+                build_pg_rewind_command(cfg, &source),
             ))
         }
-        ProcessIntent::Start(PostgresStartIntent::Primary) => {
+        ProcessIntent::Start(start_intent) => Ok(prepared_launch_for_request(
+            cfg,
+            request,
+            prepare_start_postgres_launch(cfg, observed, start_intent)?,
+        )),
+        ProcessIntent::Promote => Ok(prepared_launch_for_request(
+            cfg,
+            request,
+            build_promote_command(cfg, None),
+        )),
+        ProcessIntent::Demote(mode) => Ok(prepared_launch_for_request(
+            cfg,
+            request,
+            build_demote_command(cfg, mode),
+        )),
+    }
+}
+
+fn prepare_start_postgres_launch(
+    cfg: &RuntimeConfigV2,
+    observed: &ProcessObservedSnapshot,
+    start_intent: &PostgresStartIntent,
+) -> Result<ProcessCommandSpec, ProcessPreparationError> {
+    let source = match start_intent {
+        PostgresStartIntent::Primary => {
             if observed.managed_recovery_state != ManagedRecoverySignal::None {
                 return Err(ProcessPreparationError::IntentMaterialization(
                     ProcessError::InvalidSpec(
@@ -131,62 +160,43 @@ pub(crate) fn prepare_process_launch(
                     ),
                 ));
             }
-            materialize_start_config(cfg, tracked_job_kind, None, None)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command =
-                build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)?;
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
-            ))
+            None
         }
-        ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-            materialize_start_config(cfg, tracked_job_kind, None, None)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command =
-                build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)?;
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
-            ))
-        }
-        ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
-            let source = basebackup_source_from_leader(&cfg.member_id, cfg, &observed.dcs, leader)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
-            materialize_start_config(cfg, tracked_job_kind, Some(&source.conninfo), None)
-                .map_err(ProcessPreparationError::IntentMaterialization)?;
-            let command =
-                build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)?;
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
-            ))
-        }
-        ProcessIntent::Promote => {
-            let command = build_promote_command(cfg, None);
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
-            ))
-        }
-        ProcessIntent::Demote(mode) => {
-            let command = build_demote_command(cfg, mode);
-            Ok(prepared_launch(
-                request.id.clone(),
-                tracked_job_kind,
-                default_timeout_ms(cfg, tracked_job_kind),
-                command,
-            ))
-        }
-    }
+        PostgresStartIntent::DetachedStandby => None,
+        PostgresStartIntent::Replica { leader } => Some(
+            source_from_leader(
+                &cfg.member_id,
+                cfg,
+                &observed.dcs,
+                leader,
+                SourceCredentialKind::Replicator,
+            )
+            .map_err(ProcessPreparationError::IntentMaterialization)?,
+        ),
+    };
+
+    materialize_start_config(
+        cfg,
+        start_intent.job_kind(),
+        source.as_ref().map(|remote_source| &remote_source.conninfo),
+        None,
+    )
+    .map_err(ProcessPreparationError::IntentMaterialization)?;
+    build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)
+}
+
+fn prepared_launch_for_request(
+    cfg: &RuntimeConfigV2,
+    request: &ProcessIntentRequest,
+    command: ProcessCommandSpec,
+) -> PreparedProcessLaunch {
+    let tracked_job_kind = request.intent.job_kind();
+    prepared_launch(
+        request.id.clone(),
+        tracked_job_kind,
+        default_timeout_ms(cfg, tracked_job_kind),
+        command,
+    )
 }
 
 fn observed_snapshot_from_ctx(
@@ -434,11 +444,12 @@ fn default_timeout_ms(cfg: &RuntimeConfigV2, tracked_job_kind: ProcessJobKind) -
     duration_millis_u64(duration)
 }
 
-fn basebackup_source_from_leader(
+fn source_from_leader(
     self_id: &MemberId,
     cfg: &RuntimeConfigV2,
     dcs: &DcsSnapshot,
     leader: &MemberId,
+    credential_kind: SourceCredentialKind,
 ) -> Result<SourceConn, ProcessError> {
     let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
     source_from_member(
@@ -446,24 +457,7 @@ fn basebackup_source_from_leader(
         cfg,
         source_member_id,
         source_member,
-        SourceCredentialKind::Replicator,
-    )
-    .map_err(source_materialization_error)
-}
-
-fn rewind_source_from_leader(
-    self_id: &MemberId,
-    cfg: &RuntimeConfigV2,
-    dcs: &DcsSnapshot,
-    leader: &MemberId,
-) -> Result<SourceConn, ProcessError> {
-    let (source_member_id, source_member) = resolve_source_member(dcs, leader)?;
-    source_from_member(
-        self_id,
-        cfg,
-        source_member_id,
-        source_member,
-        SourceCredentialKind::Rewinder,
+        credential_kind,
     )
     .map_err(source_materialization_error)
 }
