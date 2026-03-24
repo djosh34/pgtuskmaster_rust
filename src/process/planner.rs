@@ -1,12 +1,12 @@
 use crate::{
     config_v2::RuntimeConfigV2,
     dcs::{DcsMemberState, DcsSnapshot},
-    postgres_managed_conf::{ManagedPostgresStartIntent, ManagedRecoverySignal},
+    postgres_managed_conf::{ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME},
     process::{
         jobs::{
             BaseBackupSpec, BootstrapSpec, DemoteSpec, MandatoryRoleSourceConn,
             MandatorySourceRole, PgRewindSpec, PostgresStartIntent, ProcessError, ProcessIntent,
-            PromoteSpec, ReplicaProvisionIntent,
+            PromoteSpec, ReplicaProvisionIntent, StartPostgresSpec,
         },
         source::source_from_member,
         state::ProcessObservedSnapshot,
@@ -19,7 +19,7 @@ pub(crate) enum ClusterProcessPlan {
     Bootstrap(BootstrapSpec),
     BaseBackup(BaseBackupSpec),
     PgRewind(PgRewindSpec),
-    StartManagedPostgres(ManagedPostgresStartIntent),
+    StartPostgres(StartPostgresSpec),
     Promote(PromoteSpec),
     Demote(DemoteSpec),
 }
@@ -72,20 +72,20 @@ impl ProcessIntentPlanner {
                         "existing postgres data dir contains managed replica recovery state but no leader-derived source is available to rebuild authoritative managed config".to_string(),
                     ));
                 }
-                Ok(ClusterProcessPlan::StartManagedPostgres(
-                    ManagedPostgresStartIntent::primary(),
-                ))
+                Ok(ClusterProcessPlan::StartPostgres(start_postgres_spec(
+                    cfg, None, None,
+                )))
             }
-            ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => {
-                Ok(ClusterProcessPlan::StartManagedPostgres(
-                    ManagedPostgresStartIntent::detached_standby(),
-                ))
-            }
+            ProcessIntent::Start(PostgresStartIntent::DetachedStandby) => Ok(
+                ClusterProcessPlan::StartPostgres(start_postgres_spec(cfg, None, None)),
+            ),
             ProcessIntent::Start(PostgresStartIntent::Replica { leader }) => {
                 let source = basebackup_source_from_leader(self_id, cfg, &observed.dcs, leader)?;
-                Ok(ClusterProcessPlan::StartManagedPostgres(
-                    ManagedPostgresStartIntent::replica(source.conninfo, None),
-                ))
+                Ok(ClusterProcessPlan::StartPostgres(start_postgres_spec(
+                    cfg,
+                    Some(source.conninfo),
+                    None,
+                )))
             }
             ProcessIntent::Promote => Ok(ClusterProcessPlan::Promote(PromoteSpec {
                 data_dir: cfg.postgres.data_dir.clone(),
@@ -98,6 +98,20 @@ impl ProcessIntentPlanner {
                 timeout_ms: None,
             })),
         }
+    }
+}
+
+fn start_postgres_spec(
+    cfg: &RuntimeConfigV2,
+    primary_conninfo: Option<crate::pginfo::state::PgConnInfo>,
+    primary_slot_name: Option<String>,
+) -> StartPostgresSpec {
+    StartPostgresSpec {
+        data_dir: cfg.postgres.data_dir.clone(),
+        config_file: cfg.postgres.data_dir.join(MANAGED_POSTGRESQL_CONF_NAME),
+        log_file: cfg.postgres.log_file.clone(),
+        primary_conninfo,
+        primary_slot_name,
     }
 }
 
@@ -156,11 +170,11 @@ mod tests {
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
-        postgres_managed_conf::{ManagedPostgresStartIntent, ManagedRecoverySignal},
+        postgres_managed_conf::ManagedRecoverySignal,
         process::{
             jobs::{
                 MandatorySourceRole, PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent,
-                ShutdownMode,
+                ShutdownMode, StartPostgresSpec,
             },
             state::ProcessObservedSnapshot,
         },
@@ -263,12 +277,12 @@ mod tests {
             let matches_expected = matches!(
                 (&plan, label),
                 (ClusterProcessPlan::Bootstrap(_), "bootstrap")
-                    | (ClusterProcessPlan::StartManagedPostgres(_), "start-primary")
+                    | (ClusterProcessPlan::StartPostgres(_), "start-primary")
                     | (
-                        ClusterProcessPlan::StartManagedPostgres(_),
+                        ClusterProcessPlan::StartPostgres(_),
                         "start-detached-standby"
                     )
-                    | (ClusterProcessPlan::StartManagedPostgres(_), "start-replica")
+                    | (ClusterProcessPlan::StartPostgres(_), "start-replica")
                     | (ClusterProcessPlan::BaseBackup(_), "basebackup")
                     | (ClusterProcessPlan::PgRewind(_), "pg-rewind")
                     | (ClusterProcessPlan::Promote(_), "promote")
@@ -371,9 +385,10 @@ mod tests {
             )
             .map_err(|err| format!("plan replica start failed: {err}"))?;
         match replica_plan {
-            ClusterProcessPlan::StartManagedPostgres(ManagedPostgresStartIntent::Replica {
-                primary_conninfo,
+            ClusterProcessPlan::StartPostgres(StartPostgresSpec {
+                primary_conninfo: Some(primary_conninfo),
                 primary_slot_name,
+                ..
             }) => {
                 if primary_conninfo.user != "replicator" {
                     return Err(format!(

@@ -107,23 +107,11 @@ pub(crate) struct DemoteSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct StartPostgresSpec {
-    pub(crate) mode: PostgresStartMode,
     pub(crate) data_dir: PathBuf,
     pub(crate) config_file: PathBuf,
     pub(crate) log_file: PathBuf,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ShutdownMode {
-    Fast,
-    Immediate,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum PostgresStartMode {
-    Primary,
-    DetachedStandby,
-    Replica,
+    pub(crate) primary_conninfo: Option<PgConnInfo>,
+    pub(crate) primary_slot_name: Option<String>,
 }
 
 impl ShutdownMode {
@@ -133,6 +121,12 @@ impl ShutdownMode {
             Self::Immediate => "immediate",
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownMode {
+    Fast,
+    Immediate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, LogValue)]

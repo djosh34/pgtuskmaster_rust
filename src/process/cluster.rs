@@ -5,11 +5,10 @@ use thiserror::Error;
 use crate::{
     config_v2::{types::Secret, RuntimeConfigV2},
     postgres_managed::{inspect_managed_recovery_state, materialize_managed_postgres_config},
-    postgres_managed_conf::ManagedPostgresStartIntent,
     process::{
         jobs::{
-            PostgresStartMode, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
-            ProcessJobKind, StartPostgresSpec,
+            ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError, ProcessJobKind,
+            StartPostgresSpec,
         },
         planner::{ClusterProcessPlan, ProcessIntentPlanner},
         state::{
@@ -105,14 +104,9 @@ fn execution_request_from_plan(
             ProcessExecutionKind::BaseBackup(spec.clone())
         }
         ClusterProcessPlan::PgRewind(spec) => ProcessExecutionKind::PgRewind(spec.clone()),
-        ClusterProcessPlan::StartManagedPostgres(start_intent) => {
-            let config = materialize_start_config(cfg, start_intent)?;
-            ProcessExecutionKind::StartPostgres(StartPostgresSpec {
-                mode: managed_start_mode(start_intent),
-                data_dir: cfg.postgres.data_dir.clone(),
-                config_file: config.postgresql_conf_path,
-                log_file: cfg.postgres.log_file.clone(),
-            })
+        ClusterProcessPlan::StartPostgres(spec) => {
+            materialize_start_config(cfg, tracked_job_kind, spec)?;
+            ProcessExecutionKind::StartPostgres(spec.clone())
         }
         ClusterProcessPlan::Promote(spec) => ProcessExecutionKind::Promote(spec.clone()),
         ClusterProcessPlan::Demote(spec) => ProcessExecutionKind::Demote(spec.clone()),
@@ -127,20 +121,15 @@ fn execution_request_from_plan(
 
 fn materialize_start_config(
     cfg: &RuntimeConfigV2,
-    start_intent: &ManagedPostgresStartIntent,
-) -> Result<crate::postgres_managed::ManagedPostgresConfig, ProcessError> {
+    tracked_job_kind: ProcessJobKind,
+    start_spec: &StartPostgresSpec,
+) -> Result<(), ProcessError> {
     ensure_start_paths(cfg)?;
-    materialize_managed_postgres_config(cfg, start_intent).map_err(|err| {
-        ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
-    })
-}
-
-fn managed_start_mode(start_intent: &ManagedPostgresStartIntent) -> PostgresStartMode {
-    match start_intent {
-        ManagedPostgresStartIntent::Primary => PostgresStartMode::Primary,
-        ManagedPostgresStartIntent::DetachedStandby => PostgresStartMode::DetachedStandby,
-        ManagedPostgresStartIntent::Replica { .. } => PostgresStartMode::Replica,
-    }
+    materialize_managed_postgres_config(cfg, tracked_job_kind, start_spec)
+        .map(|_| ())
+        .map_err(|err| {
+            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
+        })
 }
 
 fn build_command(
@@ -453,15 +442,14 @@ mod tests {
         dcs::{DcsMemberState, DcsSnapshot},
         dev_support::test_fs::unique_test_dir,
         pginfo::{
-            conninfo::{PgClientTls, PgConnInfo},
+            conninfo::PgConnInfo,
             state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         },
         postgres_managed_conf::{
-            managed_standby_passfile_path, ManagedPostgresStartIntent, ManagedRecoverySignal,
-            MANAGED_POSTGRESQL_CONF_NAME,
+            managed_standby_passfile_path, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_NAME,
         },
         process::{
-            jobs::{PostgresStartIntent, ProcessIntent, ProcessJobKind, ReplicaProvisionIntent},
+            jobs::{PostgresStartIntent, ProcessIntent, ReplicaProvisionIntent},
             state::ProcessIntentRequest,
         },
         state::{
@@ -573,8 +561,15 @@ psql = "/bin/true""#
         }
         match prepared.request.kind {
             crate::process::state::ProcessExecutionKind::StartPostgres(spec) => {
-                if spec.mode != crate::process::jobs::PostgresStartMode::Replica {
-                    return Err(format!("unexpected start mode: {:?}", spec.mode));
+                let primary_conninfo = spec
+                    .primary_conninfo
+                    .as_ref()
+                    .ok_or_else(|| "replica start should include primary_conninfo".to_string())?;
+                if primary_conninfo.user != "replicator" {
+                    return Err(format!(
+                        "replica start should use replicator user, observed `{}`",
+                        primary_conninfo.user
+                    ));
                 }
                 if !spec.config_file.exists() {
                     return Err(format!(
@@ -764,152 +759,6 @@ psql = "/bin/true""#
                 "non-start plan should not materialize standby passfile at {}",
                 passfile_path.display()
             ));
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn prepare_start_command_uses_materialized_config_path() -> Result<(), String> {
-        let root = unique_test_dir("process-cluster", "start-command")?;
-        let data_dir = root.join("data");
-        let cfg =
-            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
-        let start_intent = ManagedPostgresStartIntent::replica(
-            PgConnInfo {
-                route: crate::state::PgRoute::tcp("10.0.0.12".to_string(), 5432)?,
-                user: "replicator".to_string(),
-                dbname: "postgres".to_string(),
-                application_name: None,
-                connect_timeout_s: Some(5),
-                options: None,
-                tls: PgClientTls {
-                    mode: crate::pginfo::state::PgSslMode::Prefer,
-                    root_cert: None,
-                    client_cert: None,
-                    client_key: None,
-                },
-            },
-            None,
-        );
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: crate::dcs::DcsSnapshot::starting(),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-start".to_string()),
-            intent: ProcessIntent::Start(PostgresStartIntent::DetachedStandby),
-        };
-
-        let prepared = super::PreparedProcessLaunch {
-            request: super::execution_request_from_plan(
-                request.id.clone(),
-                request.intent.job_kind(),
-                &cfg,
-                &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(start_intent),
-            )
-            .map_err(|err| format!("lower start execution request failed: {err}"))?,
-            command: super::build_command(
-                &cfg,
-                &super::execution_request_from_plan(
-                    JobId("job-start".to_string()),
-                    ProcessJobKind::StartReplica,
-                    &cfg,
-                    &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(
-                        ManagedPostgresStartIntent::replica(
-                            PgConnInfo {
-                                route: crate::state::PgRoute::tcp("10.0.0.12".to_string(), 5432)?,
-                                user: "replicator".to_string(),
-                                dbname: "postgres".to_string(),
-                                application_name: None,
-                                connect_timeout_s: Some(5),
-                                options: None,
-                                tls: PgClientTls {
-                                    mode: crate::pginfo::state::PgSslMode::Prefer,
-                                    root_cert: None,
-                                    client_cert: None,
-                                    client_key: None,
-                                },
-                            },
-                            None,
-                        ),
-                    ),
-                )
-                .map_err(|err| format!("lower start execution request failed: {err}"))?
-                .kind,
-            )
-            .map_err(|err| format!("build start command failed: {err}"))?,
-        };
-
-        let config_file = match prepared.request.kind {
-            crate::process::state::ProcessExecutionKind::StartPostgres(ref spec) => {
-                spec.config_file.clone()
-            }
-            ref other => return Err(format!("unexpected execution request kind: {other:?}")),
-        };
-        let has_config_file = prepared
-            .command
-            .args
-            .iter()
-            .any(|arg| arg.contains(config_file.display().to_string().as_str()));
-        if !has_config_file {
-            return Err(format!(
-                "start command did not include prepared config path {}",
-                config_file.display()
-            ));
-        }
-        let passfile_path = managed_standby_passfile_path(&data_dir);
-        if !passfile_path.exists() {
-            return Err(format!(
-                "expected standby passfile to exist at {}",
-                passfile_path.display()
-            ));
-        }
-        if !matches!(observed.managed_recovery_state, ManagedRecoverySignal::None) {
-            return Err("test setup expected managed recovery state none".to_string());
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn execution_request_from_replica_start_uses_replicator_user_conninfo() -> Result<(), String> {
-        let root = unique_test_dir("process-cluster", "replica-plan")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
-        let execution_request = super::execution_request_from_plan(
-            JobId("job-start".to_string()),
-            ProcessJobKind::StartReplica,
-            &cfg,
-            &crate::process::planner::ClusterProcessPlan::StartManagedPostgres(
-                ManagedPostgresStartIntent::replica(
-                    PgConnInfo {
-                        route: crate::state::PgRoute::tcp("10.0.0.14".to_string(), 5432)?,
-                        user: "replicator".to_string(),
-                        dbname: "postgres".to_string(),
-                        application_name: None,
-                        connect_timeout_s: Some(5),
-                        options: None,
-                        tls: PgClientTls {
-                            mode: crate::pginfo::state::PgSslMode::Prefer,
-                            root_cert: None,
-                            client_cert: None,
-                            client_key: None,
-                        },
-                    },
-                    None,
-                ),
-            ),
-        )
-        .map_err(|err| format!("execution request from start plan failed: {err}"))?;
-
-        match execution_request.kind {
-            crate::process::state::ProcessExecutionKind::StartPostgres(spec) => {
-                if spec.mode != crate::process::jobs::PostgresStartMode::Replica {
-                    return Err(format!("unexpected start mode: {:?}", spec.mode));
-                }
-            }
-            other => return Err(format!("unexpected execution request kind: {other:?}")),
         }
 
         Ok(())

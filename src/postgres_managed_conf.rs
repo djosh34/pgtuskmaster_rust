@@ -6,6 +6,7 @@ use std::{
 use thiserror::Error;
 
 use crate::pginfo::{conninfo::render_conninfo_value, state::PgConnInfo};
+use crate::process::jobs::ProcessJobKind;
 
 pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
 pub(crate) const MANAGED_POSTGRESQL_CONF_HEADER: &str = "\
@@ -56,40 +57,6 @@ pub(crate) enum ManagedRecoverySignal {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ManagedPostgresStartIntent {
-    Primary,
-    DetachedStandby,
-    Replica {
-        primary_conninfo: Box<PgConnInfo>,
-        primary_slot_name: Option<String>,
-    },
-}
-
-impl ManagedPostgresStartIntent {
-    pub(crate) fn primary() -> Self {
-        Self::Primary
-    }
-
-    pub(crate) fn detached_standby() -> Self {
-        Self::DetachedStandby
-    }
-
-    pub(crate) fn replica(primary_conninfo: PgConnInfo, primary_slot_name: Option<String>) -> Self {
-        Self::Replica {
-            primary_conninfo: Box::new(primary_conninfo),
-            primary_slot_name,
-        }
-    }
-
-    pub(crate) fn recovery_signal(&self) -> ManagedRecoverySignal {
-        match self {
-            Self::Primary => ManagedRecoverySignal::None,
-            Self::DetachedStandby | Self::Replica { .. } => ManagedRecoverySignal::Standby,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ManagedPostgresTlsConfig {
     Disabled,
     Enabled {
@@ -107,7 +74,9 @@ pub(crate) struct ManagedPostgresConf {
     pub(crate) hba_file: PathBuf,
     pub(crate) ident_file: PathBuf,
     pub(crate) tls: ManagedPostgresTlsConfig,
-    pub(crate) start_intent: ManagedPostgresStartIntent,
+    pub(crate) start_job_kind: ProcessJobKind,
+    pub(crate) primary_conninfo: Option<PgConnInfo>,
+    pub(crate) primary_slot_name: Option<String>,
     pub(crate) extra_gucs: BTreeMap<String, String>,
 }
 
@@ -119,6 +88,10 @@ pub(crate) enum ManagedPostgresConfError {
     ReservedExtraGuc { key: String },
     #[error("invalid primary_slot_name `{slot}`: {message}")]
     InvalidPrimarySlotName { slot: String, message: String },
+    #[error("invalid start job kind for managed postgres config: `{job_kind}`")]
+    InvalidStartJobKind { job_kind: String },
+    #[error("invalid managed start data: {message}")]
+    InvalidStartData { message: String },
 }
 
 pub(crate) fn render_managed_postgres_conf(
@@ -161,17 +134,21 @@ pub(crate) fn render_managed_postgres_conf(
         }
     }
 
-    match &conf.start_intent {
-        ManagedPostgresStartIntent::Primary => {
+    match conf.start_job_kind {
+        ProcessJobKind::StartPrimary => {
+            reject_replica_source_fields(conf)?;
             push_bool_setting(&mut rendered, "hot_standby", false);
         }
-        ManagedPostgresStartIntent::DetachedStandby => {
+        ProcessJobKind::StartDetachedStandby => {
+            reject_replica_source_fields(conf)?;
             push_bool_setting(&mut rendered, "hot_standby", true);
         }
-        ManagedPostgresStartIntent::Replica {
-            primary_conninfo,
-            primary_slot_name,
-        } => {
+        ProcessJobKind::StartReplica => {
+            let primary_conninfo = conf.primary_conninfo.as_ref().ok_or_else(|| {
+                ManagedPostgresConfError::InvalidStartData {
+                    message: "replica start requires primary_conninfo".to_string(),
+                }
+            })?;
             push_bool_setting(&mut rendered, "hot_standby", true);
             let mut primary_conninfo_with_passfile = primary_conninfo.to_string();
             primary_conninfo_with_passfile.push(' ');
@@ -185,10 +162,15 @@ pub(crate) fn render_managed_postgres_conf(
                 "primary_conninfo",
                 primary_conninfo_with_passfile.as_str(),
             );
-            if let Some(slot) = primary_slot_name.as_ref() {
+            if let Some(slot) = conf.primary_slot_name.as_ref() {
                 validate_primary_slot_name(slot.as_str())?;
                 push_string_setting(&mut rendered, "primary_slot_name", slot.as_str());
             }
+        }
+        other => {
+            return Err(ManagedPostgresConfError::InvalidStartJobKind {
+                job_kind: other.as_str().to_string(),
+            });
         }
     }
 
@@ -198,6 +180,20 @@ pub(crate) fn render_managed_postgres_conf(
     }
 
     Ok(rendered)
+}
+
+pub(crate) fn managed_recovery_signal_for_start_job(
+    job_kind: ProcessJobKind,
+) -> Result<ManagedRecoverySignal, ManagedPostgresConfError> {
+    match job_kind {
+        ProcessJobKind::StartPrimary => Ok(ManagedRecoverySignal::None),
+        ProcessJobKind::StartDetachedStandby | ProcessJobKind::StartReplica => {
+            Ok(ManagedRecoverySignal::Standby)
+        }
+        other => Err(ManagedPostgresConfError::InvalidStartJobKind {
+            job_kind: other.as_str().to_string(),
+        }),
+    }
 }
 
 pub(crate) fn validate_extra_guc_entry(
@@ -216,6 +212,18 @@ pub(crate) fn validate_extra_guc_entry(
 
 pub(crate) fn managed_standby_passfile_path(data_dir: &Path) -> PathBuf {
     data_dir.join(MANAGED_STANDBY_PASSFILE_NAME)
+}
+
+fn reject_replica_source_fields(
+    conf: &ManagedPostgresConf,
+) -> Result<(), ManagedPostgresConfError> {
+    if conf.primary_conninfo.is_some() || conf.primary_slot_name.is_some() {
+        return Err(ManagedPostgresConfError::InvalidStartData {
+            message: "only replica starts may carry primary_conninfo or primary_slot_name"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresConfError> {
@@ -332,11 +340,13 @@ mod tests {
         conninfo::PgClientTls,
         state::{PgConnInfo, PgSslMode},
     };
+    use crate::process::jobs::ProcessJobKind;
 
     use super::{
-        managed_standby_passfile_path, render_managed_postgres_conf, validate_extra_guc_entry,
-        ManagedPostgresConf, ManagedPostgresConfError, ManagedPostgresStartIntent,
-        ManagedPostgresTlsConfig, ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER,
+        managed_recovery_signal_for_start_job, managed_standby_passfile_path,
+        render_managed_postgres_conf, validate_extra_guc_entry, ManagedPostgresConf,
+        ManagedPostgresConfError, ManagedPostgresTlsConfig, ManagedRecoverySignal,
+        MANAGED_POSTGRESQL_CONF_HEADER,
     };
 
     fn sample_conf() -> Result<ManagedPostgresConf, String> {
@@ -351,23 +361,22 @@ mod tests {
                 key_file: PathBuf::from("/etc/pgtuskmaster/tls/server.key"),
                 ca_file: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
             },
-            start_intent: ManagedPostgresStartIntent::replica(
-                PgConnInfo {
-                    route: crate::state::PgRoute::tcp("leader.internal".to_string(), 5432)?,
-                    user: "replicator".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: Some("node-b".to_string()),
-                    connect_timeout_s: Some(5),
-                    options: Some("-c wal_receiver_status_interval=5s".to_string()),
-                    tls: PgClientTls {
-                        mode: PgSslMode::Require,
-                        root_cert: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
-                        client_cert: None,
-                        client_key: None,
-                    },
+            start_job_kind: ProcessJobKind::StartReplica,
+            primary_conninfo: Some(PgConnInfo {
+                route: crate::state::PgRoute::tcp("leader.internal".to_string(), 5432)?,
+                user: "replicator".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: Some("node-b".to_string()),
+                connect_timeout_s: Some(5),
+                options: Some("-c wal_receiver_status_interval=5s".to_string()),
+                tls: PgClientTls {
+                    mode: PgSslMode::Require,
+                    root_cert: Some(PathBuf::from("/etc/pgtuskmaster/tls/client-ca.crt")),
+                    client_cert: None,
+                    client_key: None,
                 },
-                Some("slot_a".to_string()),
-            ),
+            }),
+            primary_slot_name: Some("slot_a".to_string()),
             extra_gucs: BTreeMap::from([
                 (
                     "log_line_prefix".to_string(),
@@ -505,7 +514,9 @@ mod tests {
     ) -> Result<(), String> {
         let mut conf = sample_conf()?;
         conf.tls = ManagedPostgresTlsConfig::Disabled;
-        conf.start_intent = ManagedPostgresStartIntent::Primary;
+        conf.start_job_kind = ProcessJobKind::StartPrimary;
+        conf.primary_conninfo = None;
+        conf.primary_slot_name = None;
         let rendered = render_managed_postgres_conf(
             &conf,
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
@@ -530,7 +541,9 @@ mod tests {
     fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
     ) -> Result<(), String> {
         let mut conf = sample_conf()?;
-        conf.start_intent = ManagedPostgresStartIntent::detached_standby();
+        conf.start_job_kind = ProcessJobKind::StartDetachedStandby;
+        conf.primary_conninfo = None;
+        conf.primary_slot_name = None;
         let rendered = render_managed_postgres_conf(
             &conf,
             managed_standby_passfile_path(PathBuf::from("/var/lib/postgresql/data").as_path())
@@ -549,17 +562,20 @@ mod tests {
     }
 
     #[test]
-    fn managed_start_intent_tracks_recovery_signal_state() -> Result<(), String> {
+    fn start_job_kind_tracks_recovery_signal_state() -> Result<(), String> {
         assert_eq!(
-            ManagedPostgresStartIntent::primary().recovery_signal(),
+            managed_recovery_signal_for_start_job(ProcessJobKind::StartPrimary)
+                .map_err(|err| err.to_string())?,
             ManagedRecoverySignal::None
         );
         assert_eq!(
-            ManagedPostgresStartIntent::detached_standby().recovery_signal(),
+            managed_recovery_signal_for_start_job(ProcessJobKind::StartDetachedStandby)
+                .map_err(|err| err.to_string())?,
             ManagedRecoverySignal::Standby
         );
         assert_eq!(
-            sample_conf()?.start_intent.recovery_signal(),
+            managed_recovery_signal_for_start_job(sample_conf()?.start_job_kind)
+                .map_err(|err| err.to_string())?,
             ManagedRecoverySignal::Standby
         );
         Ok(())
