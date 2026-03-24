@@ -1435,6 +1435,34 @@ mod tests {
         }
     }
 
+    #[cfg(test)]
+    impl WriteConvergenceInvariantRunner {
+        pub(crate) fn healthy_for_tests() -> Self {
+            Self::new(
+                None,
+                Duration::from_millis(1),
+                Duration::from_millis(10),
+                Arc::new(WriteGate::new()),
+                Vec::new(),
+                Arc::new(AtomicBool::new(false)),
+                None,
+            )
+        }
+
+        pub(crate) fn failed_for_tests(message: &str) -> Self {
+            let message = message.to_string();
+            Self::new(
+                None,
+                Duration::from_millis(1),
+                Duration::from_millis(10),
+                Arc::new(WriteGate::new()),
+                Vec::new(),
+                Arc::new(AtomicBool::new(false)),
+                Some(thread::spawn(move || Err(message))),
+            )
+        }
+    }
+
     struct SessionHandle {
         client: Arc<Client>,
         connection_task: ConnectionTask,
