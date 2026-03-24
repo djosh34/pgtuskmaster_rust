@@ -10,7 +10,7 @@ use crate::{
         RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
     },
     pginfo::conninfo::PgClientTls,
-    state::{ClusterName, MemberId, ScopeName},
+    state::{ClusterName, MemberId, PgRoute, ScopeName},
 };
 
 use super::private_schema as raw;
@@ -73,11 +73,24 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
         document.postgres.network.listen_port,
         DEFAULT_POSTGRES_LISTEN_PORT,
     );
-    let advertise_port = document
+    let cluster_advertise = map_postgres_advertise(
+        "postgres.network.cluster_advertise",
+        document
+            .postgres
+            .network
+            .cluster_advertise
+            .unwrap_or(raw::PostgresAdvertiseConfig {
+                host: listen_host.clone(),
+                port: listen_port,
+                hostaddr: None,
+            }),
+    )?;
+    let operator_advertise = document
         .postgres
         .network
-        .advertise_port
-        .unwrap_or(listen_port);
+        .operator_advertise
+        .map(|advertise| map_postgres_advertise("postgres.network.operator_advertise", advertise))
+        .transpose()?;
     let connect_timeout_s = nonzero_or_default(
         document.postgres.connect_timeout_s,
         DEFAULT_POSTGRES_CONNECT_TIMEOUT_S,
@@ -89,7 +102,8 @@ pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2
         log_file,
         listen_host,
         listen_port,
-        advertise_port,
+        cluster_advertise,
+        operator_advertise,
         connect_timeout: Duration::from_secs(u64::from(connect_timeout_s)),
         local_database: non_empty_owned(
             "postgres.local_database",
@@ -532,6 +546,18 @@ fn map_dcs_tls(tls: raw::DcsTlsConfig) -> Result<Option<TlsConfig>, ConfigErrorV
             }))
         }
     }
+}
+
+fn map_postgres_advertise(
+    field: &'static str,
+    advertise: raw::PostgresAdvertiseConfig,
+) -> Result<PgRoute, ConfigErrorV2> {
+    let host = non_empty_owned(field, advertise.host)?;
+    if advertise.port == 0 {
+        return Err(validation_error(field, "port must not be zero"));
+    }
+    PgRoute::tcp_hostaddr(host, advertise.port, advertise.hostaddr)
+        .map_err(|message| validation_error(field, message))
 }
 
 fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport, ConfigErrorV2> {

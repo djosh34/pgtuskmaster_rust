@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    net::{IpAddr, SocketAddr},
+    path::PathBuf,
+};
 
 use serde::Deserialize;
 
@@ -211,7 +215,8 @@ pub(super) struct PostgresPathsConfig {
 pub(super) struct PostgresNetworkConfig {
     pub listen_host: String,
     pub listen_port: u16,
-    pub advertise_port: Option<u16>,
+    pub cluster_advertise: Option<PostgresAdvertiseConfig>,
+    pub operator_advertise: Option<PostgresAdvertiseConfig>,
 }
 
 impl Default for PostgresNetworkConfig {
@@ -219,9 +224,18 @@ impl Default for PostgresNetworkConfig {
         Self {
             listen_host: DEFAULT_POSTGRES_LISTEN_HOST.to_string(),
             listen_port: DEFAULT_POSTGRES_LISTEN_PORT,
-            advertise_port: None,
+            cluster_advertise: None,
+            operator_advertise: None,
         }
     }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PostgresAdvertiseConfig {
+    pub host: String,
+    pub port: u16,
+    pub hostaddr: Option<IpAddr>,
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -1,6 +1,6 @@
 # Done Tasks Summary
 
-Generated: Tue Mar 24 01:51:02 AM CET 2026
+Generated: Tue Mar 24 02:53:58 AM CET 2026
 
 # Task `.ralph/tasks/smells/dcs-bootstrap-removal-and-worker-collapse.md`
 
@@ -219,6 +219,18 @@ Your only goal is to reduce code and clean up the codebase.
 ## Task: Collapse DCS Behind A Single Private Component And A Read-Only `DcsView` <status>completed</status> <passes>true</passes>
 
 <priority>high</priority>
+
+<description>
+```
+
+==============
+
+# Task `.ralph/tasks/story-ctl-operator-experience/11-task-qa-the-shipped-docker-compose-up-operator-walkthrough.md`
+
+```
+## Task: QA The Shipped `docker compose up` Operator Walkthrough <status>completed</status> <passes>true</passes>
+
+<priority>low</priority>
 
 <description>
 ```

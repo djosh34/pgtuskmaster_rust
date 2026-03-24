@@ -11,7 +11,7 @@ use crate::{
         LogLevel, LoggingConfig, PostgresConfig, RoleConfig, RuntimeConfigV2, Secret, TimingConfig,
     },
     pginfo::conninfo::{PgClientTls, PgSslMode},
-    state::{ClusterName, MemberId, ScopeName},
+    state::{ClusterName, MemberId, PgRoute, ScopeName},
 };
 
 use super::HarnessError;
@@ -108,7 +108,14 @@ fn sample_postgres_config() -> PostgresConfig {
         log_file: working_root.join("postgres.log"),
         listen_host: SAMPLE_POSTGRES_LISTEN_HOST.to_string(),
         listen_port: SAMPLE_POSTGRES_LISTEN_PORT,
-        advertise_port: SAMPLE_POSTGRES_LISTEN_PORT,
+        cluster_advertise: PgRoute::new(
+            crate::state::PgEndpoint::Tcp {
+                host: SAMPLE_POSTGRES_LISTEN_HOST.to_string(),
+                port: SAMPLE_POSTGRES_LISTEN_PORT,
+            },
+            None,
+        ),
+        operator_advertise: None,
         connect_timeout: Duration::from_secs(5),
         local_database: "postgres".to_string(),
         source_client_tls: PgClientTls {
@@ -218,14 +225,6 @@ impl RuntimeConfigBuilder {
     pub(crate) fn with_postgres_listen_port(self, listen_port: u16) -> Self {
         self.transform_postgres(move |postgres| PostgresConfig {
             listen_port,
-            ..postgres
-        })
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_postgres_advertise_port(self, advertise_port: u16) -> Self {
-        self.transform_postgres(move |postgres| PostgresConfig {
-            advertise_port,
             ..postgres
         })
     }

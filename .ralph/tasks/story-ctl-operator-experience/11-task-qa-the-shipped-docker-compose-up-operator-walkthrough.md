@@ -1,4 +1,4 @@
-## Task: QA The Shipped `docker compose up` Operator Walkthrough <status>not_started</status> <passes>false</passes>
+## Task: QA The Shipped `docker compose up` Operator Walkthrough <status>completed</status> <passes>true</passes>
 
 <priority>low</priority>
 
@@ -167,23 +167,103 @@ pgtm -c docker/pgtm.toml status -v
 </description>
 
 <acceptance_criteria>
-- [ ] Add a QA evidence directory at `.ralph/evidence/docker-compose-qa-walkthrough/` with a report that answers:
+- [x] Add a QA evidence directory at `.ralph/evidence/docker-compose-qa-walkthrough/` with a report that answers:
   - how `pgtm` was installed
   - whether installing `pgtm` was easy or overly complicated
   - was it easy to figure out from the shipped docs/configs without searching or extra work
   - how should the operator experience be improved
   - exactly what commands were run and what each one verified
-- [ ] Install `pgtm` on the host first and validate whether the repo makes that installation path obvious and truthful.
-- [ ] Start the shipped stack with `docker compose up -d --build` and prove whether that documented entrypoint is truthful from a clean operator workflow.
-- [ ] Validate the shipped host-side operator config `docker/pgtm.toml` against the running stack.
-- [ ] Verify the documented `pgtm` feature set against the Docker stack: `status`, `--json`, `status -v`, `status --watch`, `primary`, `primary --tls`, `replicas`, `switchover request`, targeted `switchover request --switchover-to ...`, and `switchover clear`.
-- [ ] Kill one node container, run `pgtm -c ...` checks while it is down, restart it, and verify the cluster view converges again.
-- [ ] Exercise negative cases that should fail, including wrong auth material and wrong PostgreSQL password, and document whether those failures are clear and correct.
-- [ ] Fix any doc/config/compose issues needed to make the shipped experience truthful, or create bug tasks for each remaining gap using the `$add-bug` skill.
-- [ ] The final evidence report explicitly lists every bug task created during this QA pass.
-- [ ] Tear the Docker stack down cleanly after the QA pass.
-- [ ] `make check` — passes cleanly
-- [ ] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
-- [ ] `make lint` — passes cleanly
-- [ ] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
+- [x] Install `pgtm` on the host first and validate whether the repo makes that installation path obvious and truthful.
+- [x] Start the shipped stack with `docker compose up -d --build` and prove whether that documented entrypoint is truthful from a clean operator workflow.
+- [x] Validate the shipped host-side operator config `docker/pgtm.toml` against the running stack.
+- [x] Verify the documented `pgtm` feature set against the Docker stack: `status`, `--json`, `status -v`, `status --watch`, `primary`, `primary --tls`, `replicas`, `switchover request`, targeted `switchover request --switchover-to ...`, and `switchover clear`.
+- [x] Kill one node container, run `pgtm -c ...` checks while it is down, restart it, and verify the cluster view converges again.
+- [x] Exercise negative cases that should fail, including wrong auth material and wrong PostgreSQL password, and document whether those failures are clear and correct.
+- [x] Fix any doc/config/compose issues needed to make the shipped experience truthful, or create bug tasks for each remaining gap using the `$add-bug` skill.
+- [x] The final evidence report explicitly lists every bug task created during this QA pass.
+- [x] Tear the Docker stack down cleanly after the QA pass.
+- [x] `make check` — passes cleanly
+- [x] `make test` — passes cleanly (default suite; excludes only ultra-long tests moved to `make test-long`)
+- [x] `make lint` — passes cleanly
+- [x] If this task impacts ultra-long tests (or their selection): `make test-long` — passes cleanly (ultra-long-only)
 </acceptance_criteria>
+
+<boundary_review>
+Smell applied from `improve-code-boundaries`: wrong operator-entrypoint/config truth boundary.
+
+Verified repository facts before execution:
+- The repository root already has `docker-compose.yml` that simply includes `docker/compose.yml`, so the plain root command `docker compose up -d --build` is a real candidate for the canonical operator entrypoint.
+- `README.md` and the checked-in docs currently still teach `docker compose -f docker/compose.yml ...`, so the task text and the shipped docs are already split on which compose entrypoint is the truth.
+- `docker/pgtm.toml` is the shipped host-side operator config, and `docs/examples/docker-cluster-node-a.toml` is currently the same config shape with the same TLS/token material and the same `base_url`.
+- `docs/examples/docker-cluster-node-b.toml` and `docs/examples/docker-cluster-node-c.toml` differ only by `base_url`, which means the docs currently carry a duplicated operator-config surface instead of one canonical entrypoint plus the minimal alternates genuinely needed for cross-seed validation.
+- The host install path for `pgtm` is discoverable in `Makefile` as `make install-pgtm`, but the README/tutorial/how-to surface currently assumes the binary already exists instead of teaching that install step explicitly.
+- No QA evidence directory exists yet for this walkthrough, so execution must create one from scratch and keep it operator-oriented.
+
+Verified reduction / reuse constraints for execution:
+- Prefer one canonical host-side operator config surface for the Docker walkthrough. Do not preserve docs-owned duplicates if `docker/pgtm.toml` already serves the same role truthfully.
+- Keep per-node alternate seed configs only if they are still needed for real cross-seed verification; otherwise collapse or rewrite docs to point at the shipped canonical config.
+- Treat the install surface as part of the same boundary: the docs should not require code spelunking to discover how to put `pgtm` on the host.
+- If execution shows the current docs/config split still hides indispensable operator behavior, switch this task back to `TO BE VERIFIED`, document the exact missing boundary here, and stop immediately instead of papering over it with more duplicated examples.
+
+Execution findings that force this task back to design:
+- Fixing the shipped Docker runtime configs was enough to make the repo-root `docker compose up -d --build` workflow boot and to make host-side `pgtm -c docker/pgtm.toml status`, `--json`, `status -v`, and `status --watch` work again.
+- It was not enough to make `pgtm primary`, `pgtm primary --tls`, and `pgtm replicas` truthful from the host. Those commands currently resolve the single PostgreSQL endpoint stored in DCS member state, which in the Docker stack must remain the internal HA routing target (`node-x:5432`) so replicas and rewinding work.
+- The host-side walkthrough, however, needs a distinct operator-routable PostgreSQL target (`127.0.0.1:1500x`, or equivalent host plus `hostaddr` representation) so `psql "$(pgtm -c docker/pgtm.toml primary --tls)"` works from the host.
+- The current types cannot represent both truths at once:
+  - `src/dcs/state.rs` stores only `postgres_endpoint: PgEndpoint` per member
+  - `src/cli/connect.rs` renders that endpoint directly into `primary` and `replicas` with `hostaddr: None`
+- This is therefore not just a docs/config cleanup anymore. It is a boundary/type problem between internal HA routing data and operator-facing PostgreSQL routing output.
+- Chosen boundary fix for execution:
+  - extract one shared PostgreSQL route type, `PgRoute { endpoint, hostaddr }`, so DCS member state and conninfo rendering stop carrying the same address facts in separate shapes
+  - replace the single DCS member PostgreSQL route with two explicit roles:
+    - `cluster_postgres`: the intra-cluster HA/replication route that rewind, replica follow, and upstream matching continue to use
+    - `operator_postgres`: an optional operator-routable route that `pgtm primary` and `pgtm replicas` prefer when present, with fallback to `cluster_postgres` for same-network deployments
+  - replace runtime `postgres.network.advertise_port` with typed publish routes:
+    - `postgres.network.cluster_advertise`
+    - `postgres.network.operator_advertise`
+  - keep `docker/pgtm.toml` and the docs examples focused on API seed URL plus TLS/auth material only; per-member PostgreSQL routing truth must come from the node-published DCS payload
+  - for the Docker walkthrough, each node runtime config should publish:
+    - cluster route: `host = "node-x"`, `port = 5432`
+    - operator route: `host = "node-x"`, `port = 1500x`, `hostaddr = "127.0.0.1"`
+</boundary_review>
+
+<plan>
+- [x] Start from the operator surface only and record discovery friction before fixing anything:
+  - read `README.md`, `docs/src/tutorial/first-ha-cluster.md`, `docs/src/how-to/check-cluster-health.md`, and `docs/src/how-to/perform-switchover.md` as written
+  - identify the first point where host install or compose usage stops being discoverable without code/config spelunking
+  - create `.ralph/evidence/docker-compose-qa-walkthrough/` and begin a command/evidence log immediately
+- [x] Verify and document the host install path first:
+  - install `pgtm` from the host using the documented-or-discoverable repo path
+  - capture whether that was a simple one-command install or a more complicated flow
+  - if the docs omit or misstate the install path, plan doc fixes around the real supported command instead of adding workaround prose
+- [x] Prove the compose entrypoint from the repo root:
+  - start from a clean environment
+  - run `docker compose up -d --build` from the repo root first, because the root wrapper file exists and the task requires validating that top-level workflow
+  - if the plain root command and the currently documented `-f docker/compose.yml` form differ materially, treat that mismatch as a product issue to fix or bug-track explicitly
+- [x] Exercise the shipped host-side operator config and the documented command surface against the live stack:
+  - baseline: `docker compose ps`, `pgtm -c docker/pgtm.toml status`, `--json`, `status -v`, `status --watch`, `primary`, `primary --tls`, `replicas`
+  - switchover: generic visibility plus targeted `switchover request --switchover-to node-b`, watch output, and `switchover clear`
+  - failure/recovery: kill `node-b`, observe degraded truth through `pgtm`, restart `node-b`, and observe convergence back to healthy
+- [x] Exercise the required negative paths with evidence-local configs only:
+  - copy the shipped operator config into the evidence directory and break auth material to confirm a clear auth failure
+  - break TLS or connectivity by using the wrong port or unusable TLS material and confirm the failure is explicit instead of hanging/misleading
+  - use the resolved primary target with a wrong PostgreSQL password and confirm server-side rejection is clear
+- [x] Fix the operator-truth boundary instead of documenting around it:
+  - if `docker/pgtm.toml` is sufficient for the host-side walkthrough, rewrite README/tutorial/how-to guidance to center that one canonical config
+  - keep or adjust `docs/examples/docker-cluster-node-{b,c}.toml` only if execution proves they add real operator value for alternate seed-node checks
+  - remove or rewrite misleading duplicated instructions rather than preserving parallel doc paths
+  - create `$add-bug` tasks for every remaining gap that is not fully fixed in this task, and list those bug paths in the evidence report
+- [x] Redesign the PostgreSQL routing boundary before resuming execution:
+  - land the shared `PgRoute { endpoint, hostaddr }` type and make `PgConnInfo` reuse it instead of storing endpoint plus hostaddr separately
+  - change `DcsMemberState` to publish `cluster_postgres` plus optional `operator_postgres`, and make CLI connection rendering prefer `operator_postgres` with fallback to `cluster_postgres`
+  - replace runtime `postgres.network.advertise_port` with `cluster_advertise` and optional `operator_advertise` so the node can publish both truths explicitly
+  - update the Docker node configs to publish `node-x:5432` for HA and `node-x:1500x` plus `hostaddr = 127.0.0.1` for operator DSNs
+  - update DCS/API/CLI/docs/examples to the new canonical routing model before resuming the QA walkthrough
+- [x] Finish with the required validation and task bookkeeping:
+  - tear the Docker stack down cleanly after the QA pass
+  - run `make check`, `make lint`, `make test`, and `make test-long` in repo order, and tick the acceptance criteria only after they pass
+  - set `<passes>true</passes>`, run `/bin/bash .ralph/task_switch.sh`, commit all tracked Ralph/task/doc/code/evidence changes, push, and stop
+- [ ] If execution shows the canonical operator surface cannot be made truthful without a different config/doc boundary, switch this task back to `TO BE VERIFIED`, document the exact mismatch here, and stop immediately
+
+NOW EXECUTE
+</plan>

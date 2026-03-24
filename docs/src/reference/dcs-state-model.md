@@ -15,7 +15,8 @@ DcsQuorumState
 - members: BTreeMap<MemberId, DcsMemberState>
 
 DcsMemberState
-- postgres_endpoint: PgEndpoint
+- cluster_postgres: PgRoute
+- operator_postgres: Option<PgRoute>
 - postgres: PgInfoState
 
 DcsAuthority
@@ -77,13 +78,17 @@ Public accessors expose the authoritative cluster payload:
 
 ```text
 pub struct DcsMemberState {
-    pub postgres_endpoint: PgEndpoint,
+    pub cluster_postgres: PgRoute,
+    pub operator_postgres: Option<PgRoute>,
     pub postgres: PgInfoState,
 }
 ```
 
-- `postgres_endpoint` is the advertised PostgreSQL endpoint for the member
+- `cluster_postgres` is the advertised PostgreSQL route for intra-cluster HA, replication, and rewind
+- `operator_postgres` is an optional operator-routable PostgreSQL route for host-side clients such as `pgtm primary` and `pgtm replicas`
 - `postgres` is the current PostgreSQL observation for that member
+
+When `operator_postgres` is absent, operator-facing connection helpers fall back to `cluster_postgres`.
 
 These fields are public and serializable as part of the published snapshot and API surface. The etcd-backed store still uses internal DCS record types rather than writing `DcsMemberState` directly.
 

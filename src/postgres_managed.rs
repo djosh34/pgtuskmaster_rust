@@ -205,7 +205,7 @@ fn render_libpq_passfile_entry(
     password: &str,
 ) -> Result<String, ManagedPostgresError> {
     const STREAMING_REPLICATION_DATABASE: &str = "replication";
-    let (host, port) = passfile_target_fields(&conninfo.endpoint);
+    let (host, port) = passfile_target_fields(conninfo.route.endpoint());
 
     if [
         host.as_str(),
@@ -596,8 +596,10 @@ mod tests {
         let cfg = runtime_config_v2(sample_runtime_config(data_dir.clone()))?;
         let replica_start = ManagedPostgresStartIntent::replica(
             PgConnInfo {
-                endpoint: tcp_connect_target("leader.internal", 5432)?,
-                hostaddr: None,
+                route: crate::state::PgRoute::new(
+                    tcp_connect_target("leader.internal", 5432)?,
+                    None,
+                ),
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: None,
@@ -976,7 +978,12 @@ mod tests {
 
             let mut runtime_config = sample_runtime_config(replica_data.clone());
             runtime_config.postgres.listen_port = replica_port;
-            runtime_config.postgres.advertise_port = replica_port;
+            runtime_config.postgres.cluster_advertise =
+                crate::state::PgRoute::tcp(
+                    runtime_config.postgres.listen_host.clone(),
+                    replica_port,
+                )
+                .map_err(real_test_error)?;
             runtime_config.postgres.socket_dir = replica_socket.clone();
             runtime_config.postgres.log_file = replica_logs.join("managed-postgres.log");
             runtime_config.postgres.pg_hba_contents = concat!(
@@ -991,9 +998,11 @@ mod tests {
                 &runtime_config,
                 &ManagedPostgresStartIntent::replica(
                     PgConnInfo {
-                        endpoint: tcp_connect_target("127.0.0.1", primary_port)
-                            .map_err(real_test_error)?,
-                        hostaddr: None,
+                        route: crate::state::PgRoute::new(
+                            tcp_connect_target("127.0.0.1", primary_port)
+                                .map_err(real_test_error)?,
+                            None,
+                        ),
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,
@@ -1260,8 +1269,7 @@ mod tests {
 
     fn sample_replica_conninfo_for_port(port: u16) -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            endpoint: tcp_connect_target("leader.internal", port)?,
-            hostaddr: None,
+            route: crate::state::PgRoute::new(tcp_connect_target("leader.internal", port)?, None),
             user: "replicator".to_string(),
             dbname: "postgres".to_string(),
             application_name: None,

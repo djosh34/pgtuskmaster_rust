@@ -96,7 +96,7 @@ impl ExternalToolLowerer {
                 validate_non_empty_path("basebackup.data_dir", &spec.data_dir)?;
                 validate_non_empty_pg_endpoint(
                     "basebackup.source_conninfo.endpoint",
-                    &spec.source.conninfo.endpoint,
+                    spec.source.conninfo.route.endpoint(),
                 )?;
                 if spec.source.conninfo.user.trim().is_empty() {
                     return Err(ProcessError::InvalidSpec(
@@ -128,7 +128,7 @@ impl ExternalToolLowerer {
                 validate_non_empty_path("pg_rewind.target_data_dir", &spec.target_data_dir)?;
                 validate_non_empty_pg_endpoint(
                     "pg_rewind.source_conninfo.endpoint",
-                    &spec.source.conninfo.endpoint,
+                    spec.source.conninfo.route.endpoint(),
                 )?;
                 if spec.source.conninfo.user.trim().is_empty() {
                     return Err(ProcessError::InvalidSpec(
@@ -377,7 +377,6 @@ mod tests {
             session::PreparedManagedPostgresSession,
             state::ProcessObservedSnapshot,
         },
-        state::PgEndpoint,
     };
 
     use super::ExternalToolLowerer;
@@ -409,8 +408,7 @@ mod tests {
             source: MandatoryRoleSourceConn {
                 role: MandatorySourceRole::Replicator,
                 conninfo: PgConnInfo {
-                    endpoint: PgEndpoint::tcp("10.0.0.11".to_string(), 5432)?,
-                    hostaddr: None,
+                    route: crate::state::PgRoute::tcp("10.0.0.11".to_string(), 5432)?,
                     user: "replicator".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -486,8 +484,7 @@ mod tests {
                 source: MandatoryRoleSourceConn {
                     role: MandatorySourceRole::Replicator,
                     conninfo: PgConnInfo {
-                        endpoint: PgEndpoint::tcp("10.0.0.12".to_string(), 5432)?,
-                        hostaddr: None,
+                        route: crate::state::PgRoute::tcp("10.0.0.12".to_string(), 5432)?,
                         user: "replicator".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,

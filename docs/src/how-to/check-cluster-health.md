@@ -11,8 +11,8 @@ This guide shows how to inspect the current cluster state with one operator comm
 If you are using the local Docker HA cluster, first confirm the stack is up and then seed `pgtm` from one of the shipped operator configs:
 
 ```bash
-docker compose -f docker/compose.yml ps
-pgtm -c docs/examples/docker-cluster-node-a.toml status
+docker compose ps
+pgtm -c docker/pgtm.toml status
 ```
 
 ## Read the current cluster view
@@ -29,7 +29,7 @@ The explicit form is the same:
 pgtm -c config.toml status
 ```
 
-The command starts from one node API, reads the stable HA state payload, discovers peer API URLs from the stable member list, then samples those peers to build a cluster view.
+The command starts from one node API, reads that node's `/state` payload, and renders the DCS member slots plus the seed node's local HA/process view.
 
 ## Choose the presentation
 
@@ -73,45 +73,34 @@ node-c        replica  full_quorum   replica  ok
 
 The high-signal fields are:
 
-- `health`: `healthy` when the CLI sampled a consistent cluster view; `degraded` when it saw unreachable members, disagreement, degraded trust, or incomplete sampling
+- `health`: `healthy` when the seed node exposes quorum, visible DCS members, and an authoritative primary; `degraded` when one of those signals is missing
 - `queried via`: the seed member used for cluster discovery
 - `SELF`: marks that seed member in the table
-- `ROLE`: the sampled node role as seen from that node's own HA state
-- `TRUST`: the sampled DCS trust value
-- `PHASE`: the sampled HA phase
-- `API`: whether the CLI could sample that member's API (`ok`, `down`, or `missing`)
+- `ROLE`: the role derived from each DCS member slot's PostgreSQL observation
+- `TRUST`: the seed node's published DCS authority label
+- `PHASE`: the seed node's local HA/process detail when you use `-v`
+- `API`: currently `-`; the present CLI does not sample peer APIs
 
-Warnings appear only when the cluster view is degraded. Typical warning causes are:
+Warnings appear only when the seed node's published view is degraded. Typical warning causes are:
 
-- one or more unreachable nodes
-- missing advertised peer API URLs
-- leader mismatch across sampled nodes
-- more than one sampled primary
-- incomplete sampling
+- the seed node reporting `no_quorum`
+- the seed node projecting no authoritative primary
+- the seed node exposing no DCS member slots
 
 ## Interpret the JSON output
 
-`pgtm --json` emits the aggregated cluster view. It is not just the seed node's raw HA state payload.
+`pgtm --json` emits the rendered state command output built from the seed node's payload.
 
 The top-level fields you will usually care about first are:
 
 - `cluster_name`
 - `scope`
 - `queried_via`
-- `sampled_member_count`
 - `discovered_member_count`
 - `health`
 - `warnings`
 - `switchover`
-- `nodes`
-
-Each `nodes[]` entry records whether that member was actually sampled and, if not, why:
-
-- `sampled`
-- `api_status`
-- `observation_error`
-
-That means automation can distinguish "member exists in discovery data" from "member responded successfully."
+- `state`
 
 ## Use the cluster view to answer operator questions
 
@@ -119,16 +108,15 @@ For a quick operational check, look for:
 
 - one node with `ROLE=primary`
 - replicas reporting `ROLE=replica`
-- `TRUST=full_quorum` across sampled nodes
-- `API=ok` for the members you expect to be reachable
+- `TRUST=quorum`
 - no warning lines
 
 For a suspected incident, look for:
 
 - `health: degraded`
-- warnings about leader mismatch or multiple sampled primaries
-- `TRUST=fail_safe` or `TRUST=not_trusted`
-- members stuck in transitional HA roles such as `candidate(...)`, `demoting_for_switchover(...)`, `fenced(...)`, or `fail_safe(...)`
+- warnings about `no_quorum`, no primary, or no visible DCS members
+- members showing `ROLE=unknown` or `READINESS=not_ready`
+- verbose process detail on the seed node that explains whether it is promoting, starting, or idle
 
 ## Resolve connection targets without scraping status output
 
@@ -139,7 +127,7 @@ pgtm -c config.toml primary
 pgtm -c config.toml replicas
 ```
 
-That keeps operator scripts off the table renderer. For example, to connect to the current primary:
+When a member publishes both routes, these commands prefer the operator-routable PostgreSQL target and fall back to the cluster route only when no operator route is available. That keeps operator scripts off the table renderer while still letting the runtime keep an internal HA route for replication and rewind. For example, to connect to the current primary:
 
 ```bash
 psql "$(pgtm -c config.toml primary)"
@@ -156,8 +144,6 @@ pgtm -c config.toml primary --tls
 If the CLI reports a `transport error`, verify:
 
 - the seed operator config or `pgtm.api.base_url` is correct and reachable
-- the node APIs are listening on the expected ports
+- the chosen node API is listening on the expected port
 - network access from the host running `pgtm`
-- peer nodes are publishing usable `api_url` values in cluster discovery data
-
-If a node shows `API=missing`, the cluster discovered that member in stable DCS state but did not have an operator-reachable peer API URL to sample. Fix the node's published API target before treating the cluster view as fully healthy.
+- TLS and role-token material in the operator config still match the target node API

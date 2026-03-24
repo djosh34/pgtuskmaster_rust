@@ -1,5 +1,5 @@
 use crate::config_v2::RuntimeConfigV2;
-use crate::state::PgEndpoint;
+use crate::state::PgRoute;
 use crate::state::{UnixMillis, WorkerError, WorkerStatus};
 
 use super::log_event::PgInfoLogEvent;
@@ -86,11 +86,13 @@ fn now_unix_millis() -> Result<UnixMillis, WorkerError> {
 
 fn probe_conninfo(cfg: &RuntimeConfigV2) -> PgConnInfo {
     PgConnInfo {
-        endpoint: PgEndpoint::UnixSocket {
-            socket_dir: cfg.postgres.socket_dir.clone(),
-            port: cfg.postgres.listen_port,
-        },
-        hostaddr: None,
+        route: PgRoute::new(
+            crate::state::PgEndpoint::UnixSocket {
+                socket_dir: cfg.postgres.socket_dir.clone(),
+                port: cfg.postgres.listen_port,
+            },
+            None,
+        ),
         user: cfg.postgres.superuser.username.clone(),
         dbname: cfg.postgres.local_database.clone(),
         application_name: None,
@@ -121,12 +123,12 @@ mod tests {
         let conninfo = probe_conninfo(&cfg);
         let _ = std::fs::remove_file(path);
 
-        match conninfo.endpoint {
+        match conninfo.route.endpoint() {
             PgEndpoint::UnixSocket { socket_dir, port } => {
                 if socket_dir != Path::new("/tmp/pgtm-socket") {
                     return Err(format!("unexpected socket dir {}", socket_dir.display()));
                 }
-                if port != 5432 {
+                if *port != 5432 {
                     return Err(format!("unexpected port {port}"));
                 }
             }

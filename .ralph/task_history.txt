@@ -356,3 +356,4 @@ NONE
 .ralph/tasks/story-config-v2-direct-cfg-collapse/01-task-create-private-toml-schema-and-initial-runtimeconfigv2-root-handoff.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
 .ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop.md
+.ralph/tasks/story-ctl-operator-experience/11-task-qa-the-shipped-docker-compose-up-operator-walkthrough.md

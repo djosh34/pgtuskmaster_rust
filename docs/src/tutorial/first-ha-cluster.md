@@ -9,22 +9,23 @@ You will start a three-node PostgreSQL HA cluster on your local machine and insp
 - Docker and Docker Compose installed
 - `git clone` of the repository completed
 - a local shell in the repository root directory
-- the `pgtm` binary available in your shell
+- the `pgtm` binary installed from the repo root with `make install-pgtm`
 
-The local docker tutorials use these docs-owned operator configs:
+The local docker walkthrough uses the shipped host-side operator config:
 
-- [`docs/examples/docker-cluster-node-a.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-a.toml)
+- [`docker/pgtm.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docker/pgtm.toml)
+
+Alternate seed configs are still available when you want to prove that another node API reports the same cluster view:
+
 - [`docs/examples/docker-cluster-node-b.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-b.toml)
 - [`docs/examples/docker-cluster-node-c.toml`](/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/docs/examples/docker-cluster-node-c.toml)
-
-Each file is a docs-owned operator config that seeds one host-mapped HTTPS API and includes the shared CA, client certificate, and role-token paths required by the shipped Docker stack.
 
 ## Steps
 
 1. **Start the cluster**
 
    ```bash
-   docker compose -f docker/compose.yml up -d --build
+   docker compose up -d --build
    ```
 
    This command:
@@ -37,7 +38,7 @@ Each file is a docs-owned operator config that seeds one host-mapped HTTPS API a
    Wait until the operator view becomes reachable:
 
    ```bash
-   until pgtm -c docs/examples/docker-cluster-node-a.toml status >/dev/null 2>&1; do
+   until pgtm -c docker/pgtm.toml status >/dev/null 2>&1; do
      sleep 1
    done
    ```
@@ -45,20 +46,20 @@ Each file is a docs-owned operator config that seeds one host-mapped HTTPS API a
 2. **Inspect the running stack**
 
    ```bash
-   docker compose -f docker/compose.yml ps
+   docker compose ps
    ```
 
-3. **Check the current leader through node-a**
+3. **Check the current leader through the canonical host config**
 
    ```bash
-   pgtm -c docs/examples/docker-cluster-node-a.toml status
+   pgtm -c docker/pgtm.toml status
    ```
 
-   The docs example already points `pgtm` at node-a's host-mapped HTTPS API and carries the required TLS and token material. The table is cluster-oriented already, so you can inspect the current topology from one seed node.
+   `docker/pgtm.toml` points `pgtm` at node-a's host-mapped HTTPS API and carries the shared TLS and token material for the shipped Docker stack. The table is cluster-oriented already, so you can inspect the current topology from one seed node.
 
 4. **Verify that the cluster reports a consistent view**
 
-   Run the same command from the other seed configs:
+   Run the same command from the alternate seed configs:
 
    ```bash
    pgtm -c docs/examples/docker-cluster-node-b.toml status
@@ -78,4 +79,4 @@ Each file is a docs-owned operator config that seeds one host-mapped HTTPS API a
 - two follower nodes reporting `replica`
 - reachable HA APIs on ports `18081`, `18082`, and `18083`
 - reachable PostgreSQL ports on `15001`, `15002`, and `15003`
-- truthful `pgtm -c ... status` examples for the local mapped API ports
+- truthful `pgtm -c ... status`, `primary`, and `replicas` examples for the local mapped API and PostgreSQL ports

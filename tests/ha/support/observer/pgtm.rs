@@ -12,7 +12,6 @@ use pgtuskmaster_rust::{
         conninfo::PgClientTls,
         state::{PgConnInfo, PgSslMode},
     },
-    state::PgEndpoint,
 };
 
 use crate::support::{
@@ -273,9 +272,12 @@ fn host_postgres_conninfo(
     observer_key_path: &Path,
 ) -> Result<PgConnInfo> {
     Ok(PgConnInfo {
-        endpoint: PgEndpoint::tcp(member.service_name().to_string(), port)
-            .map_err(HarnessError::message)?,
-        hostaddr: Some(Ipv4Addr::LOCALHOST.into()),
+        route: pgtuskmaster_rust::state::PgRoute::tcp_hostaddr(
+            member.service_name().to_string(),
+            port,
+            Some(Ipv4Addr::LOCALHOST.into()),
+        )
+        .map_err(HarnessError::message)?,
         user: "postgres".to_string(),
         dbname: "postgres".to_string(),
         application_name: None,

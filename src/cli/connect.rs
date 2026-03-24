@@ -30,7 +30,7 @@ pub(crate) async fn run_primary(
             primary_id.as_str()
         ))
     })?;
-    let postgres_target = member.postgres_target();
+    let postgres_target = member.operator_or_cluster_postgres_target();
     let postgres_host = postgres_target.host().trim();
     let postgres_port = postgres_target.port();
     if postgres_host.is_empty() || postgres_port == 0 {
@@ -43,8 +43,7 @@ pub(crate) async fn run_primary(
         targets: vec![StateDerivedConnectionTargetDto {
             member_id: primary_id.0.clone(),
             conninfo: PgConnInfo {
-                endpoint: postgres_target.clone(),
-                hostaddr: None,
+                route: postgres_target.clone(),
                 user: "postgres".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: None,
@@ -68,7 +67,7 @@ pub(crate) async fn run_replicas(
         .members()
         .filter(|(_member_id, member)| member.postgres().is_ready_replica())
         .map(|(member_id, member)| {
-            let postgres_target = member.postgres_target();
+            let postgres_target = member.operator_or_cluster_postgres_target();
             let postgres_host = postgres_target.host().trim();
             let postgres_port = postgres_target.port();
             if postgres_host.is_empty() || postgres_port == 0 {
@@ -80,8 +79,7 @@ pub(crate) async fn run_replicas(
             Ok(StateDerivedConnectionTargetDto {
                 member_id: member_id.0.clone(),
                 conninfo: PgConnInfo {
-                    endpoint: postgres_target.clone(),
-                    hostaddr: None,
+                    route: postgres_target.clone(),
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,

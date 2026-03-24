@@ -1093,7 +1093,7 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus, UpstreamInfo},
         process::state::ProcessState,
         state::{
-            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, ScopeName,
+            ClusterName, LeaseEpoch, MemberId, NodeIdentity, PgRoute, ScopeName,
             SwitchoverState, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
@@ -1131,7 +1131,8 @@ mod tests {
                 Ok((
                     member_id(*member),
                     DcsMemberState {
-                        postgres_endpoint: endpoint_for(*member)?,
+                        cluster_postgres: endpoint_for(*member)?,
+                        operator_postgres: None,
                         postgres: replica_pg_info(readiness.clone()),
                     },
                 ))
@@ -1140,7 +1141,8 @@ mod tests {
         let members = std::iter::once((
             primary_member_id.clone(),
             DcsMemberState {
-                postgres_endpoint: endpoint_for(primary)?,
+                cluster_postgres: endpoint_for(primary)?,
+                operator_postgres: None,
                 postgres: primary_pg_info(),
             },
         ))
@@ -1195,8 +1197,8 @@ mod tests {
         })
     }
 
-    fn endpoint_for(member: ClusterMember) -> Result<PgEndpoint, String> {
-        PgEndpoint::tcp(member.service_name().to_string(), 5432)
+    fn endpoint_for(member: ClusterMember) -> Result<PgRoute, String> {
+        PgRoute::tcp(member.service_name().to_string(), 5432)
     }
 
     fn member_id(member: ClusterMember) -> MemberId {

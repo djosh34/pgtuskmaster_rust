@@ -1,5 +1,5 @@
 use crate::pginfo::conninfo::PgClientTls;
-use crate::state::{ClusterName, MemberId, ScopeName};
+use crate::state::{ClusterName, MemberId, PgRoute, ScopeName};
 use reqwest::Url;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -70,7 +70,8 @@ pub(crate) struct PostgresConfig {
     pub log_file: PathBuf,
     pub listen_host: String,
     pub listen_port: u16,
-    pub advertise_port: u16,
+    pub cluster_advertise: PgRoute,
+    pub operator_advertise: Option<PgRoute>,
     pub connect_timeout: Duration,
     pub local_database: String,
     pub source_client_tls: PgClientTls,

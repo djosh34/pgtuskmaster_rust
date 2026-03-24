@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -48,5 +48,49 @@ impl PgEndpoint {
         match self {
             Self::Tcp { port, .. } | Self::UnixSocket { port, .. } => *port,
         }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PgRoute {
+    pub endpoint: PgEndpoint,
+    pub hostaddr: Option<IpAddr>,
+}
+
+impl PgRoute {
+    pub fn new(endpoint: PgEndpoint, hostaddr: Option<IpAddr>) -> Self {
+        Self { endpoint, hostaddr }
+    }
+
+    pub fn tcp(host: String, port: u16) -> Result<Self, String> {
+        Self::tcp_hostaddr(host, port, None)
+    }
+
+    pub fn tcp_hostaddr(host: String, port: u16, hostaddr: Option<IpAddr>) -> Result<Self, String> {
+        Ok(Self::new(PgEndpoint::tcp(host, port)?, hostaddr))
+    }
+
+    pub fn unix_socket(socket_dir: PathBuf, port: u16) -> Result<Self, String> {
+        Ok(Self::new(PgEndpoint::unix_socket(socket_dir, port)?, None))
+    }
+
+    pub fn endpoint(&self) -> &PgEndpoint {
+        &self.endpoint
+    }
+
+    pub fn host(&self) -> &str {
+        self.endpoint.host()
+    }
+
+    pub fn socket_dir(&self) -> Option<&PathBuf> {
+        self.endpoint.socket_dir()
+    }
+
+    pub fn port(&self) -> u16 {
+        self.endpoint.port()
+    }
+
+    pub fn hostaddr(&self) -> Option<IpAddr> {
+        self.hostaddr
     }
 }

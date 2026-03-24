@@ -1031,7 +1031,7 @@ mod tests {
             conninfo::PgClientTls,
             state::{PgConnInfo, PgSslMode},
         },
-        state::PgEndpoint,
+        state::PgRoute,
     };
     use pgtuskmaster_test_support::{
         binaries::require_pg16_bin_for_real_tests,
@@ -1056,8 +1056,11 @@ mod tests {
 
     fn sample_routing_conninfo() -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            endpoint: PgEndpoint::tcp("node-a".to_string(), 5432)?,
-            hostaddr: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            route: PgRoute::tcp_hostaddr(
+                "node-a".to_string(),
+                5432,
+                Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            )?,
             user: "postgres".to_string(),
             dbname: "postgres db".to_string(),
             application_name: None,

@@ -94,14 +94,26 @@ log_file = "/var/log/pgtuskmaster/postgres.log"
 [postgres.network]
 listen_host = "node-a"
 listen_port = 5432
-advertise_port = 15432
+cluster_advertise = { host = "node-a", port = 5432 }
+operator_advertise = { host = "node-a", port = 15432, hostaddr = "127.0.0.1" }
 ```
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `listen_host` | string | defaults to `127.0.0.1` |
 | `listen_port` | integer | defaults to `5432` |
-| `advertise_port` | integer | optional |
+| `cluster_advertise` | route table | optional; defaults to `listen_host` + `listen_port` |
+| `operator_advertise` | route table | optional; preferred by `pgtm primary` and `pgtm replicas` when present |
+
+Each advertise route accepts:
+
+- `host`
+- `port`
+- optional `hostaddr`
+
+`cluster_advertise` is the intra-cluster PostgreSQL route that HA, replication, and rewind use.
+
+`operator_advertise` is a separate operator-facing PostgreSQL route. Use it when host-side clients must reach PostgreSQL through a different address or port than the cluster's internal HA path.
 
 ### Local database and rewind transport
 

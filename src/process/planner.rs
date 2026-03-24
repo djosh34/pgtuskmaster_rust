@@ -193,7 +193,7 @@ mod tests {
             state::ProcessObservedSnapshot,
         },
         state::{
-            ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState,
+            ClusterName, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState,
             SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
@@ -216,7 +216,8 @@ mod tests {
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
-            postgres_endpoint: PgEndpoint::tcp(host.to_string(), port)?,
+            cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
+            operator_postgres: None,
             postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,

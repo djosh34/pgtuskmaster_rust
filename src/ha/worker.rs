@@ -149,21 +149,18 @@ fn observe(
             upstream: Some(upstream),
             ..
         } => Some(upstream.member_id.clone()),
-        PgInfoState::Replica { common, .. } => match common.pg_config.primary_conninfo.as_ref() {
-            Some(crate::pginfo::state::PgConnInfo {
-                endpoint: PgEndpoint::Tcp { host, port },
-                ..
-            }) => dcs.members().find_map(|(member_id, member)| {
-                (member.postgres_target().host() == host.as_str()
-                    && member.postgres_target().port() == *port)
-                    .then_some(member_id.clone())
+        PgInfoState::Replica { common, .. } => common
+            .pg_config
+            .primary_conninfo
+            .as_ref()
+            .and_then(|conninfo| match conninfo.route.endpoint() {
+                PgEndpoint::Tcp { host, port } => dcs.members().find_map(|(member_id, member)| {
+                    (member.cluster_postgres_target().host() == host.as_str()
+                        && member.cluster_postgres_target().port() == *port)
+                        .then_some(member_id.clone())
+                }),
+                PgEndpoint::UnixSocket { .. } => None,
             }),
-            Some(crate::pginfo::state::PgConnInfo {
-                endpoint: PgEndpoint::UnixSocket { .. },
-                ..
-            })
-            | None => None,
-        },
         PgInfoState::Unknown { .. } | PgInfoState::Primary { .. } => None,
     };
 
@@ -277,7 +274,7 @@ mod tests {
     use crate::{
         pginfo::state::SqlStatus,
         state::{
-            new_state_channel, ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName,
+            new_state_channel, ClusterName, MemberId, NodeIdentity, PgRoute, ScopeName,
             SwitchoverState, SystemIdentifier, TimelineId, UnixMillis, WalLsn, WorkerStatus,
         },
     };
@@ -314,8 +311,7 @@ mod tests {
         let mut state = replica_pg_state(67_272_104, Some(67_272_104));
         if let PgInfoState::Replica { common, .. } = &mut state {
             common.pg_config.primary_conninfo = Some(PgConnInfo {
-                endpoint: PgEndpoint::tcp(host.to_string(), port)?,
-                hostaddr: None,
+                route: PgRoute::tcp(host.to_string(), port)?,
                 user: "replicator".to_string(),
                 dbname: "postgres".to_string(),
                 application_name: Some("node-a".to_string()),
@@ -339,7 +335,8 @@ mod tests {
             BTreeMap::from([(
                 MemberId(member_id.to_string()),
                 DcsMemberState {
-                    postgres_endpoint: PgEndpoint::tcp(host.to_string(), port)?,
+                    cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
+                    operator_postgres: None,
                     postgres: PgInfoState::Unknown {
                         common: PgInfoCommon {
                             worker: WorkerStatus::Running,

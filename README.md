@@ -21,20 +21,21 @@ Start with the [docs overview](docs/src/overview.md), then use the chapter entry
 Three-node HA cluster:
 
 ```bash
-docker compose -f docker/compose.yml up -d --build
+make install-pgtm
+docker compose up -d --build
 ```
 
-This shipped HA stack is TLS-enabled. Use the operator config in `docker/pgtm.toml` or the docs-owned seed configs in `docs/examples/docker-cluster-node-*.toml` when you talk to it with `pgtm`.
+This shipped HA stack is TLS-enabled. Use the canonical host-side operator config in `docker/pgtm.toml` when you talk to it with `pgtm`. The docs-owned seed configs in `docs/examples/docker-cluster-node-{b,c}.toml` are only for alternate-seed checks.
 
 Inspect the running stack:
 
 ```bash
-docker compose -f docker/compose.yml ps
+docker compose ps
 pgtm -c docker/pgtm.toml status
-docker compose -f docker/compose.yml down
+docker compose down
 ```
 
-The compose file publishes node APIs on `18081`, `18082`, and `18083`, and PostgreSQL on `15001`, `15002`, and `15003`. The first run can take noticeably longer because Docker needs to build `pgtuskmaster-local:compose`.
+The compose file publishes node APIs on `18081`, `18082`, and `18083`, and PostgreSQL on `15001`, `15002`, and `15003`. `pgtm primary` and `pgtm replicas` prefer those host-routable PostgreSQL targets when the runtime publishes them. The first run can take noticeably longer because Docker needs to build `pgtuskmaster-local:compose`.
 
 For guided walkthroughs, see [First HA Cluster](docs/src/tutorial/first-ha-cluster.md) and [Check Cluster Health](docs/src/how-to/check-cluster-health.md).
 

@@ -496,7 +496,7 @@ mod tests {
         pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
         process::state::ProcessState,
         state::{
-            LeaseEpoch, MemberId, ObservedWalPosition, PgEndpoint, SwitchoverState, TimelineId,
+            LeaseEpoch, MemberId, ObservedWalPosition, PgRoute, SwitchoverState, TimelineId,
             WalLsn, WorkerStatus,
         },
     };
@@ -540,10 +540,14 @@ mod tests {
 
     fn peer(member_id: &str, pg: PgInfoState) -> DcsMemberState {
         DcsMemberState {
-            postgres_endpoint: PgEndpoint::Tcp {
-                host: member_id.to_string(),
-                port: 5432,
-            },
+            cluster_postgres: PgRoute::new(
+                crate::state::PgEndpoint::Tcp {
+                    host: member_id.to_string(),
+                    port: 5432,
+                },
+                None,
+            ),
+            operator_postgres: None,
             postgres: pg,
         }
     }

@@ -4,6 +4,8 @@ This guide shows how to transfer primary leadership to another cluster member wi
 
 ## Before you begin
 
+If you are following this guide against the repository's shipped Docker stack, install `pgtm` with `make install-pgtm` and use `docker/pgtm.toml` as the canonical operator config.
+
 Verify the cluster is healthy:
 
 ```bash
@@ -116,7 +118,7 @@ If you want the concrete PostgreSQL target without scraping the status table, re
 pgtm -c config.toml primary
 ```
 
-That output is designed to feed straight into `psql`:
+That output is designed to feed straight into `psql`. When the runtime publishes a dedicated operator PostgreSQL route, `pgtm primary` prefers that route and falls back to the cluster route only when no operator route exists:
 
 ```bash
 psql "$(pgtm -c config.toml primary)" -c "SELECT pg_is_in_recovery();"

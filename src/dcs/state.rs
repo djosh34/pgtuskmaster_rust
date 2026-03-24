@@ -4,18 +4,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     pginfo::state::PgInfoState,
-    state::{LeaseEpoch, MemberId, PgEndpoint, SwitchoverState},
+    state::{LeaseEpoch, MemberId, PgRoute, SwitchoverState},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DcsMemberState {
-    pub postgres_endpoint: PgEndpoint,
+    pub cluster_postgres: PgRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operator_postgres: Option<PgRoute>,
     pub postgres: PgInfoState,
 }
 
 impl DcsMemberState {
-    pub fn postgres_target(&self) -> &PgEndpoint {
-        &self.postgres_endpoint
+    pub fn cluster_postgres_target(&self) -> &PgRoute {
+        &self.cluster_postgres
+    }
+
+    pub fn operator_postgres_target(&self) -> Option<&PgRoute> {
+        self.operator_postgres.as_ref()
+    }
+
+    pub fn operator_or_cluster_postgres_target(&self) -> &PgRoute {
+        self.operator_postgres
+            .as_ref()
+            .unwrap_or(&self.cluster_postgres)
     }
 
     pub fn postgres(&self) -> &PgInfoState {
@@ -149,11 +161,13 @@ impl DcsSnapshot {
 }
 
 pub(crate) fn build_local_member_state(
-    advertised_postgres: &PgEndpoint,
+    cluster_postgres: &PgRoute,
+    operator_postgres: Option<&PgRoute>,
     pg_snapshot: &PgInfoState,
 ) -> DcsMemberState {
     DcsMemberState {
-        postgres_endpoint: advertised_postgres.clone(),
+        cluster_postgres: cluster_postgres.clone(),
+        operator_postgres: operator_postgres.cloned(),
         postgres: pg_snapshot.clone(),
     }
 }

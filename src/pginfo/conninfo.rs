@@ -2,7 +2,7 @@ use std::{fmt, net::IpAddr, path::PathBuf, str::FromStr};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::state::PgEndpoint;
+use crate::state::{PgEndpoint, PgRoute};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PgSslMode {
@@ -61,8 +61,7 @@ impl Serialize for PgSslMode {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PgConnInfo {
-    pub endpoint: PgEndpoint,
-    pub hostaddr: Option<IpAddr>,
+    pub route: PgRoute,
     pub user: String,
     pub dbname: String,
     pub application_name: Option<String>,
@@ -81,7 +80,7 @@ pub struct PgClientTls {
 
 impl fmt::Display for PgConnInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (host, port) = match &self.endpoint {
+        let (host, port) = match self.route.endpoint() {
             PgEndpoint::Tcp { host, port } => (host.clone(), *port),
             PgEndpoint::UnixSocket { socket_dir, port } => {
                 (socket_dir.display().to_string(), *port)
@@ -89,7 +88,7 @@ impl fmt::Display for PgConnInfo {
         };
 
         write!(f, "host={}", render_conninfo_value(host.as_str()))?;
-        if let Some(value) = self.hostaddr {
+        if let Some(value) = self.route.hostaddr() {
             write!(f, " hostaddr={value}")?;
         }
         write!(
@@ -165,15 +164,17 @@ impl FromStr for PgConnInfo {
             PgEndpoint::tcp(host, port)?
         };
         Ok(Self {
-            endpoint,
-            hostaddr: entries
-                .get("hostaddr")
-                .map(|value| {
-                    value
-                        .parse::<IpAddr>()
-                        .map_err(|err| format!("invalid conninfo hostaddr: {err}"))
-                })
-                .transpose()?,
+            route: PgRoute::new(
+                endpoint,
+                entries
+                    .get("hostaddr")
+                    .map(|value| {
+                        value
+                            .parse::<IpAddr>()
+                            .map_err(|err| format!("invalid conninfo hostaddr: {err}"))
+                    })
+                    .transpose()?,
+            ),
             user: entries
                 .get("user")
                 .cloned()
@@ -318,12 +319,11 @@ mod tests {
         conninfo_entries, conninfo_value, parse_pg_conninfo, render_conninfo_value, PgClientTls,
         PgConnInfo, PgSslMode,
     };
-    use crate::state::PgEndpoint;
+    use crate::state::PgRoute;
 
     fn sample_conninfo() -> Result<PgConnInfo, String> {
         Ok(PgConnInfo {
-            endpoint: PgEndpoint::tcp("127.0.0.1".to_string(), 5432)?,
-            hostaddr: None,
+            route: PgRoute::tcp("127.0.0.1".to_string(), 5432)?,
             user: "postgres".to_string(),
             dbname: "postgres".to_string(),
             application_name: Some("ha worker".to_string()),
@@ -363,7 +363,11 @@ mod tests {
     #[test]
     fn parse_and_render_round_trip_hostaddr() -> Result<(), String> {
         let conninfo = PgConnInfo {
-            hostaddr: Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            route: PgRoute::tcp_hostaddr(
+                "127.0.0.1".to_string(),
+                5432,
+                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            )?,
             ..sample_conninfo()?
         };
 

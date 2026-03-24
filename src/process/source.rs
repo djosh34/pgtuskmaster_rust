@@ -31,7 +31,7 @@ pub(crate) fn source_from_member(
         });
     }
 
-    if member.postgres_target().host().trim().is_empty() {
+    if member.cluster_postgres_target().host().trim().is_empty() {
         return Err(SourceMaterializationError::EmptyHost {
             member_id: member_id.0.clone(),
         });
@@ -50,8 +50,7 @@ pub(crate) fn source_from_member(
     Ok(MandatoryRoleSourceConn {
         role,
         conninfo: PgConnInfo {
-            endpoint: member.postgres_target().clone(),
-            hostaddr: None,
+            route: member.cluster_postgres_target().clone(),
             user: credential.username.clone(),
             dbname: cfg.postgres.local_database.clone(),
             application_name: None,
@@ -76,12 +75,13 @@ mod tests {
             jobs::MandatorySourceRole,
             source::{source_from_member, SourceMaterializationError},
         },
-        state::{MemberId, PgEndpoint, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
+        state::{MemberId, PgRoute, SystemIdentifier, TimelineId, UnixMillis, WorkerStatus},
     };
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
-            postgres_endpoint: PgEndpoint::tcp(host.to_string(), port)?,
+            cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
+            operator_postgres: None,
             postgres: PgInfoState::Primary {
                 common: PgInfoCommon {
                     worker: WorkerStatus::Running,

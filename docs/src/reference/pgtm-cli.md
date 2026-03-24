@@ -100,6 +100,8 @@ Warnings are generated from the seed node's trust and authority view. A degraded
 
 Reads one seed `GET /state` payload and resolves the authoritative primary from the seed node's HA publication plus the DCS member slot routing data.
 
+If the selected member publishes `operator_postgres`, the CLI emits that operator-routable route. Otherwise it falls back to `cluster_postgres`.
+
 Any `--tls` additions come only from local `pgtm.postgres.tls` config after the primary target has already been selected from that state payload.
 
 Default output: one libpq keyword/value DSN line
@@ -110,7 +112,7 @@ The command fails closed when the seed payload does not currently project a prim
 
 Reads one seed `GET /state` payload and prints DSNs for the replicas that the seed node currently exposes as ready DCS member slots.
 
-As with `primary`, the CLI adds PostgreSQL TLS paths only from local config after the replica targets have already been derived from `GET /state`.
+As with `primary`, the CLI prefers `operator_postgres` and falls back to `cluster_postgres`. It adds PostgreSQL TLS paths only from local config after the replica targets have already been derived from `GET /state`.
 
 ### `switchover request`
 

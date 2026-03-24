@@ -17,7 +17,7 @@ use crate::{
     logging::LogSender,
     pginfo::state::PgInfoState,
     state::{
-        LeaseEpoch, MemberId, NodeIdentity, PgEndpoint, StatePublisher, StateSubscriber,
+        LeaseEpoch, MemberId, NodeIdentity, PgRoute, StatePublisher, StateSubscriber,
         SwitchoverState, WorkerError,
     },
 };
@@ -195,9 +195,6 @@ impl<'a> DcsWorker<'a> {
                 let outcome = match step {
                     ConnectedStep::Tick | ConnectedStep::PgChanged => {
                         let pg_snapshot = self.pg.latest();
-                        let advertised_postgres = advertised_postgres(self.cfg).map_err(|err| {
-                            WorkerError::Message(format!("dcs advertised postgres invalid: {err}"))
-                        })?;
                         let Some(session) = self.session.as_mut() else {
                             return Err(WorkerError::Message(
                                 "dcs session disappeared during connected step".to_string(),
@@ -207,7 +204,7 @@ impl<'a> DcsWorker<'a> {
                             .sync_local_member(
                                 &self.identity,
                                 &self.keys,
-                                &advertised_postgres,
+                                self.cfg,
                                 lease_ttl_ms(self.cfg),
                                 &pg_snapshot,
                                 &mut self.cluster,
@@ -306,9 +303,6 @@ impl<'a> DcsWorker<'a> {
                     Ok(session) => {
                         self.session = Some(session);
                         let pg_snapshot = self.pg.latest();
-                        let advertised_postgres = advertised_postgres(self.cfg).map_err(|err| {
-                            WorkerError::Message(format!("dcs advertised postgres invalid: {err}"))
-                        })?;
                         let Some(session) = self.session.as_mut() else {
                             return Err(WorkerError::Message(
                                 "dcs session missing after successful connect".to_string(),
@@ -318,7 +312,7 @@ impl<'a> DcsWorker<'a> {
                             .sync_local_member(
                                 &self.identity,
                                 &self.keys,
-                                &advertised_postgres,
+                                self.cfg,
                                 lease_ttl_ms(self.cfg),
                                 &pg_snapshot,
                                 &mut self.cluster,
@@ -467,7 +461,7 @@ impl ConnectedSession {
         &mut self,
         identity: &NodeIdentity,
         keys: &DcsKeySpace,
-        advertisement: &PgEndpoint,
+        cfg: &RuntimeConfigV2,
         member_ttl_ms: u64,
         pg_snapshot: &PgInfoState,
         cluster: &mut DcsClusterState,
@@ -491,7 +485,13 @@ impl ConnectedSession {
             return Ok(());
         }
 
-        let local_member = build_local_member_state(advertisement, pg_snapshot);
+        let cluster_advertisement = advertised_cluster_postgres(cfg);
+        let operator_advertisement = advertised_operator_postgres(cfg);
+        let local_member = build_local_member_state(
+            &cluster_advertisement,
+            operator_advertisement.as_ref(),
+            pg_snapshot,
+        );
         let write = keys.write(member_key, &local_member)?;
         let lease = EtcdRuntime::timeout(
             "etcd lease grant",
@@ -991,12 +991,12 @@ fn lease_ttl_ms(cfg: &RuntimeConfigV2) -> u64 {
     u64::try_from(cfg.timing.ha_lease_ttl.as_millis()).unwrap_or(u64::MAX)
 }
 
-fn advertised_postgres(cfg: &RuntimeConfigV2) -> Result<PgEndpoint, DcsError> {
-    PgEndpoint::tcp(
-        cfg.postgres.listen_host.clone(),
-        cfg.postgres.advertise_port,
-    )
-    .map_err(DcsError::Io)
+fn advertised_cluster_postgres(cfg: &RuntimeConfigV2) -> PgRoute {
+    cfg.postgres.cluster_advertise.clone()
+}
+
+fn advertised_operator_postgres(cfg: &RuntimeConfigV2) -> Option<PgRoute> {
+    cfg.postgres.operator_advertise.clone()
 }
 
 fn read_tls_file(path: &std::path::Path) -> Result<Vec<u8>, DcsError> {

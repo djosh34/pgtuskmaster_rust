@@ -337,7 +337,7 @@ mod tests {
         },
         process::state::ProcessState,
         state::{
-            ClusterName, MemberId, NodeIdentity, PgEndpoint, ScopeName, SwitchoverState, WalLsn,
+            ClusterName, MemberId, NodeIdentity, PgRoute, ScopeName, SwitchoverState, WalLsn,
             WorkerStatus,
         },
     };
@@ -370,8 +370,7 @@ mod tests {
             targets: vec![StateDerivedConnectionTargetDto {
                 member_id: "node-a".to_string(),
                 conninfo: PgConnInfo {
-                    endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
-                    hostaddr: None,
+                    route: PgRoute::tcp("db.internal".to_string(), 5432)?,
                     user: "postgres".to_string(),
                     dbname: "postgres".to_string(),
                     application_name: None,
@@ -402,8 +401,7 @@ mod tests {
                 targets: vec![StateDerivedConnectionTargetDto {
                     member_id: "node-a".to_string(),
                     conninfo: PgConnInfo {
-                        endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
-                        hostaddr: None,
+                        route: PgRoute::tcp("db.internal".to_string(), 5432)?,
                         user: "postgres".to_string(),
                         dbname: "postgres".to_string(),
                         application_name: None,
@@ -491,7 +489,8 @@ mod tests {
                     BTreeMap::from([(
                         member_id.clone(),
                         DcsMemberState {
-                            postgres_endpoint: PgEndpoint::tcp("db.internal".to_string(), 5432)?,
+                            cluster_postgres: PgRoute::tcp("db.internal".to_string(), 5432)?,
+                            operator_postgres: None,
                             postgres: sample_pg_info(Readiness::Ready),
                         },
                     )]),

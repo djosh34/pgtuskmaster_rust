@@ -205,7 +205,7 @@ mod tests {
         },
         pginfo::conninfo::{PgClientTls, PgSslMode},
         postgres_roles::render_managed_role_reconciliation_sql_v2,
-        state::{ClusterName, MemberId, ScopeName},
+        state::{ClusterName, MemberId, PgRoute, ScopeName},
     };
 
     fn sample_cfg() -> RuntimeConfigV2 {
@@ -219,7 +219,14 @@ mod tests {
                 log_file: "/tmp/pgtm/logs/postgres.log".into(),
                 listen_host: "127.0.0.1".to_string(),
                 listen_port: 5432,
-                advertise_port: 5432,
+                cluster_advertise: PgRoute::new(
+                    crate::state::PgEndpoint::Tcp {
+                        host: "127.0.0.1".to_string(),
+                        port: 5432,
+                    },
+                    None,
+                ),
+                operator_advertise: None,
                 connect_timeout: std::time::Duration::from_secs(5),
                 local_database: "postgres".to_string(),
                 source_client_tls: PgClientTls {
