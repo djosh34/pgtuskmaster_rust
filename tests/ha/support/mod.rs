@@ -37,11 +37,10 @@ pub fn run_feature(
     feature_path: &str,
     scenario_name: Option<&str>,
 ) -> std::result::Result<(), String> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("failed to build tokio runtime: {err}"))?;
-    runtime.block_on(run_feature_async(feature_name, feature_path, scenario_name))
+    block_on_current_thread(
+        run_feature_async(feature_name, feature_path, scenario_name),
+        "failed to build tokio runtime",
+    )
 }
 
 async fn run_feature_async(
@@ -167,6 +166,17 @@ fn record_cleanup_error(error: String) {
     }
 }
 
+pub(crate) fn block_on_current_thread<T>(
+    future: impl Future<Output = std::result::Result<T, String>>,
+    runtime_build_error: &'static str,
+) -> std::result::Result<T, String> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|err| format!("{runtime_build_error}: {err}"))?
+        .block_on(future)
+}
+
 pub(crate) fn block_on_support_future<T, E>(
     future: impl Future<Output = std::result::Result<T, E>> + Send + 'static,
     runtime_build_error: &'static str,
@@ -181,14 +191,10 @@ where
         Ok(handle) if handle.runtime_flavor() == RuntimeFlavor::MultiThread => {
             tokio::task::block_in_place(|| handle.block_on(future))
         }
-        Ok(_) | Err(_) => thread::spawn(move || {
-            Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("{runtime_build_error}: {err}"))?
-                .block_on(future)
-        })
-        .join()
-        .map_err(|_| thread_panic_error.to_string())?,
+        Ok(_) | Err(_) => {
+            thread::spawn(move || block_on_current_thread(future, runtime_build_error))
+                .join()
+                .map_err(|_| thread_panic_error.to_string())?
+        }
     }
 }

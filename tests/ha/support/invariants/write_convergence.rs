@@ -19,7 +19,6 @@ use rustls::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    runtime::Builder,
     task::JoinHandle,
     time::Instant,
 };
@@ -35,7 +34,7 @@ use pgtuskmaster_rust::{
 };
 
 use crate::support::{
-    block_on_support_future,
+    block_on_current_thread, block_on_support_future,
     observer::pgtm::{PgtmObserver, PostgresRoutingTarget},
     topology::ClusterMember,
 };
@@ -450,16 +449,10 @@ fn spawn_authoritative_worker(
     let thread = thread::Builder::new()
         .name("write-convergence-authoritative".to_string())
         .spawn(move || {
-            Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("build runtime for write convergence worker failed: {err}"))?
-                .block_on(run_authoritative_worker(
-                    observer,
-                    write_gate,
-                    stop_requested,
-                    poll_interval,
-                ))
+            block_on_current_thread(
+                run_authoritative_worker(observer, write_gate, stop_requested, poll_interval),
+                "build runtime for write convergence worker failed",
+            )
         })
         .map_err(|err| {
             WriteConvergenceInvariantError::Failed(format!(
@@ -929,7 +922,9 @@ mod tests {
         MemberCountObservation, ThreadJoinHandle, WriteConvergenceInvariantError,
         WriteConvergenceInvariantRunner, WriteGate, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
-    use crate::support::{observer::pgtm::PostgresRoutingTarget, topology::ClusterMember};
+    use crate::support::{
+        block_on_current_thread, observer::pgtm::PostgresRoutingTarget, topology::ClusterMember,
+    };
     use pgtuskmaster_rust::{
         pginfo::{
             conninfo::PgClientTls,
@@ -955,7 +950,7 @@ mod tests {
         thread,
         time::Duration,
     };
-    use tokio::{runtime::Builder, sync::oneshot, time::Instant};
+    use tokio::{sync::oneshot, time::Instant};
     use tokio_postgres::{Client, NoTls};
 
     fn sample_routing_conninfo() -> Result<PgConnInfo, String> {
@@ -1294,17 +1289,11 @@ mod tests {
             let result = send_started
                 .map_err(|_| IoError::other("cleanup start signal receiver dropped"))
                 .and_then(|()| {
-                    Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|err| {
-                            IoError::other(format!("build cleanup runtime failed: {err}"))
-                        })
-                })
-                .and_then(|runtime| {
-                    runtime
-                        .block_on(async { runner.ensure_running() })
-                        .map_err(|err| IoError::other(err.to_string()))
+                    block_on_current_thread(
+                        async { runner.ensure_running().map_err(|err| err.to_string()) },
+                        "build cleanup runtime failed",
+                    )
+                    .map_err(IoError::other)
                 });
             let _ = cleanup_done_tx.send(result);
         });
@@ -1491,11 +1480,8 @@ mod tests {
         let task = thread::Builder::new()
             .name("write-convergence-test-authoritative".to_string())
             .spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|err| format!("build authoritative test write runtime failed: {err}"))?
-                    .block_on(async move {
+                block_on_current_thread(
+                    async move {
                         loop {
                             if stop_requested.load(Ordering::SeqCst) {
                                 return Ok(());
@@ -1528,7 +1514,9 @@ mod tests {
                             }
                             tokio::time::sleep(poll_interval).await;
                         }
-                    })
+                    },
+                    "build authoritative test write runtime failed",
+                )
             })?;
         Ok(task)
     }
@@ -1543,11 +1531,8 @@ mod tests {
         let task = thread::Builder::new()
             .name("write-convergence-test-blocked".to_string())
             .spawn(move || {
-                Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|err| format!("build blocked test runtime failed: {err}"))?
-                    .block_on(async move {
+                block_on_current_thread(
+                    async move {
                         let write_permit = write_gate.try_start_write().ok_or_else(|| {
                             "test worker gate was already closed before write start".to_string()
                         })?;
@@ -1565,7 +1550,9 @@ mod tests {
                             }
                             tokio::time::sleep(Duration::from_millis(10)).await;
                         }
-                    })
+                    },
+                    "build blocked test runtime failed",
+                )
             })?;
         Ok(task)
     }
