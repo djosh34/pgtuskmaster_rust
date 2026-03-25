@@ -117,6 +117,12 @@ Re-verified on 2026-03-25 against the live tree before re-arming execution:
 - Do not move polling logic into `HaWorld` for this slice; the reduction target is action glue, not observation workflows.
 - If moving actions onto `HaWorld` adds more boilerplate than it deletes, switch this plan back to `TO BE VERIFIED` and stop.
 
+### Re-Verification On 2026-03-25
+
+- Attempting to continue this slice by moving the remaining DCS toggles, blocker toggles, wipe, and cut-from-DCS couriers onto `HaWorld` failed the reduction gate.
+- The trial edit raised tracked code from `34006` total lines to `34055` and weakened the diff reduction from `-4069` to `-4020`.
+- That means the current execution shape is not a valid reduction. Any further work on this boundary needs a different deletion strategy before re-entering execution.
+
 ### Expected yield
 
 - Delete the step-local DCS courier helper.
@@ -124,4 +130,4 @@ Re-verified on 2026-03-25 against the live tree before re-arming execution:
 - Remove repeated harness/given lookup boilerplate from the action-only cucumber steps.
 - Flatten the HA support ownership boundary so `steps/mod.rs` is mostly phrasing and `world/mod.rs` owns the mutable side effects.
 
-NOW EXECUTE
+TO BE VERIFIED

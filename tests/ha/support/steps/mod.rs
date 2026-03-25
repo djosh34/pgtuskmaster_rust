@@ -281,45 +281,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 
 #[when(regex = r#"^I request a targeted switchover to "([^"]+)"$"#)]
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let seed_member = world.require_member_alias("current_primary")?;
-    let deadline = world.harness()?.timeouts.failover_deadline;
-    poll_until(
-        world,
-        deadline,
-        None,
-        "no targeted switchover precondition check ran",
-        |world| {
-            let harness = world.harness()?;
-            let status = harness.observer.state_via_member(seed_member)?;
-            harness.record_status_snapshot("switchover.request.targeted_precondition", &status)?;
-            match status.dcs.member(&member_id.member_id()) {
-                Some(member) if member_slot_is_api_switchover_eligible(member) => Ok(()),
-                Some(member) => Err(HarnessError::message(format!(
-                    "target `{member_id}` is not yet promotion-eligible via `{seed_member}` with postgres state {:?}",
-                    member.postgres()
-                ))),
-                None => Err(HarnessError::message(format!(
-                    "target `{member_id}` is not visible via `{seed_member}` yet"
-                ))),
-            }
-        },
-        |last_error| {
-            HarnessError::message(format!(
-                "timed out waiting for `{member_id}` to become an eligible targeted switchover target via `{seed_member}`; last observed error: {last_error}"
-            ))
-        },
-    )
-    .await?;
-    let harness = world.harness()?;
-    let response = harness
-        .observer
-        .switchover_request_via_member(seed_member, Some(member_id))?;
-    harness.record_note(
-        "switchover.request.targeted",
-        format!("target={member_id} response={response}"),
-    )?;
-    Ok(())
+    attempt_targeted_switchover(world, member_ref.as_str(), true).await
 }
 
 #[when(
@@ -329,51 +291,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let seed_member = world.require_member_alias("current_primary")?;
-    let deadline = world.harness()?.timeouts.failover_deadline;
-    poll_until(
-        world,
-        deadline,
-        None,
-        "no ineligibility check ran",
-        |world| {
-            let harness = world.harness()?;
-            let status = harness.observer.state_via_member(seed_member)?;
-            harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
-            match status.dcs.member(&member_id.member_id()) {
-                None => Ok(()),
-                Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
-                Some(member) => Err(HarnessError::message(format!(
-                    "target `{member_id}` is still promotion-eligible via `{seed_member}` with postgres state {:?}",
-                    member.postgres()
-                ))),
-            }
-        },
-        |last_error| {
-            HarnessError::message(format!(
-                "timed out waiting for `{member_id}` to become an ineligible targeted switchover target; last observed error: {last_error}"
-            ))
-        },
-    )
-    .await?;
-    let request_result = world
-        .harness()?
-        .observer
-        .switchover_request_via_member(seed_member, Some(member_id));
-    match request_result {
-        Ok(output) => Err(HarnessError::message(format!(
-            "expected targeted switchover to `{member_id}` to be rejected, but it succeeded: {output}"
-        ))),
-        Err(err) => {
-            let rendered = err.to_string();
-            world.harness()?.record_note(
-                "switchover.request.targeted_rejected",
-                format!("target={member_id} error={rendered}"),
-            )?;
-            Ok(())
-        }
-    }
+    attempt_targeted_switchover(world, member_ref.as_str(), false).await
 }
 
 #[then(regex = r#"^"([^"]+)" becomes primary$"#)]
@@ -642,6 +560,78 @@ fn member_slot_is_api_switchover_eligible(member: &DcsMemberState) -> bool {
         PgInfoState::Unknown { common } | PgInfoState::Replica { common, .. } => {
             common.readiness == Readiness::Ready
         }
+    }
+}
+
+async fn attempt_targeted_switchover(
+    world: &mut HaWorld,
+    member_ref: &str,
+    require_eligible: bool,
+) -> Result<()> {
+    let member_id = world.resolve_member_reference(member_ref)?;
+    let seed_member = world.require_member_alias("current_primary")?;
+    let deadline = world.harness()?.timeouts.failover_deadline;
+    let precondition_note = if require_eligible {
+        "switchover.request.targeted_precondition"
+    } else {
+        "switchover.rejected.precondition"
+    };
+    poll_until(
+        world,
+        deadline,
+        None,
+        if require_eligible {
+            "no targeted switchover precondition check ran"
+        } else {
+            "no ineligibility check ran"
+        },
+        |world| {
+            let harness = world.harness()?;
+            let status = harness.observer.state_via_member(seed_member)?;
+            harness.record_status_snapshot(precondition_note, &status)?;
+            match status.dcs.member(&member_id.member_id()) {
+                Some(member) if member_slot_is_api_switchover_eligible(member) == require_eligible => Ok(()),
+                Some(member) if require_eligible => Err(HarnessError::message(format!(
+                    "target `{member_id}` is not yet promotion-eligible via `{seed_member}` with postgres state {:?}",
+                    member.postgres()
+                ))),
+                Some(member) => Err(HarnessError::message(format!(
+                    "target `{member_id}` is still promotion-eligible via `{seed_member}` with postgres state {:?}",
+                    member.postgres()
+                ))),
+                None if require_eligible => Err(HarnessError::message(format!(
+                    "target `{member_id}` is not visible via `{seed_member}` yet"
+                ))),
+                None => Ok(()),
+            }
+        },
+        |last_error| match require_eligible {
+            true => HarnessError::message(format!(
+                "timed out waiting for `{member_id}` to become an eligible targeted switchover target via `{seed_member}`; last observed error: {last_error}"
+            )),
+            false => HarnessError::message(format!(
+                "timed out waiting for `{member_id}` to become an ineligible targeted switchover target; last observed error: {last_error}"
+            )),
+        },
+    )
+    .await?;
+    let harness = world.harness()?;
+    match harness
+        .observer
+        .switchover_request_via_member(seed_member, Some(member_id))
+    {
+        Ok(response) if require_eligible => harness.record_note(
+            "switchover.request.targeted",
+            format!("target={member_id} response={response}"),
+        ),
+        Ok(output) => Err(HarnessError::message(format!(
+            "expected targeted switchover to `{member_id}` to be rejected, but it succeeded: {output}"
+        ))),
+        Err(err) if require_eligible => Err(err),
+        Err(err) => harness.record_note(
+            "switchover.request.targeted_rejected",
+            format!("target={member_id} error={err}"),
+        ),
     }
 }
 
