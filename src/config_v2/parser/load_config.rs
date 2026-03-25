@@ -16,6 +16,8 @@ use reqwest::Url;
 
 use super::private_schema as raw;
 
+type ResolvedOptionalTokens = (Option<Secret>, Option<Secret>);
+
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let contents = read_config_file(path)?;
     load_runtime_config_contents_at(contents.as_str(), path)
@@ -77,17 +79,35 @@ impl raw::RuntimeDocument {
             .transpose()?
             .and_then(|config| config.advertised_url);
 
-        let (cluster_name, scope, member_id) = cluster.into_runtime_identity()?;
-        Ok(RuntimeConfigV2 {
-            cluster_name,
+        let raw::ClusterConfig {
+            name: cluster_name,
             scope,
             member_id,
+        } = cluster;
+        validate_non_empty("cluster.name", cluster_name.as_str())?;
+        validate_non_empty("cluster.scope", scope.as_str())?;
+        validate_non_empty("cluster.member_id", member_id.as_str())?;
+        Ok(RuntimeConfigV2 {
+            cluster_name: ClusterName(cluster_name),
+            scope: ScopeName(scope),
+            member_id: MemberId(member_id),
             postgres: postgres.into_runtime_config(working_root.as_path(), config_dir)?,
             dcs: dcs.into_runtime_config(config_dir)?,
-            timing: ha.into_runtime_timing(timeouts),
+            timing: TimingConfig {
+                ha_loop_interval: Duration::from_millis(ha.loop_interval_ms),
+                ha_lease_ttl: Duration::from_millis(ha.lease_ttl_ms),
+                bootstrap_timeout: Duration::from_millis(timeouts.bootstrap_ms),
+                pg_rewind_timeout: Duration::from_millis(timeouts.pg_rewind_ms),
+                fencing_timeout: Duration::from_millis(timeouts.fencing_ms),
+            },
             binaries,
             logging: logging.into_runtime_config(working_root.as_path(), config_dir)?,
-            api: api.into_runtime_config(operator_advertise, config_dir)?,
+            api: ApiConfig {
+                listen_addr: api.listen_addr,
+                transport: api.transport.into_runtime_transport(config_dir)?,
+                auth: api.auth.into_runtime_api_auth(config_dir)?,
+                advertise: operator_advertise,
+            },
         })
     }
 }
@@ -351,18 +371,6 @@ pub(super) fn resolve_secret_required(
     Ok(Secret::new(value))
 }
 
-fn resolve_required_secret(
-    field: &'static str,
-    source: Option<raw::SecretSource>,
-    config_dir: &Path,
-) -> Result<Secret, ConfigErrorV2> {
-    resolve_secret_required(
-        field,
-        source.ok_or_else(|| validation_error(field, "is required when auth is enabled"))?,
-        config_dir,
-    )
-}
-
 pub(super) fn resolve_path_only(
     field: &'static str,
     source: raw::PathSource,
@@ -525,19 +533,19 @@ fn validate_expected_transport(
     ))
 }
 
-fn merge_optional_path(
+fn merge_matching<T: PartialEq>(
     left_field: &'static str,
-    left: Option<PathBuf>,
+    left: Option<T>,
     right_field: &'static str,
-    right: Option<PathBuf>,
+    right: Option<T>,
     merged_field: &'static str,
-) -> Result<Option<PathBuf>, ConfigErrorV2> {
+) -> Result<Option<T>, ConfigErrorV2> {
     match (left, right) {
         (Some(left), Some(right)) if left != right => Err(validation_error(
             merged_field,
             format!("`{left_field}` and `{right_field}` must match when both are configured"),
         )),
-        (Some(path), Some(_)) | (Some(path), None) | (None, Some(path)) => Ok(Some(path)),
+        (Some(value), Some(_)) | (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
         (None, None) => Ok(None),
     }
 }
@@ -548,30 +556,27 @@ fn merge_operator_client_tls(
 ) -> Result<Option<PgClientTls>, ConfigErrorV2> {
     match (left, right) {
         (Some(left), Some(right)) => {
-            let left_identity = left.client_cert.as_ref().zip(left.client_key.as_ref());
-            let right_identity = right.client_cert.as_ref().zip(right.client_key.as_ref());
-            if let (Some((left_cert, left_key)), Some((right_cert, right_key))) =
-                (left_identity, right_identity)
-            {
-                if left_cert != right_cert || left_key != right_key {
-                    return Err(validation_error(
-                        "pgtm.client_tls.identity",
-                        "`pgtm.api.tls.identity` and `pgtm.postgres.tls.identity` must match when both are configured",
-                    ));
-                }
-            }
+            let merged_identity = merge_matching(
+                "pgtm.api.tls.identity",
+                left.client_cert.zip(left.client_key),
+                "pgtm.postgres.tls.identity",
+                right.client_cert.zip(right.client_key),
+                "pgtm.client_tls.identity",
+            )?;
+            let (client_cert, client_key) =
+                merged_identity.map_or((None, None), |(cert, key)| (Some(cert), Some(key)));
 
             Ok(Some(PgClientTls {
                 mode: PgSslMode::VerifyFull,
-                root_cert: merge_optional_path(
+                root_cert: merge_matching(
                     "pgtm.api.tls.ca_cert",
                     left.root_cert,
                     "pgtm.postgres.tls.ca_cert",
                     right.root_cert,
                     "pgtm.client_tls.ca_cert",
                 )?,
-                client_cert: left.client_cert.or(right.client_cert),
-                client_key: left.client_key.or(right.client_key),
+                client_cert,
+                client_key,
             }))
         }
         (Some(tls), None) | (None, Some(tls)) => Ok(Some(tls)),
@@ -636,20 +641,6 @@ fn resolve_binary_path(
             "unable to resolve `{executable}` via PATH or conventional PostgreSQL install locations; {detail}; set `{field}` explicitly if autodiscovery fails"
         ),
     ))
-}
-
-impl raw::ClusterConfig {
-    fn into_runtime_identity(self) -> Result<(ClusterName, ScopeName, MemberId), ConfigErrorV2> {
-        let raw::ClusterConfig {
-            name,
-            scope,
-            member_id,
-        } = self;
-        validate_non_empty("cluster.name", name.as_str())?;
-        validate_non_empty("cluster.scope", scope.as_str())?;
-        validate_non_empty("cluster.member_id", member_id.as_str())?;
-        Ok((ClusterName(name), ScopeName(scope), MemberId(member_id)))
-    }
 }
 
 impl raw::PostgresConfig {
@@ -738,7 +729,16 @@ impl raw::PostgresConfig {
             operator_advertise,
             connect_timeout: Duration::from_secs(u64::from(connect_timeout_s)),
             local_database: non_empty_owned("postgres.local_database", local_database)?,
-            source_client_tls: transport.into_pg_client_tls(config_dir)?,
+            source_client_tls: PgClientTls {
+                mode: transport.ssl_mode,
+                root_cert: resolve_optional_path(
+                    "postgres.rewind.transport.ca_cert",
+                    transport.ca_cert,
+                    config_dir,
+                )?,
+                client_cert: None,
+                client_key: None,
+            },
             superuser: map_postgres_role(
                 "postgres.roles.mandatory.superuser",
                 superuser,
@@ -808,18 +808,6 @@ impl raw::DcsConfig {
             auth: map_dcs_auth(auth, config_dir)?,
             tls,
         })
-    }
-}
-
-impl raw::HaConfig {
-    fn into_runtime_timing(self, timeouts: raw::ProcessTimeoutsConfig) -> TimingConfig {
-        TimingConfig {
-            ha_loop_interval: Duration::from_millis(self.loop_interval_ms),
-            ha_lease_ttl: Duration::from_millis(self.lease_ttl_ms),
-            bootstrap_timeout: Duration::from_millis(timeouts.bootstrap_ms),
-            pg_rewind_timeout: Duration::from_millis(timeouts.pg_rewind_ms),
-            fencing_timeout: Duration::from_millis(timeouts.fencing_ms),
-        }
     }
 }
 
@@ -957,36 +945,6 @@ impl raw::LoggingConfig {
     }
 }
 
-impl raw::ApiConfig {
-    fn into_runtime_config(
-        self,
-        advertise: Option<ApiRoute>,
-        config_dir: &Path,
-    ) -> Result<ApiConfig, ConfigErrorV2> {
-        Ok(ApiConfig {
-            listen_addr: self.listen_addr,
-            transport: self.transport.into_runtime_transport(config_dir)?,
-            auth: self.auth.into_runtime_api_auth(config_dir)?,
-            advertise,
-        })
-    }
-}
-
-impl raw::PostgresClientTransportConfig {
-    fn into_pg_client_tls(self, config_dir: &Path) -> Result<PgClientTls, ConfigErrorV2> {
-        Ok(PgClientTls {
-            mode: self.ssl_mode,
-            root_cert: resolve_optional_path(
-                "postgres.rewind.transport.ca_cert",
-                self.ca_cert,
-                config_dir,
-            )?,
-            client_cert: None,
-            client_key: None,
-        })
-    }
-}
-
 impl raw::TlsServerConfig {
     fn into_runtime_tls(self, config_dir: &Path) -> Result<Option<TlsConfig>, ConfigErrorV2> {
         match self {
@@ -1036,28 +994,30 @@ impl raw::ApiClientAuthConfig {
         self,
         config_dir: &Path,
     ) -> Result<(Option<PathBuf>, bool, Vec<String>), ConfigErrorV2> {
-        let Some((client_ca, client_cert_required, allowed_client_common_names)) = (match self {
-            raw::ApiClientAuthConfig::Disabled => None,
-            raw::ApiClientAuthConfig::Optional { client_ca } => {
-                Some((client_ca, false, Vec::new()))
-            }
+        match self {
+            raw::ApiClientAuthConfig::Disabled => Ok((None, false, Vec::new())),
+            raw::ApiClientAuthConfig::Optional { client_ca } => Ok((
+                Some(resolve_path_only(
+                    "api.transport.tls.client_auth.client_ca",
+                    client_ca,
+                    config_dir,
+                )?),
+                false,
+                Vec::new(),
+            )),
             raw::ApiClientAuthConfig::Required {
                 client_ca,
                 allowed_common_names,
-            } => Some((client_ca, true, allowed_common_names)),
-        }) else {
-            return Ok((None, false, Vec::new()));
-        };
-
-        Ok((
-            Some(resolve_path_only(
-                "api.transport.tls.client_auth.client_ca",
-                client_ca,
-                config_dir,
-            )?),
-            client_cert_required,
-            allowed_client_common_names,
-        ))
+            } => Ok((
+                Some(resolve_path_only(
+                    "api.transport.tls.client_auth.client_ca",
+                    client_ca,
+                    config_dir,
+                )?),
+                true,
+                allowed_common_names,
+            )),
+        }
     }
 }
 
@@ -1091,13 +1051,18 @@ impl raw::ApiTransportConfig {
 
 impl raw::TokenAuthConfig {
     fn into_runtime_api_auth(self, config_dir: &Path) -> Result<ApiAuth, ConfigErrorV2> {
-        if self.is_disabled() {
+        let Some((read_token, admin_token)) =
+            self.resolve_tokens("api.auth.read_token", "api.auth.admin_token", config_dir)?
+        else {
             return Ok(ApiAuth::Disabled);
-        }
-        let (read_token, admin_token) = self.into_token_sources();
+        };
         Ok(ApiAuth::Tokens {
-            read_token: resolve_required_secret("api.auth.read_token", read_token, config_dir)?,
-            admin_token: resolve_required_secret("api.auth.admin_token", admin_token, config_dir)?,
+            read_token: read_token.ok_or_else(|| {
+                validation_error("api.auth.read_token", "is required when auth is enabled")
+            })?,
+            admin_token: admin_token.ok_or_else(|| {
+                validation_error("api.auth.admin_token", "is required when auth is enabled")
+            })?,
         })
     }
 
@@ -1106,14 +1071,16 @@ impl raw::TokenAuthConfig {
         resolve_auth_tokens: bool,
         config_dir: &Path,
     ) -> Result<(Option<Secret>, Option<Secret>), ConfigErrorV2> {
-        if !resolve_auth_tokens || self.is_disabled() {
+        if !resolve_auth_tokens {
             return Ok((None, None));
         }
-        let (read_token, admin_token) = self.into_token_sources();
-        Ok((
-            resolve_secret_optional("pgtm.api.auth.read_token", read_token, config_dir)?,
-            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token, config_dir)?,
-        ))
+        Ok(self
+            .resolve_tokens(
+                "pgtm.api.auth.read_token",
+                "pgtm.api.auth.admin_token",
+                config_dir,
+            )?
+            .unwrap_or((None, None)))
     }
 
     fn into_token_sources(self) -> (Option<raw::SecretSource>, Option<raw::SecretSource>) {
@@ -1132,14 +1099,20 @@ impl raw::TokenAuthConfig {
         }
     }
 
-    fn is_disabled(&self) -> bool {
-        match self.kind.as_deref() {
-            Some("disabled") => true,
-            Some(_) => false,
-            None => {
-                self.read_token.is_none() && self.admin_token.is_none() && self.tokens.is_none()
-            }
+    fn resolve_tokens(
+        self,
+        read_field: &'static str,
+        admin_field: &'static str,
+        config_dir: &Path,
+    ) -> Result<Option<ResolvedOptionalTokens>, ConfigErrorV2> {
+        if self.is_disabled() {
+            return Ok(None);
         }
+        let (read_token, admin_token) = self.into_token_sources();
+        Ok(Some((
+            resolve_secret_optional(read_field, read_token, config_dir)?,
+            resolve_secret_optional(admin_field, admin_token, config_dir)?,
+        )))
     }
 }
 
@@ -1190,6 +1163,19 @@ impl raw::ClientTlsInput {
     }
 }
 
+fn resolve_path_pair(
+    cert_field: &'static str,
+    cert: raw::PathSource,
+    key_field: &'static str,
+    key: raw::PathSource,
+    config_dir: &Path,
+) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
+    Ok((
+        resolve_path_only(cert_field, cert, config_dir)?,
+        resolve_path_only(key_field, key, config_dir)?,
+    ))
+}
+
 impl raw::TlsServerIdentityConfig {
     fn resolve(
         self,
@@ -1197,10 +1183,13 @@ impl raw::TlsServerIdentityConfig {
         key_field: &'static str,
         config_dir: &Path,
     ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        Ok((
-            resolve_path_only(cert_field, self.cert_chain, config_dir)?,
-            resolve_path_only(key_field, self.private_key, config_dir)?,
-        ))
+        resolve_path_pair(
+            cert_field,
+            self.cert_chain,
+            key_field,
+            self.private_key,
+            config_dir,
+        )
     }
 }
 
@@ -1211,10 +1200,7 @@ impl raw::TlsClientIdentityConfig {
         key_field: &'static str,
         config_dir: &Path,
     ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        Ok((
-            resolve_path_only(cert_field, self.cert, config_dir)?,
-            resolve_path_only(key_field, self.key, config_dir)?,
-        ))
+        resolve_path_pair(cert_field, self.cert, key_field, self.key, config_dir)
     }
 }
 

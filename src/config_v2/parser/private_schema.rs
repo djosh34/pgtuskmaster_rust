@@ -137,7 +137,7 @@ pub(super) enum PathOrInline {
     Inline { content: String },
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(super) enum PathSource {
     Path(PathBuf),
@@ -174,7 +174,7 @@ pub(super) struct TlsServerIdentityConfig {
     pub private_key: PathSource,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsClientIdentityConfig {
     pub cert: PathSource,
@@ -650,6 +650,18 @@ pub(super) struct TokenAuthConfig {
     pub(super) tokens: Option<RoleTokens>,
 }
 
+impl TokenAuthConfig {
+    pub(super) fn is_disabled(&self) -> bool {
+        match self.kind.as_deref() {
+            Some("disabled") => true,
+            Some(_) => false,
+            None => {
+                self.read_token.is_none() && self.admin_token.is_none() && self.tokens.is_none()
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RoleTokens {
@@ -657,11 +669,17 @@ pub(super) struct RoleTokens {
     pub admin_token: Option<SecretSource>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClientTlsInput {
     pub(super) ca_cert: Option<PathSource>,
     pub(super) identity: Option<TlsClientIdentityConfig>,
+}
+
+impl ClientTlsInput {
+    fn is_empty(&self) -> bool {
+        self.ca_cert.is_none() && self.identity.is_none()
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -670,7 +688,7 @@ pub(super) struct OperatorDocument {
     #[serde(default)]
     pub api: OperatorApiConfig,
     #[serde(default)]
-    #[serde(skip_serializing_if = "operator_postgres_config_is_empty")]
+    #[serde(skip_serializing_if = "OperatorPostgresConfig::is_empty")]
     pub postgres: OperatorPostgresConfig,
 }
 
@@ -681,32 +699,23 @@ pub(super) struct OperatorApiConfig {
     pub advertised_url: Option<String>,
     pub expected_transport: Option<PgtmApiTransportExpectation>,
     pub resolve_to: Option<SocketAddr>,
-    #[serde(default, skip_serializing_if = "token_auth_config_is_disabled")]
+    #[serde(default, skip_serializing_if = "TokenAuthConfig::is_disabled")]
     pub auth: TokenAuthConfig,
-    #[serde(default, skip_serializing_if = "client_tls_input_is_empty")]
+    #[serde(default, skip_serializing_if = "ClientTlsInput::is_empty")]
     pub tls: ClientTlsInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorPostgresConfig {
-    #[serde(default, skip_serializing_if = "client_tls_input_is_empty")]
+    #[serde(default, skip_serializing_if = "ClientTlsInput::is_empty")]
     pub tls: ClientTlsInput,
 }
 
-fn token_auth_config_is_disabled(auth: &TokenAuthConfig) -> bool {
-    auth.kind.is_none()
-        && auth.read_token.is_none()
-        && auth.admin_token.is_none()
-        && auth.tokens.is_none()
-}
-
-fn client_tls_input_is_empty(tls: &ClientTlsInput) -> bool {
-    tls.ca_cert.is_none() && tls.identity.is_none()
-}
-
-fn operator_postgres_config_is_empty(postgres: &OperatorPostgresConfig) -> bool {
-    client_tls_input_is_empty(&postgres.tls)
+impl OperatorPostgresConfig {
+    fn is_empty(&self) -> bool {
+        self.tls.is_empty()
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
