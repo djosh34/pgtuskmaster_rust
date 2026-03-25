@@ -14,7 +14,6 @@ Feature: ha_quorum_loss_and_dcs_loss
     Then cluster becomes unhealthy
     When I restore DCS quorum
     Then cluster becomes healthy
-
   Scenario: losing every DCS service makes the cluster unhealthy until DCS returns
     Given the "three_node_three_etcd" harness is running
     And I wait for exactly one stable primary as "initial_primary"
@@ -22,7 +21,6 @@ Feature: ha_quorum_loss_and_dcs_loss
     Then cluster becomes unhealthy
     When I start the DCS service
     Then cluster becomes healthy
-
   Scenario: a lone survivor with only local DCS stays unhealthy
     Given the "three_node_three_etcd" harness is running
     And I wait for exactly one stable primary as "initial_primary"

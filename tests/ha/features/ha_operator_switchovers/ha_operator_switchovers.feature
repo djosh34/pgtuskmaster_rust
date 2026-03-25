@@ -10,7 +10,6 @@ Feature: ha_operator_switchovers
     And I wait for exactly one stable primary as "old_primary"
     When I request a planned switchover
     Then cluster becomes healthy
-
   Scenario: a targeted switchover promotes the requested replica
     Given the "three_node_plain" harness is running
     And I wait for exactly one stable primary as "old_primary"
@@ -18,7 +17,6 @@ Feature: ha_operator_switchovers
     When I request a targeted switchover to "target_replica"
     Then "target_replica" becomes primary
     And cluster becomes healthy
-
   Scenario: a targeted switchover to a degraded replica is rejected while the cluster stays healthy
     Given the "three_node_plain" harness is running
     And I wait for exactly one stable primary as "initial_primary"
