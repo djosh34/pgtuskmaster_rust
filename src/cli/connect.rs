@@ -3,7 +3,7 @@ use crate::{
     cli::{
         args::ConnectionOptions, config::OperatorContext, error::CliError, status::fetch_seed_state,
     },
-    command::{CommandOutputDto, StateDerivedConnectionCommandDto},
+    command::CommandOutputDto,
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
         state::PgConnInfo,
@@ -34,18 +34,16 @@ pub(crate) async fn run_primary(
             "member does not advertise PostgreSQL host/port".to_string(),
         ));
     }
-    let view = StateDerivedConnectionCommandDto {
-        targets: vec![PgConnInfo {
-            route: postgres_target.clone(),
-            user: "postgres".to_string(),
-            dbname: "postgres".to_string(),
-            application_name: None,
-            connect_timeout_s: None,
-            options: None,
-            tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
-        }],
-    };
-    CommandOutputDto::Primary { output: view }.render(options.json)
+    let targets = vec![PgConnInfo {
+        route: postgres_target.clone(),
+        user: "postgres".to_string(),
+        dbname: "postgres".to_string(),
+        application_name: None,
+        connect_timeout_s: None,
+        options: None,
+        tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
+    }];
+    CommandOutputDto::Primary { targets }.render(options.json)
 }
 
 pub(crate) async fn run_replicas(
@@ -86,8 +84,7 @@ pub(crate) async fn run_replicas(
         ));
     }
 
-    let view = StateDerivedConnectionCommandDto { targets };
-    CommandOutputDto::Replicas { output: view }.render(options.json)
+    CommandOutputDto::Replicas { targets }.render(options.json)
 }
 
 fn build_connection_tls(tls: Option<&PgClientTls>, emit_tls: bool) -> PgClientTls {

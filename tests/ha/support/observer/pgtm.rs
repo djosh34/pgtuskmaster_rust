@@ -251,7 +251,7 @@ impl PgtmObserver {
         )
         .map_err(|err| err.to_string())?
         .and_then(|output| match output {
-            CommandOutputDto::State { output } => Ok(output.state),
+            CommandOutputDto::State { state, .. } => Ok(*state),
             other => Err(format!(
                 "expected `pgtm status --json` output, observed command payload `{}`",
                 command_label(&other)

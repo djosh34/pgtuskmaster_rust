@@ -3,7 +3,7 @@ use std::{io::Write, time::Duration};
 use crate::{
     api::NodeState,
     cli::{args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError},
-    command::{CommandOutputDto, StateCommandOutputDto},
+    command::CommandOutputDto,
 };
 
 pub(crate) async fn run_status(
@@ -14,9 +14,11 @@ pub(crate) async fn run_status(
         return run_watch(context, options).await;
     }
 
-    let output = fetch_state_command_output(context, options.verbose).await?;
+    let (state, api_url) = fetch_seed_state(context).await?;
     CommandOutputDto::State {
-        output: Box::new(output),
+        api_url,
+        verbose: options.verbose,
+        state: Box::new(state),
     }
     .render(options.json)
 }
@@ -29,29 +31,18 @@ pub(crate) async fn fetch_seed_state(
     Ok((state, client.base_url().to_string()))
 }
 
-pub(crate) async fn fetch_state_command_output(
-    context: &OperatorContext,
-    verbose: bool,
-) -> Result<StateCommandOutputDto, CliError> {
-    let (state, api_url) = fetch_seed_state(context).await?;
-    Ok(StateCommandOutputDto::from_seed_state(
-        state, api_url, verbose,
-    ))
-}
-
 async fn run_watch(context: &OperatorContext, options: StatusOptions) -> Result<String, CliError> {
     let mut stdout = std::io::stdout();
     let interval = Duration::from_secs(2);
 
     loop {
-        let rendered = fetch_state_command_output(context, options.verbose)
-            .await
-            .and_then(|output| {
-                CommandOutputDto::State {
-                    output: Box::new(output),
-                }
-                .render(options.json)
-            })?;
+        let (state, api_url) = fetch_seed_state(context).await?;
+        let rendered = CommandOutputDto::State {
+            api_url,
+            verbose: options.verbose,
+            state: Box::new(state),
+        }
+        .render(options.json)?;
         if options.json {
             writeln!(stdout, "{rendered}").map_err(CliError::OutputWrite)?;
         } else {
