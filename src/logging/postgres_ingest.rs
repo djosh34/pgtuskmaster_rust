@@ -113,11 +113,56 @@ pub(crate) enum PostgresLineLogEvent {
 const POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS: u64 = 30_000;
 const POSTGRES_INGEST_MAX_BYTES_PER_FILE: usize = 256 * 1024;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IngestIssue {
+    stage: &'static str,
+    kind: &'static str,
+    path: PathBuf,
+    cause: String,
+}
+
+impl IngestIssue {
+    fn new(
+        stage: &'static str,
+        kind: &'static str,
+        path: &Path,
+        cause: impl std::fmt::Display,
+    ) -> Self {
+        Self {
+            stage,
+            kind,
+            path: path.to_path_buf(),
+            cause: cause.to_string(),
+        }
+    }
+
+    fn key(&self) -> IngestErrorKey {
+        IngestErrorKey {
+            stage: self.stage,
+            kind: self.kind,
+            path: self.path.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for IngestIssue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "stage={} kind={} path={} error={}",
+            self.stage,
+            self.kind,
+            self.path.display(),
+            self.cause
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct IngestErrorKey {
-    stage: String,
-    kind: String,
-    path: String,
+    stage: &'static str,
+    kind: &'static str,
+    path: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -207,14 +252,21 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx<'_>) -> Result<(), WorkerEr
                 Err(error) => {
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     let now_ms = crate::logging::system_now_unix_millis();
-                    let key = ingest_error_key_best_effort(&error);
+                    let key = match error.first() {
+                        Some(issue) => issue.key(),
+                        None => IngestErrorKey {
+                            stage: "unknown",
+                            kind: "unknown",
+                            path: PathBuf::from("."),
+                        },
+                    };
                     let decision = limiter.record(key, now_ms);
                     if decision.emit {
                         ctx.log
                             .send(PostgresIngestLogEvent::StepOnceFailed {
                                 attempts: consecutive_failures,
                                 suppressed: decision.suppressed,
-                                cause: error.to_string(),
+                                cause: render_iteration_errors(error.as_slice()),
                             })
                             .map_err(|err| {
                                 WorkerError::Message(format!(
@@ -233,40 +285,6 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx<'_>) -> Result<(), WorkerEr
     }
 }
 
-fn ingest_error_key_best_effort(error: &WorkerError) -> IngestErrorKey {
-    let msg = error.to_string();
-
-    let mut stage = "unknown".to_string();
-    let mut kind = "unknown".to_string();
-    let mut path = "unknown".to_string();
-
-    for token in msg.split_whitespace() {
-        if stage == "unknown" {
-            if let Some(value) = token.strip_prefix("stage=") {
-                stage = value.to_string();
-                continue;
-            }
-        }
-        if kind == "unknown" {
-            if let Some(value) = token.strip_prefix("kind=") {
-                kind = value.to_string();
-                continue;
-            }
-        }
-        if path == "unknown" {
-            if let Some(value) = token.strip_prefix("path=") {
-                path = value.to_string();
-                continue;
-            }
-        }
-        if stage != "unknown" && kind != "unknown" && path != "unknown" {
-            break;
-        }
-    }
-
-    IngestErrorKey { stage, kind, path }
-}
-
 struct PostgresIngestWorkerState {
     pg_ctl_log: FileTailer,
     dir_tailers: DirTailers,
@@ -279,10 +297,6 @@ impl PostgresIngestWorkerState {
             dir_tailers: DirTailers::default(),
         }
     }
-}
-
-fn encode_path_token(path: &Path) -> String {
-    path.display().to_string().replace(' ', "%20")
 }
 
 fn ingestable_postgres_log_start(path: &Path) -> Option<StartPosition> {
@@ -300,45 +314,62 @@ fn ingestable_postgres_log_start(path: &Path) -> Option<StartPosition> {
     })
 }
 
-fn ingest_issue(stage: &str, kind: &str, path: &Path, error: impl std::fmt::Display) -> String {
+fn render_iteration_errors(issues: &[IngestIssue]) -> String {
+    let first = issues
+        .first()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "stage=unknown kind=unknown path=. error=unknown".to_string());
+    let extra = issues
+        .iter()
+        .skip(1)
+        .take(2)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let extra_suffix = if extra.is_empty() {
+        String::new()
+    } else {
+        format!(" extra=[{}]", extra.join(" | "))
+    };
     format!(
-        "stage={stage} kind={kind} path={} error={error}",
-        encode_path_token(path),
+        "postgres_ingest iteration_errors count={} {}{}",
+        issues.len(),
+        first,
+        extra_suffix
     )
+}
+
+impl From<IngestIssue> for WorkerError {
+    fn from(value: IngestIssue) -> Self {
+        Self::Message(value.to_string())
+    }
+}
+
+impl From<Vec<IngestIssue>> for WorkerError {
+    fn from(value: Vec<IngestIssue>) -> Self {
+        Self::Message(render_iteration_errors(value.as_slice()))
+    }
 }
 
 async fn collect_ingestable_postgres_log_paths(
     dir: &Path,
-    read_dir_error: &str,
-    entry_error: &str,
-    file_type_stage: &str,
-) -> Result<Vec<PathBuf>, WorkerError> {
+    stage: &'static str,
+) -> Result<Vec<PathBuf>, IngestIssue> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => {
-            return Err(WorkerError::Message(format!(
-                "{read_dir_error} {}: {err}",
-                dir.display()
-            )));
-        }
+        Err(err) => return Err(IngestIssue::new(stage, "read_dir", dir, err)),
     };
 
     let mut paths = Vec::new();
     while let Some(entry) = entries
         .next_entry()
         .await
-        .map_err(|err| WorkerError::Message(format!("{entry_error}: {err}")))?
+        .map_err(|err| IngestIssue::new(stage, "read_dir_entry", dir, err))?
     {
         let path = entry.path();
         let is_file = match entry.file_type().await {
             Ok(ft) => ft.is_file(),
-            Err(err) => {
-                return Err(WorkerError::Message(format!(
-                    "stage={file_type_stage} kind=file_type path={} error={err}",
-                    path.display()
-                )));
-            }
+            Err(err) => return Err(IngestIssue::new(stage, "file_type", path.as_path(), err)),
         };
         if is_file && ingestable_postgres_log_start(path.as_path()).is_some() {
             paths.push(path);
@@ -351,26 +382,24 @@ async fn collect_ingestable_postgres_log_paths(
 async fn emit_tailer_lines(
     log: &LogSender,
     tailer: &mut FileTailer,
-    origin: &str,
-    read_stage: &str,
-    emit_stage: &str,
+    read_stage: &'static str,
+    emit_stage: &'static str,
     max_bytes_per_file: usize,
-) -> Result<u64, String> {
+) -> Result<u64, IngestIssue> {
     let lines = tailer
         .read_new_lines(max_bytes_per_file)
         .await
-        .map_err(|err| ingest_issue(read_stage, "tailer.read_new_lines", tailer.path(), err))?;
+        .map_err(|err| IngestIssue::new(read_stage, "tailer.read_new_lines", tailer.path(), err))?;
 
     let mut emitted = 0u64;
     for line in lines {
         log.send(postgres_line_event(
             LogProducer::Postgres,
             LogTransport::FileTail,
-            origin,
             tailer.path(),
             line,
         ))
-        .map_err(|err| ingest_issue(emit_stage, "log.emit_record", tailer.path(), err))?;
+        .map_err(|err| IngestIssue::new(emit_stage, "log.emit_record", tailer.path(), err))?;
         emitted = emitted.saturating_add(1);
     }
 
@@ -380,7 +409,7 @@ async fn emit_tailer_lines(
 async fn step_once(
     ctx: &PostgresIngestWorkerCtx<'_>,
     state: &mut PostgresIngestWorkerState,
-) -> Result<(), WorkerError> {
+) -> Result<(), Vec<IngestIssue>> {
     let max_bytes_per_file = POSTGRES_INGEST_MAX_BYTES_PER_FILE;
     let mut pg_ctl_lines_emitted: u64 = 0;
     let mut log_dir_lines_emitted: u64 = 0;
@@ -391,7 +420,6 @@ async fn step_once(
     match emit_tailer_lines(
         &ctx.log,
         &mut state.pg_ctl_log,
-        "pg_ctl_log_file",
         "pg_ctl_log_file.read",
         "pg_ctl_log_file.emit",
         max_bytes_per_file,
@@ -407,21 +435,14 @@ async fn step_once(
     if ctx.cfg.logging.postgres_logs_enabled {
         let dir = ctx.cfg.logging.postgres_log_dir.as_path();
         if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
-            issues.push(ingest_issue("log_dir.discover", "read_dir", dir, err));
+            issues.push(err);
         }
 
-        for (path, tailer) in state.dir_tailers.iter_mut() {
+        for (_, tailer) in state.dir_tailers.iter_mut() {
             log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
-            let origin = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map_or("postgres_log_dir:log".to_string(), |name| {
-                    format!("postgres_log_dir:{name}")
-                });
             match emit_tailer_lines(
                 &ctx.log,
                 tailer,
-                origin.as_str(),
                 "log_dir.read",
                 "log_dir.emit",
                 max_bytes_per_file,
@@ -450,7 +471,12 @@ async fn step_once(
             .await
             {
                 Ok(()) => {}
-                Err(err) => issues.push(ingest_issue("log_dir.cleanup", "cleanup.fatal", dir, err)),
+                Err(err) => issues.push(IngestIssue::new(
+                    "log_dir.cleanup",
+                    "cleanup.fatal",
+                    dir,
+                    err,
+                )),
             }
         }
     }
@@ -464,40 +490,21 @@ async fn step_once(
                 dir_tailers: state.dir_tailers.len(),
             })
             .map_err(|err| {
-                WorkerError::Message(format!("postgres ingest debug log send failed: {err}"))
+                vec![IngestIssue::new(
+                    "iteration_summary.emit",
+                    "log.send",
+                    state.pg_ctl_log.path(),
+                    err,
+                )]
             })?;
         return Ok(());
     }
 
-    let first = match issues.first() {
-        Some(first) => first.clone(),
-        None => "stage=unknown kind=unknown path=unknown error=unknown".to_string(),
-    };
-
-    let extra = issues.iter().skip(1).take(2).cloned().collect::<Vec<_>>();
-    let extra_suffix = if extra.is_empty() {
-        String::new()
-    } else {
-        format!(" extra=[{}]", extra.join(" | "))
-    };
-
-    Err(WorkerError::Message(format!(
-        "postgres_ingest iteration_errors count={} {}{}",
-        issues.len(),
-        first,
-        extra_suffix
-    )))
+    Err(issues)
 }
 
-async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), WorkerError> {
-    for path in collect_ingestable_postgres_log_paths(
-        dir,
-        "read_dir failed for",
-        "read_dir entry failed",
-        "log_dir.discover",
-    )
-    .await?
-    {
+async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), IngestIssue> {
+    for path in collect_ingestable_postgres_log_paths(dir, "log_dir.discover").await? {
         let start = match ingestable_postgres_log_start(path.as_path()) {
             Some(start) => start,
             None => continue,
@@ -514,8 +521,8 @@ async fn cleanup_log_dir(
     protect_recent: Duration,
     protected_paths: &[&Path],
     now: SystemTime,
-    issues: &mut Vec<String>,
-) -> Result<(), WorkerError> {
+    issues: &mut Vec<IngestIssue>,
+) -> Result<(), IngestIssue> {
     let protected_basenames: [&str; 3] = [
         "postgres.json",
         "postgres.stderr.log",
@@ -523,14 +530,7 @@ async fn cleanup_log_dir(
     ];
 
     let mut candidates = Vec::new();
-    for path in collect_ingestable_postgres_log_paths(
-        dir,
-        "cleanup read_dir failed for",
-        "cleanup readdir entry failed",
-        "cleanup.file_type",
-    )
-    .await?
-    {
+    for path in collect_ingestable_postgres_log_paths(dir, "cleanup.collect").await? {
         let mut protected = protected_paths.contains(&path.as_path());
 
         let file_name = match path.file_name() {
@@ -545,9 +545,11 @@ async fn cleanup_log_dir(
             Ok(meta) => meta,
             Err(err) => {
                 protected = true;
-                issues.push(format!(
-                    "stage=cleanup.metadata kind=metadata path={} error={err}",
-                    path.display()
+                issues.push(IngestIssue::new(
+                    "cleanup.metadata",
+                    "metadata",
+                    path.as_path(),
+                    err,
                 ));
                 candidates.push((path, None, protected));
                 continue;
@@ -557,9 +559,11 @@ async fn cleanup_log_dir(
             Ok(modified) => Some(modified),
             Err(err) => {
                 protected = true;
-                issues.push(format!(
-                    "stage=cleanup.modified kind=modified path={} error={err}",
-                    path.display()
+                issues.push(IngestIssue::new(
+                    "cleanup.modified",
+                    "modified",
+                    path.as_path(),
+                    err,
                 ));
                 candidates.push((path, None, protected));
                 continue;
@@ -571,9 +575,11 @@ async fn cleanup_log_dir(
                 Some(modified) => match now.duration_since(modified) {
                     Ok(age) => age <= protect_recent,
                     Err(err) => {
-                        issues.push(format!(
-                            "stage=cleanup.age kind=duration_since path={} error={err}",
-                            path.display()
+                        issues.push(IngestIssue::new(
+                            "cleanup.age",
+                            "duration_since",
+                            path.as_path(),
+                            err,
                         ));
                         true
                     }
@@ -624,9 +630,11 @@ async fn cleanup_log_dir(
                     }
                 }
                 Err(err) => {
-                    issues.push(format!(
-                        "stage=cleanup.age kind=duration_since path={} error={err}",
-                        path.display()
+                    issues.push(IngestIssue::new(
+                        "cleanup.age",
+                        "duration_since",
+                        path.as_path(),
+                        err,
                     ));
                 }
             }
@@ -638,9 +646,11 @@ async fn cleanup_log_dir(
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => {
-                issues.push(format!(
-                    "stage=cleanup.remove_file kind=remove_file path={} error={err}",
-                    path.display()
+                issues.push(IngestIssue::new(
+                    "cleanup.remove_file",
+                    "remove_file",
+                    path.as_path(),
+                    err,
                 ));
             }
         }
@@ -652,7 +662,6 @@ async fn cleanup_log_dir(
 fn postgres_line_event(
     producer: LogProducer,
     transport: LogTransport,
-    _origin: &str,
     path: &Path,
     line: Vec<u8>,
 ) -> PostgresLineLogEvent {
@@ -813,8 +822,8 @@ mod tests {
     use crate::state::WorkerError;
 
     use super::{
-        cleanup_log_dir, decode_line, ingest_error_key_best_effort, map_pg_severity,
-        normalize_postgres_line, IngestErrorKey, IngestErrorRateLimiter, PostgresIngestLogEvent,
+        cleanup_log_dir, decode_line, map_pg_severity, normalize_postgres_line, IngestErrorKey,
+        IngestErrorRateLimiter, IngestIssue, PostgresIngestLogEvent,
     };
 
     const REAL_INGEST_RETRY_SLEEP: Duration = Duration::from_millis(20);
@@ -897,11 +906,11 @@ mod tests {
         RunningTestLog::start()
     }
 
-    fn sample_postgres_ingest_failure_event(error: &WorkerError) -> PostgresIngestLogEvent {
+    fn sample_postgres_ingest_failure_event(cause: &str) -> PostgresIngestLogEvent {
         PostgresIngestLogEvent::StepOnceFailed {
             attempts: 2,
             suppressed: 7,
-            cause: error.to_string(),
+            cause: cause.to_string(),
         }
     }
 
@@ -909,7 +918,6 @@ mod tests {
         super::postgres_line_event(
             LogProducer::Postgres,
             LogTransport::FileTail,
-            "pg_ctl_log_file",
             path,
             vec![0xff_u8, 0x00, b'a', 0x80],
         )
@@ -919,9 +927,9 @@ mod tests {
     fn ingest_error_rate_limiter_suppresses_and_reemits_with_count() {
         let mut limiter = IngestErrorRateLimiter::new(30_000);
         let key = IngestErrorKey {
-            stage: "a".to_string(),
-            kind: "b".to_string(),
-            path: "c".to_string(),
+            stage: "a",
+            kind: "b",
+            path: PathBuf::from("c"),
         };
 
         let first = limiter.record(key.clone(), 1_000);
@@ -953,21 +961,33 @@ mod tests {
     }
 
     #[test]
-    fn ingest_error_key_parsing_uses_first_stage_kind_path_tokens() {
-        let err = WorkerError::Message(
-            "postgres_ingest iteration_errors count=2 stage=first kind=k1 path=/a error=x extra=[stage=second kind=k2 path=/b error=y]"
-                .to_string(),
-        );
-        let key = ingest_error_key_best_effort(&err);
+    fn ingest_issue_key_uses_stage_kind_and_path() {
+        let issue = IngestIssue::new("first", "k1", PathBuf::from("/a").as_path(), "x");
+        let key = issue.key();
         assert_eq!(key.stage, "first");
         assert_eq!(key.kind, "k1");
-        assert_eq!(key.path, "/a");
+        assert_eq!(key.path, PathBuf::from("/a"));
+    }
+
+    #[test]
+    fn render_iteration_errors_uses_first_issue_and_caps_extras() {
+        let rendered = super::render_iteration_errors(&[
+            IngestIssue::new("first", "k1", PathBuf::from("/a").as_path(), "x"),
+            IngestIssue::new("second", "k2", PathBuf::from("/b").as_path(), "y"),
+            IngestIssue::new("third", "k3", PathBuf::from("/c").as_path(), "z"),
+            IngestIssue::new("fourth", "k4", PathBuf::from("/d").as_path(), "w"),
+        ]);
+        assert!(rendered.contains("count=4 stage=first kind=k1 path=/a error=x"));
+        assert!(rendered.contains("stage=second kind=k2 path=/b error=y"));
+        assert!(rendered.contains("stage=third kind=k3 path=/c error=z"));
+        assert!(!rendered.contains("stage=fourth kind=k4 path=/d error=w"));
     }
 
     #[test]
     fn step_failure_event_encodes_internal_error_record() {
-        let err = WorkerError::Message("stage=x kind=y path=/z error=boom".to_string());
-        let record = materialize_record(sample_postgres_ingest_failure_event(&err));
+        let record = materialize_record(sample_postgres_ingest_failure_event(
+            "stage=x kind=y path=/z error=boom",
+        ));
 
         assert_eq!(record.severity_text, LogSeverity::Error);
         assert_eq!(record.event_name, "postgres_ingest.step_once_failed");
@@ -1175,7 +1195,7 @@ mod tests {
         assert!(!issues.is_empty());
         assert!(issues
             .iter()
-            .any(|issue| issue.contains("stage=cleanup.remove_file kind=remove_file")));
+            .any(|issue| issue.stage == "cleanup.remove_file" && issue.kind == "remove_file"));
         assert!(old.exists());
 
         let mut perms = std::fs::metadata(&dir)
