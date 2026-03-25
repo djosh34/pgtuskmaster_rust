@@ -13,6 +13,7 @@ use pgtuskmaster_rust::{
         state::{PgConnInfo, PgInfoState, PgSslMode, Readiness},
     },
 };
+use pgtuskmaster_test_support::config_v2::test_support::{toml_path_source, toml_string};
 use serde::de::DeserializeOwned;
 
 use crate::support::{
@@ -435,17 +436,6 @@ fn host_postgres_conninfo(
             client_key: Some(observer_key_path.to_path_buf()),
         },
     })
-}
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_path_source(path: &Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
 }
 
 fn build_host_observer_config(

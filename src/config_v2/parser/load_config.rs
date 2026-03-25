@@ -3,6 +3,10 @@ use std::{
     time::Duration,
 };
 
+#[cfg(any(test, feature = "internal-test-support"))]
+use crate::config_v2::test_support::toml_string;
+#[cfg(test)]
+use crate::config_v2::test_support::{toml_path_source, toml_string_secret};
 use crate::{
     config_v2::types::{
         ApiAuth, ApiConfig, ConfigErrorV2, DcsAuth, DcsConfig, DcsEndpoint, FileSinkConfig,
@@ -24,24 +28,6 @@ const RUNTIME_TEST_BINARY_PATHS_TOML: &str = r#"process.binaries.pg_ctl = "/bin/
 process.binaries.initdb = "/bin/true"
 process.binaries.pg_rewind = "/bin/true"
 process.binaries.pg_basebackup = "/bin/true""#;
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-#[cfg(test)]
-fn toml_path_source(path: &Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
-}
-
-#[cfg(test)]
-fn toml_string_secret(value: &str) -> String {
-    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
-}
 
 #[cfg(any(test, feature = "internal-test-support"))]
 fn render_runtime_test_config_toml<J, T>(

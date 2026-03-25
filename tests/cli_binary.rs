@@ -8,6 +8,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use pgtuskmaster_test_support::config_v2::test_support::toml_string;
+
 #[rustfmt::skip]
 const API_HTTP_DISABLED_AUTH: &str = "[api]\ntransport = { transport = \"http\" }\nauth = { type = \"disabled\" }";
 #[rustfmt::skip]
@@ -15,10 +17,6 @@ const DCS_BASIC_AUTH_EMPTY_USERNAME: &str = "[dcs.client.auth]\ntype = \"basic\"
 #[rustfmt::skip]
 const MISSING_PROCESS_BINARIES: &str = "[process.binaries]\ninitdb = \"/definitely/missing/initdb\"\npg_basebackup = \"/definitely/missing/pg_basebackup\"\npg_rewind = \"/definitely/missing/pg_rewind\"\npg_ctl = \"/definitely/missing/pg_ctl\"";
 const PROCESS_BINARIES_USR_BIN: &str = "[process.binaries]\ninitdb = \"/usr/bin/initdb\"\npg_basebackup = \"/usr/bin/pg_basebackup\"\npg_rewind = \"/usr/bin/pg_rewind\"\npg_ctl = \"/usr/bin/pg_ctl\"";
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
 
 fn render_runtime_config_toml(dcs_endpoint: &str, extra_sections: &[&str]) -> String {
     let extra_sections = extra_sections

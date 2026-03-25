@@ -1,4 +1,6 @@
 mod parser;
+#[cfg(any(test, feature = "internal-test-support"))]
+pub mod test_support;
 pub mod types;
 
 pub use parser::{load_operator_config, load_runtime_config};

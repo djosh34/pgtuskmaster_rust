@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pgtuskmaster_test_support::config_v2::load_runtime_config_contents;
+use pgtuskmaster_test_support::config_v2::{
+    load_runtime_config_contents,
+    test_support::{toml_path_source, toml_string, toml_string_secret},
+};
 
 use crate::support::{
     error::{HarnessError, Result},
@@ -43,21 +46,6 @@ hostssl replication    all             0.0.0.0/0               scram-sha-256"#;
 const HA_POSTGRES_IDENT_CONTENTS: &str = "observer_as_postgres    observer        postgres";
 const SHARED_ETCD_SERVICES: [DcsService; 1] = [DcsService::SharedEtcd];
 const THREE_ETCD_QUORUM_SERVICES: [DcsService; 2] = [DcsService::EtcdA, DcsService::EtcdB];
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_path_source(path: &Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
-}
-
-fn toml_string_secret(value: &str) -> String {
-    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HaGivenId {
