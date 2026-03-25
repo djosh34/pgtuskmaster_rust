@@ -20,10 +20,10 @@ use super::private_schema as raw;
 type OptionalTokens = (Option<Secret>, Option<Secret>);
 
 #[cfg(any(test, feature = "internal-test-support"))]
-const RUNTIME_TEST_BINARY_OVERRIDES_TOML: &str = r#"process.binaries.overrides.pg_ctl = "/bin/true"
-process.binaries.overrides.initdb = "/bin/true"
-process.binaries.overrides.pg_rewind = "/bin/true"
-process.binaries.overrides.pg_basebackup = "/bin/true""#;
+const RUNTIME_TEST_BINARY_PATHS_TOML: &str = r#"process.binaries.pg_ctl = "/bin/true"
+process.binaries.initdb = "/bin/true"
+process.binaries.pg_rewind = "/bin/true"
+process.binaries.pg_basebackup = "/bin/true""#;
 
 #[cfg(any(test, feature = "internal-test-support"))]
 fn join_rendered_sections<J, T>(base: String, extra_sections: J) -> String
@@ -95,7 +95,7 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn render_runtime_test_config_document_toml<I, S, J, T>(
+pub fn render_runtime_test_config_document_toml<I, S, J, T>(
     identity: (&str, &str, &str),
     paths: (&Path, Option<&Path>, Option<&Path>),
     dcs_endpoints: I,
@@ -213,7 +213,7 @@ where
     T: AsRef<str>,
 {
     let (data_dir, socket_dir, log_file) = paths;
-    render_runtime_test_config_toml_with_overrides(
+    render_runtime_test_config_document_toml(
         (cluster_name, scope, member_id),
         (data_dir, Some(socket_dir), Some(log_file)),
         dcs_endpoints,
@@ -223,31 +223,6 @@ where
             ("rewinder", "rewinder"),
         ],
         ("host all all 127.0.0.1/32 trust", ""),
-        extra_sections,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_runtime_test_config_toml_with_overrides<I, S, J, T>(
-    identity: (&str, &str, &str),
-    paths: (&Path, Option<&Path>, Option<&Path>),
-    dcs_endpoints: I,
-    role_credentials: [(&str, &str); 3],
-    access_contents: (&str, &str),
-    extra_sections: J,
-) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    render_runtime_test_config_document_toml(
-        identity,
-        paths,
-        dcs_endpoints,
-        role_credentials,
-        access_contents,
         extra_sections,
     )
 }
@@ -263,7 +238,7 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let contents = render_runtime_test_config_toml_with_overrides(
+    let contents = render_runtime_test_config_document_toml(
         ("cluster-a", scope, "node-a"),
         (data_dir, None, None),
         ["http://127.0.0.1:2379"],
@@ -273,7 +248,7 @@ where
             ("rewinder", "secret-password"),
         ],
         (hba_contents, ""),
-        std::iter::once(RUNTIME_TEST_BINARY_OVERRIDES_TOML.to_string()).chain(
+        std::iter::once(RUNTIME_TEST_BINARY_PATHS_TOML.to_string()).chain(
             extra_sections
                 .into_iter()
                 .map(|section| section.as_ref().to_string()),
@@ -903,25 +878,25 @@ impl ProcessBinariesConfig {
         } = self;
         Ok(Self {
             pg_ctl: resolve_binary_path(
-                "process.binaries.overrides.pg_ctl",
+                "process.binaries.pg_ctl",
                 "pg_ctl",
                 path_override(pg_ctl),
                 config_dir,
             )?,
             initdb: resolve_binary_path(
-                "process.binaries.overrides.initdb",
+                "process.binaries.initdb",
                 "initdb",
                 path_override(initdb),
                 config_dir,
             )?,
             pg_rewind: resolve_binary_path(
-                "process.binaries.overrides.pg_rewind",
+                "process.binaries.pg_rewind",
                 "pg_rewind",
                 path_override(pg_rewind),
                 config_dir,
             )?,
             pg_basebackup: resolve_binary_path(
-                "process.binaries.overrides.pg_basebackup",
+                "process.binaries.pg_basebackup",
                 "pg_basebackup",
                 path_override(pg_basebackup),
                 config_dir,
@@ -1166,10 +1141,10 @@ ha.lease_ttl_ms = 0
 process.timeouts.pg_rewind_ms = 0
 process.timeouts.bootstrap_ms = 0
 process.timeouts.fencing_ms = 0
-process.binaries.overrides.pg_ctl = "/bin/true"
-process.binaries.overrides.initdb = "/bin/true"
-process.binaries.overrides.pg_rewind = "/bin/true"
-process.binaries.overrides.pg_basebackup = "/bin/true"
+process.binaries.pg_ctl = "/bin/true"
+process.binaries.initdb = "/bin/true"
+process.binaries.pg_rewind = "/bin/true"
+process.binaries.pg_basebackup = "/bin/true"
 logging.capture_subprocess_output = true
 logging.postgres.enabled = true
 logging.postgres.poll_interval_ms = 0

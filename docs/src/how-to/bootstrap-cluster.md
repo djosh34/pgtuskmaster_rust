@@ -86,7 +86,7 @@ When started, nodes automatically:
 
 - Check PostgreSQL logs for startup failures
 - Verify `postgres.network.listen_host` and `postgres.network.listen_port` are not in use
-- If autodiscovery is not enough in this environment, confirm `process.binaries.overrides.*` points to valid PostgreSQL executables
+- If autodiscovery is not enough in this environment, confirm `process.binaries.*` points to valid PostgreSQL executables
 
 ### Bootstrap Node Enters FailSafe
 

@@ -273,7 +273,7 @@ Defaults exist for both values. Validation requires `lease_ttl_ms > loop_interva
 
 ## `process`
 
-`process` now separates timeouts, working-root defaults, and optional binary overrides.
+`process` separates timeouts, working-root defaults, and optional PostgreSQL binary paths.
 
 ```toml
 [process]
@@ -284,9 +284,9 @@ pg_rewind_ms = 120000
 bootstrap_ms = 300000
 fencing_ms = 30000
 
-[process.binaries.overrides]
-postgres = "/usr/lib/postgresql/16/bin/postgres"
+[process.binaries]
 pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
+initdb = "/usr/lib/postgresql/16/bin/initdb"
 ```
 
 ### Timeouts
@@ -303,14 +303,14 @@ All three timeout fields default to sane values and remain overridable:
 
 ### Binary resolution
 
-Binary overrides are optional.
+Explicit binary paths are optional.
 
-When an override is not present, the runtime searches:
+When a path is not present, the runtime searches:
 
 1. `PATH`
 2. conventional PostgreSQL install directories
 
-If autodiscovery fails, the runtime reports which `process.binaries.overrides.*` field to set explicitly.
+If autodiscovery fails, the runtime reports which `process.binaries.*` field to set explicitly.
 
 ## `logging`
 
@@ -446,7 +446,7 @@ Common validation patterns include:
 - DCS HTTPS endpoints requiring `dcs.client.tls`
 - non-empty `dcs.client.auth.username` for basic auth
 - `lease_ttl_ms > loop_interval_ms`
-- readable path-backed overrides when `process.binaries.overrides.*` is set
+- readable path-backed binaries when `process.binaries.*` is set
 - TLS client/server combinations that require CA material when verification modes demand it
 
-If validation fails, the loader reports a stable dotted field path such as `cluster.scope` or `process.binaries.overrides.initdb`.
+If validation fails, the loader reports a stable dotted field path such as `cluster.scope` or `process.binaries.initdb`.

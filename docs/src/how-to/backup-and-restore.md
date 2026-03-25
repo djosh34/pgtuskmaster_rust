@@ -31,7 +31,7 @@ The `-X stream` option includes WAL files necessary for consistency.
 Your pgtuskmaster configuration must expose the `pg_basebackup` binary:
 
 ```toml
-[process.binaries.overrides]
+[process.binaries]
 pg_basebackup = "/usr/lib/postgresql/16/bin/pg_basebackup"
 ```
 

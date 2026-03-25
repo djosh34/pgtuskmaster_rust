@@ -307,10 +307,14 @@ impl Default for HaConfig {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProcessConfig {
+    #[serde(default)]
     pub timeouts: ProcessTimeoutsConfig,
+    #[serde(default = "default_runtime_working_root")]
     pub working_root: PathBuf,
+    #[serde(default)]
     pub binaries: ProcessBinariesConfig,
 }
 
@@ -321,42 +325,6 @@ impl Default for ProcessConfig {
             working_root: default_runtime_working_root(),
             binaries: ProcessBinariesConfig::default(),
         }
-    }
-}
-
-impl<'de> Deserialize<'de> for ProcessConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        #[derive(Default, Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct BinaryResolutionConfig {
-            #[serde(default)]
-            overrides: ProcessBinariesConfig,
-        }
-
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct ProcessConfigInput {
-            #[serde(default)]
-            timeouts: ProcessTimeoutsConfig,
-            #[serde(default = "default_runtime_working_root")]
-            working_root: PathBuf,
-            #[serde(default)]
-            binaries: BinaryResolutionConfig,
-        }
-
-        let ProcessConfigInput {
-            timeouts,
-            working_root,
-            binaries,
-        } = ProcessConfigInput::deserialize(deserializer)?;
-        Ok(Self {
-            timeouts,
-            working_root,
-            binaries: binaries.overrides,
-        })
     }
 }
 

@@ -33,7 +33,7 @@ Fields that must be correct for the new node:
 - `postgres.network.listen_host`
 - `postgres.network.listen_port`
 - `dcs.endpoints`
-- `process.binaries.overrides.*` when autodiscovery is not sufficient
+- `process.binaries.*` when autodiscovery is not sufficient
 - `api.listen_addr`
 
 ## Step 2: Check connectivity before you start it
@@ -116,7 +116,7 @@ Repeat `pgtm status -v` from at least one surviving node's operator config. You 
 Check:
 
 - local PostgreSQL startup
-- `process.binaries.overrides.*` if you rely on explicit overrides
+- `process.binaries.*` if you rely on explicit binary paths
 - PostgreSQL data, socket, and log paths
 
 ### The node stays in `waiting_dcs_trusted` or enters `fail_safe`

@@ -275,7 +275,7 @@ fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
 pg_rewind_ms = 120000
 bootstrap_ms = 300000
 fencing_ms = 30000"#,
-                r#"[process.binaries.overrides]
+                r#"[process.binaries]
 initdb = "/definitely/missing/initdb"
 pg_basebackup = "/definitely/missing/pg_basebackup"
 pg_rewind = "/definitely/missing/pg_rewind"
@@ -330,7 +330,7 @@ fn node_rejects_empty_dcs_basic_auth_username_with_stable_field_path() -> Result
 type = "basic"
 username = ""
 password = { type = "string", value = "secret-password" }"#,
-                r#"[process.binaries.overrides]
+                r#"[process.binaries]
 initdb = "/usr/bin/initdb"
 pg_basebackup = "/usr/bin/pg_basebackup"
 pg_rewind = "/usr/bin/pg_rewind"
@@ -377,7 +377,7 @@ fn node_rejects_https_dcs_without_tls_config() -> Result<(), String> {
             ),
             ["https://127.0.0.1:2379"],
             [
-                r#"[process.binaries.overrides]
+                r#"[process.binaries]
 initdb = "/usr/bin/initdb"
 pg_basebackup = "/usr/bin/pg_basebackup"
 pg_rewind = "/usr/bin/pg_rewind"

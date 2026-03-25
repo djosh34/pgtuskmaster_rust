@@ -30,10 +30,10 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/80-collapse-config-parser-source-resolution-onto-raw-schema-owners.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/81-flatten-process-binaries-and-delete-overrides-wrapper.md`
 
 <steps>
-- [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
+- [ ] If fresh (based on progress history), untick all boxes, remove existing path to plan file
 - [x] Find a potential plan if it exists, otherwise find new ones
 - [x] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
 - [x] Do improvement

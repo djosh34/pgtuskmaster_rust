@@ -4,7 +4,7 @@ use std::{
 };
 
 use pgtuskmaster_test_support::config_v2::{
-    load_runtime_config_contents, render_runtime_test_config_toml_with_overrides, toml_path_source,
+    load_runtime_config_contents, render_runtime_test_config_document_toml, toml_path_source,
     toml_string, toml_string_secret,
 };
 
@@ -26,13 +26,13 @@ const HA_REPLICATOR_PASSWORD: &str = "ha-cucumber-superuser-password";
 const HA_REWINDER_PASSWORD: &str = "ha-cucumber-superuser-password";
 const HA_API_READ_TOKEN: &str = "ha-cucumber-read-token";
 const HA_API_ADMIN_TOKEN: &str = "ha-cucumber-admin-token";
-const CONTAINER_PROCESS_BINARY_OVERRIDES: [&str; 4] = [
+const CONTAINER_PROCESS_BINARY_PATHS: [&str; 4] = [
     "/usr/lib/postgresql/16/bin/pg_ctl",
     "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind",
     "/usr/lib/postgresql/16/bin/initdb",
     "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup",
 ];
-const HOST_VALIDATION_PROCESS_BINARY_OVERRIDES: [&str; 4] =
+const HOST_VALIDATION_PROCESS_BINARY_PATHS: [&str; 4] =
     ["/bin/true", "/bin/true", "/bin/true", "/bin/true"];
 const HA_POSTGRES_HBA_CONTENTS: &str = r#"local   all             all                                     peer
 hostnossl all           all             0.0.0.0/0               reject
@@ -150,10 +150,8 @@ impl HaGivenId {
     }
 
     pub fn render_runtime_config(self, member: ClusterMember) -> Result<String> {
-        let rendered = self.render_runtime_config_with_process_binaries(
-            member,
-            CONTAINER_PROCESS_BINARY_OVERRIDES,
-        );
+        let rendered = self
+            .render_runtime_config_with_process_binaries(member, CONTAINER_PROCESS_BINARY_PATHS);
         self.validate_runtime_config_for_host(member)?;
         Ok(rendered)
     }
@@ -188,14 +186,14 @@ impl HaGivenId {
     fn render_runtime_config_with_process_binaries(
         self,
         member: ClusterMember,
-        process_binary_overrides: [&str; 4],
+        process_binary_paths: [&str; 4],
     ) -> String {
         render_ha_member_runtime_test_config_toml(
             member.service_name(),
             self.local_dcs_service_for(member).client_url(),
             self.replicator_role(),
             self.rewinder_role(),
-            process_binary_overrides,
+            process_binary_paths,
         )
     }
 
@@ -215,7 +213,7 @@ impl HaGivenId {
     fn validate_runtime_config_for_host(self, member: ClusterMember) -> Result<()> {
         let rendered = self.render_runtime_config_with_process_binaries(
             member,
-            HOST_VALIDATION_PROCESS_BINARY_OVERRIDES,
+            HOST_VALIDATION_PROCESS_BINARY_PATHS,
         );
         load_runtime_config_contents(rendered.as_str())
             .map(|_| ())
@@ -228,19 +226,19 @@ fn render_ha_member_runtime_test_config_toml(
     dcs_endpoint: &str,
     replicator: &str,
     rewinder: &str,
-    process_binary_overrides: [&str; 4],
+    process_binary_paths: [&str; 4],
 ) -> String {
     let ca_cert_path = Path::new("/etc/pgtuskmaster/tls/ca.crt");
     let member_cert_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.crt"));
     let member_key_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.key"));
-    let [pg_ctl_path, pg_rewind_path, initdb_path, pg_basebackup_path] = process_binary_overrides;
+    let [pg_ctl_path, pg_rewind_path, initdb_path, pg_basebackup_path] = process_binary_paths;
     let ca_cert = toml_path_source(ca_cert_path);
     let member_cert_path = toml_path_source(member_cert_path.as_path());
     let member_key_path = toml_path_source(member_key_path.as_path());
     let api_read_token = toml_string_secret(HA_API_READ_TOKEN);
     let api_admin_token = toml_string_secret(HA_API_ADMIN_TOKEN);
     let api_base_url = toml_string(format!("https://{member_name}:8443").as_str());
-    render_runtime_test_config_toml_with_overrides(
+    render_runtime_test_config_document_toml(
         ("ha-cucumber-cluster", "ha-cucumber-cluster", member_name),
         (
             Path::new("/var/lib/postgresql/data"),
@@ -276,7 +274,7 @@ client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}"#,
 wal_keep_size = "128MB""#
                 .to_string(),
             format!(
-                r#"[process.binaries.overrides]
+                r#"[process.binaries]
 pg_ctl = {pg_ctl_path}
 pg_rewind = {pg_rewind_path}
 initdb = {initdb_path}
