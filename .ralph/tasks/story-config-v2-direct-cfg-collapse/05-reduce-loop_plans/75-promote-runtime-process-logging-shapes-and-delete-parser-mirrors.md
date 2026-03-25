@@ -1,46 +1,55 @@
-## Plan: Promote Runtime Process/Logging Shapes and Delete Parser Mirrors
+## Plan: Route Runtime Test Support Through The Canonical Parser
 
-### Why this is the next reduction target
+### Why this is the next verified reduction target
 
-The parser still owns the canonical structure for runtime-owned HA/process/logging sections, then `load_config.rs` immediately flattens and rethreads those sections back into separate runtime structs.
+The parser already owns the canonical runtime defaults and path derivation, but the test-support entrypoints still rebuild that same runtime shape by hand.
 
-- `src/config_v2/parser/private_schema.rs:438-612` defines `HaConfig`, `ProcessConfig`, `ProcessTimeoutsConfig`, `BinaryResolutionConfig`, `BinaryPathOverrides`, `LoggingConfig`, `PostgresLoggingConfig`, `LoggingSinksConfig`, `StderrSinkConfig`, `FileSinkConfig`, and `LogCleanupConfig` as parser-private couriers.
-- `src/config_v2/parser/load_config.rs:72-113` then has `RuntimeDocument::into_runtime_config()` manually split one conceptual runtime section across `timing`, `binaries`, and `logging`, even though those values already entered in grouped TOML sections.
-- `src/config_v2/parser/load_config.rs:166-177` has to deserialize the whole runtime document just to read four timeout values, which is a direct symptom of the wrong ownership boundary.
-- `src/config_v2/parser/load_config.rs:782-905` is mostly section reassembly: normalize working-root paths, repack timeouts, resolve binaries, and flatten nested logging back into `src/config_v2/types.rs:129-163`.
+- `src/config_v2/parser/load_config.rs:118-175` exposes `runtime_test_config`, `runtime_test_config_with_data_dir`, `managed_postgres_test_config`, and `trace_logging_test_config`.
+- `src/config_v2/parser/load_config.rs:193-299` hand-constructs a full `RuntimeConfigV2` in `load_runtime_test_config_from_paths`, repeating cluster defaults, role defaults, working-root-derived paths, HA/process durations, logging defaults, and binary resolution behavior that the parser already knows.
+- `src/config_v2/parser/load_config.rs:1299-1475` already contains TOML render helpers inside the unit-test module that express those same runtime defaults once and feed them through `load_runtime_config_contents`.
+- `tests/ha/support/timeouts/mod.rs:27-42` depends on `load_runtime_timing_values` precisely because the HA harness must derive timing inputs from a runtime config file without forcing full runtime finalization against host-side binary paths.
 
-### Current overlap already verified
+The stale mirror-struct plan was wrong; the live boundary problem is duplicated runtime default knowledge in test support plus a second raw runtime-document parse path.
 
-- Parser `HaConfig` plus `ProcessTimeoutsConfig` (`src/config_v2/parser/private_schema.rs:438-491`) exist only to feed runtime `TimingConfig` (`src/config_v2/types.rs:129-135`) through `Duration::from_millis(...)` calls in `src/config_v2/parser/load_config.rs:98-103`.
-- Parser `BinaryResolutionConfig` and `BinaryPathOverrides` (`src/config_v2/parser/private_schema.rs:498-511`) only survive long enough for `src/config_v2/parser/load_config.rs:809-846` to rebuild runtime `BinariesConfig` (`src/config_v2/types.rs:140-145`).
-- Parser `LoggingConfig` and its nested structs (`src/config_v2/parser/private_schema.rs:514-612`) mirror the same runtime concern as `src/config_v2/types.rs:150-163`, but `src/config_v2/parser/load_config.rs:849-910` has to destructure and flatten them field by field.
-- Downstream runtime usage is contained: timing is read in `src/pginfo/worker.rs`, `src/process/jobs.rs`, `src/dcs/worker.rs`, and `src/ha/worker.rs`; binaries are read in `src/process/cluster.rs` and `src/dev_support/binaries.rs`; logging is read mostly in `src/process/cluster.rs`, `src/process/worker.rs`, `src/logging/core/runtime.rs`, and `src/logging/postgres_ingest.rs`.
+### Current overlap verified in code
+
+- The manual builder in `load_runtime_test_config_from_paths` duplicates parser-owned defaults from `src/config_v2/types.rs` and parser finalize logic from `src/config_v2/parser/load_config.rs`, including:
+  - `process.working_root` and derived logging/postgres paths
+  - default HA/process timeout durations
+  - default logging sink and postgres logging settings
+  - default role names and inline password sources
+  - binary resolution through `resolve_binary_path`
+- The test module already has reusable TOML builders for runtime fixtures:
+  - `join_rendered_sections`
+  - `toml_string`
+  - `render_runtime_test_config_toml`
+  - `render_default_runtime_test_config_toml`
+- `load_runtime_timing_values` reparses `raw::RuntimeDocument` directly instead of sharing the same parse entry that `load_runtime_config_contents_at` already uses.
 
 ### Execution plan
 
-1. Move canonical ownership of the HA/process/logging layout into `src/config_v2/types.rs`.
-   - Replace the flat `TimingConfig`, `BinariesConfig`, and `LoggingConfig` shape with canonical runtime-owned section types that match the config structure closely enough to reuse the parser section layout instead of mirroring it.
-   - Concretely, make `RuntimeConfigV2` own nested `ha`, `process`, and `logging` sections directly, with resolved runtime leaf values (`Duration`, normalized `PathBuf`, resolved binary paths) stored inside those canonical section types rather than in separate flattened mirrors.
-   - Prefer promoting or relocating the existing parser section structs over inventing new names. If a parser type can become the canonical runtime type after path/duration cleanup, reuse it.
-   - Keep only the genuinely parser-specific leaf wrappers, such as `PathOrInline`, `PathSource`, `SecretSource`, and TLS/auth inputs that still need path or secret resolution.
+1. Promote the shared runtime test-config render helpers out of `mod tests`.
+   - Move the runtime TOML helper functions now living in `src/config_v2/parser/load_config.rs:1310-1475` into private `#[cfg(any(test, feature = "internal-test-support"))]` support code near the public test helper entrypoints.
+   - Keep only the operator-specific test helpers inside the unit-test module if they are not needed by runtime test support.
+   - Do not create a second hand-built runtime config representation; the helpers should render canonical config text and feed the real parser.
 
-2. Shrink `private_schema.rs` to input-only wrappers and serde defaults.
-   - Delete parser-private structs whose only job is to mirror runtime-owned `ha`, `process`, `binaries`, and `logging` hierarchy.
-   - Attach the existing defaulting behavior (`zero means default`, blank listen host fallback, default working root/log paths where still appropriate) to the promoted canonical section types or tiny parser-only leaf inputs.
-   - Do not introduce a new intermediate "normalized runtime config" layer. The overlap should disappear, not move.
+2. Delete the manual `RuntimeConfigV2` builder.
+   - Remove `load_runtime_test_config_from_paths`.
+   - Reimplement `runtime_test_config` and `runtime_test_config_with_data_dir` by rendering the default runtime fixture TOML and loading it through `load_runtime_config_contents_at` or an equivalent shared parser entry.
+   - Preserve the current absolute-path test behavior so relative-path resolution does not become accidental test coupling.
 
-3. Replace section re-threading in `load_config.rs` with section-local finalize methods.
-   - Remove `raw::ProcessConfig::into_runtime_parts`, `raw::BinaryResolutionConfig::into_runtime_config`, and `raw::LoggingConfig::into_runtime_config`.
-   - Let the promoted runtime sections finalize themselves in place: resolve working-root-relative paths, resolve binary overrides, and convert timeout millisecond fields to `Duration` at the owning section boundary.
-   - Simplify `RuntimeDocument::into_runtime_config()` so it composes validated sections instead of manually reconstructing timing, binaries, and logging field by field.
+3. Keep specialized test configs as thin parser-backed variants.
+   - Rework `managed_postgres_test_config` and `trace_logging_test_config` so they start from rendered config input instead of inheriting parser defaults and then rebuilding nested runtime structs by hand wherever possible.
+   - If a tiny post-parse override remains clearer than extra TOML assembly, keep only that thin override layer; the large duplicated base builder must still be deleted.
 
-4. Update downstream consumers directly to the new canonical layout.
-   - Rewrite the limited runtime call sites to use the promoted section structure instead of preserving flat compatibility accessors.
-   - Adjust focused tests and config helpers in `src/config_v2/parser/load_config.rs` and the affected runtime modules rather than adding adapter methods.
+4. Share runtime-document parsing for timing extraction.
+   - Extract a small shared `parse_runtime_document` helper used by both `load_runtime_config_contents_at` and `load_runtime_timing_values`.
+   - Keep `load_runtime_timing_values` as the lightweight host-side path for the HA harness, but make it read timing fields from the shared parsed document instead of open-coding another `toml::from_str::<raw::RuntimeDocument>` branch.
+   - Do not switch the HA harness to full runtime finalization, because its fixture configs intentionally reference container-side binary paths that are not guaranteed to exist on the host.
 
 5. Validate the slice.
    - Run `cargo fmt`.
-   - Run `bash .ralph/git_diff_lines_since.sh` and require the diff to remain net-negative.
+   - Run `bash .ralph/git_diff_lines_since.sh` and confirm the diff stays net-negative.
    - Run `make check`.
    - Run `make lint`.
    - Run `make test`.
@@ -48,14 +57,16 @@ The parser still owns the canonical structure for runtime-owned HA/process/loggi
 
 ### Guardrails
 
-- Do not add new mirror types. When parser and runtime shapes overlap, promote one as canonical and delete the other.
-- Keep path and secret resolution inside parser/finalize code so runtime consumers still receive validated, resolved config values.
-- Prefer direct consumer updates over alias fields or compatibility getters; this project is greenfield and should not keep duplicate shapes alive.
+- Reuse existing runtime types and parser behavior; do not add a new normalized config layer.
+- Keep config validation and path resolution inside `src/config_v2/parser/`.
+- Prefer deleting duplicated defaults over moving them into another helper that still bypasses the parser.
+- Leave the `ProcessConfig` custom deserialize helper alone unless it becomes obviously collapsible during execution without adding new schema types.
 
 ### Expected yield
 
-- Delete the parser `ha/process/binaries/logging` mirror structs from `src/config_v2/parser/private_schema.rs`.
-- Delete the section reassembly impls in `src/config_v2/parser/load_config.rs:782-905`.
-- Reduce the amount of runtime test-config scaffolding in `src/config_v2/parser/load_config.rs` because the runtime layout will no longer need a second flattened representation.
+- Delete the manual runtime test builder in `src/config_v2/parser/load_config.rs:193-299`.
+- Delete or shrink the duplicated default-value knowledge currently spread across the public test helper entrypoints.
+- Remove the extra raw runtime-document parse branch from `load_runtime_timing_values` by sharing the parse entrypoint.
+- Keep the change net-negative in lines while improving the ownership boundary: parser owns config defaults, test support consumes parser output.
 
 NOW EXECUTE

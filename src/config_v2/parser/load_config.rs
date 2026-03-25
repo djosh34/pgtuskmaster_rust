@@ -15,14 +15,180 @@ use crate::{
 };
 use reqwest::Url;
 
-#[cfg(any(test, feature = "internal-test-support"))]
-use crate::config_v2::types::{
-    HaConfig, LogCleanupConfig, ProcessTimeoutsConfig, StderrSinkConfig,
-};
-
 use super::private_schema as raw;
 
 type OptionalTokens = (Option<Secret>, Option<Secret>);
+
+#[cfg(any(test, feature = "internal-test-support"))]
+const RUNTIME_TEST_BINARY_OVERRIDES_TOML: &str = r#"process.binaries.overrides.pg_ctl = "/bin/true"
+process.binaries.overrides.initdb = "/bin/true"
+process.binaries.overrides.pg_rewind = "/bin/true"
+process.binaries.overrides.pg_basebackup = "/bin/true""#;
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn join_rendered_sections<J, T>(base: String, extra_sections: J) -> String
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    std::iter::once(base)
+        .chain(extra_sections.into_iter().filter_map(|section| {
+            let section = section.as_ref().trim();
+            (!section.is_empty()).then_some(section.to_string())
+        }))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn toml_string_secret(value: &str) -> String {
+    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
+}
+
+#[cfg(test)]
+fn render_runtime_test_config_toml<I, S, J, T>(
+    cluster_name: &str,
+    scope: &str,
+    member_id: &str,
+    paths: (&Path, &Path, &Path),
+    dcs_endpoints: I,
+    extra_sections: J,
+) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let (data_dir, socket_dir, log_file) = paths;
+    let endpoints = dcs_endpoints
+        .into_iter()
+        .map(|endpoint| format!("  {}", toml_string(endpoint.as_ref())))
+        .collect::<Vec<_>>()
+        .join(",\n");
+
+    join_rendered_sections(
+        format!(
+            r#"cluster.name = {cluster_name}
+cluster.scope = {scope}
+cluster.member_id = {member_id}
+postgres.paths.data_dir = {data_dir}
+postgres.paths.socket_dir = {socket_dir}
+postgres.paths.log_file = {log_file}
+postgres.roles.mandatory.superuser.username = "postgres"
+postgres.roles.mandatory.superuser.auth.type = "password"
+postgres.roles.mandatory.superuser.auth.password = {{ type = "string", value = "postgres" }}
+postgres.roles.mandatory.replicator.username = "replicator"
+postgres.roles.mandatory.replicator.auth.type = "password"
+postgres.roles.mandatory.replicator.auth.password = {{ type = "string", value = "replicator" }}
+postgres.roles.mandatory.rewinder.username = "rewinder"
+postgres.roles.mandatory.rewinder.auth.type = "password"
+postgres.roles.mandatory.rewinder.auth.password = {{ type = "string", value = "rewinder" }}
+postgres.access.hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+postgres.access.ident = {{ content = "" }}
+dcs.endpoints = [
+{endpoints}
+]"#,
+            cluster_name = toml_string(cluster_name),
+            scope = toml_string(scope),
+            member_id = toml_string(member_id),
+            data_dir = toml_string(data_dir.display().to_string().as_str()),
+            socket_dir = toml_string(socket_dir.display().to_string().as_str()),
+            log_file = toml_string(log_file.display().to_string().as_str()),
+            endpoints = endpoints,
+        ),
+        extra_sections,
+    )
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn render_runtime_fixture_toml<J, T>(
+    data_dir: &Path,
+    scope: &str,
+    hba_contents: &str,
+    extra_sections: J,
+) -> String
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    join_rendered_sections(
+        format!(
+            r#"cluster.name = "cluster-a"
+cluster.scope = {scope}
+cluster.member_id = "node-a"
+postgres.paths.data_dir = {data_dir}
+postgres.roles.mandatory.superuser.username = "postgres"
+postgres.roles.mandatory.superuser.auth.type = "password"
+postgres.roles.mandatory.superuser.auth.password = {superuser_password}
+postgres.roles.mandatory.replicator.username = "replicator"
+postgres.roles.mandatory.replicator.auth.type = "password"
+postgres.roles.mandatory.replicator.auth.password = {replicator_password}
+postgres.roles.mandatory.rewinder.username = "rewinder"
+postgres.roles.mandatory.rewinder.auth.type = "password"
+postgres.roles.mandatory.rewinder.auth.password = {rewinder_password}
+postgres.access.hba = {{ content = {hba_contents} }}
+postgres.access.ident = {{ content = "" }}
+dcs.endpoints = [
+  "http://127.0.0.1:2379"
+]"#,
+            scope = toml_string(scope),
+            data_dir = toml_string(data_dir.display().to_string().as_str()),
+            hba_contents = toml_string(hba_contents),
+            superuser_password = toml_string_secret("secret-password"),
+            replicator_password = toml_string_secret("secret-password"),
+            rewinder_password = toml_string_secret("secret-password"),
+        ),
+        extra_sections,
+    )
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn load_runtime_test_config_with_hba_and_sections<J, T>(
+    data_dir: &Path,
+    scope: &str,
+    hba_contents: &str,
+    extra_sections: J,
+) -> Result<RuntimeConfigV2, ConfigErrorV2>
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let contents = render_runtime_fixture_toml(
+        data_dir,
+        scope,
+        hba_contents,
+        std::iter::once(RUNTIME_TEST_BINARY_OVERRIDES_TOML.to_string()).chain(
+            extra_sections
+                .into_iter()
+                .map(|section| section.as_ref().to_string()),
+        ),
+    );
+    load_runtime_config_contents(contents.as_str())
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn load_runtime_test_config_with_sections<J, T>(
+    data_dir: &Path,
+    scope: &str,
+    extra_sections: J,
+) -> Result<RuntimeConfigV2, ConfigErrorV2>
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    load_runtime_test_config_with_hba_and_sections(
+        data_dir,
+        scope,
+        "host all all 127.0.0.1/32 trust",
+        extra_sections,
+    )
+}
 
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let contents = read_config_file(path)?;
@@ -48,9 +214,7 @@ fn load_runtime_config_contents_at(
     contents: &str,
     path: &Path,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let document = toml::from_str::<raw::RuntimeDocument>(contents)
-        .map_err(|source| parse_error(path, source))?;
-    document.into_runtime_config(path)
+    parse_runtime_document(contents, path)?.into_runtime_config(path)
 }
 
 fn load_operator_config_contents_at(
@@ -73,6 +237,13 @@ fn load_operator_config_contents_at(
     toml::from_str::<raw::OperatorDocument>(contents)
         .map_err(|source| parse_error(path, source))?
         .into_operator_config(path, true)
+}
+
+fn parse_runtime_document(
+    contents: &str,
+    path: &Path,
+) -> Result<raw::RuntimeDocument, ConfigErrorV2> {
+    toml::from_str(contents).map_err(|source| parse_error(path, source))
 }
 
 impl raw::RuntimeDocument {
@@ -117,61 +288,55 @@ impl raw::RuntimeDocument {
 
 #[cfg(any(test, feature = "internal-test-support"))]
 pub fn runtime_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    load_runtime_test_config_from_paths(PathBuf::from("/tmp/pgdata"), "scope-a")
+    load_runtime_test_config_with_sections(
+        Path::new("/tmp/pgdata"),
+        "scope-a",
+        std::iter::empty::<String>(),
+    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
 pub fn runtime_test_config_with_data_dir(
     data_dir: impl Into<PathBuf>,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    load_runtime_test_config_from_paths(data_dir.into(), "scope-a")
+    let data_dir = data_dir.into();
+    load_runtime_test_config_with_sections(
+        data_dir.as_path(),
+        "scope-a",
+        std::iter::empty::<String>(),
+    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
 pub fn managed_postgres_test_config(
     data_dir: impl Into<PathBuf>,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let config = load_runtime_test_config_from_paths(data_dir.into(), "cluster-a")?;
-    Ok(RuntimeConfigV2 {
-        ha: HaConfig {
-            loop_interval: Duration::from_millis(500),
-            lease_ttl: Duration::from_secs(5),
-        },
-        process: ProcessConfig {
-            timeouts: ProcessTimeoutsConfig {
-                bootstrap: Duration::from_secs(30),
-                pg_rewind: Duration::from_secs(30),
-                fencing: Duration::from_secs(10),
-            },
-            ..config.process
-        },
-        ..config
-    })
+    let data_dir = data_dir.into();
+    load_runtime_test_config_with_sections(
+        data_dir.as_path(),
+        "cluster-a",
+        [
+            "ha.loop_interval_ms = 500",
+            "ha.lease_ttl_ms = 5000",
+            "process.timeouts.bootstrap_ms = 30000",
+            "process.timeouts.pg_rewind_ms = 30000",
+            "process.timeouts.fencing_ms = 10000",
+        ],
+    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
 pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let config = runtime_test_config()?;
-    Ok(RuntimeConfigV2 {
-        postgres: PostgresConfig {
-            pg_hba_contents: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n")
-                .to_string(),
-            ..config.postgres
-        },
-        logging: LoggingConfig {
-            level: crate::config_v2::types::LogLevel::Trace,
-            postgres: PostgresLoggingConfig {
-                poll_interval: Duration::from_millis(50),
-                cleanup: LogCleanupConfig {
-                    enabled: false,
-                    ..config.logging.postgres.cleanup
-                },
-                ..config.logging.postgres
-            },
-            ..config.logging
-        },
-        ..config
-    })
+    load_runtime_test_config_with_hba_and_sections(
+        Path::new("/tmp/pgdata"),
+        "scope-a",
+        "local all all trust\nhost all all 127.0.0.1/32 trust\n",
+        [
+            r#"logging.level = "trace""#.to_string(),
+            "logging.postgres.poll_interval_ms = 50".to_string(),
+            "logging.postgres.cleanup.enabled = false".to_string(),
+        ],
+    )
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -179,124 +344,13 @@ pub fn load_runtime_timing_values(
     path: &Path,
 ) -> Result<(Duration, Duration, Duration, Duration), ConfigErrorV2> {
     let contents = read_config_file(path)?;
-    let document = toml::from_str::<raw::RuntimeDocument>(&contents)
-        .map_err(|source| parse_error(path, source))?;
+    let document = parse_runtime_document(contents.as_str(), path)?;
     Ok((
         document.ha.loop_interval,
         document.ha.lease_ttl,
         document.process.timeouts.bootstrap,
         document.process.timeouts.pg_rewind,
     ))
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn load_runtime_test_config_from_paths(
-    data_dir: PathBuf,
-    scope: &str,
-) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let working_root = PathBuf::from("/tmp/pgtuskmaster");
-    let postgres_log_dir = working_root.join("logs/postgres");
-    let password = Secret::new("secret-password".to_string());
-    let listen_host = "127.0.0.1".to_string();
-    let listen_port = 5432;
-    let cluster_advertise = PgRoute::tcp(listen_host.clone(), listen_port)
-        .map_err(|message| validation_error("runtime_test_config", message))?;
-    let config_dir = Path::new(".");
-
-    #[rustfmt::skip]
-    let config = RuntimeConfigV2 {
-        cluster_name: ClusterName("cluster-a".to_string()),
-        scope: ScopeName(scope.to_string()),
-        member_id: MemberId("node-a".to_string()),
-        postgres: PostgresConfig {
-            data_dir: data_dir.clone(),
-            socket_dir: working_root.join("socket"),
-            log_file: working_root.join("logs/postgres.log"),
-            listen_host,
-            listen_port,
-            cluster_advertise,
-            operator_advertise: None,
-            connect_timeout: Duration::from_secs(5),
-            local_database: "postgres".to_string(),
-            source_client_tls: PgClientTls {
-                mode: PgSslMode::Prefer,
-                root_cert: None,
-                client_cert: None,
-                client_key: None,
-            },
-            superuser: RoleConfig {
-                username: "postgres".to_string(),
-                password: password.clone(),
-            },
-            replicator: RoleConfig {
-                username: "replicator".to_string(),
-                password: password.clone(),
-            },
-            rewinder: RoleConfig {
-                username: "rewinder".to_string(),
-                password,
-            },
-            pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
-            pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-            pg_hba_contents: "host all all 127.0.0.1/32 trust".to_string(),
-            pg_ident_contents: String::new(),
-            extra_gucs: Default::default(),
-            tls: None,
-        },
-        dcs: DcsConfig {
-            endpoints: vec![DcsEndpoint::new("http://127.0.0.1:2379".to_string())],
-            auth: None,
-            tls: None,
-        },
-        ha: HaConfig {
-            loop_interval: Duration::from_millis(1_000),
-            lease_ttl: Duration::from_millis(10_000),
-        },
-        process: ProcessConfig {
-            timeouts: ProcessTimeoutsConfig {
-                bootstrap: Duration::from_millis(300_000),
-                pg_rewind: Duration::from_millis(120_000),
-                fencing: Duration::from_millis(30_000),
-            },
-            working_root: working_root.clone(),
-            binaries: ProcessBinariesConfig {
-                pg_ctl: resolve_binary_path("process.binaries.overrides.pg_ctl", "pg_ctl", None, config_dir)?,
-                initdb: resolve_binary_path("process.binaries.overrides.initdb", "initdb", None, config_dir)?,
-                pg_rewind: resolve_binary_path("process.binaries.overrides.pg_rewind", "pg_rewind", None, config_dir)?,
-                pg_basebackup: resolve_binary_path("process.binaries.overrides.pg_basebackup", "pg_basebackup", None, config_dir)?,
-            },
-        },
-        logging: LoggingConfig {
-            level: crate::config_v2::types::LogLevel::Info,
-            capture_subprocess_output: true,
-            sinks: LoggingSinksConfig {
-                stderr: StderrSinkConfig { enabled: true },
-                file: FileSinkConfig {
-                    enabled: false,
-                    path: working_root.join("runtime.jsonl"),
-                    mode: crate::config_v2::types::FileSinkMode::Append,
-                },
-            },
-            postgres: PostgresLoggingConfig {
-                enabled: true,
-                log_dir: postgres_log_dir.clone(),
-                poll_interval: Duration::from_millis(200),
-                cleanup: LogCleanupConfig {
-                    enabled: true,
-                    max_files: 50,
-                    max_age: Duration::from_secs(7 * 24 * 60 * 60),
-                    protect_recent: Duration::from_secs(300),
-                },
-            },
-        },
-        api: ApiConfig {
-            listen_addr: std::net::SocketAddr::from((std::net::Ipv4Addr::new(127, 0, 0, 1), 8080)),
-            transport: ApiTransport::Http,
-            auth: ApiAuth::Disabled,
-            advertise: None,
-        },
-    };
-    Ok(config)
 }
 
 pub(super) fn read_config_file(path: &Path) -> Result<String, ConfigErrorV2> {
@@ -1298,7 +1352,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
+        join_rendered_sections, load_operator_config_contents, load_runtime_config_contents,
+        load_runtime_timing_values, render_runtime_test_config_toml, toml_string,
+        toml_string_secret,
     };
     use crate::{
         config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
@@ -1307,87 +1363,10 @@ mod tests {
     };
     use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
-    fn join_rendered_sections<J, T>(base: String, extra_sections: J) -> String
-    where
-        J: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        std::iter::once(base)
-            .chain(extra_sections.into_iter().filter_map(|section| {
-                let section = section.as_ref().trim();
-                (!section.is_empty()).then_some(section.to_string())
-            }))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    }
-
-    fn toml_string(value: &str) -> String {
-        toml::Value::String(value.to_string()).to_string()
-    }
-
     fn toml_path_source(path: &Path) -> String {
         format!(
             "{{ path = {} }}",
             toml_string(path.display().to_string().as_str())
-        )
-    }
-
-    fn toml_string_secret(value: &str) -> String {
-        format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
-    }
-
-    fn render_runtime_test_config_toml<I, S, J, T>(
-        cluster_name: &str,
-        scope: &str,
-        member_id: &str,
-        paths: (&Path, &Path, &Path),
-        dcs_endpoints: I,
-        extra_sections: J,
-    ) -> String
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-        J: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        let (data_dir, socket_dir, log_file) = paths;
-        let endpoints = dcs_endpoints
-            .into_iter()
-            .map(|endpoint| format!("  {}", toml_string(endpoint.as_ref())))
-            .collect::<Vec<_>>()
-            .join(",\n");
-
-        join_rendered_sections(
-            format!(
-                r#"cluster.name = {cluster_name}
-cluster.scope = {scope}
-cluster.member_id = {member_id}
-postgres.paths.data_dir = {data_dir}
-postgres.paths.socket_dir = {socket_dir}
-postgres.paths.log_file = {log_file}
-postgres.roles.mandatory.superuser.username = "postgres"
-postgres.roles.mandatory.superuser.auth.type = "password"
-postgres.roles.mandatory.superuser.auth.password = {{ type = "string", value = "postgres" }}
-postgres.roles.mandatory.replicator.username = "replicator"
-postgres.roles.mandatory.replicator.auth.type = "password"
-postgres.roles.mandatory.replicator.auth.password = {{ type = "string", value = "replicator" }}
-postgres.roles.mandatory.rewinder.username = "rewinder"
-postgres.roles.mandatory.rewinder.auth.type = "password"
-postgres.roles.mandatory.rewinder.auth.password = {{ type = "string", value = "rewinder" }}
-postgres.access.hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-postgres.access.ident = {{ content = "" }}
-dcs.endpoints = [
-{endpoints}
-]"#,
-                cluster_name = toml_string(cluster_name),
-                scope = toml_string(scope),
-                member_id = toml_string(member_id),
-                data_dir = toml_string(data_dir.display().to_string().as_str()),
-                socket_dir = toml_string(socket_dir.display().to_string().as_str()),
-                log_file = toml_string(log_file.display().to_string().as_str()),
-                endpoints = endpoints,
-            ),
-            extra_sections,
         )
     }
 
