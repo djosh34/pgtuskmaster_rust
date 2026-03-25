@@ -1493,10 +1493,7 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.postgres.pg_hba_contents =
-                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.logging.postgres_log_dir = log_dir;
-            cfg.logging.postgres_log_cleanup_enabled = false;
             cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
 
             let test_log = start_test_log();
@@ -1569,8 +1566,6 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.postgres.pg_hba_contents =
-                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.binaries = binaries.clone();
             cfg.timing.bootstrap_timeout = Duration::from_secs(30);
             cfg.timing.fencing_timeout = Duration::from_secs(30);
@@ -1583,8 +1578,8 @@ mod tests {
                 crate::state::PgRoute::tcp(cfg.postgres.listen_host.clone(), port).map_err(
                     |err| WorkerError::Message(format!("test advertise route failed: {err}")),
                 )?;
-            cfg.postgres.log_file = log_file.clone();
             cfg.logging.postgres_pg_ctl_log = log_file.clone();
+            cfg.postgres.log_file = cfg.logging.postgres_pg_ctl_log.clone();
             cfg.postgres
                 .extra_gucs
                 .insert("log_filename".to_string(), "postgres.json".to_string());
@@ -1595,7 +1590,6 @@ mod tests {
                 .extra_gucs
                 .insert("log_statement".to_string(), "all".to_string());
             cfg.logging.postgres_log_dir = log_dir.clone();
-            cfg.logging.postgres_log_cleanup_enabled = false;
 
             let test_log = start_test_log();
 
@@ -1829,8 +1823,6 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.postgres.pg_hba_contents =
-                concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n",).to_string();
             cfg.binaries = binaries;
 
             let test_log = start_test_log();

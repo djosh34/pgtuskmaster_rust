@@ -228,6 +228,11 @@ pub fn managed_postgres_test_config(
 pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let config = runtime_test_config()?;
     Ok(RuntimeConfigV2 {
+        postgres: PostgresConfig {
+            pg_hba_contents: concat!("local all all trust\n", "host all all 127.0.0.1/32 trust\n")
+                .to_string(),
+            ..config.postgres
+        },
         logging: LoggingConfig {
             level: crate::config_v2::types::LogLevel::Trace,
             postgres_log_poll_interval: Duration::from_millis(50),
