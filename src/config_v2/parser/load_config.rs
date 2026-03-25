@@ -109,7 +109,7 @@ impl raw::RuntimeDocument {
         #[rustfmt::skip]
         let raw::ProcessConfig { timeouts, working_root, binaries: raw::BinaryResolutionConfig { overrides: raw::BinaryPathOverrides { pg_ctl, pg_rewind, initdb, pg_basebackup } } } = process;
         #[rustfmt::skip]
-        let raw::LoggingConfig { level, capture_subprocess_output, postgres: raw::PostgresLoggingConfig { enabled: postgres_logs_enabled, pg_ctl_log_file, log_dir, poll_interval_ms, cleanup: raw::LogCleanupConfig { enabled: postgres_log_cleanup_enabled, max_files: postgres_log_cleanup_max_files, max_age_seconds: postgres_log_cleanup_max_age_seconds, protect_recent_seconds: postgres_log_cleanup_protect_recent_seconds } }, sinks: raw::LoggingSinksConfig { stderr: raw::StderrSinkConfig { enabled: stderr_enabled }, file: raw::FileSinkConfig { enabled: file_enabled, path: runtime_log_path, mode: file_mode } } } = logging;
+        let raw::LoggingConfig { level, capture_subprocess_output, postgres: raw::PostgresLoggingConfig { enabled: postgres_logs_enabled, log_dir, poll_interval_ms, cleanup: raw::LogCleanupConfig { enabled: postgres_log_cleanup_enabled, max_files: postgres_log_cleanup_max_files, max_age_seconds: postgres_log_cleanup_max_age_seconds, protect_recent_seconds: postgres_log_cleanup_protect_recent_seconds } }, sinks: raw::LoggingSinksConfig { stderr: raw::StderrSinkConfig { enabled: stderr_enabled }, file: raw::FileSinkConfig { enabled: file_enabled, path: runtime_log_path, mode: file_mode } } } = logging;
         #[rustfmt::skip]
         let raw::ApiConfig { listen_addr, transport: api_transport, auth: api_auth } = api;
 
@@ -176,14 +176,8 @@ impl raw::RuntimeDocument {
             || working_root.join("logs/postgres"),
             config_dir,
         )?;
-        let postgres_pg_ctl_log = normalize_path_or_default(
-            "logging.postgres.pg_ctl_log_file",
-            pg_ctl_log_file,
-            || postgres_log_dir.join("pg_ctl.log"),
-            config_dir,
-        )?;
         #[rustfmt::skip]
-        let logging = LoggingConfig { level, capture_subprocess_output, stderr_enabled, file_enabled, file_path: normalize_path_or_default("logging.sinks.file.path", runtime_log_path, || working_root.join("runtime.jsonl"), config_dir)?, file_mode, postgres_logs_enabled, postgres_log_dir: postgres_log_dir.clone(), postgres_pg_ctl_log, postgres_log_poll_interval: Duration::from_millis(poll_interval_ms), postgres_log_cleanup_enabled, postgres_log_cleanup_max_files, postgres_log_cleanup_max_age: Duration::from_secs(postgres_log_cleanup_max_age_seconds), postgres_log_cleanup_protect_recent: Duration::from_secs(postgres_log_cleanup_protect_recent_seconds) };
+        let logging = LoggingConfig { level, capture_subprocess_output, stderr_enabled, file_enabled, file_path: normalize_path_or_default("logging.sinks.file.path", runtime_log_path, || working_root.join("runtime.jsonl"), config_dir)?, file_mode, postgres_logs_enabled, postgres_log_dir: postgres_log_dir.clone(), postgres_log_poll_interval: Duration::from_millis(poll_interval_ms), postgres_log_cleanup_enabled, postgres_log_cleanup_max_files, postgres_log_cleanup_max_age: Duration::from_secs(postgres_log_cleanup_max_age_seconds), postgres_log_cleanup_protect_recent: Duration::from_secs(postgres_log_cleanup_protect_recent_seconds) };
         let operator_advertise = pgtm
             .map(|pgtm| parse_operator_config_value_at(pgtm, path, false))
             .transpose()?
@@ -281,7 +275,7 @@ fn load_runtime_test_config_from_paths(
         postgres: PostgresConfig {
             data_dir: data_dir.clone(),
             socket_dir: working_root.join("socket"),
-            log_file: working_root.join("postgres.log"),
+            log_file: working_root.join("logs/postgres.log"),
             listen_host,
             listen_port,
             cluster_advertise,
@@ -340,7 +334,6 @@ fn load_runtime_test_config_from_paths(
             file_mode: crate::config_v2::types::FileSinkMode::Append,
             postgres_logs_enabled: true,
             postgres_log_dir: postgres_log_dir.clone(),
-            postgres_pg_ctl_log: postgres_log_dir.join("pg_ctl.log"),
             postgres_log_poll_interval: Duration::from_millis(200),
             postgres_log_cleanup_enabled: true,
             postgres_log_cleanup_max_files: 50,

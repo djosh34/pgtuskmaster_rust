@@ -512,7 +512,6 @@ impl Default for LoggingConfig {
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresLoggingConfig {
     pub enabled: bool,
-    pub pg_ctl_log_file: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
     pub poll_interval_ms: u64,
     #[serde(default)]
@@ -523,7 +522,6 @@ impl Default for PostgresLoggingConfig {
     fn default() -> Self {
         Self {
             enabled: DEFAULT_LOGGING_POSTGRES_ENABLED,
-            pg_ctl_log_file: None,
             log_dir: None,
             poll_interval_ms: DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
             cleanup: LogCleanupConfig::default(),

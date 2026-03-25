@@ -156,7 +156,6 @@ pub(crate) struct LoggingConfig {
     pub file_mode: FileSinkMode,
     pub postgres_logs_enabled: bool,
     pub postgres_log_dir: PathBuf,
-    pub postgres_pg_ctl_log: PathBuf,
     pub postgres_log_poll_interval: Duration,
     pub postgres_log_cleanup_enabled: bool,
     pub postgres_log_cleanup_max_files: u64,

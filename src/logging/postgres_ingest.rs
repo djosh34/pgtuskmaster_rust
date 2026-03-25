@@ -275,10 +275,7 @@ struct PostgresIngestWorkerState {
 impl PostgresIngestWorkerState {
     fn new(cfg: &RuntimeConfigV2) -> Self {
         Self {
-            pg_ctl_log: FileTailer::new(
-                cfg.logging.postgres_pg_ctl_log.clone(),
-                StartPosition::Beginning,
-            ),
+            pg_ctl_log: FileTailer::new(cfg.postgres.log_file.clone(), StartPosition::Beginning),
             dir_tailers: DirTailers::default(),
         }
     }
@@ -1578,8 +1575,7 @@ mod tests {
                 crate::state::PgRoute::tcp(cfg.postgres.listen_host.clone(), port).map_err(
                     |err| WorkerError::Message(format!("test advertise route failed: {err}")),
                 )?;
-            cfg.logging.postgres_pg_ctl_log = log_file.clone();
-            cfg.postgres.log_file = cfg.logging.postgres_pg_ctl_log.clone();
+            cfg.postgres.log_file = log_file.clone();
             cfg.postgres
                 .extra_gucs
                 .insert("log_filename".to_string(), "postgres.json".to_string());

@@ -335,7 +335,7 @@ mode = "append"
 
 Managed PostgreSQL always writes collector output with `logging_collector = on` and `log_destination = 'jsonlog,stderr'`. The postgres ingest worker still follows both JSON log files and plain `.log` output, because helper and archive-command output can still land outside the JSON stream.
 
-`logging.postgres.pg_ctl_log_file` and `logging.postgres.log_dir` remain optional advanced overrides for where the ingest worker reads those files from.
+`postgres.paths.log_file` is the authoritative `pg_ctl` startup log path. `logging.postgres.log_dir` remains the override for collector-managed postgres log files that the ingest worker tails.
 
 ## `api`
 
