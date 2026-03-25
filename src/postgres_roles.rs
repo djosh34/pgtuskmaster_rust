@@ -1,7 +1,7 @@
 use thiserror::Error;
 use tokio_postgres::NoTls;
 
-use crate::config_v2::RuntimeConfigV2;
+use crate::config_v2::{types::Secret, RuntimeConfigV2};
 
 #[derive(Debug, Error)]
 pub(crate) enum RoleProvisionError {
@@ -15,46 +15,9 @@ pub(crate) enum RoleProvisionError {
     Connection(String),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DesiredManagedRoleSet {
-    pub(crate) mandatory: [ManagedRoleSpec; 3],
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ManagedRoleSpec {
-    pub(crate) identity: MandatoryManagedRole,
-    pub(crate) username: String,
-    pub(crate) password: String,
-    pub(crate) grants: Vec<ManagedRoleGrant>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MandatoryManagedRole {
-    Superuser,
-    Replicator,
-    Rewinder,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ManagedRoleGrant {
-    RewindFunctionExecute,
-}
-
-impl DesiredManagedRoleSet {
-    fn all_roles(&self) -> impl Iterator<Item = &ManagedRoleSpec> {
-        self.mandatory.iter()
-    }
-}
-
-impl MandatoryManagedRole {
-    fn attributes(self) -> &'static str {
-        match self {
-            Self::Superuser => "LOGIN SUPERUSER NOREPLICATION",
-            Self::Replicator => "LOGIN REPLICATION NOSUPERUSER",
-            Self::Rewinder => "LOGIN NOSUPERUSER NOREPLICATION",
-        }
-    }
-}
+const SUPERUSER_ATTRIBUTES: &str = "LOGIN SUPERUSER NOREPLICATION";
+const REPLICATOR_ATTRIBUTES: &str = "LOGIN REPLICATION NOSUPERUSER";
+const REWINDER_ATTRIBUTES: &str = "LOGIN NOSUPERUSER NOREPLICATION";
 
 pub(crate) async fn reconcile_managed_roles_v2(
     cfg: &RuntimeConfigV2,
@@ -89,69 +52,37 @@ pub(crate) async fn reconcile_managed_roles_v2(
 pub(crate) fn render_managed_role_reconciliation_sql_v2(
     cfg: &RuntimeConfigV2,
 ) -> Result<String, RoleProvisionError> {
-    let desired = DesiredManagedRoleSet {
-        mandatory: [
-            v2_managed_role(
-                MandatoryManagedRole::Superuser,
-                &cfg.postgres.superuser.username,
-                &cfg.postgres.superuser.password,
-                Vec::new(),
-            ),
-            v2_managed_role(
-                MandatoryManagedRole::Replicator,
-                &cfg.postgres.replicator.username,
-                &cfg.postgres.replicator.password,
-                Vec::new(),
-            ),
-            v2_managed_role(
-                MandatoryManagedRole::Rewinder,
-                &cfg.postgres.rewinder.username,
-                &cfg.postgres.rewinder.password,
-                vec![ManagedRoleGrant::RewindFunctionExecute],
-            ),
-        ],
-    };
-    render_managed_role_reconciliation_sql_for_set(&desired)
+    Ok([
+        render_protected_role_provision_block(
+            cfg.postgres.superuser.username.as_str(),
+            &cfg.postgres.superuser.password,
+            SUPERUSER_ATTRIBUTES,
+        ),
+        render_protected_role_provision_block(
+            cfg.postgres.replicator.username.as_str(),
+            &cfg.postgres.replicator.password,
+            REPLICATOR_ATTRIBUTES,
+        ),
+        render_protected_role_provision_block(
+            cfg.postgres.rewinder.username.as_str(),
+            &cfg.postgres.rewinder.password,
+            REWINDER_ATTRIBUTES,
+        ),
+        render_rewinder_grants_sql(cfg.postgres.rewinder.username.as_str()),
+    ]
+    .into_iter()
+    .filter(|block| !block.trim().is_empty())
+    .collect::<Vec<_>>()
+    .join("\n"))
 }
 
-fn render_managed_role_reconciliation_sql_for_set(
-    desired: &DesiredManagedRoleSet,
-) -> Result<String, RoleProvisionError> {
-    let provision_blocks = desired
-        .all_roles()
-        .map(render_protected_role_provision_block)
-        .collect::<Vec<_>>();
-    let grant_blocks = desired
-        .all_roles()
-        .map(render_role_grant_reconciliation_block)
-        .collect::<Vec<_>>();
-
-    Ok(provision_blocks
-        .into_iter()
-        .chain(grant_blocks)
-        .filter(|block| !block.trim().is_empty())
-        .collect::<Vec<_>>()
-        .join("\n"))
-}
-
-fn v2_managed_role(
-    identity: MandatoryManagedRole,
+fn render_protected_role_provision_block(
     username: &str,
-    password: &crate::config_v2::types::Secret,
-    grants: Vec<ManagedRoleGrant>,
-) -> ManagedRoleSpec {
-    ManagedRoleSpec {
-        identity,
-        username: username.to_string(),
-        password: password.as_str().to_string(),
-        grants,
-    }
-}
-
-fn render_protected_role_provision_block(spec: &ManagedRoleSpec) -> String {
-    let username_literal = sql_literal(spec.username.as_str());
-    let attributes = spec.identity.attributes();
-    let password_literal = sql_literal(spec.password.as_str());
+    password: &Secret,
+    attributes: &str,
+) -> String {
+    let username_literal = sql_literal(username);
+    let password_literal = sql_literal(password.as_str());
     format!(
         "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = {username_literal}) THEN\n    EXECUTE format('CREATE ROLE %I', {username_literal});\n  END IF;\n  EXECUTE format('ALTER ROLE %I WITH {attributes} PASSWORD %L', {username_literal}, {password_literal});\nEND\n$$;"
     )
@@ -163,18 +94,6 @@ fn sql_literal(value: &str) -> String {
 
 fn sql_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
-}
-
-fn render_role_grant_reconciliation_block(spec: &ManagedRoleSpec) -> String {
-    spec.grants
-        .iter()
-        .map(|grant| match grant {
-            ManagedRoleGrant::RewindFunctionExecute => {
-                render_rewinder_grants_sql(spec.username.as_str())
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 fn render_rewinder_grants_sql(username: &str) -> String {
@@ -199,105 +118,34 @@ fn render_rewinder_grants_sql(username: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::{
-        config_v2::types::{
-            BinariesConfig, DcsConfig, FileSinkMode, LogLevel, LoggingConfig, PostgresConfig,
-            RoleConfig, RuntimeConfigV2, Secret, TimingConfig,
-        },
-        pginfo::conninfo::{PgClientTls, PgSslMode},
+        config_v2::{runtime_test_config, types::RoleConfig},
         postgres_roles::render_managed_role_reconciliation_sql_v2,
-        state::{ClusterName, MemberId, PgRoute, ScopeName},
     };
 
-    fn sample_cfg() -> RuntimeConfigV2 {
-        RuntimeConfigV2 {
-            cluster_name: ClusterName("cluster-a".to_string()),
-            scope: ScopeName("scope-a".to_string()),
-            member_id: MemberId("node-a".to_string()),
-            postgres: PostgresConfig {
-                data_dir: "/tmp/pgtm/data".into(),
-                socket_dir: "/tmp/pgtm/socket".into(),
-                log_file: "/tmp/pgtm/logs/postgres.log".into(),
-                listen_host: "127.0.0.1".to_string(),
-                listen_port: 5432,
-                cluster_advertise: PgRoute::new(
-                    crate::state::PgEndpoint::Tcp {
-                        host: "127.0.0.1".to_string(),
-                        port: 5432,
-                    },
-                    None,
-                ),
-                operator_advertise: None,
-                connect_timeout: std::time::Duration::from_secs(5),
-                local_database: "postgres".to_string(),
-                source_client_tls: PgClientTls {
-                    mode: PgSslMode::Prefer,
-                    root_cert: None,
-                    client_cert: None,
-                    client_key: None,
+    fn sample_cfg() -> Result<crate::config_v2::RuntimeConfigV2, String> {
+        runtime_test_config()
+            .map(|cfg| crate::config_v2::RuntimeConfigV2 {
+                postgres: crate::config_v2::types::PostgresConfig {
+                    superuser: role("postgres", "postgres-secret"),
+                    replicator: role("replicator", "replicator-secret"),
+                    rewinder: role("rewinder", "rewinder-secret"),
+                    ..cfg.postgres
                 },
-                superuser: role("postgres", "postgres-secret"),
-                replicator: role("replicator", "replicator-secret"),
-                rewinder: role("rewinder", "rewinder-secret"),
-                pg_hba_file: "/tmp/pgtm/data/pgtm.pg_hba.conf".into(),
-                pg_ident_file: "/tmp/pgtm/data/pgtm.pg_ident.conf".into(),
-                pg_hba_contents: "local all all trust".to_string(),
-                pg_ident_contents: String::new(),
-                extra_gucs: std::collections::BTreeMap::new(),
-                tls: None,
-            },
-            dcs: DcsConfig {
-                endpoints: Vec::new(),
-                auth: None,
-                tls: None,
-            },
-            timing: TimingConfig {
-                ha_loop_interval: std::time::Duration::from_secs(1),
-                ha_lease_ttl: std::time::Duration::from_secs(10),
-                bootstrap_timeout: std::time::Duration::from_secs(30),
-                pg_rewind_timeout: std::time::Duration::from_secs(30),
-                fencing_timeout: std::time::Duration::from_secs(30),
-            },
-            binaries: BinariesConfig {
-                pg_ctl: "/usr/bin/pg_ctl".into(),
-                initdb: "/usr/bin/initdb".into(),
-                pg_rewind: "/usr/bin/pg_rewind".into(),
-                pg_basebackup: "/usr/bin/pg_basebackup".into(),
-            },
-            logging: LoggingConfig {
-                level: LogLevel::Info,
-                capture_subprocess_output: true,
-                stderr_enabled: true,
-                file_enabled: false,
-                file_path: "/tmp/pgtm/runtime.jsonl".into(),
-                file_mode: FileSinkMode::Append,
-                postgres_logs_enabled: true,
-                postgres_log_dir: "/tmp/pgtm/logs/postgres".into(),
-                postgres_pg_ctl_log: "/tmp/pgtm/logs/postgres.log".into(),
-                postgres_log_poll_interval: std::time::Duration::from_millis(200),
-                postgres_log_cleanup_enabled: true,
-                postgres_log_cleanup_max_files: 50,
-                postgres_log_cleanup_max_age: std::time::Duration::from_secs(3600),
-                postgres_log_cleanup_protect_recent: std::time::Duration::from_secs(300),
-            },
-            api: crate::config_v2::types::ApiConfig {
-                listen_addr: std::net::SocketAddr::from(([127, 0, 0, 1], 8080)),
-                transport: crate::config_v2::types::ApiTransport::Http,
-                auth: crate::config_v2::types::ApiAuth::Disabled,
-                advertise: None,
-            },
-        }
+                ..cfg
+            })
+            .map_err(|err| format!("runtime test config failed: {err}"))
     }
 
     fn role(username: &str, password: &str) -> RoleConfig {
         RoleConfig {
             username: username.to_string(),
-            password: Secret::new(password.to_string()),
+            password: crate::config_v2::types::Secret::new(password.to_string()),
         }
     }
 
     #[test]
     fn renders_mandatory_role_sql() -> Result<(), String> {
-        let sql = render_managed_role_reconciliation_sql_v2(&sample_cfg())
+        let sql = render_managed_role_reconciliation_sql_v2(&sample_cfg()?)
             .map_err(|err| format!("render sql failed: {err}"))?;
 
         assert!(sql.contains("ALTER ROLE %I WITH LOGIN SUPERUSER NOREPLICATION PASSWORD %L"));
