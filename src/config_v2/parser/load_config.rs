@@ -50,8 +50,8 @@ fn toml_string_secret(value: &str) -> String {
     format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
 }
 
-#[cfg(test)]
-fn render_runtime_test_config_toml<I, S, J, T>(
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn render_runtime_test_config_toml<I, S, J, T>(
     cluster_name: &str,
     scope: &str,
     member_id: &str,
@@ -102,6 +102,27 @@ dcs.endpoints = [
             log_file = toml_string(log_file.display().to_string().as_str()),
             endpoints = endpoints,
         ),
+        extra_sections,
+    )
+}
+
+#[cfg(test)]
+fn render_default_runtime_test_config_toml<J, T>(root: &Path, extra_sections: J) -> String
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    let data_dir = root.join("data");
+    render_runtime_test_config_toml(
+        "cluster-a",
+        "scope-a",
+        "node-a",
+        (
+            data_dir.as_path(),
+            Path::new("/tmp/pgtm-socket"),
+            Path::new("/tmp/pgtm.log"),
+        ),
+        ["http://127.0.0.1:2379"],
         extra_sections,
     )
 }
@@ -1353,8 +1374,8 @@ where
 mod tests {
     use super::{
         join_rendered_sections, load_operator_config_contents, load_runtime_config_contents,
-        load_runtime_timing_values, render_runtime_test_config_toml, toml_string,
-        toml_string_secret,
+        load_runtime_timing_values, render_default_runtime_test_config_toml,
+        render_runtime_test_config_toml, toml_string, toml_string_secret,
     };
     use crate::{
         config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
@@ -1430,26 +1451,6 @@ logging.postgres.cleanup.enabled = true
 logging.postgres.cleanup.max_files = 0
 logging.postgres.cleanup.max_age_seconds = 0
 logging.postgres.cleanup.protect_recent_seconds = 0"#],
-        )
-    }
-
-    fn render_default_runtime_test_config_toml<J, T>(root: &Path, extra_sections: J) -> String
-    where
-        J: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        let data_dir = root.join("data");
-        render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "node-a",
-            (
-                data_dir.as_path(),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
-            ),
-            ["http://127.0.0.1:2379"],
-            extra_sections,
         )
     }
 

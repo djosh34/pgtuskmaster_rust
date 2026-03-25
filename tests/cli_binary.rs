@@ -8,6 +8,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+use pgtuskmaster_test_support::config_v2::render_runtime_test_config_toml;
+
 fn spawn_single_request_server(
     response: &str,
 ) -> Result<(std::net::SocketAddr, mpsc::Receiver<String>), String> {
@@ -78,93 +80,6 @@ fn write_temp_toml(label: &str, contents: impl AsRef<str>) -> Result<PathBuf, St
     fs::write(&path, contents.as_ref())
         .map_err(|err| format!("write config {} failed: {err}", path.display()))?;
     Ok(path)
-}
-
-fn join_rendered_sections<J, T>(base: String, extra_sections: J) -> String
-where
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    std::iter::once(base)
-        .chain(extra_sections.into_iter().filter_map(|section| {
-            let section = section.as_ref().trim();
-            (!section.is_empty()).then_some(section.to_string())
-        }))
-        .collect::<Vec<_>>()
-        .join("\n\n")
-}
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_string_secret(value: &str) -> String {
-    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
-}
-
-fn render_runtime_test_config_toml<I, S, J, T>(
-    cluster_name: &str,
-    scope: &str,
-    member_id: &str,
-    paths: (&Path, &Path, &Path),
-    dcs_endpoints: I,
-    extra_sections: J,
-) -> String
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    let (data_dir, socket_dir, log_file) = paths;
-    let endpoints = dcs_endpoints
-        .into_iter()
-        .map(|endpoint| toml_string(endpoint.as_ref()))
-        .collect::<Vec<_>>()
-        .join(", ");
-    join_rendered_sections(
-        format!(
-            r#"[cluster]
-name = {cluster_name}
-scope = {scope}
-member_id = {member_id}
-
-[postgres.paths]
-data_dir = {data_dir}
-socket_dir = {socket_dir}
-log_file = {log_file}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {superuser_password} }}
-
-[postgres.roles.mandatory.replicator]
-username = "replicator"
-auth = {{ type = "password", password = {replicator_password} }}
-
-[postgres.roles.mandatory.rewinder]
-username = "rewinder"
-auth = {{ type = "password", password = {rewinder_password} }}
-
-[postgres.access]
-hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-ident = {{ content = "" }}
-
-[dcs]
-endpoints = [{endpoints}]
-"#,
-            cluster_name = toml_string(cluster_name),
-            scope = toml_string(scope),
-            member_id = toml_string(member_id),
-            data_dir = toml_string(data_dir.display().to_string().as_str()),
-            socket_dir = toml_string(socket_dir.display().to_string().as_str()),
-            log_file = toml_string(log_file.display().to_string().as_str()),
-            superuser_password = toml_string_secret("postgres"),
-            replicator_password = toml_string_secret("replicator"),
-            rewinder_password = toml_string_secret("rewinder"),
-        ),
-        extra_sections,
-    )
 }
 
 #[test]
