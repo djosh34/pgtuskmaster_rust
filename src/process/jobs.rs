@@ -4,7 +4,7 @@ use pgtm_log_derive::LogValue;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::config_v2::types::Secret;
+use crate::config_v2::{types::Secret, RuntimeConfigV2};
 use crate::state::{JobId, MemberId, UnixMillis};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -30,6 +30,28 @@ impl ProcessIntent {
             Self::Promote => ProcessJobKind::Promote,
             Self::Demote(_) => ProcessJobKind::Demote,
         }
+    }
+
+    pub(crate) fn command_job_kind(&self) -> ProcessJobKind {
+        match self {
+            Self::Start(_) => ProcessJobKind::StartPostgres,
+            _ => self.job_kind(),
+        }
+    }
+
+    pub(crate) fn timeout_ms(&self, cfg: &RuntimeConfigV2) -> u64 {
+        let duration = match self.job_kind() {
+            ProcessJobKind::PgRewind => cfg.timing.pg_rewind_timeout,
+            ProcessJobKind::Demote => cfg.timing.fencing_timeout,
+            ProcessJobKind::Bootstrap
+            | ProcessJobKind::BaseBackup
+            | ProcessJobKind::Promote
+            | ProcessJobKind::StartPrimary
+            | ProcessJobKind::StartDetachedStandby
+            | ProcessJobKind::StartReplica
+            | ProcessJobKind::StartPostgres => cfg.timing.bootstrap_timeout,
+        };
+        duration_millis_u64(duration)
     }
 }
 
@@ -203,4 +225,8 @@ impl ProcessError {
             ProcessExit::Failure { code } => Self::EarlyExit { code },
         }
     }
+}
+
+fn duration_millis_u64(duration: std::time::Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }

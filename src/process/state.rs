@@ -12,11 +12,8 @@ use crate::{
     state::{JobId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
 };
 
-use super::{
-    cluster::PreparedProcessLaunch,
-    jobs::{
-        ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
-    },
+use super::jobs::{
+    ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
 };
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProcessState {
@@ -64,8 +61,7 @@ pub enum JobOutcome {
 }
 
 pub(crate) struct ActiveRuntime {
-    pub(crate) launch: PreparedProcessLaunch,
-    pub(crate) deadline_at: UnixMillis,
+    pub(crate) command_job_kind: ProcessJobKind,
     pub(crate) handle: Box<dyn ProcessHandle>,
 }
 
@@ -119,11 +115,15 @@ impl ProcessState {
         }
     }
 
-    pub(crate) fn active_job(&self) -> Option<&ProcessJobKind> {
+    pub(crate) fn active(&self) -> Option<&ActiveJob> {
         match self {
-            Self::Running { active, .. } => Some(&active.kind),
+            Self::Running { active, .. } => Some(active),
             Self::Idle { .. } => None,
         }
+    }
+
+    pub(crate) fn active_job(&self) -> Option<&ProcessJobKind> {
+        self.active().map(|active| &active.kind)
     }
 
     pub(crate) fn waiting_for_pg_observation(

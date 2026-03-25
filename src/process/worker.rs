@@ -477,10 +477,15 @@ pub(crate) async fn start_job(
             return Ok(());
         }
     };
-    let deadline_at = UnixMillis(now.0.saturating_add(prepared_launch.timeout_ms));
-    let tracked_job_kind = prepared_launch.tracked_job_kind;
-    let command = prepared_launch.command.clone();
-    let job_kind = command.job_kind;
+    let active = ActiveJob {
+        id: request.id.clone(),
+        kind: request.intent.job_kind(),
+        started_at: now,
+        deadline_at: UnixMillis(now.0.saturating_add(request.intent.timeout_ms(ctx.cfg))),
+    };
+    let command = prepared_launch;
+    let job_kind = request.intent.command_job_kind();
+    debug_assert_eq!(command.job_kind, job_kind);
     let handle = match ctx.runtime.command_runner.spawn(command) {
         Ok(handle) => handle,
         Err(error) => {
@@ -497,7 +502,7 @@ pub(crate) async fn start_job(
                 ctx,
                 JobOutcome::Failure {
                     id: request.id,
-                    job_kind: tracked_job_kind,
+                    job_kind: active.kind,
                     error,
                     finished_at: now,
                 },
@@ -507,15 +512,8 @@ pub(crate) async fn start_job(
         }
     };
 
-    let active = ActiveJob {
-        id: prepared_launch.id.clone(),
-        kind: tracked_job_kind,
-        started_at: now,
-        deadline_at,
-    };
     ctx.control.active_runtime = Some(ActiveRuntime {
-        launch: prepared_launch,
-        deadline_at,
+        command_job_kind: job_kind,
         handle,
     });
     ctx.state_channel.current = ProcessState::Running {
@@ -533,18 +531,21 @@ pub(crate) async fn start_job(
 
 pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<(), WorkerError> {
     let ActiveRuntime {
-        launch,
-        deadline_at,
+        command_job_kind,
         mut handle,
     } = match ctx.control.active_runtime.take() {
         Some(runtime) => runtime,
         None => return Ok(()),
     };
-    let command_job_kind = launch.command.job_kind;
+    let active = ctx.state_channel.current.active().cloned().ok_or_else(|| {
+        WorkerError::Message(
+            "process runtime exists without a running active job in state".to_string(),
+        )
+    })?;
 
     let now = current_time(ctx)?;
     flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
-    if now.0 >= deadline_at.0 {
+    if now.0 >= active.deadline_at.0 {
         ctx.runtime
             .log
             .send(ProcessLogEvent::Timeout {
@@ -557,13 +558,13 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
         flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
         let outcome = match cancel_result {
             Ok(()) => JobOutcome::Timeout {
-                id: launch.id,
-                job_kind: launch.tracked_job_kind,
+                id: active.id.clone(),
+                job_kind: active.kind,
                 finished_at: now,
             },
             Err(error) => JobOutcome::Failure {
-                id: launch.id,
-                job_kind: launch.tracked_job_kind,
+                id: active.id.clone(),
+                job_kind: active.kind,
                 error,
                 finished_at: now,
             },
@@ -576,8 +577,7 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
     match poll {
         Ok(None) => {
             ctx.control.active_runtime = Some(ActiveRuntime {
-                launch,
-                deadline_at,
+                command_job_kind,
                 handle,
             });
             Ok(())
@@ -585,8 +585,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
         Ok(Some(ProcessExit::Success)) => {
             flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let outcome = JobOutcome::Success {
-                id: launch.id,
-                job_kind: launch.tracked_job_kind,
+                id: active.id.clone(),
+                job_kind: active.kind,
                 finished_at: now,
             };
             ctx.runtime
@@ -603,8 +603,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
             flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let exit_error = ProcessError::from_exit(exit);
             let outcome = JobOutcome::Failure {
-                id: launch.id,
-                job_kind: launch.tracked_job_kind,
+                id: active.id.clone(),
+                job_kind: active.kind,
                 error: exit_error.clone(),
                 finished_at: now,
             };
@@ -622,8 +622,8 @@ pub(crate) async fn tick_active_job(ctx: &mut ProcessWorkerCtx<'_>) -> Result<()
         Err(error) => {
             flush_subprocess_output(ctx, handle.as_mut(), command_job_kind).await?;
             let outcome = JobOutcome::Failure {
-                id: launch.id,
-                job_kind: launch.tracked_job_kind,
+                id: active.id,
+                job_kind: active.kind,
                 error,
                 finished_at: now,
             };

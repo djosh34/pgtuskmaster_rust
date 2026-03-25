@@ -17,7 +17,7 @@ use crate::{
         },
         state::{ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx},
     },
-    state::{JobId, MemberId},
+    state::MemberId,
 };
 
 const PG_CTL_DEFAULT_WAIT_SECONDS: u64 = 30;
@@ -44,14 +44,6 @@ enum SourceMaterializationError {
     EmptyHost { member_id: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PreparedProcessLaunch {
-    pub(crate) id: JobId,
-    pub(crate) tracked_job_kind: ProcessJobKind,
-    pub(crate) timeout_ms: u64,
-    pub(crate) command: ProcessCommandSpec,
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum ProcessPreparationError {
     #[error("planning snapshot failed: {0}")]
@@ -75,7 +67,7 @@ impl ProcessPreparationError {
 pub(crate) fn prepare_process_launch_from_ctx(
     ctx: &ProcessWorkerCtx<'_>,
     request: &ProcessIntentRequest,
-) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
+) -> Result<ProcessCommandSpec, ProcessPreparationError> {
     let observed = observed_snapshot_from_ctx(ctx)?;
     prepare_process_launch(ctx.cfg, &observed, request)
 }
@@ -84,16 +76,12 @@ pub(crate) fn prepare_process_launch(
     cfg: &RuntimeConfigV2,
     observed: &ProcessObservedSnapshot,
     request: &ProcessIntentRequest,
-) -> Result<PreparedProcessLaunch, ProcessPreparationError> {
+) -> Result<ProcessCommandSpec, ProcessPreparationError> {
     match &request.intent {
         ProcessIntent::Bootstrap => {
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            Ok(prepared_launch_for_request(
-                cfg,
-                request,
-                build_bootstrap_command(cfg),
-            ))
+            Ok(build_bootstrap_command(cfg))
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }) => {
             let source = source_from_leader(
@@ -106,11 +94,7 @@ pub(crate) fn prepare_process_launch(
             .map_err(ProcessPreparationError::IntentMaterialization)?;
             wipe_data_dir(cfg.postgres.data_dir.as_path())
                 .map_err(ProcessPreparationError::IntentMaterialization)?;
-            Ok(prepared_launch_for_request(
-                cfg,
-                request,
-                build_basebackup_command(cfg, &source),
-            ))
+            Ok(build_basebackup_command(cfg, &source))
         }
         ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::PgRewind { leader }) => {
             let source = source_from_leader(
@@ -121,27 +105,13 @@ pub(crate) fn prepare_process_launch(
                 SourceCredentialKind::Rewinder,
             )
             .map_err(ProcessPreparationError::IntentMaterialization)?;
-            Ok(prepared_launch_for_request(
-                cfg,
-                request,
-                build_pg_rewind_command(cfg, &source),
-            ))
+            Ok(build_pg_rewind_command(cfg, &source))
         }
-        ProcessIntent::Start(start_intent) => Ok(prepared_launch_for_request(
-            cfg,
-            request,
-            prepare_start_postgres_launch(cfg, observed, start_intent)?,
-        )),
-        ProcessIntent::Promote => Ok(prepared_launch_for_request(
-            cfg,
-            request,
-            build_promote_command(cfg, None),
-        )),
-        ProcessIntent::Demote(mode) => Ok(prepared_launch_for_request(
-            cfg,
-            request,
-            build_demote_command(cfg, mode),
-        )),
+        ProcessIntent::Start(start_intent) => {
+            prepare_start_postgres_launch(cfg, observed, start_intent)
+        }
+        ProcessIntent::Promote => Ok(build_promote_command(cfg, None)),
+        ProcessIntent::Demote(mode) => Ok(build_demote_command(cfg, mode)),
     }
 }
 
@@ -184,20 +154,6 @@ fn prepare_start_postgres_launch(
     build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)
 }
 
-fn prepared_launch_for_request(
-    cfg: &RuntimeConfigV2,
-    request: &ProcessIntentRequest,
-    command: ProcessCommandSpec,
-) -> PreparedProcessLaunch {
-    let tracked_job_kind = request.intent.job_kind();
-    prepared_launch(
-        request.id.clone(),
-        tracked_job_kind,
-        default_timeout_ms(cfg, tracked_job_kind),
-        command,
-    )
-}
-
 fn observed_snapshot_from_ctx(
     ctx: &ProcessWorkerCtx<'_>,
 ) -> Result<ProcessObservedSnapshot, ProcessPreparationError> {
@@ -211,20 +167,6 @@ fn observed_snapshot_from_ctx(
         dcs: ctx.observed.dcs.latest(),
         managed_recovery_state,
     })
-}
-
-fn prepared_launch(
-    id: JobId,
-    tracked_job_kind: ProcessJobKind,
-    timeout_ms: u64,
-    command: ProcessCommandSpec,
-) -> PreparedProcessLaunch {
-    PreparedProcessLaunch {
-        id,
-        tracked_job_kind,
-        timeout_ms,
-        command,
-    }
 }
 
 fn materialize_start_config(
@@ -426,21 +368,6 @@ fn wipe_data_dir_contents(data_dir: &Path) -> Result<(), ProcessError> {
     Ok(())
 }
 
-fn default_timeout_ms(cfg: &RuntimeConfigV2, tracked_job_kind: ProcessJobKind) -> u64 {
-    let duration = match tracked_job_kind {
-        ProcessJobKind::PgRewind => cfg.timing.pg_rewind_timeout,
-        ProcessJobKind::Demote => cfg.timing.fencing_timeout,
-        ProcessJobKind::Bootstrap
-        | ProcessJobKind::BaseBackup
-        | ProcessJobKind::Promote
-        | ProcessJobKind::StartPrimary
-        | ProcessJobKind::StartDetachedStandby
-        | ProcessJobKind::StartReplica
-        | ProcessJobKind::StartPostgres => cfg.timing.bootstrap_timeout,
-    };
-    duration_millis_u64(duration)
-}
-
 fn source_from_leader(
     self_id: &MemberId,
     cfg: &RuntimeConfigV2,
@@ -527,10 +454,6 @@ fn source_from_member(
         },
         auth: credential.password.clone(),
     })
-}
-
-fn duration_millis_u64(duration: std::time::Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError> {
@@ -716,23 +639,22 @@ mod tests {
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare replica start failed: {err}"))?;
 
-        if prepared.command.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {
+        if prepared.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {
             return Err(format!(
                 "unexpected prepared command job kind: {:?}",
-                prepared.command.job_kind
+                prepared.job_kind
             ));
         }
-        if prepared.tracked_job_kind != ProcessJobKind::StartReplica {
+        if request.intent.job_kind() != ProcessJobKind::StartReplica {
             return Err(format!(
                 "unexpected tracked job kind: {:?}",
-                prepared.tracked_job_kind
+                request.intent.job_kind()
             ));
         }
-        if prepared.timeout_ms == 0 {
+        if request.intent.timeout_ms(&cfg) == 0 {
             return Err("replica start should carry a non-zero timeout".to_string());
         }
         let options = prepared
-            .command
             .args
             .windows(2)
             .find_map(|window| (window[0] == "-o").then(|| window[1].clone()))
@@ -774,14 +696,13 @@ mod tests {
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
 
-        if prepared.command.job_kind != crate::process::jobs::ProcessJobKind::BaseBackup {
+        if prepared.job_kind != crate::process::jobs::ProcessJobKind::BaseBackup {
             return Err(format!(
                 "unexpected prepared command job kind: {:?}",
-                prepared.command.job_kind
+                prepared.job_kind
             ));
         }
         let conninfo_arg = prepared
-            .command
             .args
             .windows(2)
             .find_map(|window| {
@@ -861,12 +782,13 @@ mod tests {
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
-        if prepared.tracked_job_kind != ProcessJobKind::BaseBackup {
+        if request.intent.job_kind() != ProcessJobKind::BaseBackup {
             return Err(format!(
                 "unexpected tracked job kind: {:?}",
-                prepared.tracked_job_kind
+                request.intent.job_kind()
             ));
         }
+        assert_eq!(prepared.job_kind, request.intent.command_job_kind());
         if stale.exists() {
             return Err(format!(
                 "basebackup prepare should wipe stale data dir contents at {}",
@@ -893,12 +815,13 @@ mod tests {
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare non-start plan failed: {err}"))?;
-        if prepared.tracked_job_kind != ProcessJobKind::Promote {
+        if request.intent.job_kind() != ProcessJobKind::Promote {
             return Err(format!(
                 "unexpected tracked job kind for promote: {:?}",
-                prepared.tracked_job_kind
+                request.intent.job_kind()
             ));
         }
+        assert_eq!(prepared.job_kind, request.intent.command_job_kind());
         let passfile_path = managed_standby_passfile_path(&cfg.postgres.data_dir);
         if passfile_path.exists() {
             return Err(format!(
@@ -998,18 +921,16 @@ mod tests {
         ];
 
         for (intent, tracked_job_kind, command_job_kind) in cases {
-            let prepared = prepare_process_launch(
-                &cfg,
-                &observed,
-                &ProcessIntentRequest {
-                    id: JobId(format!("job-{}", tracked_job_kind.as_str())),
-                    intent,
-                },
-            )
-            .map_err(|err| format!("prepare {} failed: {err}", tracked_job_kind.as_str()))?;
-            assert_eq!(prepared.tracked_job_kind, tracked_job_kind);
-            assert_eq!(prepared.command.job_kind, command_job_kind);
-            assert!(prepared.timeout_ms > 0);
+            let request = ProcessIntentRequest {
+                id: JobId(format!("job-{}", tracked_job_kind.as_str())),
+                intent,
+            };
+            let prepared = prepare_process_launch(&cfg, &observed, &request)
+                .map_err(|err| format!("prepare {} failed: {err}", tracked_job_kind.as_str()))?;
+            assert_eq!(request.intent.job_kind(), tracked_job_kind);
+            assert_eq!(request.intent.command_job_kind(), command_job_kind);
+            assert_eq!(prepared.job_kind, command_job_kind);
+            assert!(request.intent.timeout_ms(&cfg) > 0);
         }
 
         Ok(())

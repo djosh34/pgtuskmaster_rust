@@ -1,1 +1,0 @@
-- Delete the `src/process/cluster.rs` pass-through pipeline; `plan -> materialize -> lower -> build` is DTO choreography, not a real domain boundary.
