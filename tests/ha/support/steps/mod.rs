@@ -5,7 +5,6 @@ use std::{
 
 use cucumber::{given, then, when};
 use pgtuskmaster_rust::{
-    api::NodeState,
     dcs::DcsMemberState,
     pginfo::state::{PgInfoState, Readiness},
     state::ObservedWalPosition,
@@ -50,7 +49,16 @@ async fn i_wait_for_exactly_one_stable_primary_as(
         wait_for_replicas(
             world,
             format!("wait.stable_primary_replicas.{alias}").as_str(),
-            expected_replicas,
+            |replicas| {
+                if replicas.len() == expected_replicas {
+                    Ok(())
+                } else {
+                    Err(HarnessError::message(format!(
+                        "expected {expected_replicas} visible replicas, observed {}",
+                        replicas.len()
+                    )))
+                }
+            },
         )
         .await?;
     }
@@ -84,8 +92,20 @@ async fn cluster_becomes_unhealthy(world: &mut HaWorld) -> Result<()> {
 
 #[given(regex = r#"^I choose one non-primary node as "([^"]+)"$"#)]
 async fn i_choose_one_non_primary_node_as(world: &mut HaWorld, alias: String) -> Result<()> {
-    let replicas =
-        wait_for_minimum_replicas(world, format!("choose_one_replica.{alias}").as_str(), 1).await?;
+    let replicas = wait_for_replicas(
+        world,
+        format!("choose_one_replica.{alias}").as_str(),
+        |replicas| {
+            if replicas.is_empty() {
+                Err(HarnessError::message(
+                    "expected at least 1 visible replica, observed 0",
+                ))
+            } else {
+                Ok(())
+            }
+        },
+    )
+    .await?;
     let member_id = replicas
         .first()
         .copied()
@@ -102,7 +122,16 @@ async fn i_choose_the_two_non_primary_nodes_as(
     let replicas = wait_for_replicas(
         world,
         format!("choose_two_replicas.{alias_a}.{alias_b}").as_str(),
-        2,
+        |replicas| {
+            if replicas.len() == 2 {
+                Ok(())
+            } else {
+                Err(HarnessError::message(format!(
+                    "expected 2 visible replicas, observed {}",
+                    replicas.len()
+                )))
+            }
+        },
     )
     .await?;
     match replicas.as_slice() {
@@ -169,7 +198,78 @@ async fn i_start_only_the_fixed_nodes(
 #[when("I request a planned switchover")]
 async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
     let seed_member = world.require_member_alias("current_primary")?;
-    let target_member = wait_for_planned_switchover_precondition(world, seed_member).await?;
+    let deadline = world.harness()?.timeouts.failover_deadline;
+    let target_member = poll_until(
+        world,
+        deadline,
+        None,
+        "no planned switchover precondition check ran",
+        |world| {
+            let harness = world.harness()?;
+            let status = harness.observer.state_via_member(seed_member)?;
+            harness.record_status_snapshot("switchover.request.precondition", &status)?;
+            status
+                .dcs
+                .members()
+                .filter_map(|(member_id, member_view)| {
+                    ClusterMember::parse(member_id.0.as_str())
+                        .ok()
+                        .filter(|member| *member != seed_member)
+                        .filter(|_| member_slot_is_api_switchover_eligible(member_view))
+                        .map(|member| {
+                            let rank = match member_view.postgres() {
+                                PgInfoState::Replica {
+                                    common,
+                                    replay_lsn,
+                                    follow_lsn,
+                                    ..
+                                } => Some(ObservedWalPosition {
+                                    timeline: common.timeline,
+                                    lsn: *replay_lsn,
+                                })
+                                .or_else(|| {
+                                    follow_lsn.map(|lsn| ObservedWalPosition {
+                                        timeline: common.timeline,
+                                        lsn,
+                                    })
+                                })
+                                .map(|wal| {
+                                    (
+                                        1,
+                                        wal.timeline.map_or(0, |timeline| u64::from(timeline.0)),
+                                        wal.lsn.0,
+                                    )
+                                })
+                                .unwrap_or((0, 0, 0)),
+                                PgInfoState::Unknown { common } => (
+                                    0,
+                                    common.timeline.map_or(0, |timeline| u64::from(timeline.0)),
+                                    0,
+                                ),
+                                PgInfoState::Primary { .. } => (0, 0, 0),
+                            };
+                            (member, rank)
+                        })
+                })
+                .max_by(|(left_member, left_rank), (right_member, right_rank)| {
+                    left_rank
+                        .cmp(right_rank)
+                        .then_with(|| right_member.cmp(left_member))
+                })
+                .map(|(member, _)| member)
+                .ok_or_else(|| {
+                    HarnessError::message(format!(
+                        "no eligible planned switchover target is currently visible via `{seed_member}`"
+                    ))
+                })
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for an eligible planned switchover target via `{seed_member}`; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await?;
     let harness = world.harness()?;
     let response = harness
         .observer
@@ -185,7 +285,34 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
-    wait_for_targeted_switchover_precondition(world, seed_member, member_id).await?;
+    let deadline = world.harness()?.timeouts.failover_deadline;
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no targeted switchover precondition check ran",
+        |world| {
+            let harness = world.harness()?;
+            let status = harness.observer.state_via_member(seed_member)?;
+            harness.record_status_snapshot("switchover.request.targeted_precondition", &status)?;
+            match status.dcs.member(&member_id.member_id()) {
+                Some(member) if member_slot_is_api_switchover_eligible(member) => Ok(()),
+                Some(member) => Err(HarnessError::message(format!(
+                    "target `{member_id}` is not yet promotion-eligible via `{seed_member}` with postgres state {:?}",
+                    member.postgres()
+                ))),
+                None => Err(HarnessError::message(format!(
+                    "target `{member_id}` is not visible via `{seed_member}` yet"
+                ))),
+            }
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for `{member_id}` to become an eligible targeted switchover target via `{seed_member}`; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await?;
     let harness = world.harness()?;
     let response = harness
         .observer
@@ -206,7 +333,32 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
 ) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
-    wait_for_targeted_switchover_rejection_precondition(world, seed_member, member_id).await?;
+    let deadline = world.harness()?.timeouts.failover_deadline;
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no ineligibility check ran",
+        |world| {
+            let harness = world.harness()?;
+            let status = harness.observer.state_via_member(seed_member)?;
+            harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
+            match status.dcs.member(&member_id.member_id()) {
+                None => Ok(()),
+                Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
+                Some(member) => Err(HarnessError::message(format!(
+                    "target `{member_id}` is still promotion-eligible via `{seed_member}` with postgres state {:?}",
+                    member.postgres()
+                ))),
+            }
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for `{member_id}` to become an ineligible targeted switchover target; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await?;
     let request_result = world
         .harness()?
         .observer
@@ -276,9 +428,7 @@ async fn i_stop_the_local_dcs_service_for_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let harness = world.harness()?;
-    harness.stop_dcs_services([harness.given.local_dcs_service_for(member_id)])
+    set_local_dcs_service_for_node_named(world, member_ref, false).await
 }
 
 #[when(regex = r#"^I start the local DCS service for node named "([^"]+)"$"#)]
@@ -286,9 +436,7 @@ async fn i_start_the_local_dcs_service_for_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let harness = world.harness()?;
-    harness.start_dcs_services([harness.given.local_dcs_service_for(member_id)])
+    set_local_dcs_service_for_node_named(world, member_ref, true).await
 }
 
 #[when(regex = r#"^I fully isolate the node named "([^"]+)" from the cluster$"#)]
@@ -344,9 +492,7 @@ async fn i_enable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(member_id, blocker, true)
+    set_blocker_on_node_named(world, blocker_name, member_ref, true).await
 }
 
 #[given(regex = r#"^I disable the "([^"]+)" blocker on the node named "([^"]+)"$"#)]
@@ -356,9 +502,7 @@ async fn i_disable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = world.resolve_member_reference(member_ref.as_str())?;
-    let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(member_id, blocker, false)
+    set_blocker_on_node_named(world, blocker_name, member_ref, false).await
 }
 
 #[when(regex = r#"^I wipe the data directory on the node named "([^"]+)"$"#)]
@@ -370,11 +514,14 @@ async fn i_wipe_the_data_directory_on_the_node_named(
     world.harness()?.wipe_member_data_dir(member_id)
 }
 
-async fn wait_for_replicas(
+async fn wait_for_replicas<F>(
     world: &mut HaWorld,
     phase: &str,
-    expected_replicas: usize,
-) -> Result<Vec<ClusterMember>> {
+    check: F,
+) -> Result<Vec<ClusterMember>>
+where
+    F: Fn(&[ClusterMember]) -> Result<()>,
+{
     let expected_members = world.online_member_ids();
     poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
         let primary = observation.compatible_primary(
@@ -383,39 +530,8 @@ async fn wait_for_replicas(
             None,
         )?;
         let replicas = observation.replica_members(primary)?;
-        if replicas.len() == expected_replicas {
-            Ok(replicas)
-        } else {
-            Err(HarnessError::message(format!(
-                "expected {expected_replicas} visible replicas, observed {}",
-                replicas.len()
-            )))
-        }
-    })
-    .await
-}
-
-async fn wait_for_minimum_replicas(
-    world: &mut HaWorld,
-    phase: &str,
-    minimum_replicas: usize,
-) -> Result<Vec<ClusterMember>> {
-    let expected_members = world.online_member_ids();
-    poll_for_cluster_observation(world, phase, PollKind::Startup, |observation| {
-        let primary = observation.compatible_primary(
-            expected_members.as_slice(),
-            expected_members.len(),
-            None,
-        )?;
-        let replicas = observation.replica_members(primary)?;
-        if replicas.len() >= minimum_replicas {
-            Ok(replicas)
-        } else {
-            Err(HarnessError::message(format!(
-                "expected at least {minimum_replicas} visible replicas, observed {}",
-                replicas.len()
-            )))
-        }
+        check(replicas.as_slice())?;
+        Ok(replicas)
     })
     .await
 }
@@ -507,162 +623,6 @@ async fn wait_for_no_operator_primary(world: &mut HaWorld) -> Result<()> {
     .await
 }
 
-async fn wait_for_targeted_switchover_rejection_precondition(
-    world: &mut HaWorld,
-    seed_member: ClusterMember,
-    target_member: ClusterMember,
-) -> Result<()> {
-    let deadline = world.harness()?.timeouts.failover_deadline;
-
-    poll_until(
-        world,
-        deadline,
-        None,
-        "no ineligibility check ran",
-        |world| {
-            let harness = world.harness()?;
-            let status = harness.observer.state_via_member(seed_member)?;
-            harness.record_status_snapshot("switchover.rejected.precondition", &status)?;
-            match status.dcs.member(&target_member.member_id()) {
-                None => Ok(()),
-                Some(member) if !member_slot_is_api_switchover_eligible(member) => Ok(()),
-                Some(member) => Err(HarnessError::message(format!(
-                    "target `{target_member}` is still promotion-eligible via `{seed_member}` with postgres state {:?}",
-                    member.postgres()
-                ))),
-            }
-        },
-        |last_error| {
-            HarnessError::message(format!(
-                "timed out waiting for `{target_member}` to become an ineligible targeted switchover target; last observed error: {last_error}"
-            ))
-        },
-    )
-    .await
-}
-
-async fn wait_for_targeted_switchover_precondition(
-    world: &mut HaWorld,
-    seed_member: ClusterMember,
-    target_member: ClusterMember,
-) -> Result<()> {
-    let deadline = world.harness()?.timeouts.failover_deadline;
-
-    poll_until(
-        world,
-        deadline,
-        None,
-        "no targeted switchover precondition check ran",
-        |world| {
-            let harness = world.harness()?;
-            let status = harness.observer.state_via_member(seed_member)?;
-            harness.record_status_snapshot("switchover.request.targeted_precondition", &status)?;
-            match status.dcs.member(&target_member.member_id()) {
-                Some(member) if member_slot_is_api_switchover_eligible(member) => Ok(()),
-                Some(member) => Err(HarnessError::message(format!(
-                    "target `{target_member}` is not yet promotion-eligible via `{seed_member}` with postgres state {:?}",
-                    member.postgres()
-                ))),
-                None => Err(HarnessError::message(format!(
-                    "target `{target_member}` is not visible via `{seed_member}` yet"
-                ))),
-            }
-        },
-        |last_error| {
-            HarnessError::message(format!(
-                "timed out waiting for `{target_member}` to become an eligible targeted switchover target via `{seed_member}`; last observed error: {last_error}"
-            ))
-        },
-    )
-    .await
-}
-
-async fn wait_for_planned_switchover_precondition(
-    world: &mut HaWorld,
-    seed_member: ClusterMember,
-) -> Result<ClusterMember> {
-    let deadline = world.harness()?.timeouts.failover_deadline;
-
-    poll_until(
-        world,
-        deadline,
-        None,
-        "no planned switchover precondition check ran",
-        |world| {
-            let harness = world.harness()?;
-            let status = harness.observer.state_via_member(seed_member)?;
-            harness.record_status_snapshot("switchover.request.precondition", &status)?;
-            select_planned_switchover_target(&status, seed_member).ok_or_else(|| {
-                HarnessError::message(format!(
-                    "no eligible planned switchover target is currently visible via `{seed_member}`"
-                ))
-            })
-        },
-        |last_error| {
-            HarnessError::message(format!(
-                "timed out waiting for an eligible planned switchover target via `{seed_member}`; last observed error: {last_error}"
-            ))
-        },
-    )
-    .await
-}
-
-fn select_planned_switchover_target(
-    status: &NodeState,
-    seed_member: ClusterMember,
-) -> Option<ClusterMember> {
-    status
-        .dcs
-        .members()
-        .filter_map(|(member_id, member_view)| {
-            ClusterMember::parse(member_id.0.as_str())
-                .ok()
-                .filter(|member| *member != seed_member)
-                .filter(|_| member_slot_is_api_switchover_eligible(member_view))
-                .map(|member| (member, planned_switchover_target_rank(member_view)))
-        })
-        .max_by(|(left_member, left_rank), (right_member, right_rank)| {
-            left_rank
-                .cmp(right_rank)
-                .then_with(|| right_member.cmp(left_member))
-        })
-        .map(|(member, _)| member)
-}
-
-fn planned_switchover_target_rank(member: &DcsMemberState) -> (u8, u64, u64) {
-    match member.postgres() {
-        PgInfoState::Replica {
-            common,
-            replay_lsn,
-            follow_lsn,
-            ..
-        } => Some(ObservedWalPosition {
-            timeline: common.timeline,
-            lsn: *replay_lsn,
-        })
-        .or_else(|| {
-            follow_lsn.map(|lsn| ObservedWalPosition {
-                timeline: common.timeline,
-                lsn,
-            })
-        })
-        .map(|wal| {
-            (
-                1,
-                wal.timeline.map_or(0, |timeline| u64::from(timeline.0)),
-                wal.lsn.0,
-            )
-        })
-        .unwrap_or((0, 0, 0)),
-        PgInfoState::Unknown { common } => (
-            0,
-            common.timeline.map_or(0, |timeline| u64::from(timeline.0)),
-            0,
-        ),
-        PgInfoState::Primary { .. } => (0, 0, 0),
-    }
-}
-
 fn member_slot_is_api_switchover_eligible(member: &DcsMemberState) -> bool {
     match member.postgres() {
         PgInfoState::Primary { .. } => false,
@@ -670,6 +630,32 @@ fn member_slot_is_api_switchover_eligible(member: &DcsMemberState) -> bool {
             common.readiness == Readiness::Ready
         }
     }
+}
+
+async fn set_local_dcs_service_for_node_named(
+    world: &mut HaWorld,
+    member_ref: String,
+    started: bool,
+) -> Result<()> {
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
+    let harness = world.harness()?;
+    let service = harness.given.local_dcs_service_for(member_id);
+    if started {
+        harness.start_dcs_services([service])
+    } else {
+        harness.stop_dcs_services([service])
+    }
+}
+
+async fn set_blocker_on_node_named(
+    world: &mut HaWorld,
+    blocker_name: String,
+    member_ref: String,
+    enabled: bool,
+) -> Result<()> {
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
+    let blocker = parse_blocker_kind(blocker_name.as_str())?;
+    world.harness()?.set_blocker(member_id, blocker, enabled)
 }
 
 async fn poll_for_cluster_observation<T, F>(
