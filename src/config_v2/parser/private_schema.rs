@@ -427,8 +427,8 @@ pub(super) enum DcsTlsConfig {
     #[default]
     Disabled,
     Enabled {
-        ca_cert: Option<PathSource>,
-        identity: Option<TlsClientIdentityConfig>,
+        #[serde(flatten)]
+        tls: ClientTlsInput,
         server_name: Option<String>,
     },
 }
@@ -659,7 +659,7 @@ pub(super) struct RoleTokens {
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct OperatorClientTlsInput {
+pub(super) struct ClientTlsInput {
     pub(super) ca_cert: Option<PathSource>,
     pub(super) identity: Option<TlsClientIdentityConfig>,
 }
@@ -683,15 +683,15 @@ pub(super) struct OperatorApiConfig {
     pub resolve_to: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "token_auth_config_is_disabled")]
     pub auth: TokenAuthConfig,
-    #[serde(default, skip_serializing_if = "operator_client_tls_input_is_empty")]
-    pub tls: OperatorClientTlsInput,
+    #[serde(default, skip_serializing_if = "client_tls_input_is_empty")]
+    pub tls: ClientTlsInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorPostgresConfig {
-    #[serde(default, skip_serializing_if = "operator_client_tls_input_is_empty")]
-    pub tls: OperatorClientTlsInput,
+    #[serde(default, skip_serializing_if = "client_tls_input_is_empty")]
+    pub tls: ClientTlsInput,
 }
 
 fn token_auth_config_is_disabled(auth: &TokenAuthConfig) -> bool {
@@ -701,12 +701,12 @@ fn token_auth_config_is_disabled(auth: &TokenAuthConfig) -> bool {
         && auth.tokens.is_none()
 }
 
-fn operator_client_tls_input_is_empty(tls: &OperatorClientTlsInput) -> bool {
+fn client_tls_input_is_empty(tls: &ClientTlsInput) -> bool {
     tls.ca_cert.is_none() && tls.identity.is_none()
 }
 
 fn operator_postgres_config_is_empty(postgres: &OperatorPostgresConfig) -> bool {
-    operator_client_tls_input_is_empty(&postgres.tls)
+    client_tls_input_is_empty(&postgres.tls)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
