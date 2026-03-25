@@ -17,6 +17,7 @@ use std::{
     io,
     sync::{Mutex, OnceLock},
     thread,
+    time::Duration,
 };
 
 use cucumber::{writer, World as _, WriterExt as _};
@@ -181,6 +182,33 @@ pub(crate) fn block_on_current_thread<T>(
     runtime_build_error: &'static str,
 ) -> std::result::Result<T, String> {
     build_current_thread_runtime(runtime_build_error)?.block_on(future)
+}
+
+pub(crate) async fn poll_async_until<T, E, F, PollFuture, G>(
+    deadline_window: Duration,
+    poll_interval: Duration,
+    mut attempt: F,
+    timeout_error: G,
+) -> std::result::Result<T, E>
+where
+    F: FnMut() -> PollFuture,
+    PollFuture: Future<Output = std::result::Result<std::result::Result<T, E>, E>>,
+    E: ToString,
+    G: FnOnce(Option<String>) -> E,
+{
+    let deadline = tokio::time::Instant::now() + deadline_window;
+    let mut last_error = None;
+
+    while tokio::time::Instant::now() < deadline {
+        match attempt().await {
+            Ok(Ok(value)) => return Ok(value),
+            Ok(Err(err)) => last_error = Some(err.to_string()),
+            Err(err) => return Err(err),
+        }
+        tokio::time::sleep(poll_interval).await;
+    }
+
+    Err(timeout_error(last_error))
 }
 
 pub(crate) fn spawn_named_current_thread<T>(

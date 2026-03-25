@@ -20,7 +20,6 @@ use rustls::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     task::JoinHandle,
-    time::Instant,
 };
 use tokio_postgres::{Client, Connection, NoTls, Socket};
 use tokio_postgres_rustls::MakeRustlsConnect;
@@ -36,7 +35,7 @@ use pgtuskmaster_rust::{
 use crate::support::{
     block_on_support_future,
     observer::pgtm::{PgtmObserver, PostgresRoutingTarget},
-    spawn_named_current_thread,
+    poll_async_until, spawn_named_current_thread,
     topology::ClusterMember,
 };
 
@@ -641,26 +640,40 @@ async fn wait_for_convergence(
     expected_count: Option<u64>,
     last_write_error: Option<&str>,
 ) -> Result<(), WriteConvergenceInvariantError> {
-    let deadline = Instant::now() + write_deadline;
-    loop {
-        let observations =
-            futures::future::join_all(members.iter().map(|member| {
+    poll_async_until(
+        write_deadline,
+        poll_interval,
+        || async {
+            let observations = futures::future::join_all(members.iter().map(|member| {
                 read_member_count_via_fresh_connection(member, observer, poll_interval)
             }))
             .await;
-        if observations_are_converged(observations.as_slice(), expected_count) {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err(convergence_failure(
-                observations.as_slice(),
-                write_deadline,
-                expected_count,
-                last_write_error,
-            ));
-        }
-        tokio::time::sleep(poll_interval).await;
-    }
+            Ok(
+                if observations_are_converged(observations.as_slice(), expected_count) {
+                    Ok(())
+                } else {
+                    Err(convergence_failure_message(
+                        render_observations(observations.as_slice()),
+                        write_deadline,
+                        expected_count,
+                        last_write_error,
+                    ))
+                },
+            )
+        },
+        |last_error| {
+            last_error.unwrap_or_else(|| {
+                convergence_failure_message(
+                    "no observations were collected",
+                    write_deadline,
+                    expected_count,
+                    last_write_error,
+                )
+            })
+        },
+    )
+    .await
+    .map_err(WriteConvergenceInvariantError::Failed)
 }
 
 async fn convergence_expectation(
@@ -890,12 +903,12 @@ fn render_observations(observations: &[MemberCountObservation]) -> String {
         .join(", ")
 }
 
-fn convergence_failure(
-    observations: &[MemberCountObservation],
+fn convergence_failure_message(
+    observed: impl Into<String>,
     write_deadline: Duration,
     expected_count: Option<u64>,
     last_write_error: Option<&str>,
-) -> WriteConvergenceInvariantError {
+) -> String {
     let expectation = expected_count.map_or_else(
         || format!("`{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}`"),
         |count| format!("accepted count `{count}` on `{FIXTURE_TABLE}` row `{FIXTURE_ROW_ID}`"),
@@ -903,10 +916,24 @@ fn convergence_failure(
     let last_write_error = last_write_error.map_or_else(String::new, |error| {
         format!("; last write attempt error: {error}")
     });
-    WriteConvergenceInvariantError::Failed(format!(
+    format!(
         "expected selected members to converge on {expectation} before {:?}; observed: {}{}",
         write_deadline,
+        observed.into(),
+        last_write_error,
+    )
+}
+
+fn convergence_failure(
+    observations: &[MemberCountObservation],
+    write_deadline: Duration,
+    expected_count: Option<u64>,
+    last_write_error: Option<&str>,
+) -> WriteConvergenceInvariantError {
+    WriteConvergenceInvariantError::Failed(convergence_failure_message(
         render_observations(observations),
+        write_deadline,
+        expected_count,
         last_write_error,
     ))
 }
@@ -920,7 +947,8 @@ mod tests {
         WriteConvergenceInvariantRunner, WriteGate, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
     use crate::support::{
-        observer::pgtm::PostgresRoutingTarget, spawn_named_current_thread, topology::ClusterMember,
+        observer::pgtm::PostgresRoutingTarget, poll_async_until, spawn_named_current_thread,
+        topology::ClusterMember,
     };
     use pgtuskmaster_rust::{
         pginfo::{
@@ -947,7 +975,7 @@ mod tests {
         thread,
         time::Duration,
     };
-    use tokio::{sync::oneshot, time::Instant};
+    use tokio::sync::oneshot;
     use tokio_postgres::{Client, NoTls};
 
     fn sample_routing_conninfo() -> Result<PgConnInfo, String> {
@@ -1612,43 +1640,63 @@ SET written_count = EXCLUDED.written_count
         minimum: u64,
         timeout: Duration,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let observed = read_count(client, Duration::from_millis(250)).await?;
-            if observed >= minimum {
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err(IoError::other(format!(
-                    "timed out waiting for row count >= {minimum}; observed {observed}"
+        poll_async_until(
+            timeout,
+            Duration::from_millis(25),
+            || async {
+                let observed = read_count(client, Duration::from_millis(250))
+                    .await
+                    .map_err(Box::<dyn Error + Send + Sync>::from)?;
+                Ok(if observed >= minimum {
+                    Ok(())
+                } else {
+                    Err(IoError::other(observed.to_string()).into())
+                })
+            },
+            |last_error: Option<String>| {
+                IoError::other(format!(
+                    "timed out waiting for row count >= {minimum}; observed {}",
+                    last_error.unwrap_or_else(|| "no row count was observed".to_string())
                 ))
-                .into());
-            }
-            tokio::time::sleep(Duration::from_millis(25)).await;
-        }
+                .into()
+            },
+        )
+        .await
     }
 
     async fn wait_for_postgres_ready(
         dsn: &str,
         timeout: Duration,
     ) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match tokio_postgres::connect(dsn, NoTls).await {
-                Ok((client, connection)) => {
-                    let connection_task = tokio::spawn(connection);
-                    client.simple_query("SELECT 1").await?;
-                    drop(client);
-                    connection_task.await??;
-                    return Ok(());
-                }
-                Err(err) => {
-                    if Instant::now() >= deadline {
-                        return Err(Box::new(err));
+        poll_async_until(
+            timeout,
+            Duration::from_millis(100),
+            || async {
+                match tokio_postgres::connect(dsn, NoTls).await {
+                    Ok((client, connection)) => {
+                        let connection_task = tokio::spawn(connection);
+                        if let Err(err) = client.simple_query("SELECT 1").await {
+                            return Err(Box::<dyn Error + Send + Sync>::from(err));
+                        }
+                        drop(client);
+                        match connection_task.await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(err)) => {
+                                return Err(Box::<dyn Error + Send + Sync>::from(err));
+                            }
+                            Err(err) => return Err(Box::<dyn Error + Send + Sync>::from(err)),
+                        }
+                        Ok(Ok(()))
                     }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    Err(err) => Ok(Err(Box::<dyn Error + Send + Sync>::from(err))),
                 }
-            }
-        }
+            },
+            |last_error: Option<String>| {
+                Box::<dyn Error + Send + Sync>::from(IoError::other(last_error.unwrap_or_else(
+                    || "timed out waiting for postgres to become ready".to_string(),
+                )))
+            },
+        )
+        .await
     }
 }

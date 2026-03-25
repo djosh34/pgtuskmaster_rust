@@ -9,12 +9,13 @@ use std::{
 };
 
 use pgtuskmaster_rust::pginfo::state::PgInfoState;
-use tokio::{sync::RwLock, task::JoinHandle, time::Instant};
+use tokio::{sync::RwLock, task::JoinHandle};
 
 use crate::support::{
     block_on_support_future,
     error::{HarnessError, Result},
     observer::pgtm::PgtmObserver,
+    poll_async_until,
     topology::ClusterMember,
 };
 
@@ -150,26 +151,31 @@ impl PrimaryCountInvariantRunner {
         let fatal_error = Arc::clone(&self.fatal_error);
         let task_stopped = Arc::clone(&self.task_stopped);
         let future = async move {
-            let deadline = Instant::now() + health_deadline;
-            loop {
-                ensure_task_running_state(fatal_error.as_ref(), task_stopped.as_ref()).await?;
+            poll_async_until(
+                health_deadline,
+                poll_interval,
+                || async {
+                    ensure_task_running_state(fatal_error.as_ref(), task_stopped.as_ref()).await?;
 
-                let num_primaries = num_primaries.load(Ordering::SeqCst);
-                match validate_primary_count(num_primaries) {
-                    Ok(true) => return Ok(()),
-                    Ok(false) => {}
-                    Err(message) => return Err(HarnessError::message(message)),
-                }
-
-                if Instant::now() >= deadline {
-                    return Err(HarnessError::message(format!(
-                        "timed out waiting for self-reported primary count to become `1` before {:?}; last observed count was `{num_primaries}`",
+                    let num_primaries = num_primaries.load(Ordering::SeqCst);
+                    match validate_primary_count(num_primaries) {
+                        Ok(true) => Ok(Ok(())),
+                        Ok(false) => Ok(Err(HarnessError::message(num_primaries.to_string()))),
+                        Err(message) => Err(HarnessError::message(message)),
+                    }
+                },
+                |last_error| match last_error {
+                    Some(last_count) => HarnessError::message(format!(
+                        "timed out waiting for self-reported primary count to become `1` before {:?}; last observed count was `{last_count}`",
                         health_deadline
-                    )));
-                }
-
-                tokio::time::sleep(poll_interval).await;
-            }
+                    )),
+                    None => HarnessError::message(format!(
+                        "timed out waiting for self-reported primary count to become `1` before {:?}; no primary count was observed",
+                        health_deadline
+                    )),
+                },
+            )
+            .await
         };
 
         block_on_support_future(

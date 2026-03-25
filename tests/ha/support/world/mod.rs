@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cucumber::World;
@@ -21,6 +21,7 @@ use crate::support::{
     givens::HaGivenId,
     invariants::{PrimaryCountInvariantRunner, WriteConvergenceInvariantRunner},
     observer::pgtm::PgtmObserver,
+    poll_async_until,
     timeouts::TimeoutModel,
     topology::{ClusterMember, DcsService},
 };
@@ -675,57 +676,56 @@ impl HarnessShared {
     }
 
     async fn wait_for_service_health(&self, service_name: &str) -> Result<()> {
-        let deadline = Instant::now() + self.timeouts.startup_deadline;
-        let mut last_error = None;
-        while Instant::now() < deadline {
-            let result = match self
-                .service_container_id(service_name)
-                .and_then(|container_id| self.docker.container_health_status(container_id.as_str()))
-            {
-                Ok(Some(status)) if status == "healthy" => Ok(()),
-                Ok(Some(status)) => Err(HarnessError::message(format!(
-                    "service `{service_name}` health is `{status}`"
-                ))),
-                Ok(None) => Err(HarnessError::message(format!(
-                    "service `{service_name}` does not expose a docker health status"
-                ))),
-                Err(err) => Err(err),
-            };
-            match result {
-                Ok(()) => return Ok(()),
-                Err(err) => last_error = Some(err.to_string()),
-            }
-            tokio::time::sleep(self.timeouts.poll_interval).await;
-        }
-
-        Err(HarnessError::message(format!(
-            "timed out waiting for service `{service_name}` to become healthy; last observed error: {}",
-            last_error.unwrap_or_else(|| "no health state was observed".to_string())
-        )))
+        poll_async_until(
+            self.timeouts.startup_deadline,
+            self.timeouts.poll_interval,
+            || async {
+                Ok(
+                    match self.service_container_id(service_name).and_then(|container_id| {
+                        self.docker.container_health_status(container_id.as_str())
+                    }) {
+                        Ok(Some(status)) if status == "healthy" => Ok(()),
+                        Ok(Some(status)) => Err(HarnessError::message(format!(
+                            "service `{service_name}` health is `{status}`"
+                        ))),
+                        Ok(None) => Err(HarnessError::message(format!(
+                            "service `{service_name}` does not expose a docker health status"
+                        ))),
+                        Err(err) => Err(err),
+                    },
+                )
+            },
+            |last_error| {
+                HarnessError::message(format!(
+                    "timed out waiting for service `{service_name}` to become healthy; last observed error: {}",
+                    last_error.unwrap_or_else(|| "no health state was observed".to_string())
+                ))
+            },
+        )
+        .await
     }
 
     async fn wait_for_seed_primary(&self) -> Result<()> {
-        let deadline = Instant::now() + self.timeouts.startup_deadline;
-        let mut last_error = None;
-        while Instant::now() < deadline {
-            let result = match self.observer.state_via_member(ClusterMember::SEED_PRIMARY) {
-                Ok(status) => {
-                    self.record_status_snapshot("bootstrap.seed_primary", &status)?;
-                    validate_seed_primary(&status)
+        poll_async_until(
+            self.timeouts.startup_deadline,
+            self.timeouts.poll_interval,
+            || async {
+                match self.observer.state_via_member(ClusterMember::SEED_PRIMARY) {
+                    Ok(status) => {
+                        self.record_status_snapshot("bootstrap.seed_primary", &status)?;
+                        Ok(validate_seed_primary(&status))
+                    }
+                    Err(err) => Ok(Err(err)),
                 }
-                Err(err) => Err(err),
-            };
-            match result {
-                Ok(()) => return Ok(()),
-                Err(err) => last_error = Some(err.to_string()),
-            }
-            tokio::time::sleep(self.timeouts.poll_interval).await;
-        }
-
-        Err(HarnessError::message(format!(
-            "timed out waiting for bootstrap primary before starting replicas; last observed error: {}",
-            last_error.unwrap_or_else(|| "no status was observed".to_string())
-        )))
+            },
+            |last_error| {
+                HarnessError::message(format!(
+                    "timed out waiting for bootstrap primary before starting replicas; last observed error: {}",
+                    last_error.unwrap_or_else(|| "no status was observed".to_string())
+                ))
+            },
+        )
+        .await
     }
 
     pub fn cleanup(&mut self) -> Result<()> {
