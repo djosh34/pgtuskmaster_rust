@@ -8,13 +8,11 @@ use serde::{Deserialize, Deserializer};
 
 use crate::{
     config_v2::types::{
-        ConfigErrorV2, HaConfig, LoggingConfig, PgtmApiTransportExpectation, ProcessConfig, Secret,
-        TlsConfig,
+        ApiTransport, ConfigErrorV2, HaConfig, LoggingConfig, PgtmApiTransportExpectation,
+        ProcessConfig, Secret, TlsConfig,
     },
     pginfo::conninfo::{PgClientTls, PgSslMode},
 };
-
-use super::load_config::{normalize_config_path, validation_error};
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
@@ -457,6 +455,41 @@ impl PathSource {
             .map(|source| source.resolve(field, config_dir))
             .transpose()
     }
+
+    fn resolve_pair(
+        cert_field: &'static str,
+        cert: Self,
+        key_field: &'static str,
+        key: Self,
+        config_dir: &Path,
+    ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
+        Ok((
+            cert.resolve(cert_field, config_dir)?,
+            key.resolve(key_field, config_dir)?,
+        ))
+    }
+}
+
+pub(super) fn validation_error(field: &'static str, message: impl Into<String>) -> ConfigErrorV2 {
+    ConfigErrorV2::Validation {
+        field,
+        message: message.into(),
+    }
+}
+
+pub(super) fn normalize_config_path(
+    field: &'static str,
+    path: PathBuf,
+    config_dir: &Path,
+) -> Result<PathBuf, ConfigErrorV2> {
+    if path.as_os_str().is_empty() {
+        return Err(validation_error(field, "must not be empty"));
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    })
 }
 
 fn read_config_string(
@@ -534,19 +567,6 @@ impl SecretSource {
     }
 }
 
-fn resolve_path_pair(
-    cert_field: &'static str,
-    cert: PathSource,
-    key_field: &'static str,
-    key: PathSource,
-    config_dir: &Path,
-) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-    Ok((
-        cert.resolve(cert_field, config_dir)?,
-        key.resolve(key_field, config_dir)?,
-    ))
-}
-
 impl TlsServerIdentityConfig {
     pub(super) fn resolve(
         self,
@@ -554,13 +574,24 @@ impl TlsServerIdentityConfig {
         key_field: &'static str,
         config_dir: &Path,
     ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        resolve_path_pair(
+        PathSource::resolve_pair(
             cert_field,
             self.cert_chain,
             key_field,
             self.private_key,
             config_dir,
         )
+    }
+
+    fn into_runtime_tls(
+        self,
+        cert_field: &'static str,
+        key_field: &'static str,
+        ca_cert: Option<PathBuf>,
+        config_dir: &Path,
+    ) -> Result<TlsConfig, ConfigErrorV2> {
+        let (cert, key) = self.resolve(cert_field, key_field, config_dir)?;
+        Ok(TlsConfig { cert, key, ca_cert })
     }
 }
 
@@ -571,7 +602,34 @@ impl TlsClientIdentityConfig {
         key_field: &'static str,
         config_dir: &Path,
     ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        resolve_path_pair(cert_field, self.cert, key_field, self.key, config_dir)
+        PathSource::resolve_pair(cert_field, self.cert, key_field, self.key, config_dir)
+    }
+}
+
+impl TlsServerConfig {
+    pub(super) fn into_runtime_tls(
+        self,
+        config_dir: &Path,
+    ) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+        match self {
+            Self::Disabled => Ok(None),
+            Self::Enabled {
+                identity,
+                client_auth,
+            } => Ok(Some(identity.into_runtime_tls(
+                "postgres.tls.identity.cert_chain",
+                "postgres.tls.identity.private_key",
+                PathSource::resolve_optional(
+                    "postgres.tls.client_auth.client_ca",
+                    client_auth.map(|client_auth| {
+                        let _client_certificate_mode = client_auth.client_certificate;
+                        client_auth.client_ca
+                    }),
+                    config_dir,
+                )?,
+                config_dir,
+            )?)),
+        }
     }
 }
 
@@ -626,6 +684,75 @@ impl ClientTlsInput {
                 },
             ),
         )
+    }
+}
+
+impl DcsTlsConfig {
+    pub(super) fn into_runtime_tls(
+        self,
+        config_dir: &Path,
+    ) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+        match self {
+            Self::Disabled => Ok(None),
+            Self::Enabled { tls, server_name } => {
+                if server_name.is_some() {
+                    return Err(validation_error(
+                        "dcs.client.tls.server_name",
+                        "is not supported by config_v2",
+                    ));
+                }
+                tls.into_runtime_dcs_tls(config_dir).map(Some)
+            }
+        }
+    }
+}
+
+impl ApiClientAuthConfig {
+    fn into_runtime_client_auth(
+        self,
+        config_dir: &Path,
+    ) -> Result<(Option<PathBuf>, bool, Vec<String>), ConfigErrorV2> {
+        let Some((client_ca, client_cert_required, allowed_client_common_names)) = (match self {
+            Self::Disabled => None,
+            Self::Optional { client_ca } => Some((client_ca, false, Vec::new())),
+            Self::Required {
+                client_ca,
+                allowed_common_names,
+            } => Some((client_ca, true, allowed_common_names)),
+        }) else {
+            return Ok((None, false, Vec::new()));
+        };
+        Ok((
+            Some(client_ca.resolve("api.transport.tls.client_auth.client_ca", config_dir)?),
+            client_cert_required,
+            allowed_client_common_names,
+        ))
+    }
+}
+
+impl ApiTransportConfig {
+    pub(super) fn into_runtime_transport(
+        self,
+        config_dir: &Path,
+    ) -> Result<ApiTransport, ConfigErrorV2> {
+        match self {
+            Self::Http => Ok(ApiTransport::Http),
+            Self::Https { tls } => {
+                let (client_ca, client_cert_required, allowed_client_common_names) =
+                    tls.client_auth.into_runtime_client_auth(config_dir)?;
+                Ok(ApiTransport::Https {
+                    tls: tls.identity.into_runtime_tls(
+                        "api.transport.tls.identity.cert_chain",
+                        "api.transport.tls.identity.private_key",
+                        None,
+                        config_dir,
+                    )?,
+                    client_ca,
+                    client_cert_required,
+                    allowed_client_common_names,
+                })
+            }
+        }
     }
 }
 

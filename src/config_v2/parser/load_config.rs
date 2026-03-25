@@ -5,10 +5,10 @@ use std::{
 
 use crate::{
     config_v2::types::{
-        ApiAuth, ApiConfig, ApiTransport, ConfigErrorV2, DcsAuth, DcsConfig, DcsEndpoint,
-        FileSinkConfig, LoggingConfig, LoggingSinksConfig, OperatorConfigV2,
-        PgtmApiTransportExpectation, PostgresConfig, PostgresLoggingConfig, ProcessBinariesConfig,
-        ProcessConfig, RoleConfig, RuntimeConfigV2, Secret, TlsConfig,
+        ApiAuth, ApiConfig, ConfigErrorV2, DcsAuth, DcsConfig, DcsEndpoint, FileSinkConfig,
+        LoggingConfig, LoggingSinksConfig, OperatorConfigV2, PgtmApiTransportExpectation,
+        PostgresConfig, PostgresLoggingConfig, ProcessBinariesConfig, ProcessConfig, RoleConfig,
+        RuntimeConfigV2, Secret,
     },
     pginfo::conninfo::{PgClientTls, PgSslMode},
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
@@ -340,7 +340,7 @@ fn load_operator_config_contents_at(
         return runtime_document
             .pgtm
             .ok_or_else(|| {
-                validation_error("pgtm", "missing operator config block in runtime document")
+                raw::validation_error("pgtm", "missing operator config block in runtime document")
             })
             .and_then(|pgtm| pgtm.into_operator_config(path, true));
     }
@@ -477,16 +477,9 @@ pub(super) fn parse_error(path: &Path, source: toml::de::Error) -> ConfigErrorV2
     }
 }
 
-pub(super) fn validation_error(field: &'static str, message: impl Into<String>) -> ConfigErrorV2 {
-    ConfigErrorV2::Validation {
-        field,
-        message: message.into(),
-    }
-}
-
 pub(super) fn validate_non_empty(field: &'static str, value: &str) -> Result<(), ConfigErrorV2> {
     if value.trim().is_empty() {
-        return Err(validation_error(field, "must not be empty"));
+        return Err(raw::validation_error(field, "must not be empty"));
     }
     Ok(())
 }
@@ -551,10 +544,10 @@ fn map_postgres_advertise(
 ) -> Result<PgRoute, ConfigErrorV2> {
     let host = non_empty_owned(field, advertise.host)?;
     if advertise.port == 0 {
-        return Err(validation_error(field, "port must not be zero"));
+        return Err(raw::validation_error(field, "port must not be zero"));
     }
     PgRoute::tcp_hostaddr(host, advertise.port, advertise.hostaddr)
-        .map_err(|message| validation_error(field, message))
+        .map_err(|message| raw::validation_error(field, message))
 }
 
 fn looks_like_runtime_operator_source(document: &toml::Value) -> bool {
@@ -575,11 +568,13 @@ fn parse_operator_url(
     normalize_optional_string(value)
         .map(|value| {
             let url = Url::parse(value.as_str())
-                .map_err(|err| validation_error(field, format!("must be a valid URL: {err}")))?;
+                .map_err(|err| {
+                    raw::validation_error(field, format!("must be a valid URL: {err}"))
+                })?;
             if let Some(expected_transport) = expected_transport.filter(|transport| {
                 !transport.matches_url(&url)
             }) {
-                return Err(validation_error(
+                return Err(raw::validation_error(
                     field,
                     format!(
                         "operator config expects `{}` API transport, but resolved base URL uses `{}`",
@@ -601,7 +596,7 @@ fn merge_matching<T: PartialEq>(
     merged_field: &'static str,
 ) -> Result<Option<T>, ConfigErrorV2> {
     match (left, right) {
-        (Some(left), Some(right)) if left != right => Err(validation_error(
+        (Some(left), Some(right)) if left != right => Err(raw::validation_error(
             merged_field,
             format!("`{left_field}` and `{right_field}` must match when both are configured"),
         )),
@@ -651,9 +646,9 @@ fn resolve_binary_path(
     config_dir: &Path,
 ) -> Result<PathBuf, ConfigErrorV2> {
     if let Some(path) = override_path {
-        let path = normalize_config_path(field, path, config_dir)?;
+        let path = raw::normalize_config_path(field, path, config_dir)?;
         if !path.is_file() {
-            return Err(validation_error(
+            return Err(raw::validation_error(
                 "process.binaries",
                 format!(
                     "`{field}` points to a missing executable: {}",
@@ -695,7 +690,7 @@ fn resolve_binary_path(
         format!("searched {preview}")
     };
 
-    Err(validation_error(
+    Err(raw::validation_error(
         "process.binaries",
         format!(
             "unable to resolve `{executable}` via PATH or conventional PostgreSQL install locations; {detail}; set `{field}` explicitly if autodiscovery fails"
@@ -734,7 +729,7 @@ impl raw::PostgresConfig {
             extra,
         } = roles;
         if !extra.is_empty() {
-            return Err(validation_error(
+            return Err(raw::validation_error(
                 "postgres.roles.extra",
                 "managed extra roles are not supported by config_v2",
             ));
@@ -745,7 +740,7 @@ impl raw::PostgresConfig {
             socket_dir,
             log_file,
         } = paths;
-        let data_dir = normalize_config_path("postgres.paths.data_dir", data_dir, config_dir)?;
+        let data_dir = raw::normalize_config_path("postgres.paths.data_dir", data_dir, config_dir)?;
         let socket_dir = normalize_path_or_default(
             "postgres.paths.socket_dir",
             socket_dir,
@@ -839,13 +834,13 @@ impl raw::DcsConfig {
             init,
         } = self;
         if endpoints.is_empty() {
-            return Err(validation_error(
+            return Err(raw::validation_error(
                 "dcs.endpoints",
                 "at least one endpoint is required",
             ));
         }
         if init.is_some() {
-            return Err(validation_error(
+            return Err(raw::validation_error(
                 "dcs.init",
                 "is not supported by config_v2",
             ));
@@ -857,7 +852,7 @@ impl raw::DcsConfig {
             .any(|endpoint| endpoint.trim_start().starts_with("https://"))
             && tls.is_none()
         {
-            return Err(validation_error(
+            return Err(raw::validation_error(
                 "dcs.client.tls",
                 "https DCS endpoints require `dcs.client.tls` to be configured",
             ));
@@ -881,7 +876,7 @@ impl ProcessConfig {
             working_root,
             binaries,
         } = self;
-        let working_root = normalize_config_path(
+        let working_root = raw::normalize_config_path(
             "process.working_root",
             if working_root.as_os_str().is_empty() {
                 PathBuf::from("/tmp/pgtuskmaster")
@@ -973,102 +968,6 @@ impl LoggingConfig {
     }
 }
 
-impl raw::TlsServerConfig {
-    fn into_runtime_tls(self, config_dir: &Path) -> Result<Option<TlsConfig>, ConfigErrorV2> {
-        match self {
-            raw::TlsServerConfig::Disabled => Ok(None),
-            raw::TlsServerConfig::Enabled {
-                identity,
-                client_auth,
-            } => {
-                let (cert, key) = identity.resolve(
-                    "postgres.tls.identity.cert_chain",
-                    "postgres.tls.identity.private_key",
-                    config_dir,
-                )?;
-                let ca_cert = raw::PathSource::resolve_optional(
-                    "postgres.tls.client_auth.client_ca",
-                    client_auth.map(|client_auth| {
-                        let _client_certificate_mode = client_auth.client_certificate;
-                        client_auth.client_ca
-                    }),
-                    config_dir,
-                )?;
-                Ok(Some(TlsConfig { cert, key, ca_cert }))
-            }
-        }
-    }
-}
-
-impl raw::DcsTlsConfig {
-    fn into_runtime_tls(self, config_dir: &Path) -> Result<Option<TlsConfig>, ConfigErrorV2> {
-        match self {
-            raw::DcsTlsConfig::Disabled => Ok(None),
-            raw::DcsTlsConfig::Enabled { tls, server_name } => {
-                if server_name.is_some() {
-                    return Err(validation_error(
-                        "dcs.client.tls.server_name",
-                        "is not supported by config_v2",
-                    ));
-                }
-                tls.into_runtime_dcs_tls(config_dir).map(Some)
-            }
-        }
-    }
-}
-
-impl raw::ApiClientAuthConfig {
-    fn into_runtime_client_auth(
-        self,
-        config_dir: &Path,
-    ) -> Result<(Option<PathBuf>, bool, Vec<String>), ConfigErrorV2> {
-        match self {
-            raw::ApiClientAuthConfig::Disabled => Ok((None, false, Vec::new())),
-            raw::ApiClientAuthConfig::Optional { client_ca } => Ok((
-                Some(client_ca.resolve("api.transport.tls.client_auth.client_ca", config_dir)?),
-                false,
-                Vec::new(),
-            )),
-            raw::ApiClientAuthConfig::Required {
-                client_ca,
-                allowed_common_names,
-            } => Ok((
-                Some(client_ca.resolve("api.transport.tls.client_auth.client_ca", config_dir)?),
-                true,
-                allowed_common_names,
-            )),
-        }
-    }
-}
-
-impl raw::ApiTransportConfig {
-    fn into_runtime_transport(self, config_dir: &Path) -> Result<ApiTransport, ConfigErrorV2> {
-        match self {
-            raw::ApiTransportConfig::Http => Ok(ApiTransport::Http),
-            raw::ApiTransportConfig::Https { tls } => {
-                let (client_ca, client_cert_required, allowed_client_common_names) =
-                    tls.client_auth.into_runtime_client_auth(config_dir)?;
-                let (cert, key) = tls.identity.resolve(
-                    "api.transport.tls.identity.cert_chain",
-                    "api.transport.tls.identity.private_key",
-                    config_dir,
-                )?;
-
-                Ok(ApiTransport::Https {
-                    tls: TlsConfig {
-                        cert,
-                        key,
-                        ca_cert: None,
-                    },
-                    client_ca,
-                    client_cert_required,
-                    allowed_client_common_names,
-                })
-            }
-        }
-    }
-}
-
 impl raw::TokenAuthConfig {
     fn into_runtime_api_auth(self, config_dir: &Path) -> Result<ApiAuth, ConfigErrorV2> {
         let Some((read_token, admin_token)) =
@@ -1078,10 +977,10 @@ impl raw::TokenAuthConfig {
         };
         Ok(ApiAuth::Tokens {
             read_token: read_token.ok_or_else(|| {
-                validation_error("api.auth.read_token", "is required when auth is enabled")
+                raw::validation_error("api.auth.read_token", "is required when auth is enabled")
             })?,
             admin_token: admin_token.ok_or_else(|| {
-                validation_error("api.auth.admin_token", "is required when auth is enabled")
+                raw::validation_error("api.auth.admin_token", "is required when auth is enabled")
             })?,
         })
     }
@@ -1164,7 +1063,7 @@ impl raw::OperatorDocument {
         )?;
 
         #[rustfmt::skip]
-        let operator_config = OperatorConfigV2 { base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?, advertised_url: parse_operator_url("pgtm.api.advertised_url", advertised_url, expected_transport)?.map(|url| ApiRoute::from_url(url).map_err(|err| validation_error("pgtm.api.advertised_url", err))).transpose()?, expected_transport, resolve_to, client_tls: merge_operator_client_tls(api_tls, postgres_tls)?, read_token, admin_token };
+        let operator_config = OperatorConfigV2 { base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?, advertised_url: parse_operator_url("pgtm.api.advertised_url", advertised_url, expected_transport)?.map(|url| ApiRoute::from_url(url).map_err(|err| raw::validation_error("pgtm.api.advertised_url", err))).transpose()?, expected_transport, resolve_to, client_tls: merge_operator_client_tls(api_tls, postgres_tls)?, read_token, admin_token };
         Ok(operator_config)
     }
 }
@@ -1186,21 +1085,6 @@ fn resolve_config_dir(path: &Path) -> Result<PathBuf, ConfigErrorV2> {
         })
 }
 
-pub(super) fn normalize_config_path(
-    field: &'static str,
-    path: PathBuf,
-    config_dir: &Path,
-) -> Result<PathBuf, ConfigErrorV2> {
-    if path.as_os_str().is_empty() {
-        return Err(validation_error(field, "must not be empty"));
-    }
-    Ok(if path.is_absolute() {
-        path
-    } else {
-        config_dir.join(path)
-    })
-}
-
 fn normalize_path_or_default<F>(
     field: &'static str,
     path: Option<PathBuf>,
@@ -1210,7 +1094,7 @@ fn normalize_path_or_default<F>(
 where
     F: FnOnce() -> PathBuf,
 {
-    path.map(|path| normalize_config_path(field, path, config_dir))
+    path.map(|path| raw::normalize_config_path(field, path, config_dir))
         .transpose()?
         .map_or_else(|| Ok(default()), Ok)
 }
