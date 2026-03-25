@@ -1,1 +1,0 @@
-- Delete the `DesiredManagedPostgresSession -> ManagedPostgresStartIntent -> ManagedRecoverySignal` translation chain across `src/process/session.rs`, `src/postgres_managed_conf.rs`, and `src/postgres_managed.rs`; start mode is being re-encoded through multiple modules.

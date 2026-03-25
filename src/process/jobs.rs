@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::config_v2::{types::Secret, RuntimeConfigV2};
+use crate::postgres_managed::ManagedRecoverySignal;
 use crate::state::{JobId, MemberId, UnixMillis};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,6 +75,17 @@ impl PostgresStartIntent {
             Self::Primary => ProcessJobKind::StartPrimary,
             Self::DetachedStandby => ProcessJobKind::StartDetachedStandby,
             Self::Replica { .. } => ProcessJobKind::StartReplica,
+        }
+    }
+
+    pub(crate) fn hot_standby(&self) -> bool {
+        !matches!(self, Self::Primary)
+    }
+
+    pub(crate) fn managed_recovery_signal(&self) -> ManagedRecoverySignal {
+        match self {
+            Self::Primary => ManagedRecoverySignal::None,
+            Self::DetachedStandby | Self::Replica { .. } => ManagedRecoverySignal::Standby,
         }
     }
 }

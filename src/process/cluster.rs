@@ -146,9 +146,8 @@ fn prepare_start_postgres_launch(
 
     materialize_start_config(
         cfg,
-        start_intent.job_kind(),
+        start_intent,
         source.as_ref().map(|remote_source| &remote_source.conninfo),
-        None,
     )
     .map_err(ProcessPreparationError::IntentMaterialization)?;
     build_start_postgres_command(cfg).map_err(ProcessPreparationError::BuildCommand)
@@ -171,14 +170,12 @@ fn observed_snapshot_from_ctx(
 
 fn materialize_start_config(
     cfg: &RuntimeConfigV2,
-    tracked_job_kind: ProcessJobKind,
+    start_intent: &PostgresStartIntent,
     primary_conninfo: Option<&PgConnInfo>,
-    primary_slot_name: Option<&str>,
 ) -> Result<(), ProcessError> {
-    materialize_managed_postgres_config(cfg, tracked_job_kind, primary_conninfo, primary_slot_name)
-        .map_err(|err| {
-            ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
-        })
+    materialize_managed_postgres_config(cfg, start_intent, primary_conninfo).map_err(|err| {
+        ProcessError::InvalidSpec(format!("materialize managed postgres config failed: {err}"))
+    })
 }
 
 fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {

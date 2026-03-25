@@ -9,7 +9,7 @@ use thiserror::Error;
 use crate::{
     config_v2::{types::TlsConfig, RuntimeConfigV2},
     pginfo::{conninfo::render_conninfo_value, state::PgConnInfo},
-    process::jobs::ProcessJobKind,
+    process::jobs::PostgresStartIntent,
 };
 
 pub(crate) const MANAGED_POSTGRESQL_CONF_NAME: &str = "pgtm.postgresql.conf";
@@ -72,24 +72,10 @@ pub(crate) enum ManagedRecoverySignal {
     Recovery,
 }
 
-#[derive(Clone, Copy)]
-struct ManagedReplicaSource<'a> {
-    primary_conninfo: &'a PgConnInfo,
-    primary_slot_name: Option<&'a str>,
-}
-
-#[derive(Clone, Copy)]
-struct ManagedStartJob<'a> {
-    recovery_signal: ManagedRecoverySignal,
-    hot_standby: bool,
-    replica_source: Option<ManagedReplicaSource<'a>>,
-}
-
 pub(crate) fn materialize_managed_postgres_config(
     cfg: &RuntimeConfigV2,
-    tracked_job_kind: ProcessJobKind,
+    start_intent: &PostgresStartIntent,
     primary_conninfo: Option<&PgConnInfo>,
-    primary_slot_name: Option<&str>,
 ) -> Result<(), ManagedPostgresError> {
     let data_dir = cfg.postgres.data_dir.as_path();
     if data_dir.as_os_str().is_empty() {
@@ -118,17 +104,16 @@ pub(crate) fn materialize_managed_postgres_config(
         Some(0o644),
     )?;
 
-    let start_job =
-        resolve_managed_start_job(tracked_job_kind, primary_conninfo, primary_slot_name)?;
     let managed_tls_config = managed_tls_config(cfg)?;
     materialize_managed_standby_passfile(
         cfg,
-        start_job.replica_source,
+        replica_primary_conninfo(start_intent, primary_conninfo)?,
         managed_standby_passfile.as_path(),
     )?;
     let rendered_conf = render_managed_postgres_conf(
         cfg,
-        start_job,
+        start_intent,
+        primary_conninfo,
         managed_hba.as_path(),
         managed_ident.as_path(),
         managed_standby_passfile.as_path(),
@@ -142,7 +127,7 @@ pub(crate) fn materialize_managed_postgres_config(
 
     quarantine_postgresql_auto_conf(&postgresql_auto_conf, &quarantined_postgresql_auto_conf)?;
     materialize_recovery_signal_files(
-        start_job.recovery_signal,
+        start_intent.managed_recovery_signal(),
         &standby_signal,
         &recovery_signal,
     )?;
@@ -196,18 +181,16 @@ fn validate_existing_configured_file(field: &str, path: &Path) -> Result<(), Man
 
 fn materialize_managed_standby_passfile(
     cfg: &RuntimeConfigV2,
-    replica_source: Option<ManagedReplicaSource<'_>>,
+    primary_conninfo: Option<&PgConnInfo>,
     managed_passfile_path: &Path,
 ) -> Result<(), ManagedPostgresError> {
-    let Some(replica_source) = replica_source else {
+    let Some(primary_conninfo) = primary_conninfo else {
         remove_file_if_exists(managed_passfile_path)?;
         return Ok(());
     };
 
-    let rendered = render_libpq_passfile_entry(
-        replica_source.primary_conninfo,
-        cfg.postgres.replicator.password.as_str(),
-    )?;
+    let rendered =
+        render_libpq_passfile_entry(primary_conninfo, cfg.postgres.replicator.password.as_str())?;
     write_atomic(managed_passfile_path, rendered.as_bytes(), Some(0o600))?;
     Ok(())
 }
@@ -268,7 +251,8 @@ fn escape_libpq_passfile_field(value: &str) -> String {
 
 fn render_managed_postgres_conf(
     cfg: &RuntimeConfigV2,
-    start_job: ManagedStartJob<'_>,
+    start_intent: &PostgresStartIntent,
+    primary_conninfo: Option<&PgConnInfo>,
     managed_hba: &Path,
     managed_ident: &Path,
     managed_standby_passfile: &Path,
@@ -306,9 +290,9 @@ fn render_managed_postgres_conf(
         }
     }
 
-    push_bool_setting(&mut rendered, "hot_standby", start_job.hot_standby);
-    if let Some(replica_source) = start_job.replica_source {
-        let mut primary_conninfo_with_passfile = replica_source.primary_conninfo.to_string();
+    push_bool_setting(&mut rendered, "hot_standby", start_intent.hot_standby());
+    if let Some(primary_conninfo) = replica_primary_conninfo(start_intent, primary_conninfo)? {
+        let mut primary_conninfo_with_passfile = primary_conninfo.to_string();
         primary_conninfo_with_passfile.push(' ');
         primary_conninfo_with_passfile.push_str("passfile=");
         primary_conninfo_with_passfile.push_str(
@@ -319,9 +303,6 @@ fn render_managed_postgres_conf(
             "primary_conninfo",
             primary_conninfo_with_passfile.as_str(),
         );
-        if let Some(slot) = replica_source.primary_slot_name {
-            push_string_setting(&mut rendered, "primary_slot_name", slot);
-        }
     }
 
     for (key, value) in &cfg.postgres.extra_gucs {
@@ -332,55 +313,22 @@ fn render_managed_postgres_conf(
     Ok(rendered)
 }
 
-fn resolve_managed_start_job<'a>(
-    job_kind: ProcessJobKind,
+fn replica_primary_conninfo<'a>(
+    start_intent: &PostgresStartIntent,
     primary_conninfo: Option<&'a PgConnInfo>,
-    primary_slot_name: Option<&'a str>,
-) -> Result<ManagedStartJob<'a>, ManagedPostgresError> {
-    match job_kind {
-        ProcessJobKind::StartPrimary => {
-            reject_replica_source_fields(primary_conninfo, primary_slot_name)?;
-            Ok(ManagedStartJob {
-                recovery_signal: ManagedRecoverySignal::None,
-                hot_standby: false,
-                replica_source: None,
-            })
+) -> Result<Option<&'a PgConnInfo>, ManagedPostgresError> {
+    match start_intent {
+        PostgresStartIntent::Primary | PostgresStartIntent::DetachedStandby => {
+            reject_replica_source_fields(primary_conninfo)?;
+            Ok(None)
         }
-        ProcessJobKind::StartDetachedStandby => {
-            reject_replica_source_fields(primary_conninfo, primary_slot_name)?;
-            Ok(ManagedStartJob {
-                recovery_signal: ManagedRecoverySignal::Standby,
-                hot_standby: true,
-                replica_source: None,
-            })
-        }
-        ProcessJobKind::StartReplica => {
-            let primary_conninfo =
-                primary_conninfo.ok_or_else(|| ManagedPostgresError::InvalidConfig {
+        PostgresStartIntent::Replica { .. } => {
+            primary_conninfo
+                .map(Some)
+                .ok_or_else(|| ManagedPostgresError::InvalidConfig {
                     message: "replica start requires primary_conninfo".to_string(),
-                })?;
-            if let Some(slot) = primary_slot_name {
-                validate_primary_slot_name(slot)?;
-            }
-            Ok(ManagedStartJob {
-                recovery_signal: ManagedRecoverySignal::Standby,
-                hot_standby: true,
-                replica_source: Some(ManagedReplicaSource {
-                    primary_conninfo,
-                    primary_slot_name,
-                }),
-            })
+                })
         }
-        other => Err(invalid_managed_start_job_kind(other)),
-    }
-}
-
-fn invalid_managed_start_job_kind(job_kind: ProcessJobKind) -> ManagedPostgresError {
-    ManagedPostgresError::InvalidConfig {
-        message: format!(
-            "managed postgres config requires a start job kind, got `{}`",
-            job_kind.as_str()
-        ),
     }
 }
 
@@ -422,12 +370,10 @@ fn validate_extra_guc_entry(key: &str, value: &str) -> Result<(), ManagedPostgre
 
 fn reject_replica_source_fields(
     primary_conninfo: Option<&PgConnInfo>,
-    primary_slot_name: Option<&str>,
 ) -> Result<(), ManagedPostgresError> {
-    if primary_conninfo.is_some() || primary_slot_name.is_some() {
+    if primary_conninfo.is_some() {
         return Err(ManagedPostgresError::InvalidConfig {
-            message: "only replica starts may carry primary_conninfo or primary_slot_name"
-                .to_string(),
+            message: "only replica starts may carry primary_conninfo".to_string(),
         });
     }
     Ok(())
@@ -479,25 +425,6 @@ fn validate_extra_guc_name(key: &str) -> Result<(), ManagedPostgresError> {
         }
     }
 
-    Ok(())
-}
-
-fn validate_primary_slot_name(slot: &str) -> Result<(), ManagedPostgresError> {
-    if slot.is_empty() {
-        return Err(ManagedPostgresError::InvalidConfig {
-            message: "managed replica slot `` invalid: slot name must not be empty".to_string(),
-        });
-    }
-    if !slot
-        .chars()
-        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
-    {
-        return Err(ManagedPostgresError::InvalidConfig {
-            message: format!(
-                "managed replica slot `{slot}` invalid: slot name may only contain lowercase ASCII letters, digits, and underscore"
-            ),
-        });
-    }
     Ok(())
 }
 
@@ -754,8 +681,8 @@ mod tests {
             conninfo::{PgClientTls, PgSslMode},
             state::PgConnInfo,
         },
-        process::jobs::ProcessJobKind,
-        state::PgEndpoint,
+        process::jobs::PostgresStartIntent,
+        state::{MemberId, PgEndpoint},
     };
 
     use super::{
@@ -763,8 +690,8 @@ mod tests {
         managed_postgresql_conf_path, managed_recovery_signal_path, managed_standby_passfile_path,
         managed_standby_signal_path, materialize_managed_postgres_config,
         quarantined_postgresql_auto_conf_path, render_managed_postgres_conf,
-        resolve_managed_start_job, validate_extra_guc_entry, ManagedPostgresError,
-        ManagedRecoverySignal, MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_RECOVERY_SIGNAL_NAME,
+        validate_extra_guc_entry, ManagedPostgresError, ManagedRecoverySignal,
+        MANAGED_POSTGRESQL_CONF_HEADER, MANAGED_RECOVERY_SIGNAL_NAME,
     };
 
     fn sample_managed_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
@@ -821,20 +748,23 @@ mod tests {
         }
     }
 
-    fn render_sample_conf_for_start_job(
-        tracked_job_kind: ProcessJobKind,
+    fn sample_replica_start_intent() -> PostgresStartIntent {
+        PostgresStartIntent::Replica {
+            leader: MemberId("node-a".to_string()),
+        }
+    }
+
+    fn render_sample_conf_for_start_intent(
+        start_intent: &PostgresStartIntent,
         primary_conninfo: Option<&PgConnInfo>,
-        primary_slot_name: Option<&str>,
         managed_tls_config: Option<&TlsConfig>,
     ) -> Result<String, String> {
         let cfg = sample_render_config()?;
-        let start_job =
-            resolve_managed_start_job(tracked_job_kind, primary_conninfo, primary_slot_name)
-                .map_err(|err| format!("resolve start job failed: {err}"))?;
         let standby_passfile = managed_standby_passfile_path(cfg.postgres.data_dir.as_path());
         render_managed_postgres_conf(
             &cfg,
-            start_job,
+            start_intent,
+            primary_conninfo,
             cfg.postgres.pg_hba_file.as_path(),
             cfg.postgres.pg_ident_file.as_path(),
             standby_passfile.as_path(),
@@ -846,10 +776,9 @@ mod tests {
     fn render_sample_conf() -> Result<String, String> {
         let tls = sample_render_tls_config();
         let primary_conninfo = sample_render_replica_conninfo()?;
-        render_sample_conf_for_start_job(
-            ProcessJobKind::StartReplica,
+        render_sample_conf_for_start_intent(
+            &sample_replica_start_intent(),
             Some(&primary_conninfo),
-            Some("slot_a"),
             Some(&tls),
         )
     }
@@ -865,15 +794,15 @@ mod tests {
     #[test]
     fn render_managed_postgres_conf_keeps_owned_settings_before_extra_gucs() -> Result<(), String> {
         let rendered = render_sample_conf()?;
-        let primary_slot_index = rendered
-            .find("primary_slot_name =")
-            .ok_or_else(|| "missing primary_slot_name line".to_string())?;
+        let primary_conninfo_index = rendered
+            .find("primary_conninfo =")
+            .ok_or_else(|| "missing primary_conninfo line".to_string())?;
         let extra_index = rendered
             .find("log_line_prefix =")
             .ok_or_else(|| "missing log_line_prefix line".to_string())?;
-        if primary_slot_index >= extra_index {
+        if primary_conninfo_index >= extra_index {
             return Err(format!(
-                "expected owned settings before extra gucs: primary_slot_index={primary_slot_index} extra_index={extra_index}"
+                "expected owned settings before extra gucs: primary_conninfo_index={primary_conninfo_index} extra_index={extra_index}"
             ));
         }
         Ok(())
@@ -937,8 +866,8 @@ mod tests {
         if !rendered.contains("hot_standby = on") {
             return Err(format!("missing hot_standby=on: {rendered}"));
         }
-        if !rendered.contains("primary_slot_name = 'slot_a'") {
-            return Err(format!("missing primary_slot_name: {rendered}"));
+        if !rendered.contains("primary_conninfo =") {
+            return Err(format!("missing primary_conninfo: {rendered}"));
         }
         Ok(())
     }
@@ -947,14 +876,14 @@ mod tests {
     fn render_managed_postgres_conf_renders_primary_without_replica_only_fields(
     ) -> Result<(), String> {
         let rendered =
-            render_sample_conf_for_start_job(ProcessJobKind::StartPrimary, None, None, None)?;
+            render_sample_conf_for_start_intent(&PostgresStartIntent::Primary, None, None)?;
         if !rendered.contains("ssl = off") {
             return Err(format!("missing ssl=off: {rendered}"));
         }
         if !rendered.contains("hot_standby = off") {
             return Err(format!("missing hot_standby=off: {rendered}"));
         }
-        if rendered.contains("primary_conninfo") || rendered.contains("primary_slot_name") {
+        if rendered.contains("primary_conninfo") {
             return Err(format!(
                 "primary config unexpectedly rendered replica fields: {rendered}"
             ));
@@ -966,16 +895,15 @@ mod tests {
     fn render_managed_postgres_conf_renders_detached_standby_without_source_fields(
     ) -> Result<(), String> {
         let tls = sample_render_tls_config();
-        let rendered = render_sample_conf_for_start_job(
-            ProcessJobKind::StartDetachedStandby,
-            None,
+        let rendered = render_sample_conf_for_start_intent(
+            &PostgresStartIntent::DetachedStandby,
             None,
             Some(&tls),
         )?;
         if !rendered.contains("hot_standby = on") {
             return Err(format!("missing hot_standby=on: {rendered}"));
         }
-        if rendered.contains("primary_conninfo") || rendered.contains("primary_slot_name") {
+        if rendered.contains("primary_conninfo") {
             return Err(format!(
                 "detached standby config unexpectedly rendered replica source fields: {rendered}"
             ));
@@ -984,27 +912,19 @@ mod tests {
     }
 
     #[test]
-    fn start_job_kind_tracks_recovery_signal_state() -> Result<(), String> {
+    fn start_intent_tracks_recovery_signal_state() {
         assert_eq!(
-            resolve_managed_start_job(ProcessJobKind::StartPrimary, None, None)
-                .map_err(|err| err.to_string())?
-                .recovery_signal,
+            PostgresStartIntent::Primary.managed_recovery_signal(),
             ManagedRecoverySignal::None
         );
         assert_eq!(
-            resolve_managed_start_job(ProcessJobKind::StartDetachedStandby, None, None)
-                .map_err(|err| err.to_string())?
-                .recovery_signal,
+            PostgresStartIntent::DetachedStandby.managed_recovery_signal(),
             ManagedRecoverySignal::Standby
         );
-        let primary_conninfo = sample_render_replica_conninfo()?;
         assert_eq!(
-            resolve_managed_start_job(ProcessJobKind::StartReplica, Some(&primary_conninfo), None)
-                .map_err(|err| err.to_string())?
-                .recovery_signal,
+            sample_replica_start_intent().managed_recovery_signal(),
             ManagedRecoverySignal::Standby
         );
-        Ok(())
     }
 
     #[test]
@@ -1074,7 +994,7 @@ mod tests {
         let cfg = sample_managed_config(data_dir.clone())?;
         let postgresql_conf_path = managed_postgresql_conf_path(data_dir.as_path());
 
-        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None)
+        materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None)
             .map_err(|err| format!("materialize managed config failed: {err}"))?;
 
         let postgresql_conf = fs::read_to_string(&postgresql_conf_path).map_err(|err| {
@@ -1147,9 +1067,8 @@ mod tests {
 
         materialize_managed_postgres_config(
             &cfg,
-            ProcessJobKind::StartReplica,
+            &sample_replica_start_intent(),
             Some(&replica_primary_conninfo),
-            None,
         )
         .map_err(|err| format!("materialize replica config failed: {err}"))?;
         if !standby_signal_path.exists() {
@@ -1165,7 +1084,7 @@ mod tests {
             ));
         }
 
-        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None)
+        materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None)
             .map_err(|err| format!("materialize primary config failed: {err}"))?;
         if standby_signal_path.exists() {
             return Err(format!(
@@ -1193,9 +1112,8 @@ mod tests {
 
         materialize_managed_postgres_config(
             &cfg,
-            ProcessJobKind::StartReplica,
+            &sample_replica_start_intent(),
             Some(&sample_replica_conninfo()?),
-            None,
         )
         .map_err(|err| format!("materialize replica config failed: {err}"))?;
 
@@ -1248,7 +1166,7 @@ mod tests {
             )
         })?;
 
-        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None)
+        materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None)
             .map_err(|err| format!("materialize primary config failed: {err}"))?;
         if stale_path.exists() {
             return Err(format!(
@@ -1284,7 +1202,7 @@ mod tests {
             )
         })?;
 
-        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None)
+        materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None)
             .map_err(|err| format!("materialize primary config failed: {err}"))?;
 
         if active_auto_conf.exists() {
@@ -1320,7 +1238,7 @@ mod tests {
             .insert("config_file".to_string(), "/tmp/override.conf".to_string());
 
         assert_eq!(
-            materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None,),
+            materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None,),
             Err(ManagedPostgresError::InvalidConfig {
                 message: "postgres.extra_gucs entry `config_file` is reserved by pgtuskmaster"
                     .to_string(),
@@ -1358,7 +1276,7 @@ mod tests {
             ca_cert: Some(ca_cert.clone()),
         });
 
-        materialize_managed_postgres_config(&cfg, ProcessJobKind::StartPrimary, None, None)
+        materialize_managed_postgres_config(&cfg, &PostgresStartIntent::Primary, None)
             .map_err(|err| format!("materialize managed config failed: {err}"))?;
         let managed_conf = fs::read_to_string(&managed_conf_path).map_err(|err| {
             format!(
@@ -1547,9 +1465,8 @@ mod tests {
 
             materialize_managed_postgres_config(
                 &runtime_config,
-                ProcessJobKind::StartReplica,
+                &sample_replica_start_intent(),
                 Some(&replica_primary_conninfo),
-                None,
             )
             .map_err(|err| real_test_error(format!("materialize managed config failed: {err}")))?;
 
@@ -1698,13 +1615,8 @@ mod tests {
         let cfg = sample_managed_config(data_dir.clone())?;
         let expected = sample_replica_conninfo()?;
 
-        materialize_managed_postgres_config(
-            &cfg,
-            ProcessJobKind::StartReplica,
-            Some(&expected),
-            Some("slot_a"),
-        )
-        .map_err(|err| format!("materialize managed replica config failed: {err}"))?;
+        materialize_managed_postgres_config(&cfg, &sample_replica_start_intent(), Some(&expected))
+            .map_err(|err| format!("materialize managed replica config failed: {err}"))?;
 
         let actual = inspect_managed_recovery_state(&data_dir)
             .map_err(|err| format!("inspect managed recovery state failed: {err}"))?;
