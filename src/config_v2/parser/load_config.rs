@@ -62,9 +62,11 @@ fn load_operator_config_contents_at(
             .ok_or_else(|| {
                 validation_error("pgtm", "missing operator config block in runtime document")
             })
-            .and_then(|pgtm| parse_operator_config_value_at(pgtm, path, true));
+            .and_then(|pgtm| pgtm.into_operator_config(path, true));
     }
-    parse_operator_config_value_at(document, path, true)
+    toml::from_str::<raw::OperatorDocument>(contents)
+        .map_err(|source| parse_error(path, source))?
+        .into_operator_config(path, true)
 }
 
 impl raw::RuntimeDocument {
@@ -75,7 +77,7 @@ impl raw::RuntimeDocument {
         let config_dir = config_dir.as_path();
         let (working_root, timeouts, binaries) = process.into_runtime_parts(config_dir)?;
         let operator_advertise = pgtm
-            .map(|pgtm| parse_operator_config_value_at(pgtm, path, false))
+            .map(|pgtm| pgtm.into_operator_config(path, false))
             .transpose()?
             .and_then(|config| config.advertised_url);
 
@@ -464,17 +466,6 @@ fn looks_like_runtime_operator_source(document: &toml::Value) -> bool {
         .into_iter()
         .any(|field| table.contains_key(field))
     })
-}
-
-fn parse_operator_config_value_at(
-    value: toml::Value,
-    path: &Path,
-    resolve_auth_tokens: bool,
-) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    let document: raw::OperatorDocument = value
-        .try_into()
-        .map_err(|source| parse_error(path, source))?;
-    document.into_operator_config(path, resolve_auth_tokens)
 }
 
 fn parse_operator_url(
