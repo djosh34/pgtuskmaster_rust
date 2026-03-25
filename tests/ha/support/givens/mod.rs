@@ -46,47 +46,6 @@ hostssl replication    all             0.0.0.0/0               scram-sha-256"#;
 const HA_POSTGRES_IDENT_CONTENTS: &str = "observer_as_postgres    observer        postgres";
 const SHARED_ETCD_SERVICES: [DcsService; 1] = [DcsService::SharedEtcd];
 const THREE_ETCD_QUORUM_SERVICES: [DcsService; 2] = [DcsService::EtcdA, DcsService::EtcdB];
-const PLAIN_GIVEN: HaGivenDefinition = HaGivenDefinition {
-    name: "three_node_plain",
-    local_dcs_service_for: shared_dcs_service_for,
-    replicator_role: "replicator",
-    rewinder_role: "rewinder",
-    dcs_services: &SHARED_ETCD_SERVICES,
-    quorum_majority_dcs_services: &SHARED_ETCD_SERVICES,
-    compose_variant_relative_path: "compose/three_node_shared_single.yml",
-    shared_fixture_relative_paths: &SHARED_FIXTURE_RELATIVE_PATHS,
-};
-const CUSTOM_ROLES_GIVEN: HaGivenDefinition = HaGivenDefinition {
-    name: "three_node_custom_roles",
-    local_dcs_service_for: shared_dcs_service_for,
-    replicator_role: "mirrorbot",
-    rewinder_role: "rewindbot",
-    dcs_services: &SHARED_ETCD_SERVICES,
-    quorum_majority_dcs_services: &SHARED_ETCD_SERVICES,
-    compose_variant_relative_path: "compose/three_node_shared_single.yml",
-    shared_fixture_relative_paths: &SHARED_FIXTURE_RELATIVE_PATHS,
-};
-const THREE_ETCD_GIVEN: HaGivenDefinition = HaGivenDefinition {
-    name: "three_node_three_etcd",
-    local_dcs_service_for: member_local_dcs_service_for,
-    replicator_role: "replicator",
-    rewinder_role: "rewinder",
-    dcs_services: &DCS_SERVICES,
-    quorum_majority_dcs_services: &THREE_ETCD_QUORUM_SERVICES,
-    compose_variant_relative_path: "compose/three_node_three_etcd.yml",
-    shared_fixture_relative_paths: &SHARED_FIXTURE_RELATIVE_PATHS,
-};
-
-struct HaGivenDefinition {
-    name: &'static str,
-    local_dcs_service_for: fn(ClusterMember) -> DcsService,
-    replicator_role: &'static str,
-    rewinder_role: &'static str,
-    dcs_services: &'static [DcsService],
-    quorum_majority_dcs_services: &'static [DcsService],
-    compose_variant_relative_path: &'static str,
-    shared_fixture_relative_paths: &'static [&'static str],
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HaGivenId {
@@ -96,16 +55,11 @@ pub enum HaGivenId {
 }
 
 impl HaGivenId {
-    fn definition(self) -> &'static HaGivenDefinition {
-        match self {
-            Self::Plain => &PLAIN_GIVEN,
-            Self::CustomRoles => &CUSTOM_ROLES_GIVEN,
-            Self::ThreeEtcd => &THREE_ETCD_GIVEN,
-        }
-    }
-
     pub fn local_dcs_service_for(self, member: ClusterMember) -> DcsService {
-        (self.definition().local_dcs_service_for)(member)
+        match self {
+            Self::Plain | Self::CustomRoles => DcsService::SharedEtcd,
+            Self::ThreeEtcd => member.local_dcs_service(),
+        }
     }
 
     pub fn artifact_service_names(self) -> Vec<&'static str> {
@@ -133,29 +87,45 @@ impl HaGivenId {
     }
 
     pub fn as_str(self) -> &'static str {
-        self.definition().name
+        match self {
+            Self::Plain => "three_node_plain",
+            Self::CustomRoles => "three_node_custom_roles",
+            Self::ThreeEtcd => "three_node_three_etcd",
+        }
     }
 
     pub fn replicator_role(self) -> &'static str {
-        self.definition().replicator_role
+        match self {
+            Self::Plain | Self::ThreeEtcd => "replicator",
+            Self::CustomRoles => "mirrorbot",
+        }
     }
 
     pub fn rewinder_role(self) -> &'static str {
-        self.definition().rewinder_role
+        match self {
+            Self::Plain | Self::ThreeEtcd => "rewinder",
+            Self::CustomRoles => "rewindbot",
+        }
     }
 
     pub fn dcs_services(self) -> &'static [DcsService] {
-        self.definition().dcs_services
+        match self {
+            Self::Plain | Self::CustomRoles => &SHARED_ETCD_SERVICES,
+            Self::ThreeEtcd => &DCS_SERVICES,
+        }
     }
 
     pub fn quorum_majority_dcs_services(self) -> &'static [DcsService] {
-        self.definition().quorum_majority_dcs_services
+        match self {
+            Self::Plain | Self::CustomRoles => &SHARED_ETCD_SERVICES,
+            Self::ThreeEtcd => &THREE_ETCD_QUORUM_SERVICES,
+        }
     }
 
     pub fn compose_variant_absolute_path(self, repo_root: &Path) -> Result<PathBuf> {
         let absolute = repo_root
             .join("tests/ha/givens")
-            .join(self.definition().compose_variant_relative_path);
+            .join(self.compose_variant_relative_path());
         if absolute.is_file() {
             Ok(absolute)
         } else {
@@ -190,7 +160,7 @@ impl HaGivenId {
 
     pub fn materialize_fixture(self, repo_root: &Path, materialized_root: &Path) -> Result<()> {
         let shared_root = repo_root.join("tests/ha/givens/three_node_shared");
-        for relative_path in self.definition().shared_fixture_relative_paths {
+        for relative_path in self.shared_fixture_relative_paths() {
             copy_shared_fixture_path(
                 shared_root.as_path(),
                 materialized_root,
@@ -229,6 +199,19 @@ impl HaGivenId {
         )
     }
 
+    fn compose_variant_relative_path(self) -> &'static str {
+        match self {
+            Self::Plain | Self::CustomRoles => "compose/three_node_shared_single.yml",
+            Self::ThreeEtcd => "compose/three_node_three_etcd.yml",
+        }
+    }
+
+    fn shared_fixture_relative_paths(self) -> &'static [&'static str] {
+        match self {
+            Self::Plain | Self::CustomRoles | Self::ThreeEtcd => &SHARED_FIXTURE_RELATIVE_PATHS,
+        }
+    }
+
     fn validate_runtime_config_for_host(self, member: ClusterMember) -> Result<()> {
         let rendered = self.render_runtime_config_with_process_binaries(
             member,
@@ -238,14 +221,6 @@ impl HaGivenId {
             .map(|_| ())
             .map_err(|source| HarnessError::message(source.to_string()))
     }
-}
-
-fn shared_dcs_service_for(_: ClusterMember) -> DcsService {
-    DcsService::SharedEtcd
-}
-
-fn member_local_dcs_service_for(member: ClusterMember) -> DcsService {
-    member.local_dcs_service()
 }
 
 fn render_ha_member_runtime_test_config_toml(

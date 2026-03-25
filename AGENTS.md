@@ -20,4 +20,4 @@ Never run `cargo test` in this repo.
 If you need a focused local test while developing, use `cargo nextest ...`, not `cargo test`.
 
 ## Cross application applicable learnings
-- 
+- Do not run `make test` and `make test-long` concurrently; the HA real-resource nextest coverage can interfere across shared resources and produce misleading failures.
