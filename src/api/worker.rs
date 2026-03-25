@@ -411,12 +411,7 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::Path,
-        process::{Child, Command},
-        time::Duration,
-    };
+    use std::{fs, path::Path, time::Duration};
 
     use axum::{
         body::{to_bytes, Body},
@@ -438,7 +433,13 @@ mod tests {
             tls::build_adversarial_tls_fixture,
         },
         logging::LogSender,
-        process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget},
+        process::{
+            postmaster::ManagedPostmasterTarget,
+            test_support::{
+                spawn_fake_managed_postmaster, wait_for_lookup_ready, wait_for_signal_log,
+                write_postmaster_pid,
+            },
+        },
         state::new_state_channel,
     };
 
@@ -446,31 +447,6 @@ mod tests {
         build_router, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
         ApiServerTransport,
     };
-
-    struct ChildGuard(Option<Child>);
-
-    impl ChildGuard {
-        fn child(&self) -> Result<&Child, String> {
-            self.0
-                .as_ref()
-                .ok_or_else(|| "fake postgres child handle missing".to_string())
-        }
-
-        fn child_mut(&mut self) -> Result<&mut Child, String> {
-            self.0
-                .as_mut()
-                .ok_or_else(|| "fake postgres child handle missing".to_string())
-        }
-    }
-
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            if let Some(child) = self.0.as_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
 
     fn sample_admin_request(uri: &str) -> Result<Request<Body>, String> {
         Request::builder()
@@ -551,135 +527,6 @@ mod tests {
         serde_json::from_str::<ReloadCertificatesResponse>(&body).map_err(|err| err.to_string())
     }
 
-    #[cfg(unix)]
-    fn spawn_fake_postgres_process(
-        root: &Path,
-        data_dir: &Path,
-        signal_log: &Path,
-    ) -> Result<ChildGuard, String> {
-        let script = root.join("fake-postgres.sh");
-        let ready_file = root.join("fake-postgres.ready");
-        let script_contents = format!(
-            "#!/bin/bash\ntrap 'printf hup >> \"{}\"' HUP\nprintf ready > \"{}\"\nwhile true; do sleep 1; done\n",
-            signal_log.display(),
-            ready_file.display(),
-        );
-        fs::write(&script, script_contents).map_err(|err| {
-            format!(
-                "write fake postgres script {} failed: {err}",
-                script.display()
-            )
-        })?;
-        let mut permissions = fs::metadata(&script)
-            .map_err(|err| {
-                format!(
-                    "read fake postgres script metadata {} failed: {err}",
-                    script.display()
-                )
-            })?
-            .permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-        fs::set_permissions(&script, permissions).map_err(|err| {
-            format!(
-                "set fake postgres script permissions {} failed: {err}",
-                script.display()
-            )
-        })?;
-        let child = Command::new("/bin/bash")
-            .arg("-lc")
-            .arg(format!(
-                "exec -a postgres /bin/bash '{}' '{}'",
-                script.display(),
-                data_dir.display()
-            ))
-            .spawn()
-            .map_err(|err| {
-                format!(
-                    "spawn fake postgres process via {} failed: {err}",
-                    script.display()
-                )
-            })?;
-        wait_for_fake_postgres_ready(ready_file.as_path())?;
-        Ok(ChildGuard(Some(child)))
-    }
-
-    fn write_postmaster_pid(
-        data_dir: &Path,
-        pid: u32,
-        recorded_data_dir: &Path,
-    ) -> Result<(), String> {
-        let pid_file = data_dir.join("postmaster.pid");
-        let contents = format!("{pid}\n{}\n", recorded_data_dir.display());
-        fs::write(&pid_file, contents).map_err(|err| {
-            format!(
-                "write postmaster pid file {} failed: {err}",
-                pid_file.display()
-            )
-        })
-    }
-
-    fn wait_for_signal_log(signal_log: &Path) -> Result<String, String> {
-        let mut attempts = 0_u8;
-        while attempts < 150 {
-            match fs::read_to_string(signal_log) {
-                Ok(contents) if !contents.is_empty() => return Ok(contents),
-                Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(format!(
-                        "read signal log {} failed: {err}",
-                        signal_log.display()
-                    ));
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            attempts = attempts.saturating_add(1);
-        }
-        Err(format!(
-            "signal log {} was not written in time",
-            signal_log.display()
-        ))
-    }
-
-    fn wait_for_fake_postgres_ready(ready_file: &Path) -> Result<(), String> {
-        let mut attempts = 0_u8;
-        while attempts < 150 {
-            match fs::read_to_string(ready_file) {
-                Ok(contents) if !contents.is_empty() => return Ok(()),
-                Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => {
-                    return Err(format!(
-                        "read fake postgres ready file {} failed: {err}",
-                        ready_file.display()
-                    ));
-                }
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            attempts = attempts.saturating_add(1);
-        }
-        Err(format!(
-            "fake postgres ready file {} was not written in time",
-            ready_file.display()
-        ))
-    }
-
-    fn wait_for_managed_postmaster_ready(data_dir: &Path) -> Result<(), String> {
-        let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
-        let mut attempts = 0_u8;
-        while attempts < 150 {
-            if lookup_managed_postmaster(&target).is_ok() {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            attempts = attempts.saturating_add(1);
-        }
-        Err(format!(
-            "managed postmaster never became ready for {}",
-            data_dir.display()
-        ))
-    }
-
     async fn assert_no_signal_written(signal_log: &Path) -> Result<(), String> {
         tokio::time::sleep(Duration::from_millis(50)).await;
         match fs::read_to_string(signal_log) {
@@ -705,11 +552,11 @@ mod tests {
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
-        let pid = child.child()?.id();
+        let child = spawn_fake_managed_postmaster(&root, &data_dir, Some(&signal_log))?;
+        let pid = child.pid();
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
-        wait_for_managed_postmaster_ready(&data_dir)?;
+        wait_for_lookup_ready(&ManagedPostmasterTarget::from_data_dir(data_dir.clone()))?;
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
         let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
         let cfg = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
@@ -814,16 +661,9 @@ mod tests {
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let mut child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
-        let pid = child.child()?.id();
-        child
-            .child_mut()?
-            .kill()
-            .map_err(|err| format!("kill fake postgres pid={pid} failed: {err}"))?;
-        child
-            .child_mut()?
-            .wait()
-            .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
+        let mut child = spawn_fake_managed_postmaster(&root, &data_dir, Some(&signal_log))?;
+        let pid = child.pid();
+        child.kill_and_wait()?;
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
         let cfg = runtime_test_config_with_data_dir(&data_dir)
@@ -869,8 +709,8 @@ mod tests {
                 real_data_dir.display()
             )
         })?;
-        let child = spawn_fake_postgres_process(&root, &real_data_dir, &signal_log)?;
-        let pid = child.child()?.id();
+        let child = spawn_fake_managed_postmaster(&root, &real_data_dir, Some(&signal_log))?;
+        let pid = child.pid();
         write_postmaster_pid(&target_data_dir, pid, &real_data_dir)?;
         let _child = child;
         let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
@@ -914,11 +754,11 @@ mod tests {
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
-        let pid = child.child()?.id();
+        let child = spawn_fake_managed_postmaster(&root, &data_dir, Some(&signal_log))?;
+        let pid = child.pid();
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
-        wait_for_managed_postmaster_ready(&data_dir)?;
+        wait_for_lookup_ready(&ManagedPostmasterTarget::from_data_dir(data_dir.clone()))?;
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
         let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
         let good_cfg =
@@ -989,11 +829,11 @@ mod tests {
         let signal_log = root.join("signal.log");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let child = spawn_fake_postgres_process(&root, &data_dir, &signal_log)?;
-        let pid = child.child()?.id();
+        let child = spawn_fake_managed_postmaster(&root, &data_dir, Some(&signal_log))?;
+        let pid = child.pid();
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
-        wait_for_managed_postmaster_ready(&data_dir)?;
+        wait_for_lookup_ready(&ManagedPostmasterTarget::from_data_dir(data_dir.clone()))?;
         let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
         let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
         let good_cfg =

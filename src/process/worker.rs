@@ -783,12 +783,7 @@ fn log_prepare_failure(
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        fs,
-        path::PathBuf,
-        process::{Child, Command},
-        time::Duration,
-    };
+    use std::{fs, path::PathBuf, time::Duration};
 
     use tokio::sync::mpsc::UnboundedSender;
 
@@ -808,12 +803,14 @@ mod tests {
                 ProcessCadence, ProcessIntentRequest, ProcessObservedState, ProcessRuntime,
                 ProcessState, ProcessWorkerCtx,
             },
+            test_support::{
+                spawn_fake_managed_postmaster, wait_for_lookup_ready, write_postmaster_pid,
+            },
         },
         state::{new_state_channel, JobId, MemberId, StateSubscriber, UnixMillis, WorkerStatus},
     };
 
     use super::{bootstrap_with_runtime, start_job, step_once};
-    use crate::process::postmaster::{lookup_managed_postmaster, ManagedPostmasterTarget};
 
     struct UnexpectedSpawnRunner;
 
@@ -828,93 +825,6 @@ mod tests {
                 message: "spawn should not be called for start-postgres noop".to_string(),
             })
         }
-    }
-
-    struct ChildGuard(Option<Child>);
-
-    impl ChildGuard {
-        #[cfg(unix)]
-        fn spawn_fake_postgres(
-            root: &std::path::Path,
-            data_dir: &std::path::Path,
-        ) -> Result<Self, String> {
-            let bin_dir = root.join("bin");
-            fs::create_dir_all(&bin_dir).map_err(|err| {
-                format!(
-                    "create fake postgres bin dir {} failed: {err}",
-                    bin_dir.display()
-                )
-            })?;
-            let fake_postgres = bin_dir.join("postgres");
-            fs::write(
-                &fake_postgres,
-                "#!/bin/bash\nexec -a postgres /bin/sleep 30\n",
-            )
-            .map_err(|err| {
-                format!(
-                    "write fake postgres script {} failed: {err}",
-                    fake_postgres.display()
-                )
-            })?;
-            let mut permissions = fs::metadata(&fake_postgres)
-                .map_err(|err| {
-                    format!(
-                        "read fake postgres metadata {} failed: {err}",
-                        fake_postgres.display()
-                    )
-                })?
-                .permissions();
-            std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-            fs::set_permissions(&fake_postgres, permissions).map_err(|err| {
-                format!(
-                    "set fake postgres script permissions {} failed: {err}",
-                    fake_postgres.display()
-                )
-            })?;
-            let child = Command::new(&fake_postgres)
-                .arg(data_dir.display().to_string())
-                .spawn()
-                .map_err(|err| {
-                    format!(
-                        "spawn fake postgres process {} failed: {err}",
-                        fake_postgres.display()
-                    )
-                })?;
-            Ok(Self(Some(child)))
-        }
-
-        #[cfg(not(unix))]
-        fn spawn_fake_postgres(
-            _root: &std::path::Path,
-            _data_dir: &std::path::Path,
-        ) -> Result<Self, String> {
-            Err("fake postgres helper is only implemented on unix".to_string())
-        }
-    }
-
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            if let Some(child) = self.0.as_mut() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
-        }
-    }
-
-    fn wait_for_fake_postgres_readiness(data_dir: &std::path::Path) -> Result<(), String> {
-        let mut attempts = 0_u8;
-        while attempts < 50 {
-            let target = ManagedPostmasterTarget::from_data_dir(data_dir.to_path_buf());
-            if lookup_managed_postmaster(&target).is_ok() {
-                return Ok(());
-            }
-            std::thread::sleep(Duration::from_millis(10));
-            attempts = attempts.saturating_add(1);
-        }
-        Err(format!(
-            "fake postgres readiness timed out for data_dir={}",
-            data_dir.display()
-        ))
     }
 
     fn build_test_ctx(
@@ -977,17 +887,12 @@ mod tests {
             )
         })?;
 
-        let fake_postgres = ChildGuard::spawn_fake_postgres(&root, &data_dir)?;
-        let fake_postgres_pid = fake_postgres
-            .0
-            .as_ref()
-            .map(std::process::Child::id)
-            .ok_or_else(|| "fake postgres process handle missing child pid".to_string())?;
-        let pid_contents = format!("{fake_postgres_pid}\n{}\n", data_dir.display());
-        let pid_file = data_dir.join("postmaster.pid");
-        fs::write(&pid_file, pid_contents)
-            .map_err(|err| format!("write postmaster.pid {} failed: {err}", pid_file.display()))?;
-        wait_for_fake_postgres_readiness(&data_dir)?;
+        let fake_postgres = spawn_fake_managed_postmaster(&root, &data_dir, None)?;
+        let fake_postgres_pid = fake_postgres.pid();
+        write_postmaster_pid(&data_dir, fake_postgres_pid, &data_dir)?;
+        wait_for_lookup_ready(
+            &crate::process::postmaster::ManagedPostmasterTarget::from_data_dir(data_dir.clone()),
+        )?;
 
         let _fake_postgres = fake_postgres;
         let (mut ctx, _state_subscriber, _tx) =

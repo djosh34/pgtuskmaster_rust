@@ -185,6 +185,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
     let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
+    wait_for_targeted_switchover_precondition(world, seed_member, member_id).await?;
     let harness = world.harness()?;
     let response = harness
         .observer
@@ -534,6 +535,42 @@ async fn wait_for_targeted_switchover_rejection_precondition(
         |last_error| {
             HarnessError::message(format!(
                 "timed out waiting for `{target_member}` to become an ineligible targeted switchover target; last observed error: {last_error}"
+            ))
+        },
+    )
+    .await
+}
+
+async fn wait_for_targeted_switchover_precondition(
+    world: &mut HaWorld,
+    seed_member: ClusterMember,
+    target_member: ClusterMember,
+) -> Result<()> {
+    let deadline = world.harness()?.timeouts.failover_deadline;
+
+    poll_until(
+        world,
+        deadline,
+        None,
+        "no targeted switchover precondition check ran",
+        |world| {
+            let harness = world.harness()?;
+            let status = harness.observer.state_via_member(seed_member)?;
+            harness.record_status_snapshot("switchover.request.targeted_precondition", &status)?;
+            match status.dcs.member(&target_member.member_id()) {
+                Some(member) if member_slot_is_api_switchover_eligible(member) => Ok(()),
+                Some(member) => Err(HarnessError::message(format!(
+                    "target `{target_member}` is not yet promotion-eligible via `{seed_member}` with postgres state {:?}",
+                    member.postgres()
+                ))),
+                None => Err(HarnessError::message(format!(
+                    "target `{target_member}` is not visible via `{seed_member}` yet"
+                ))),
+            }
+        },
+        |last_error| {
+            HarnessError::message(format!(
+                "timed out waiting for `{target_member}` to become an eligible targeted switchover target via `{seed_member}`; last observed error: {last_error}"
             ))
         },
     )
