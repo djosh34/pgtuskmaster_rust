@@ -13,7 +13,7 @@ use crate::{
     process::{
         jobs::{
             PostgresStartIntent, ProcessCommandSpec, ProcessEnvValue, ProcessEnvVar, ProcessError,
-            ProcessIntent, ProcessJobKind, ReplicaProvisionIntent, ShutdownMode,
+            ProcessIntent, ReplicaProvisionIntent, ShutdownMode,
         },
         state::{ProcessIntentRequest, ProcessObservedSnapshot, ProcessWorkerCtx},
     },
@@ -192,7 +192,6 @@ fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
         ],
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::Bootstrap,
     }
 }
 
@@ -210,7 +209,6 @@ fn build_basebackup_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> Proce
         ],
         env: role_auth_env(&source.auth),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::BaseBackup,
     }
 }
 
@@ -226,7 +224,6 @@ fn build_pg_rewind_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> Proces
         ],
         env: role_auth_env(&source.auth),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::PgRewind,
     }
 }
 
@@ -251,7 +248,6 @@ fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> Pr
         args,
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::Promote,
     }
 }
 
@@ -269,7 +265,6 @@ fn build_demote_command(cfg: &RuntimeConfigV2, mode: &ShutdownMode) -> ProcessCo
         ],
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::Demote,
     }
 }
 
@@ -297,7 +292,6 @@ fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandS
         ],
         env: Vec::new(),
         capture_output: cfg.logging.capture_subprocess_output,
-        job_kind: ProcessJobKind::StartPostgres,
     })
 }
 
@@ -614,15 +608,9 @@ mod tests {
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare replica start failed: {err}"))?;
 
-        if prepared.job_kind != crate::process::jobs::ProcessJobKind::StartPostgres {
-            return Err(format!(
-                "unexpected prepared command job kind: {:?}",
-                prepared.job_kind
-            ));
-        }
         if request.intent.job_kind() != ProcessJobKind::StartReplica {
             return Err(format!(
-                "unexpected tracked job kind: {:?}",
+                "unexpected canonical job kind: {:?}",
                 request.intent.job_kind()
             ));
         }
@@ -695,12 +683,6 @@ mod tests {
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
 
-        if prepared.job_kind != crate::process::jobs::ProcessJobKind::BaseBackup {
-            return Err(format!(
-                "unexpected prepared command job kind: {:?}",
-                prepared.job_kind
-            ));
-        }
         let conninfo_arg = prepared
             .args
             .windows(2)
@@ -779,15 +761,14 @@ mod tests {
             intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
         };
 
-        let prepared = prepare_process_launch(&cfg, &observed, &request)
+        prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
         if request.intent.job_kind() != ProcessJobKind::BaseBackup {
             return Err(format!(
-                "unexpected tracked job kind: {:?}",
+                "unexpected canonical job kind: {:?}",
                 request.intent.job_kind()
             ));
         }
-        assert_eq!(prepared.job_kind, request.intent.command_job_kind());
         if stale.exists() {
             return Err(format!(
                 "basebackup prepare should wipe stale data dir contents at {}",
@@ -812,15 +793,14 @@ mod tests {
             intent: ProcessIntent::Promote,
         };
 
-        let prepared = prepare_process_launch(&cfg, &observed, &request)
+        prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare non-start plan failed: {err}"))?;
         if request.intent.job_kind() != ProcessJobKind::Promote {
             return Err(format!(
-                "unexpected tracked job kind for promote: {:?}",
+                "unexpected canonical job kind for promote: {:?}",
                 request.intent.job_kind()
             ));
         }
-        assert_eq!(prepared.job_kind, request.intent.command_job_kind());
         let passfile_path = managed_standby_passfile_path(&cfg.postgres.data_dir);
         if passfile_path.exists() {
             return Err(format!(
@@ -857,7 +837,7 @@ mod tests {
     }
 
     #[test]
-    fn prepare_intents_map_to_expected_tracked_and_command_job_kinds() -> Result<(), String> {
+    fn prepare_intents_map_to_expected_canonical_job_kinds() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "intent-variants")?;
         let cfg =
             runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
@@ -871,33 +851,25 @@ mod tests {
             managed_recovery_state: ManagedRecoverySignal::None,
         };
         let cases = [
-            (
-                ProcessIntent::Bootstrap,
-                ProcessJobKind::Bootstrap,
-                ProcessJobKind::Bootstrap,
-            ),
+            (ProcessIntent::Bootstrap, ProcessJobKind::Bootstrap),
             (
                 ProcessIntent::Start(PostgresStartIntent::Primary),
                 ProcessJobKind::StartPrimary,
-                ProcessJobKind::StartPostgres,
             ),
             (
                 ProcessIntent::Start(PostgresStartIntent::DetachedStandby),
                 ProcessJobKind::StartDetachedStandby,
-                ProcessJobKind::StartPostgres,
             ),
             (
                 ProcessIntent::Start(PostgresStartIntent::Replica {
                     leader: leader.clone(),
                 }),
                 ProcessJobKind::StartReplica,
-                ProcessJobKind::StartPostgres,
             ),
             (
                 ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
                     leader: leader.clone(),
                 }),
-                ProcessJobKind::BaseBackup,
                 ProcessJobKind::BaseBackup,
             ),
             (
@@ -905,30 +877,30 @@ mod tests {
                     leader: leader.clone(),
                 }),
                 ProcessJobKind::PgRewind,
-                ProcessJobKind::PgRewind,
             ),
-            (
-                ProcessIntent::Promote,
-                ProcessJobKind::Promote,
-                ProcessJobKind::Promote,
-            ),
+            (ProcessIntent::Promote, ProcessJobKind::Promote),
             (
                 ProcessIntent::Demote(ShutdownMode::Fast),
-                ProcessJobKind::Demote,
                 ProcessJobKind::Demote,
             ),
         ];
 
-        for (intent, tracked_job_kind, command_job_kind) in cases {
+        for (intent, job_kind) in cases {
             let request = ProcessIntentRequest {
-                id: JobId(format!("job-{}", tracked_job_kind.as_str())),
+                id: JobId(format!("job-{}", job_kind.as_str())),
                 intent,
             };
             let prepared = prepare_process_launch(&cfg, &observed, &request)
-                .map_err(|err| format!("prepare {} failed: {err}", tracked_job_kind.as_str()))?;
-            assert_eq!(request.intent.job_kind(), tracked_job_kind);
-            assert_eq!(request.intent.command_job_kind(), command_job_kind);
-            assert_eq!(prepared.job_kind, command_job_kind);
+                .map_err(|err| format!("prepare {} failed: {err}", job_kind.as_str()))?;
+            assert_eq!(request.intent.job_kind(), job_kind);
+            if matches!(&request.intent, ProcessIntent::Start(_))
+                && !prepared.args.iter().any(|arg| arg == "start")
+            {
+                return Err(format!(
+                    "prepared start command should include start verb for {}",
+                    job_kind.as_str()
+                ));
+            }
             assert!(request.intent.timeout_ms(&cfg) > 0);
         }
 

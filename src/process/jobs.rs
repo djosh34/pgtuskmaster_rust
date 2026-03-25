@@ -33,13 +33,6 @@ impl ProcessIntent {
         }
     }
 
-    pub(crate) fn command_job_kind(&self) -> ProcessJobKind {
-        match self {
-            Self::Start(_) => ProcessJobKind::StartPostgres,
-            _ => self.job_kind(),
-        }
-    }
-
     pub(crate) fn timeout_ms(&self, cfg: &RuntimeConfigV2) -> u64 {
         let duration = match self.job_kind() {
             ProcessJobKind::PgRewind => cfg.timing.pg_rewind_timeout,
@@ -49,8 +42,7 @@ impl ProcessIntent {
             | ProcessJobKind::Promote
             | ProcessJobKind::StartPrimary
             | ProcessJobKind::StartDetachedStandby
-            | ProcessJobKind::StartReplica
-            | ProcessJobKind::StartPostgres => cfg.timing.bootstrap_timeout,
+            | ProcessJobKind::StartReplica => cfg.timing.bootstrap_timeout,
         };
         duration_millis_u64(duration)
     }
@@ -113,7 +105,6 @@ pub enum ProcessJobKind {
     PgRewind,
     Promote,
     Demote,
-    StartPostgres,
     StartPrimary,
     StartDetachedStandby,
     StartReplica,
@@ -127,7 +118,6 @@ impl ProcessJobKind {
             Self::PgRewind => "pg_rewind",
             Self::Promote => "promote",
             Self::Demote => "demote",
-            Self::StartPostgres => "start_postgres",
             Self::StartPrimary => "start_primary",
             Self::StartDetachedStandby => "start_detached_standby",
             Self::StartReplica => "start_replica",
@@ -149,7 +139,6 @@ pub(crate) struct ProcessCommandSpec {
     pub(crate) args: Vec<String>,
     pub(crate) env: Vec<ProcessEnvVar>,
     pub(crate) capture_output: bool,
-    pub(crate) job_kind: ProcessJobKind,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

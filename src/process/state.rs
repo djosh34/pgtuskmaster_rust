@@ -61,7 +61,6 @@ pub enum JobOutcome {
 }
 
 pub(crate) struct ActiveRuntime {
-    pub(crate) command_job_kind: ProcessJobKind,
     pub(crate) handle: Box<dyn ProcessHandle>,
 }
 

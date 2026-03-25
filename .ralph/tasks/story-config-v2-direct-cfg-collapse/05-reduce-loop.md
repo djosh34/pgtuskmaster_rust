@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/72-collapse-postgres-ingest-stringly-issue-roundtrip.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/73-collapse-process-start-job-kind-shadow-taxonomy.md`
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file
@@ -39,7 +39,7 @@ Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/72-
 - [x] Do improvement
 - [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
 - [x] test&validate new code
-- [ ] task_switch + commit everything (including .ralph etc) + push
+- [x] task_switch + commit everything (including .ralph etc) + push
 - [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>

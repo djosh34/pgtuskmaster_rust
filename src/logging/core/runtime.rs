@@ -870,7 +870,7 @@ mod tests {
         let records = collect_records(
             LogSeverity::Trace,
             SubprocessLogEvent::Line {
-                job_kind: ProcessJobKind::StartPostgres,
+                job_kind: ProcessJobKind::StartPrimary,
                 stream: CapturedStream::Stderr,
                 line: "stderr line".to_string(),
             },
@@ -885,7 +885,7 @@ mod tests {
         assert_eq!(record.message, "stderr line");
         assert_eq!(
             record.attributes.get("job.kind"),
-            Some(&Value::String("start_postgres".to_string()))
+            Some(&Value::String("start_primary".to_string()))
         );
         assert_eq!(
             record.attributes.get("process.stream"),

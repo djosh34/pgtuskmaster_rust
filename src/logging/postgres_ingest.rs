@@ -1671,7 +1671,7 @@ mod tests {
                                                 .attributes
                                                 .get("job.kind")
                                                 .and_then(|v| v.as_str())
-                                                == Some("start_postgres")
+                                                == Some("start_primary")
                                     })
                                     .map(|record| {
                                         format!(
@@ -1691,14 +1691,14 @@ mod tests {
                                     pg_tool_lines.drain(0..start);
                                 }
                                 let pg_tool_debug = if pg_tool_lines.is_empty() {
-                                    "(no captured pg_tool stdout/stderr lines for start_postgres)"
+                                    "(no captured pg_tool stdout/stderr lines for start_primary)"
                                         .to_string()
                                 } else {
                                     pg_tool_lines.join("\n")
                                 };
 
                                 return Err(WorkerError::Message(format!(
-                                    "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
+                                    "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_primary) ---\n{}",
                                     start_id.0,
                                     log_file.display(),
                                     pg_ctl_tail,
@@ -1718,7 +1718,7 @@ mod tests {
             .await?
             {
                 return Err(WorkerError::Message(
-                    "timed out waiting for start_postgres job success".to_string(),
+                    "timed out waiting for start_primary job success".to_string(),
                 ));
             }
 
