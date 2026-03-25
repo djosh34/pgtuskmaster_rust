@@ -40,67 +40,27 @@ pub(crate) enum ApiObservedState {
 }
 
 #[derive(Clone)]
-pub(crate) struct ApiTlsRuntime {
-    pub(crate) server_config: RustlsConfig,
-}
-
-#[derive(Clone)]
 pub(crate) enum ApiServerTransport {
     Http,
-    Https(ApiTlsRuntime),
-}
-
-#[derive(Clone)]
-pub(crate) enum ApiTlsCertificateReloadHandle {
-    HttpTransport,
     Https { server_config: RustlsConfig },
 }
 
-impl ApiTlsCertificateReloadHandle {
-    pub(crate) fn from_transport(transport: &ApiServerTransport) -> Self {
-        match transport {
-            ApiServerTransport::Http => Self::HttpTransport,
-            ApiServerTransport::Https(runtime) => Self::Https {
-                server_config: runtime.server_config.clone(),
-            },
-        }
-    }
-
-    async fn reload(
+impl ApiServerTransport {
+    fn reload_certificates(
         &self,
         cfg: &RuntimeConfigV2,
-    ) -> Result<ApiCertificateReloadStep, ReloadCertificatesError> {
-        match self {
-            Self::HttpTransport => Ok(ApiCertificateReloadStep::HttpTransportUnchanged),
+    ) -> Result<ReloadCertificatesResponse, ReloadCertificatesError> {
+        let api = match self {
+            Self::Http => ApiCertificateReloadStep::HttpTransportUnchanged,
             Self::Https { server_config } => {
                 let crate::config_v2::types::ApiTransport::Https { .. } = &cfg.api.transport else {
                     return Err(ReloadCertificatesError::ApiTransportMismatch);
                 };
                 let reloaded = crate::tls::build_api_server_config_v2(&cfg.api.transport)?;
                 server_config.reload_from_config(reloaded);
-                Ok(ApiCertificateReloadStep::HttpsConfigurationReloaded)
+                ApiCertificateReloadStep::HttpsConfigurationReloaded
             }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct ApiReloadCertificatesHandle {
-    api_tls: ApiTlsCertificateReloadHandle,
-}
-
-impl ApiReloadCertificatesHandle {
-    pub(crate) fn from_transport(transport: &ApiServerTransport) -> Self {
-        Self {
-            api_tls: ApiTlsCertificateReloadHandle::from_transport(transport),
-        }
-    }
-
-    async fn reload(
-        &self,
-        cfg: &RuntimeConfigV2,
-    ) -> Result<ReloadCertificatesResponse, ReloadCertificatesError> {
-        let api = self.api_tls.reload(cfg).await?;
+        };
         let target = ManagedPostmasterTarget::from_data_dir(cfg.postgres.data_dir.clone());
         let postgres = reload_managed_postmaster(&target)?;
         Ok(ReloadCertificatesResponse {
@@ -129,7 +89,6 @@ pub(crate) struct ApiRuntimeCtx<'a> {
     pub(crate) observed: ApiObservedState,
     pub(crate) dcs_handle: DcsHandle,
     pub(crate) transport: ApiServerTransport,
-    pub(crate) reload_certificates: ApiReloadCertificatesHandle,
     pub(crate) _log: LogSender,
 }
 
@@ -147,7 +106,6 @@ impl<'a> ApiRuntimeCtx<'a> {
             cfg,
             observed,
             dcs_handle,
-            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
             transport,
             _log: log,
         })
@@ -245,8 +203,8 @@ pub(crate) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> 
             .serve(app.into_make_service())
             .await
             .map_err(|err| WorkerError::Message(format!("api server failed: {err}"))),
-        ApiServerTransport::Https(runtime) => {
-            axum_server::bind_rustls(listen_addr, runtime.server_config)
+        ApiServerTransport::Https { server_config } => {
+            axum_server::bind_rustls(listen_addr, server_config)
                 .serve(app.into_make_service())
                 .await
                 .map_err(|err| WorkerError::Message(format!("api server failed: {err}")))
@@ -313,9 +271,8 @@ async fn reload_certificates(
     State(state): State<ApiRuntimeCtx<'_>>,
 ) -> Result<Json<ReloadCertificatesResponse>, ApiHttpError> {
     let reloaded = state
-        .reload_certificates
-        .reload(state.cfg)
-        .await
+        .transport
+        .reload_certificates(state.cfg)
         .map_err(|err| ApiHttpError::internal(err.to_string()))?;
     Ok(Json(reloaded))
 }
@@ -443,10 +400,7 @@ mod tests {
         state::new_state_channel,
     };
 
-    use super::{
-        build_router, ApiObservedState, ApiReloadCertificatesHandle, ApiRuntimeCtx,
-        ApiServerTransport,
-    };
+    use super::{build_router, ApiObservedState, ApiRuntimeCtx, ApiServerTransport};
 
     fn sample_admin_request(uri: &str) -> Result<Request<Body>, String> {
         Request::builder()
@@ -505,8 +459,7 @@ mod tests {
                 ha,
             },
             dcs_handle: DcsHandle::closed(),
-            transport: transport.clone(),
-            reload_certificates: ApiReloadCertificatesHandle::from_transport(&transport),
+            transport,
             _log: LogSender::disabled(),
         })
         .map_err(|err| err.to_string())?;

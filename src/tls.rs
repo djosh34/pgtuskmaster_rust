@@ -11,10 +11,7 @@ use rustls::{
 use thiserror::Error;
 use x509_parser::parse_x509_certificate;
 
-use crate::{
-    api::worker::{ApiServerTransport, ApiTlsRuntime},
-    config_v2::types::ApiTransport as ApiTransportV2,
-};
+use crate::{api::worker::ApiServerTransport, config_v2::types::ApiTransport as ApiTransportV2};
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum TlsConfigError {
@@ -31,9 +28,9 @@ pub(crate) fn build_api_server_transport_v2(
 ) -> Result<ApiServerTransport, TlsConfigError> {
     match transport {
         ApiTransportV2::Http => Ok(ApiServerTransport::Http),
-        ApiTransportV2::Https { .. } => Ok(ApiServerTransport::Https(ApiTlsRuntime {
-            server_config: build_api_rustls_config_v2(transport)?,
-        })),
+        ApiTransportV2::Https { .. } => Ok(ApiServerTransport::Https {
+            server_config: RustlsConfig::from_config(build_api_server_config_v2(transport)?),
+        }),
     }
 }
 
@@ -59,12 +56,6 @@ pub(crate) fn build_api_server_config_v2(
     let mut config = build_server_config_from_paths(&tls.cert, &tls.key, verifier)?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(config))
-}
-
-fn build_api_rustls_config_v2(transport: &ApiTransportV2) -> Result<RustlsConfig, TlsConfigError> {
-    Ok(RustlsConfig::from_config(build_api_server_config_v2(
-        transport,
-    )?))
 }
 
 fn build_server_config_from_paths(
