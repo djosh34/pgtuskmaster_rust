@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     config_v2::types::{FileSinkMode, LogLevel, PgtmApiTransportExpectation},
@@ -44,8 +44,89 @@ fn default_postgres_database() -> String {
     DEFAULT_POSTGRES_DATABASE.to_string()
 }
 
+fn default_postgres_connect_timeout_s() -> u32 {
+    DEFAULT_POSTGRES_CONNECT_TIMEOUT_S
+}
+
 fn default_pg_ssl_mode() -> PgSslMode {
     PgSslMode::Prefer
+}
+
+macro_rules! deserialize_default_if_zero {
+    ($name:ident, $ty:ty, $default:expr) => {
+        fn $name<'de, D>(deserializer: D) -> Result<$ty, D::Error>
+        where
+            D: Deserializer<'de>,
+        {
+            <$ty>::deserialize(deserializer).map(|value| if value == 0 { $default } else { value })
+        }
+    };
+}
+
+deserialize_default_if_zero!(
+    deserialize_postgres_listen_port,
+    u16,
+    DEFAULT_POSTGRES_LISTEN_PORT
+);
+deserialize_default_if_zero!(
+    deserialize_postgres_connect_timeout_s,
+    u32,
+    DEFAULT_POSTGRES_CONNECT_TIMEOUT_S
+);
+deserialize_default_if_zero!(
+    deserialize_ha_loop_interval_ms,
+    u64,
+    DEFAULT_HA_LOOP_INTERVAL_MS
+);
+deserialize_default_if_zero!(deserialize_ha_lease_ttl_ms, u64, DEFAULT_HA_LEASE_TTL_MS);
+deserialize_default_if_zero!(
+    deserialize_pg_rewind_timeout_ms,
+    u64,
+    DEFAULT_PG_REWIND_TIMEOUT_MS
+);
+deserialize_default_if_zero!(
+    deserialize_bootstrap_timeout_ms,
+    u64,
+    DEFAULT_BOOTSTRAP_TIMEOUT_MS
+);
+deserialize_default_if_zero!(
+    deserialize_fencing_timeout_ms,
+    u64,
+    DEFAULT_FENCING_TIMEOUT_MS
+);
+deserialize_default_if_zero!(
+    deserialize_logging_postgres_poll_interval_ms,
+    u64,
+    DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS
+);
+deserialize_default_if_zero!(
+    deserialize_logging_cleanup_max_files,
+    u64,
+    DEFAULT_LOGGING_CLEANUP_MAX_FILES
+);
+deserialize_default_if_zero!(
+    deserialize_logging_cleanup_max_age_seconds,
+    u64,
+    DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS
+);
+deserialize_default_if_zero!(
+    deserialize_logging_cleanup_protect_recent_seconds,
+    u64,
+    DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS
+);
+
+fn deserialize_postgres_listen_host<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            DEFAULT_POSTGRES_LISTEN_HOST.to_string()
+        } else {
+            trimmed.to_string()
+        }
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -171,73 +252,6 @@ pub(super) struct RuntimeDocument {
     pub debug: DebugConfig,
 }
 
-impl RuntimeDocument {
-    pub(super) fn normalize(mut self) -> Self {
-        self.postgres.network.listen_host = {
-            let listen_host = self.postgres.network.listen_host.trim();
-            if listen_host.is_empty() {
-                DEFAULT_POSTGRES_LISTEN_HOST.to_string()
-            } else {
-                listen_host.to_string()
-            }
-        };
-        self.postgres.network.listen_port = default_if_zero(
-            self.postgres.network.listen_port,
-            DEFAULT_POSTGRES_LISTEN_PORT,
-        );
-        self.postgres.connect_timeout_s = default_if_zero(
-            self.postgres.connect_timeout_s,
-            DEFAULT_POSTGRES_CONNECT_TIMEOUT_S,
-        );
-        for (value, default) in [
-            (&mut self.ha.loop_interval_ms, DEFAULT_HA_LOOP_INTERVAL_MS),
-            (&mut self.ha.lease_ttl_ms, DEFAULT_HA_LEASE_TTL_MS),
-            (
-                &mut self.process.timeouts.pg_rewind_ms,
-                DEFAULT_PG_REWIND_TIMEOUT_MS,
-            ),
-            (
-                &mut self.process.timeouts.bootstrap_ms,
-                DEFAULT_BOOTSTRAP_TIMEOUT_MS,
-            ),
-            (
-                &mut self.process.timeouts.fencing_ms,
-                DEFAULT_FENCING_TIMEOUT_MS,
-            ),
-            (
-                &mut self.logging.postgres.poll_interval_ms,
-                DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
-            ),
-            (
-                &mut self.logging.postgres.cleanup.max_files,
-                DEFAULT_LOGGING_CLEANUP_MAX_FILES,
-            ),
-            (
-                &mut self.logging.postgres.cleanup.max_age_seconds,
-                DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS,
-            ),
-            (
-                &mut self.logging.postgres.cleanup.protect_recent_seconds,
-                DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
-            ),
-        ] {
-            *value = default_if_zero(*value, default);
-        }
-        self
-    }
-}
-
-fn default_if_zero<T>(value: T, default: T) -> T
-where
-    T: Default + PartialEq,
-{
-    if value == T::default() {
-        default
-    } else {
-        value
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClusterConfig {
@@ -252,7 +266,10 @@ pub(super) struct PostgresConfig {
     pub paths: PostgresPathsConfig,
     #[serde(default)]
     pub network: PostgresNetworkConfig,
-    #[serde(default)]
+    #[serde(
+        default = "default_postgres_connect_timeout_s",
+        deserialize_with = "deserialize_postgres_connect_timeout_s"
+    )]
     pub connect_timeout_s: u32,
     #[serde(default = "default_postgres_database")]
     pub local_database: String,
@@ -277,7 +294,9 @@ pub(super) struct PostgresPathsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresNetworkConfig {
+    #[serde(deserialize_with = "deserialize_postgres_listen_host")]
     pub listen_host: String,
+    #[serde(deserialize_with = "deserialize_postgres_listen_port")]
     pub listen_port: u16,
     pub cluster_advertise: Option<PostgresAdvertiseConfig>,
     pub operator_advertise: Option<PostgresAdvertiseConfig>,
@@ -417,7 +436,9 @@ pub(super) enum DcsTlsConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct HaConfig {
+    #[serde(deserialize_with = "deserialize_ha_loop_interval_ms")]
     pub loop_interval_ms: u64,
+    #[serde(deserialize_with = "deserialize_ha_lease_ttl_ms")]
     pub lease_ttl_ms: u64,
 }
 
@@ -454,8 +475,11 @@ impl Default for ProcessConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ProcessTimeoutsConfig {
+    #[serde(deserialize_with = "deserialize_pg_rewind_timeout_ms")]
     pub pg_rewind_ms: u64,
+    #[serde(deserialize_with = "deserialize_bootstrap_timeout_ms")]
     pub bootstrap_ms: u64,
+    #[serde(deserialize_with = "deserialize_fencing_timeout_ms")]
     pub fencing_ms: u64,
 }
 
@@ -513,6 +537,7 @@ impl Default for LoggingConfig {
 pub(super) struct PostgresLoggingConfig {
     pub enabled: bool,
     pub log_dir: Option<PathBuf>,
+    #[serde(deserialize_with = "deserialize_logging_postgres_poll_interval_ms")]
     pub poll_interval_ms: u64,
     #[serde(default)]
     pub cleanup: LogCleanupConfig,
@@ -575,8 +600,11 @@ impl Default for FileSinkConfig {
 #[serde(deny_unknown_fields)]
 pub(super) struct LogCleanupConfig {
     pub enabled: bool,
+    #[serde(deserialize_with = "deserialize_logging_cleanup_max_files")]
     pub max_files: u64,
+    #[serde(deserialize_with = "deserialize_logging_cleanup_max_age_seconds")]
     pub max_age_seconds: u64,
+    #[serde(deserialize_with = "deserialize_logging_cleanup_protect_recent_seconds")]
     pub protect_recent_seconds: u64,
 }
 
