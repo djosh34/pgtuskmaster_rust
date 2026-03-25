@@ -259,22 +259,96 @@ fn load_runtime_test_config_from_paths(
     data_dir: PathBuf,
     scope: &str,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let socket_dir = Path::new("/tmp/pgtuskmaster/socket");
-    let log_file = Path::new("/tmp/pgtuskmaster/postgres.log");
-    let contents = raw::render_runtime_test_config_toml(
-        "cluster-a",
-        scope,
-        "node-a",
-        (data_dir.as_path(), socket_dir, log_file),
-        ["http://127.0.0.1:2379"],
-        std::iter::empty::<&str>(),
-    )
-    .map_err(|message| validation_error("runtime_test_config", message))?;
-    let mut config = load_runtime_config_contents(contents.as_str())?;
+    let working_root = PathBuf::from("/tmp/pgtuskmaster");
+    let postgres_log_dir = working_root.join("logs/postgres");
     let password = Secret::new("secret-password".to_string());
-    config.postgres.superuser.password = password.clone();
-    config.postgres.replicator.password = password.clone();
-    config.postgres.rewinder.password = password;
+    let listen_host = "127.0.0.1".to_string();
+    let listen_port = 5432;
+    let cluster_advertise = PgRoute::tcp(listen_host.clone(), listen_port)
+        .map_err(|message| validation_error("runtime_test_config", message))?;
+    let config_dir = Path::new(".");
+
+    #[rustfmt::skip]
+    let config = RuntimeConfigV2 {
+        cluster_name: ClusterName("cluster-a".to_string()),
+        scope: ScopeName(scope.to_string()),
+        member_id: MemberId("node-a".to_string()),
+        postgres: PostgresConfig {
+            data_dir: data_dir.clone(),
+            socket_dir: working_root.join("socket"),
+            log_file: working_root.join("postgres.log"),
+            listen_host,
+            listen_port,
+            cluster_advertise,
+            operator_advertise: None,
+            connect_timeout: Duration::from_secs(5),
+            local_database: "postgres".to_string(),
+            source_client_tls: PgClientTls {
+                mode: PgSslMode::Prefer,
+                root_cert: None,
+                client_cert: None,
+                client_key: None,
+            },
+            superuser: RoleConfig {
+                username: "postgres".to_string(),
+                password: password.clone(),
+            },
+            replicator: RoleConfig {
+                username: "replicator".to_string(),
+                password: password.clone(),
+            },
+            rewinder: RoleConfig {
+                username: "rewinder".to_string(),
+                password,
+            },
+            pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
+            pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
+            pg_hba_contents: "host all all 127.0.0.1/32 trust".to_string(),
+            pg_ident_contents: String::new(),
+            extra_gucs: Default::default(),
+            tls: None,
+        },
+        dcs: DcsConfig {
+            endpoints: vec![DcsEndpoint::new("http://127.0.0.1:2379".to_string())],
+            auth: None,
+            tls: None,
+        },
+        timing: TimingConfig {
+            ha_loop_interval: Duration::from_millis(1_000),
+            ha_lease_ttl: Duration::from_millis(10_000),
+            bootstrap_timeout: Duration::from_millis(300_000),
+            pg_rewind_timeout: Duration::from_millis(120_000),
+            fencing_timeout: Duration::from_millis(30_000),
+        },
+        binaries: BinariesConfig {
+            pg_ctl: resolve_binary_path("process.binaries.overrides.pg_ctl", "pg_ctl", None, config_dir)?,
+            initdb: resolve_binary_path("process.binaries.overrides.initdb", "initdb", None, config_dir)?,
+            pg_rewind: resolve_binary_path("process.binaries.overrides.pg_rewind", "pg_rewind", None, config_dir)?,
+            pg_basebackup: resolve_binary_path("process.binaries.overrides.pg_basebackup", "pg_basebackup", None, config_dir)?,
+        },
+        logging: LoggingConfig {
+            level: crate::config_v2::types::LogLevel::Info,
+            capture_subprocess_output: true,
+            stderr_enabled: true,
+            file_enabled: false,
+            file_path: working_root.join("runtime.jsonl"),
+            file_mode: crate::config_v2::types::FileSinkMode::Append,
+            postgres_logs_enabled: true,
+            postgres_log_dir: postgres_log_dir.clone(),
+            postgres_pg_ctl_log: postgres_log_dir.join("pg_ctl.log"),
+            postgres_log_poll_interval: Duration::from_millis(200),
+            postgres_log_cleanup_enabled: true,
+            postgres_log_cleanup_max_files: 50,
+            postgres_log_cleanup_max_age: Duration::from_secs(7 * 24 * 60 * 60),
+            postgres_log_cleanup_protect_recent: Duration::from_secs(300),
+        },
+        api: ApiConfig {
+            listen_addr: std::net::SocketAddr::from((std::net::Ipv4Addr::new(127, 0, 0, 1), 8080)),
+            transport: ApiTransport::Http,
+            auth: ApiAuth::Disabled,
+            advertise: None,
+        },
+    };
     Ok(config)
 }
 
@@ -1025,7 +1099,6 @@ where
 mod tests {
     use super::{
         load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
-        raw,
     };
     use crate::{
         config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
@@ -1061,6 +1134,61 @@ mod tests {
 
     fn toml_string_secret(value: &str) -> String {
         format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
+    }
+
+    fn render_runtime_test_config_toml<I, S, J, T>(
+        cluster_name: &str,
+        scope: &str,
+        member_id: &str,
+        paths: (&Path, &Path, &Path),
+        dcs_endpoints: I,
+        extra_sections: J,
+    ) -> String
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+        J: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let (data_dir, socket_dir, log_file) = paths;
+        let endpoints = dcs_endpoints
+            .into_iter()
+            .map(|endpoint| format!("  {}", toml_string(endpoint.as_ref())))
+            .collect::<Vec<_>>()
+            .join(",\n");
+
+        join_rendered_sections(
+            format!(
+                r#"cluster.name = {cluster_name}
+cluster.scope = {scope}
+cluster.member_id = {member_id}
+postgres.paths.data_dir = {data_dir}
+postgres.paths.socket_dir = {socket_dir}
+postgres.paths.log_file = {log_file}
+postgres.roles.mandatory.superuser.username = "postgres"
+postgres.roles.mandatory.superuser.auth.type = "password"
+postgres.roles.mandatory.superuser.auth.password = {{ type = "string", value = "postgres" }}
+postgres.roles.mandatory.replicator.username = "replicator"
+postgres.roles.mandatory.replicator.auth.type = "password"
+postgres.roles.mandatory.replicator.auth.password = {{ type = "string", value = "replicator" }}
+postgres.roles.mandatory.rewinder.username = "rewinder"
+postgres.roles.mandatory.rewinder.auth.type = "password"
+postgres.roles.mandatory.rewinder.auth.password = {{ type = "string", value = "rewinder" }}
+postgres.access.hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+postgres.access.ident = {{ content = "" }}
+dcs.endpoints = [
+{endpoints}
+]"#,
+                cluster_name = toml_string(cluster_name),
+                scope = toml_string(scope),
+                member_id = toml_string(member_id),
+                data_dir = toml_string(data_dir.display().to_string().as_str()),
+                socket_dir = toml_string(socket_dir.display().to_string().as_str()),
+                log_file = toml_string(log_file.display().to_string().as_str()),
+                endpoints = endpoints,
+            ),
+            extra_sections,
+        )
     }
 
     fn render_operator_test_config_toml<J, T>(
@@ -1102,7 +1230,7 @@ mod tests {
     }
 
     fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> Result<String, String> {
-        raw::render_runtime_test_config_toml(
+        Ok(render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
             "node-a",
@@ -1124,11 +1252,14 @@ process.binaries.overrides.pg_ctl = "/bin/true"
 process.binaries.overrides.initdb = "/bin/true"
 process.binaries.overrides.pg_rewind = "/bin/true"
 process.binaries.overrides.pg_basebackup = "/bin/true"
+logging.capture_subprocess_output = true
+logging.postgres.enabled = true
 logging.postgres.poll_interval_ms = 0
+logging.postgres.cleanup.enabled = true
 logging.postgres.cleanup.max_files = 0
 logging.postgres.cleanup.max_age_seconds = 0
 logging.postgres.cleanup.protect_recent_seconds = 0"#],
-        )
+        ))
     }
 
     #[test]
@@ -1136,7 +1267,7 @@ logging.postgres.cleanup.protect_recent_seconds = 0"#],
         let root = unique_test_dir("load-config", "runtime-config-v2-runtime-fields")?;
         let ca_cert = root.join("source-ca.crt");
         let config = load_runtime_config_contents(
-            raw::render_runtime_test_config_toml(
+            render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1164,7 +1295,6 @@ expected_transport = "{}""#,
                     PgtmApiTransportExpectation::Https.scheme(),
                 )],
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         )
         .map_err(|err| err.to_string())?;
@@ -1257,7 +1387,7 @@ expected_transport = "{}""#,
         )
         .map_err(|err| err.to_string())?;
         let result = load_runtime_config_contents(
-            raw::render_runtime_test_config_toml(
+            render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1279,7 +1409,6 @@ admin_token = {{ type = "file", path = "{}" }}"#,
                     unreadable_token.display()
                 )],
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         );
 
@@ -1297,7 +1426,7 @@ admin_token = {{ type = "file", path = "{}" }}"#,
     fn parse_boundaries_reject_non_path_tls_sources() -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-inline-tls")?;
         match load_runtime_config_contents(
-            raw::render_runtime_test_config_toml(
+            render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1311,7 +1440,6 @@ admin_token = {{ type = "file", path = "{}" }}"#,
 mode = "enabled"
 identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" } }"#],
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         ) {
             Err(ConfigErrorV2::Parse { .. }) => {}
@@ -1369,7 +1497,7 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
             )
         );
 
-        let runtime_document = raw::render_runtime_test_config_toml(
+        let runtime_document = render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
             "node-a",
@@ -1385,8 +1513,7 @@ base_url = "https://127.0.0.1:8443"
 expected_transport = "{}""#,
                 PgtmApiTransportExpectation::Https.scheme(),
             )],
-        )
-        .map_err(|err| err.to_string())?;
+        );
 
         let runtime = load_runtime_config_contents(runtime_document.as_str())
             .map_err(|err| err.to_string())?;

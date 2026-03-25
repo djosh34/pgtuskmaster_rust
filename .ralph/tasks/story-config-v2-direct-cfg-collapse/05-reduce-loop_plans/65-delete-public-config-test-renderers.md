@@ -74,11 +74,10 @@ That means the parser module is still exporting HA-specific and observer-specifi
 - Keep the HA and observer rendered TOML semantically identical unless a smaller caller-owned fixture format deletes more code without reducing clarity.
 - If the local test helper replacements start growing into another shared renderer layer, switch this plan back to `TO BE VERIFIED` instead of recreating the same public API under a different module.
 
-### Expected yield
+### Status
 
-- Delete the HA-specific and operator-specific public render helpers from `src/config_v2/parser/private_schema.rs`.
-- Delete their public re-export corridor from `src/config_v2/parser/mod.rs` and `src/config_v2/mod.rs`.
-- Remove `validate_runtime_document_contents(...)` as a cross-module API and validate through the canonical loader instead.
-- Shrink `config_v2` test support so parser-private fixture rendering stops leaking into the HA harness and CLI integration tests.
+This slice is no longer the active execution target.
 
-NOW EXECUTE
+The public re-export corridor called out above has already been removed from `src/config_v2/mod.rs` and `src/config_v2/parser/mod.rs`, and the HA, observer, and CLI fixture owners now carry their own local TOML rendering helpers. The remaining reduction target is a smaller internal parser boundary, so continuing to execute this plan would be stale.
+
+TO BE VERIFIED
