@@ -881,6 +881,23 @@ mod tests {
         }
     }
 
+    const TRACE_LOGGING_TEST_HBA: &str = "local all all trust\nhost all all 127.0.0.1/32 trust\n";
+    const TRACE_LOGGING_TEST_SECTIONS: [&str; 3] = [
+        r#"logging.level = "trace""#,
+        "logging.postgres.poll_interval_ms = 50",
+        "logging.postgres.cleanup.enabled = false",
+    ];
+
+    fn trace_test_config() -> Result<crate::config_v2::RuntimeConfigV2, WorkerError> {
+        crate::config_v2::load_runtime_test_config_with_hba_and_sections(
+            std::path::Path::new("/tmp/pgdata"),
+            "scope-a",
+            TRACE_LOGGING_TEST_HBA,
+            TRACE_LOGGING_TEST_SECTIONS,
+        )
+        .map_err(|err| WorkerError::Message(err.to_string()))
+    }
+
     fn sample_non_utf8_postgres_line_event(path: &std::path::Path) -> super::PostgresLineLogEvent {
         super::postgres_line_event(
             LogProducer::Postgres,
@@ -1475,8 +1492,7 @@ mod tests {
             // vanilla-Postgres config exception path.
             let mut pg = spawn_pg16_for_vanilla_postgres(spec, &conf_lines).await?;
 
-            let mut cfg = crate::config_v2::trace_logging_test_config()
-                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            let mut cfg = super::trace_test_config()?;
             cfg.logging.postgres.log_dir = log_dir;
             cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
 
@@ -1548,8 +1564,7 @@ mod tests {
             std::fs::write(&jsonlog_path, b"")
                 .map_err(|err| WorkerError::Message(format!("seed jsonlog failed: {err}")))?;
 
-            let mut cfg = crate::config_v2::trace_logging_test_config()
-                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            let mut cfg = super::trace_test_config()?;
             cfg.process.binaries = binaries.clone();
             cfg.process.timeouts.bootstrap = Duration::from_secs(30);
             cfg.process.timeouts.fencing = Duration::from_secs(30);
@@ -1804,8 +1819,7 @@ mod tests {
             std::fs::create_dir_all(&data_dir)
                 .map_err(|err| WorkerError::Message(format!("create data_dir failed: {err}")))?;
 
-            let mut cfg = crate::config_v2::trace_logging_test_config()
-                .map_err(|err| WorkerError::Message(err.to_string()))?;
+            let mut cfg = super::trace_test_config()?;
             cfg.process.binaries = binaries;
 
             let test_log = start_test_log();

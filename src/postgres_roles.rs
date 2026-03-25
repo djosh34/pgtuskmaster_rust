@@ -117,8 +117,10 @@ fn render_rewinder_grants_sql(username: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use crate::{
-        config_v2::{runtime_test_config, types::RoleConfig},
+        config_v2::{runtime_test_config_with_data_dir, types::RoleConfig},
         postgres_roles::render_managed_role_reconciliation_sql_v2,
     };
 
@@ -131,7 +133,7 @@ mod tests {
 
     #[test]
     fn renders_mandatory_role_sql() -> Result<(), String> {
-        let cfg = runtime_test_config()
+        let cfg = runtime_test_config_with_data_dir(Path::new("/tmp/pgdata"))
             .map(|cfg| crate::config_v2::RuntimeConfigV2 {
                 postgres: crate::config_v2::types::PostgresConfig {
                     superuser: role("postgres", "postgres-secret"),

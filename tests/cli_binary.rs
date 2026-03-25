@@ -8,7 +8,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use pgtuskmaster_test_support::config_v2::render_runtime_test_config_toml;
+use pgtuskmaster_test_support::config_v2::render_runtime_test_config_document_toml;
 
 #[rustfmt::skip]
 const API_HTTP_DISABLED_AUTH: &str = "[api]\ntransport = { transport = \"http\" }\nauth = { type = \"disabled\" }";
@@ -99,16 +99,20 @@ fn assert_node_runtime_config_failure(
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_toml(
         label,
-        render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "member-a",
+        render_runtime_test_config_document_toml(
+            ("cluster-a", "scope-a", "member-a"),
             (
                 Path::new("/var/lib/postgresql/data"),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
+                Some(Path::new("/tmp/pgtm-socket")),
+                Some(Path::new("/tmp/pgtm.log")),
             ),
             [dcs_endpoint],
+            [
+                ("postgres", "postgres"),
+                ("replicator", "replicator"),
+                ("rewinder", "rewinder"),
+            ],
+            ("host all all 127.0.0.1/32 trust", ""),
             extra_sections.iter().copied(),
         )
         .map_err(|err| format!("render config failed: {err}"))?,

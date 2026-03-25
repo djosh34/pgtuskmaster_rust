@@ -252,40 +252,14 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    render_runtime_test_config_toml(
-        "cluster-a",
-        "scope-a",
-        "node-a",
+    render_runtime_test_config_document_toml(
+        ("cluster-a", "scope-a", "node-a"),
         (
             root.join("data").as_path(),
-            Path::new("/tmp/pgtm-socket"),
-            Path::new("/tmp/pgtm.log"),
+            Some(Path::new("/tmp/pgtm-socket")),
+            Some(Path::new("/tmp/pgtm.log")),
         ),
         ["http://127.0.0.1:2379"],
-        extra_sections,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_runtime_test_config_toml<I, S, J, T>(
-    cluster_name: &str,
-    scope: &str,
-    member_id: &str,
-    paths: (&Path, &Path, &Path),
-    dcs_endpoints: I,
-    extra_sections: J,
-) -> Result<String, ConfigErrorV2>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    let (data_dir, socket_dir, log_file) = paths;
-    render_runtime_test_config_document_toml(
-        (cluster_name, scope, member_id),
-        (data_dir, Some(socket_dir), Some(log_file)),
-        dcs_endpoints,
         [
             ("postgres", "postgres"),
             ("replicator", "replicator"),
@@ -297,7 +271,7 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn load_runtime_test_config_with_hba_and_sections<J, T>(
+pub fn load_runtime_test_config_with_hba_and_sections<J, T>(
     data_dir: &Path,
     scope: &str,
     hba_contents: &str,
@@ -324,24 +298,6 @@ where
         ),
     )?;
     load_runtime_config_contents(contents.as_str())
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn load_runtime_test_config_with_sections<J, T>(
-    data_dir: &Path,
-    scope: &str,
-    extra_sections: J,
-) -> Result<RuntimeConfigV2, ConfigErrorV2>
-where
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    load_runtime_test_config_with_hba_and_sections(
-        data_dir,
-        scope,
-        "host all all 127.0.0.1/32 trust",
-        extra_sections,
-    )
 }
 
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
@@ -441,55 +397,15 @@ impl raw::RuntimeDocument {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub fn runtime_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    load_runtime_test_config_with_sections(
-        Path::new("/tmp/pgdata"),
-        "scope-a",
-        std::iter::empty::<String>(),
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 pub fn runtime_test_config_with_data_dir(
     data_dir: impl Into<PathBuf>,
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let data_dir = data_dir.into();
-    load_runtime_test_config_with_sections(
-        data_dir.as_path(),
-        "scope-a",
-        std::iter::empty::<String>(),
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn managed_postgres_test_config(
-    data_dir: impl Into<PathBuf>,
-) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    let data_dir = data_dir.into();
-    load_runtime_test_config_with_sections(
-        data_dir.as_path(),
-        "cluster-a",
-        [
-            "ha.loop_interval_ms = 500",
-            "ha.lease_ttl_ms = 5000",
-            "process.timeouts.bootstrap_ms = 30000",
-            "process.timeouts.pg_rewind_ms = 30000",
-            "process.timeouts.fencing_ms = 10000",
-        ],
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
     load_runtime_test_config_with_hba_and_sections(
-        Path::new("/tmp/pgdata"),
+        data_dir.as_path(),
         "scope-a",
-        "local all all trust\nhost all all 127.0.0.1/32 trust\n",
-        [
-            r#"logging.level = "trace""#.to_string(),
-            "logging.postgres.poll_interval_ms = 50".to_string(),
-            "logging.postgres.cleanup.enabled = false".to_string(),
-        ],
+        "host all all 127.0.0.1/32 trust",
+        std::iter::empty::<&str>(),
     )
 }
 

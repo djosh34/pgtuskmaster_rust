@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use axum::Router;
 
 use crate::{
     api::worker::{build_router, ApiObservedState},
     config_v2::types::{ApiAuth, Secret},
-    config_v2::{runtime_test_config, RuntimeConfigV2},
+    config_v2::{runtime_test_config_with_data_dir, RuntimeConfigV2},
     ha::state::HaState,
     logging::LogSender,
     pginfo::state::{PgConfig, PgInfoCommon, PgInfoState, Readiness, SqlStatus},
@@ -21,8 +21,8 @@ pub fn build_test_router(
 ) -> Result<Router, HarnessError> {
     let auth = api_auth_from_optional_tokens(read_token, admin_token)
         .map_err(HarnessError::InvalidInput)?;
-    let config =
-        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
+    let config = runtime_test_config_with_data_dir(Path::new("/tmp/pgdata"))
+        .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     build_test_router_with_state(
         RuntimeConfigV2 {
             api: crate::config_v2::types::ApiConfig { auth, ..config.api },
@@ -38,8 +38,8 @@ pub fn build_test_router_with_live_state(
 ) -> Result<Router, HarnessError> {
     let auth = api_auth_from_optional_tokens(read_token, admin_token)
         .map_err(HarnessError::InvalidInput)?;
-    let config =
-        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
+    let config = runtime_test_config_with_data_dir(Path::new("/tmp/pgdata"))
+        .map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
     let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsSnapshot::starting());

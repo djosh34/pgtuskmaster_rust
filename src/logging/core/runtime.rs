@@ -726,6 +726,13 @@ mod tests {
     use crate::process::log_event::{CapturedStream, SubprocessLogEvent};
     use crate::runtime::log_event::RuntimeLogEvent;
 
+    const TRACE_LOGGING_TEST_HBA: &str = "local all all trust\nhost all all 127.0.0.1/32 trust\n";
+    const TRACE_LOGGING_TEST_SECTIONS: [&str; 3] = [
+        r#"logging.level = "trace""#,
+        "logging.postgres.poll_interval_ms = 50",
+        "logging.postgres.cleanup.enabled = false",
+    ];
+
     fn unique_temp_root(label: &str) -> PathBuf {
         let pid = std::process::id();
         static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -792,6 +799,16 @@ mod tests {
             scope: "scope-a".to_string(),
             member_id: "member-a".to_string(),
         }
+    }
+
+    fn trace_test_config() -> Result<crate::config_v2::RuntimeConfigV2, String> {
+        crate::config_v2::load_runtime_test_config_with_hba_and_sections(
+            std::path::Path::new("/tmp/pgdata"),
+            "scope-a",
+            TRACE_LOGGING_TEST_HBA,
+            TRACE_LOGGING_TEST_SECTIONS,
+        )
+        .map_err(|err| err.to_string())
     }
 
     fn test_log_system(min_app_severity: LogSeverity) -> (LogSender, LogWorker, TestSink) {
@@ -1088,8 +1105,7 @@ mod tests {
 
         let path = root.join("app.jsonl");
 
-        let mut cfg =
-            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
+        let mut cfg = trace_test_config()?;
         cfg.logging.sinks.stderr.enabled = false;
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = path.clone();
@@ -1120,8 +1136,7 @@ mod tests {
 
         let path = root.join("app.jsonl");
 
-        let mut cfg =
-            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
+        let mut cfg = trace_test_config()?;
         cfg.logging.sinks.stderr.enabled = true;
         cfg.logging.sinks.file.enabled = true;
         cfg.logging.sinks.file.path = path.clone();
@@ -1142,8 +1157,7 @@ mod tests {
 
     #[test]
     fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), String> {
-        let mut cfg =
-            crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
+        let mut cfg = trace_test_config()?;
         cfg.logging.sinks.stderr.enabled = false;
         cfg.logging.sinks.file.enabled = false;
 

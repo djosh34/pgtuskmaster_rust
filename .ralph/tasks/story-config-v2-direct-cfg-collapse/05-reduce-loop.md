@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/91-collapse-replica-conninfo-rendering-onto-pgconninfo.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/92-collapse-runtime-test-preset-ladder-onto-document-owner.md`
 
 <steps>
 - [x] Find a potential plan if it exists, otherwise find new ones

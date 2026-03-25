@@ -776,7 +776,7 @@ mod tests {
 
     use crate::{
         config_v2::types::PostgresConfig,
-        config_v2::{managed_postgres_test_config, RuntimeConfigV2},
+        config_v2::{load_runtime_test_config_with_hba_and_sections, RuntimeConfigV2},
         dcs::DcsSnapshot,
         dev_support::test_fs::unique_test_dir,
         logging::LogSender,
@@ -798,6 +798,14 @@ mod tests {
     };
 
     use super::{bootstrap_with_runtime, start_job, step_once};
+
+    const MANAGED_POSTGRES_TEST_EXTRA_SECTIONS: [&str; 5] = [
+        "ha.loop_interval_ms = 500",
+        "ha.lease_ttl_ms = 5000",
+        "process.timeouts.bootstrap_ms = 30000",
+        "process.timeouts.pg_rewind_ms = 30000",
+        "process.timeouts.fencing_ms = 10000",
+    ];
 
     struct UnexpectedSpawnRunner;
 
@@ -826,8 +834,13 @@ mod tests {
         ),
         String,
     > {
-        let config =
-            managed_postgres_test_config(data_dir.clone()).map_err(|err| err.to_string())?;
+        let config = load_runtime_test_config_with_hba_and_sections(
+            data_dir.as_path(),
+            "cluster-a",
+            "host all all 127.0.0.1/32 trust",
+            MANAGED_POSTGRES_TEST_EXTRA_SECTIONS,
+        )
+        .map_err(|err| err.to_string())?;
         let cfg = RuntimeConfigV2 {
             postgres: PostgresConfig {
                 socket_dir: socket_dir.clone(),
