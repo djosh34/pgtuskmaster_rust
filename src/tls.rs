@@ -1,6 +1,5 @@
 use std::{collections::BTreeSet, io::Cursor, sync::Arc};
 
-use axum_server::tls_rustls::RustlsConfig;
 use rustls::{
     self,
     client::danger::HandshakeSignatureValid,
@@ -11,7 +10,7 @@ use rustls::{
 use thiserror::Error;
 use x509_parser::parse_x509_certificate;
 
-use crate::{api::worker::ApiServerTransport, config_v2::types::ApiTransport as ApiTransportV2};
+use crate::config_v2::types::ApiTransport as ApiTransportV2;
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum TlsConfigError {
@@ -21,17 +20,6 @@ pub(crate) enum TlsConfigError {
     PemParse { message: String },
     #[error("rustls error: {message}")]
     Rustls { message: String },
-}
-
-pub(crate) fn build_api_server_transport_v2(
-    transport: &ApiTransportV2,
-) -> Result<ApiServerTransport, TlsConfigError> {
-    match transport {
-        ApiTransportV2::Http => Ok(ApiServerTransport::Http),
-        ApiTransportV2::Https { .. } => Ok(ApiServerTransport::Https {
-            server_config: RustlsConfig::from_config(build_api_server_config_v2(transport)?),
-        }),
-    }
 }
 
 pub(crate) fn build_api_server_config_v2(

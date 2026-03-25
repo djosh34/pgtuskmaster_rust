@@ -17,7 +17,10 @@ use crate::{
         ApiCertificateReloadStep, ApiError, NodeState, PostgresCertificateReloadStep,
         PostgresReloadSignal, ReloadCertificatesResponse,
     },
-    config_v2::{types::ApiAuth, RuntimeConfigV2},
+    config_v2::{
+        types::{ApiAuth, ApiTransport},
+        RuntimeConfigV2,
+    },
     dcs::{DcsHandle, DcsSnapshot},
     ha::state::HaState,
     logging::LogSender,
@@ -46,19 +49,30 @@ pub(crate) enum ApiServerTransport {
 }
 
 impl ApiServerTransport {
+    fn from_config(transport: &ApiTransport) -> Result<Self, crate::tls::TlsConfigError> {
+        match transport {
+            ApiTransport::Http => Ok(Self::Http),
+            ApiTransport::Https { .. } => Ok(Self::Https {
+                server_config: RustlsConfig::from_config(crate::tls::build_api_server_config_v2(
+                    transport,
+                )?),
+            }),
+        }
+    }
+
     fn reload_certificates(
         &self,
         cfg: &RuntimeConfigV2,
     ) -> Result<ReloadCertificatesResponse, ReloadCertificatesError> {
-        let api = match self {
-            Self::Http => ApiCertificateReloadStep::HttpTransportUnchanged,
-            Self::Https { server_config } => {
-                let crate::config_v2::types::ApiTransport::Https { .. } = &cfg.api.transport else {
-                    return Err(ReloadCertificatesError::ApiTransportMismatch);
-                };
+        let api = match (self, &cfg.api.transport) {
+            (Self::Http, _) => ApiCertificateReloadStep::HttpTransportUnchanged,
+            (Self::Https { server_config }, ApiTransport::Https { .. }) => {
                 let reloaded = crate::tls::build_api_server_config_v2(&cfg.api.transport)?;
                 server_config.reload_from_config(reloaded);
                 ApiCertificateReloadStep::HttpsConfigurationReloaded
+            }
+            (Self::Https { .. }, ApiTransport::Http) => {
+                return Err(ReloadCertificatesError::ApiTransportMismatch);
             }
         };
         let target = ManagedPostmasterTarget::from_data_dir(cfg.postgres.data_dir.clone());
@@ -99,7 +113,7 @@ impl<'a> ApiRuntimeCtx<'a> {
         observed: ApiObservedState,
         log: LogSender,
     ) -> Result<Self, WorkerError> {
-        let transport = crate::tls::build_api_server_transport_v2(&cfg.api.transport)
+        let transport = ApiServerTransport::from_config(&cfg.api.transport)
             .map_err(|err| WorkerError::Message(format!("api tls config build failed: {err}")))?;
 
         Ok(Self {
@@ -158,16 +172,7 @@ impl From<ApiError> for ApiHttpError {
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn build_router(ctx: ApiRuntimeCtx<'static>) -> Result<Router, WorkerError> {
-    let (_bind, _transport, app_state) = build_app_state(ctx)?;
-    Ok(router_from_state(app_state))
-}
-
-fn build_app_state(
-    ctx: ApiRuntimeCtx<'static>,
-) -> Result<(SocketAddr, ApiServerTransport, ApiRuntimeCtx<'static>), WorkerError> {
-    let bind = ctx.cfg.api.listen_addr;
-    let transport = ctx.transport.clone();
-    Ok((bind, transport, ctx))
+    Ok(router_from_state(ctx))
 }
 
 fn router_from_state(app_state: ApiRuntimeCtx<'static>) -> Router {
@@ -195,8 +200,9 @@ fn router_from_state(app_state: ApiRuntimeCtx<'static>) -> Router {
 }
 
 pub(crate) async fn run(ctx: ApiRuntimeCtx<'static>) -> Result<(), WorkerError> {
-    let (listen_addr, transport, app_state) = build_app_state(ctx)?;
-    let app = router_from_state(app_state);
+    let listen_addr: SocketAddr = ctx.cfg.api.listen_addr;
+    let transport = ctx.transport.clone();
+    let app = router_from_state(ctx);
 
     match transport {
         ApiServerTransport::Http => axum_server::bind(listen_addr)
@@ -433,8 +439,8 @@ mod tests {
     }
 
     fn build_test_app(cfg: RuntimeConfigV2) -> Result<Router, String> {
-        let transport = crate::tls::build_api_server_transport_v2(&cfg.api.transport)
-            .map_err(|err| err.to_string())?;
+        let transport =
+            ApiServerTransport::from_config(&cfg.api.transport).map_err(|err| err.to_string())?;
         build_test_app_with_transport(cfg, transport)
     }
 
@@ -733,7 +739,7 @@ mod tests {
             },
             ..good_cfg
         };
-        let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
+        let transport = ApiServerTransport::from_config(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
         let cfg = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
         let cfg = RuntimeConfigV2 {
@@ -808,7 +814,7 @@ mod tests {
             },
             ..good_cfg
         };
-        let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
+        let transport = ApiServerTransport::from_config(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
         let app = build_test_app_with_transport(
             runtime_test_config_with_data_dir(&data_dir)
