@@ -705,20 +705,6 @@ fn string_secret(value: &str) -> SecretSource {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn file_secret(path: &std::path::Path) -> SecretSource {
-    SecretSource::Tagged(TaggedSecretSource::File {
-        path: path.to_path_buf(),
-    })
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn path_source(path: &std::path::Path) -> PathSource {
-    PathSource::PathConfig {
-        path: path.to_path_buf(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 fn toml_value<T: Serialize>(label: &str, value: T) -> Result<toml::Value, String> {
     toml::Value::try_from(value)
         .map_err(|error| format!("{label} serialization to toml::Value failed: {error}"))
@@ -772,24 +758,6 @@ where
         }))
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn toml_path_source(path: &std::path::Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn toml_string_secret(value: &str) -> String {
-    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -873,146 +841,7 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_ha_member_runtime_test_config_toml(
-    member_name: &str,
-    dcs_endpoint: &str,
-    replicator: &str,
-    rewinder: &str,
-) -> Result<String, String> {
-    let mut document = build_runtime_test_document(
-        "ha-cucumber-cluster",
-        "ha-cucumber-cluster",
-        member_name,
-        (
-            std::path::Path::new("/var/lib/postgresql/data"),
-            std::path::Path::new("/var/lib/pgtuskmaster/socket"),
-            std::path::Path::new("/var/log/pgtuskmaster/postgres.log"),
-        ),
-        [dcs_endpoint],
-    );
-    let ca_cert_path = std::path::Path::new("/etc/pgtuskmaster/tls/ca.crt");
-    let member_cert_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.crt"));
-    let member_key_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.key"));
-    let api_read_token_path = std::path::Path::new("/run/secrets/api-read-token");
-    let api_admin_token_path = std::path::Path::new("/run/secrets/api-admin-token");
-
-    document.postgres.network.listen_host = member_name.to_string();
-    document.postgres.rewind.transport = PostgresClientTransportConfig {
-        ssl_mode: PgSslMode::VerifyFull,
-        ca_cert: Some(path_source(ca_cert_path)),
-    };
-    document.postgres.tls = TlsServerConfig::Enabled {
-        identity: TlsServerIdentityConfig {
-            cert_chain: path_source(member_cert_path.as_path()),
-            private_key: path_source(member_key_path.as_path()),
-        },
-        client_auth: Some(TlsClientAuthConfig {
-            client_ca: path_source(ca_cert_path),
-            client_certificate: ClientCertificateMode::Optional,
-        }),
-    };
-    document.postgres.roles.mandatory = MandatoryPostgresRolesConfig {
-        superuser: PostgresRoleConfig {
-            username: "postgres".to_string(),
-            auth: RoleAuthConfig::Password {
-                password: file_secret(std::path::Path::new(
-                    "/run/secrets/postgres-superuser-password",
-                )),
-            },
-        },
-        replicator: PostgresRoleConfig {
-            username: replicator.to_string(),
-            auth: RoleAuthConfig::Password {
-                password: file_secret(std::path::Path::new("/run/secrets/replicator-password")),
-            },
-        },
-        rewinder: PostgresRoleConfig {
-            username: rewinder.to_string(),
-            auth: RoleAuthConfig::Password {
-                password: file_secret(std::path::Path::new("/run/secrets/rewinder-password")),
-            },
-        },
-    };
-    document.postgres.access = PostgresAccessConfig {
-        hba: PathOrInline::PathConfig {
-            path: PathBuf::from("/etc/pgtuskmaster/pg_hba.conf"),
-        },
-        ident: PathOrInline::PathConfig {
-            path: PathBuf::from("/etc/pgtuskmaster/pg_ident.conf"),
-        },
-    };
-    document
-        .postgres
-        .extra_gucs
-        .insert("wal_keep_size".to_string(), "128MB".to_string());
-    document.process.binaries.overrides = BinaryPathOverrides {
-        pg_ctl: Some(PathBuf::from("/usr/lib/postgresql/16/bin/pg_ctl")),
-        pg_rewind: Some(PathBuf::from(
-            "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind",
-        )),
-        initdb: Some(PathBuf::from("/usr/lib/postgresql/16/bin/initdb")),
-        pg_basebackup: Some(PathBuf::from(
-            "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup",
-        )),
-    };
-    document.logging.postgres.cleanup.max_files = 20;
-    document.logging.postgres.cleanup.max_age_seconds = 86_400;
-    document.logging.sinks.file = FileSinkConfig {
-        enabled: true,
-        path: Some(PathBuf::from("/var/log/pgtuskmaster/runtime.jsonl")),
-        mode: FileSinkMode::Append,
-    };
-    document.api = ApiConfig {
-        listen_addr: SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, 8443)),
-        transport: ApiTransportConfig::Https {
-            tls: ApiTlsConfig {
-                identity: TlsServerIdentityConfig {
-                    cert_chain: path_source(member_cert_path.as_path()),
-                    private_key: path_source(member_key_path.as_path()),
-                },
-                client_auth: ApiClientAuthConfig::Disabled,
-            },
-        },
-        auth: TokenAuthConfig {
-            kind: Some("role_tokens".to_string()),
-            read_token: None,
-            admin_token: None,
-            tokens: Some(RoleTokens {
-                read_token: Some(file_secret(api_read_token_path)),
-                admin_token: Some(file_secret(api_admin_token_path)),
-            }),
-        },
-    };
-    document.pgtm = Some(build_operator_test_document_value(
-        Some(format!("https://{member_name}:8443").as_str()),
-        None,
-        None,
-        None,
-        Some(TokenAuthConfig {
-            kind: Some("role_tokens".to_string()),
-            read_token: Some(file_secret(api_read_token_path)),
-            admin_token: Some(file_secret(api_admin_token_path)),
-            tokens: None,
-        }),
-        Some(OperatorClientTlsInput {
-            ca_cert: Some(path_source(ca_cert_path)),
-            identity: None,
-        }),
-        Some(OperatorClientTlsInput {
-            ca_cert: Some(path_source(ca_cert_path)),
-            identity: None,
-        }),
-    )?);
-    document.debug.enabled = true;
-
-    render_toml_value(
-        "HA member runtime config",
-        &toml_value("HA member runtime document", document)?,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_runtime_test_config_toml<I, S, J, T>(
+pub(crate) fn render_runtime_test_config_toml<I, S, J, T>(
     cluster_name: &str,
     scope: &str,
     member_id: &str,
@@ -1033,93 +862,6 @@ where
     trim_runtime_test_document(&mut value)?;
     Ok(join_rendered_sections(
         render_toml_value("runtime test config", &value)?,
-        extra_sections,
-    ))
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn build_operator_test_document(
-    base_url: Option<&str>,
-    advertised_url: Option<&str>,
-    expected_transport: Option<&str>,
-    resolve_to: Option<SocketAddr>,
-    auth: Option<TokenAuthConfig>,
-    api_tls: Option<OperatorClientTlsInput>,
-    postgres_tls: Option<OperatorClientTlsInput>,
-) -> Result<OperatorDocument, String> {
-    Ok(OperatorDocument {
-        api: OperatorApiConfig {
-            base_url: base_url.map(str::to_string),
-            advertised_url: advertised_url.map(str::to_string),
-            expected_transport: match expected_transport {
-                Some("http") => Some(PgtmApiTransportExpectation::Http),
-                Some("https") => Some(PgtmApiTransportExpectation::Https),
-                Some(other) => {
-                    return Err(format!(
-                        "unsupported operator test transport expectation `{other}`"
-                    ))
-                }
-                None => None,
-            },
-            resolve_to,
-            auth: auth.unwrap_or_default(),
-            tls: api_tls.unwrap_or_default(),
-        },
-        postgres: OperatorPostgresConfig {
-            tls: postgres_tls.unwrap_or_default(),
-        },
-    })
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn build_operator_test_document_value(
-    base_url: Option<&str>,
-    advertised_url: Option<&str>,
-    expected_transport: Option<&str>,
-    resolve_to: Option<SocketAddr>,
-    auth: Option<TokenAuthConfig>,
-    api_tls: Option<OperatorClientTlsInput>,
-    postgres_tls: Option<OperatorClientTlsInput>,
-) -> Result<toml::Value, String> {
-    toml_value(
-        "operator test document",
-        build_operator_test_document(
-            base_url,
-            advertised_url,
-            expected_transport,
-            resolve_to,
-            auth,
-            api_tls,
-            postgres_tls,
-        )?,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_operator_test_config_toml<J, T>(
-    base_url: Option<&str>,
-    advertised_url: Option<&str>,
-    expected_transport: Option<&str>,
-    resolve_to: Option<SocketAddr>,
-    extra_sections: J,
-) -> Result<String, String>
-where
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    Ok(join_rendered_sections(
-        render_toml_value(
-            "operator test config",
-            &build_operator_test_document_value(
-                base_url,
-                advertised_url,
-                expected_transport,
-                resolve_to,
-                None,
-                None,
-                None,
-            )?,
-        )?,
         extra_sections,
     ))
 }

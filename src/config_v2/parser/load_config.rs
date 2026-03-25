@@ -196,14 +196,6 @@ impl raw::RuntimeDocument {
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub fn validate_runtime_document_contents(contents: &str) -> Result<(), ConfigErrorV2> {
-    let _ = toml::from_str::<raw::RuntimeDocument>(contents)
-        .map(raw::RuntimeDocument::normalize)
-        .map_err(|source| parse_error(Path::new("<runtime-config>"), source))?;
-    Ok(())
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
 pub fn runtime_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
     load_runtime_test_config_from_paths(PathBuf::from("/tmp/pgdata"), "scope-a")
 }
@@ -1033,20 +1025,84 @@ where
 mod tests {
     use super::{
         load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
-        validate_runtime_document_contents,
+        raw,
     };
     use crate::{
-        config_v2::{
-            render_operator_test_config_toml, render_runtime_test_config_toml, toml_path_source,
-            toml_string_secret, ConfigErrorV2, PgtmApiTransportExpectation,
-        },
+        config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
         dev_support::test_fs::unique_test_dir,
         pginfo::conninfo::PgSslMode,
     };
     use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
+    fn join_rendered_sections<J, T>(base: String, extra_sections: J) -> String
+    where
+        J: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        std::iter::once(base)
+            .chain(extra_sections.into_iter().filter_map(|section| {
+                let section = section.as_ref().trim();
+                (!section.is_empty()).then_some(section.to_string())
+            }))
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    fn toml_string(value: &str) -> String {
+        toml::Value::String(value.to_string()).to_string()
+    }
+
+    fn toml_path_source(path: &Path) -> String {
+        format!(
+            "{{ path = {} }}",
+            toml_string(path.display().to_string().as_str())
+        )
+    }
+
+    fn toml_string_secret(value: &str) -> String {
+        format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
+    }
+
+    fn render_operator_test_config_toml<J, T>(
+        base_url: Option<&str>,
+        advertised_url: Option<&str>,
+        expected_transport: Option<&str>,
+        resolve_to: Option<SocketAddr>,
+        extra_sections: J,
+    ) -> String
+    where
+        J: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        join_rendered_sections(
+            format!(
+                r#"[api]
+{}{}{}{}
+"#,
+                base_url
+                    .map(|value| format!("base_url = {}\n", toml_string(value)))
+                    .unwrap_or_default(),
+                advertised_url
+                    .map(|value| format!("advertised_url = {}\n", toml_string(value)))
+                    .unwrap_or_default(),
+                expected_transport
+                    .map(|value| format!("expected_transport = {}\n", toml_string(value)))
+                    .unwrap_or_default(),
+                resolve_to
+                    .map(|value| format!(
+                        "resolve_to = {}\n",
+                        toml_string(value.to_string().as_str())
+                    ))
+                    .unwrap_or_default(),
+            )
+            .trim_end()
+            .to_string(),
+            extra_sections,
+        )
+    }
+
     fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> Result<String, String> {
-        render_runtime_test_config_toml(
+        raw::render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
             "node-a",
@@ -1080,7 +1136,7 @@ logging.postgres.cleanup.protect_recent_seconds = 0"#],
         let root = unique_test_dir("load-config", "runtime-config-v2-runtime-fields")?;
         let ca_cert = root.join("source-ca.crt");
         let config = load_runtime_config_contents(
-            render_runtime_test_config_toml(
+            raw::render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1201,7 +1257,7 @@ expected_transport = "{}""#,
         )
         .map_err(|err| err.to_string())?;
         let result = load_runtime_config_contents(
-            render_runtime_test_config_toml(
+            raw::render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1240,8 +1296,8 @@ admin_token = {{ type = "file", path = "{}" }}"#,
     #[test]
     fn parse_boundaries_reject_non_path_tls_sources() -> Result<(), String> {
         let root = unique_test_dir("load-config", "runtime-config-v2-inline-tls")?;
-        match validate_runtime_document_contents(
-            render_runtime_test_config_toml(
+        match load_runtime_config_contents(
+            raw::render_runtime_test_config_toml(
                 "cluster-a",
                 "scope-a",
                 "node-a",
@@ -1260,7 +1316,7 @@ identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" 
         ) {
             Err(ConfigErrorV2::Parse { .. }) => {}
             Err(err) => return Err(format!("expected parse error, got {err}")),
-            Ok(()) => return Err("expected inline TLS parse rejection".to_string()),
+            Ok(_) => return Err("expected inline TLS parse rejection".to_string()),
         }
 
         match load_operator_config_contents(
@@ -1272,7 +1328,6 @@ identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" 
                 [r#"[api.tls]
 identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }"#],
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         ) {
             Err(ConfigErrorV2::Parse { .. }) => Ok(()),
@@ -1292,7 +1347,6 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
                 Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
                 std::iter::empty::<String>(),
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         )
         .map_err(|err| err.to_string())?;
@@ -1315,7 +1369,7 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
             )
         );
 
-        let runtime_document = render_runtime_test_config_toml(
+        let runtime_document = raw::render_runtime_test_config_toml(
             "cluster-a",
             "scope-a",
             "node-a",
@@ -1389,7 +1443,6 @@ identity = {{ cert = {}, key = {} }}"#,
                     toml_path_source(identity_key_path.as_path()),
                 )],
             )
-            .map_err(|err| err.to_string())?
             .as_str(),
         )
         .map_err(|err| err.to_string())?;
