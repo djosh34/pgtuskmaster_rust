@@ -502,7 +502,7 @@ fn render_pg_ctl_option_string(tokens: &[String]) -> Result<String, ProcessError
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use crate::{
         config_v2::{runtime_test_config_with_data_dir, RuntimeConfigV2},
@@ -532,28 +532,6 @@ mod tests {
         prepare_process_launch, source_from_member, SourceCredentialKind,
         SourceMaterializationError,
     };
-
-    fn runtime_config_v2_with_source_ca(
-        root: &std::path::Path,
-    ) -> Result<(RuntimeConfigV2, PathBuf), String> {
-        let data_dir = root.join("data");
-        fs::create_dir_all(&data_dir)
-            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let ca_cert = root.join("source-ca.crt");
-        let mut cfg = runtime_test_config_with_data_dir(data_dir).map_err(|err| err.to_string())?;
-        let true_path = Path::new("/bin/true");
-        cfg.postgres.source_client_tls = PgClientTls {
-            mode: PgSslMode::VerifyFull,
-            root_cert: Some(ca_cert.clone()),
-            client_cert: None,
-            client_key: None,
-        };
-        cfg.binaries.pg_ctl = true_path.to_path_buf();
-        cfg.binaries.initdb = true_path.to_path_buf();
-        cfg.binaries.pg_rewind = true_path.to_path_buf();
-        cfg.binaries.pg_basebackup = true_path.to_path_buf();
-        Ok((cfg, ca_cert))
-    }
 
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
@@ -675,7 +653,31 @@ mod tests {
     #[test]
     fn prepare_basebackup_from_config_v2_preserves_sslrootcert_in_conninfo() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "basebackup-source-ca")?;
-        let (cfg, expected_root_cert) = runtime_config_v2_with_source_ca(root.as_path())?;
+        let data_dir = root.join("data");
+        fs::create_dir_all(&data_dir)
+            .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
+        let expected_root_cert = root.join("source-ca.crt");
+        let true_path = Path::new("/bin/true").to_path_buf();
+        let cfg = runtime_test_config_with_data_dir(data_dir)
+            .map(|cfg| RuntimeConfigV2 {
+                postgres: crate::config_v2::types::PostgresConfig {
+                    source_client_tls: PgClientTls {
+                        mode: PgSslMode::VerifyFull,
+                        root_cert: Some(expected_root_cert.clone()),
+                        client_cert: None,
+                        client_key: None,
+                    },
+                    ..cfg.postgres
+                },
+                binaries: crate::config_v2::types::BinariesConfig {
+                    pg_ctl: true_path.clone(),
+                    initdb: true_path.clone(),
+                    pg_rewind: true_path.clone(),
+                    pg_basebackup: true_path,
+                },
+                ..cfg
+            })
+            .map_err(|err| err.to_string())?;
         let leader = MemberId("node-b".to_string());
         let observed = crate::process::state::ProcessObservedSnapshot {
             dcs: DcsSnapshot::quorum(

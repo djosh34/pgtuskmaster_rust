@@ -413,7 +413,7 @@ fn extract_bearer_token(request: &Request) -> Option<&str> {
 mod tests {
     use std::{
         fs,
-        path::{Path, PathBuf},
+        path::Path,
         process::{Child, Command},
         time::Duration,
     };
@@ -499,70 +499,6 @@ mod tests {
             cert,
             key,
             ca_cert: None,
-        })
-    }
-
-    fn sample_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
-        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
-        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
-        let mut cfg = RuntimeConfigV2 {
-            postgres: crate::config_v2::types::PostgresConfig {
-                data_dir: data_dir.clone(),
-                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
-                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-                ..config.postgres
-            },
-            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
-            ..config
-        };
-        cfg.api.transport = ApiTransport::Https {
-            tls: write_test_tls_files(
-                data_dir.as_path(),
-                fixture.valid_server.cert_pem.as_str(),
-                fixture.valid_server.key_pem.as_str(),
-            )?,
-            client_ca: None,
-            client_cert_required: false,
-            allowed_client_common_names: Vec::new(),
-        };
-        Ok(cfg)
-    }
-
-    fn sample_invalid_https_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
-        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
-        let mut cfg = RuntimeConfigV2 {
-            postgres: crate::config_v2::types::PostgresConfig {
-                data_dir: data_dir.clone(),
-                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
-                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-                ..config.postgres
-            },
-            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
-            ..config
-        };
-        cfg.api.transport = ApiTransport::Https {
-            tls: write_test_tls_files(data_dir.as_path(), "not a certificate", "not a key")?,
-            client_ca: None,
-            client_cert_required: false,
-            allowed_client_common_names: Vec::new(),
-        };
-        Ok(cfg)
-    }
-
-    fn sample_http_runtime_config(data_dir: PathBuf) -> Result<RuntimeConfigV2, String> {
-        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
-        let config = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
-        Ok(RuntimeConfigV2 {
-            postgres: crate::config_v2::types::PostgresConfig {
-                data_dir: data_dir.clone(),
-                pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
-                pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-                ..config.postgres
-            },
-            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
-            ..config
         })
     }
 
@@ -774,7 +710,26 @@ mod tests {
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
-        let cfg = sample_https_runtime_config(data_dir)?;
+        let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let cfg = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let cfg = RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig {
+                auth,
+                transport: ApiTransport::Https {
+                    tls: write_test_tls_files(
+                        data_dir.as_path(),
+                        fixture.valid_server.cert_pem.as_str(),
+                        fixture.valid_server.key_pem.as_str(),
+                    )?,
+                    client_ca: None,
+                    client_cert_required: false,
+                    allowed_client_common_names: Vec::new(),
+                },
+                ..cfg.api
+            },
+            ..cfg
+        };
         let app = build_test_app(cfg)?;
 
         let response = app
@@ -819,7 +774,13 @@ mod tests {
         let data_dir = root.join("data");
         fs::create_dir_all(&data_dir)
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
-        let cfg = sample_http_runtime_config(data_dir)?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let cfg = runtime_test_config_with_data_dir(&data_dir)
+            .map(|cfg| RuntimeConfigV2 {
+                api: crate::config_v2::types::ApiConfig { auth, ..cfg.api },
+                ..cfg
+            })
+            .map_err(|err| err.to_string())?;
         let app = build_test_app(cfg)?;
 
         let response = app
@@ -864,7 +825,13 @@ mod tests {
             .wait()
             .map_err(|err| format!("wait fake postgres pid={pid} failed: {err}"))?;
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
-        let cfg = sample_http_runtime_config(data_dir)?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let cfg = runtime_test_config_with_data_dir(&data_dir)
+            .map(|cfg| RuntimeConfigV2 {
+                api: crate::config_v2::types::ApiConfig { auth, ..cfg.api },
+                ..cfg
+            })
+            .map_err(|err| err.to_string())?;
         let app = build_test_app(cfg)?;
 
         let response = app
@@ -906,7 +873,13 @@ mod tests {
         let pid = child.child()?.id();
         write_postmaster_pid(&target_data_dir, pid, &real_data_dir)?;
         let _child = child;
-        let cfg = sample_http_runtime_config(target_data_dir.clone())?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let cfg = runtime_test_config_with_data_dir(&target_data_dir)
+            .map(|cfg| RuntimeConfigV2 {
+                api: crate::config_v2::types::ApiConfig { auth, ..cfg.api },
+                ..cfg
+            })
+            .map_err(|err| err.to_string())?;
         let app = build_test_app(cfg)?;
 
         let response = app
@@ -946,13 +919,48 @@ mod tests {
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
-        let good_cfg = sample_https_runtime_config(data_dir.clone())?;
+        let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let good_cfg =
+            runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let good_cfg = RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig {
+                auth: auth.clone(),
+                transport: ApiTransport::Https {
+                    tls: write_test_tls_files(
+                        data_dir.as_path(),
+                        fixture.valid_server.cert_pem.as_str(),
+                        fixture.valid_server.key_pem.as_str(),
+                    )?,
+                    client_ca: None,
+                    client_cert_required: false,
+                    allowed_client_common_names: Vec::new(),
+                },
+                ..good_cfg.api
+            },
+            ..good_cfg
+        };
         let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
-        let app = build_test_app_with_transport(
-            sample_invalid_https_runtime_config(data_dir)?,
-            transport,
-        )?;
+        let cfg = runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let cfg = RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig {
+                auth,
+                transport: ApiTransport::Https {
+                    tls: write_test_tls_files(
+                        data_dir.as_path(),
+                        "not a certificate",
+                        "not a key",
+                    )?,
+                    client_ca: None,
+                    client_cert_required: false,
+                    allowed_client_common_names: Vec::new(),
+                },
+                ..cfg.api
+            },
+            ..cfg
+        };
+        let app = build_test_app_with_transport(cfg, transport)?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)
@@ -986,10 +994,38 @@ mod tests {
         write_postmaster_pid(&data_dir, pid, &data_dir)?;
         let _child = child;
         wait_for_managed_postmaster_ready(&data_dir)?;
-        let good_cfg = sample_https_runtime_config(data_dir.clone())?;
+        let fixture = build_adversarial_tls_fixture().map_err(|err| err.to_string())?;
+        let auth = api_auth_from_optional_tokens(Some("read-secret"), Some("admin-secret"))?;
+        let good_cfg =
+            runtime_test_config_with_data_dir(&data_dir).map_err(|err| err.to_string())?;
+        let good_cfg = RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig {
+                auth: auth.clone(),
+                transport: ApiTransport::Https {
+                    tls: write_test_tls_files(
+                        data_dir.as_path(),
+                        fixture.valid_server.cert_pem.as_str(),
+                        fixture.valid_server.key_pem.as_str(),
+                    )?,
+                    client_ca: None,
+                    client_cert_required: false,
+                    allowed_client_common_names: Vec::new(),
+                },
+                ..good_cfg.api
+            },
+            ..good_cfg
+        };
         let transport = crate::tls::build_api_server_transport_v2(&good_cfg.api.transport)
             .map_err(|err| err.to_string())?;
-        let app = build_test_app_with_transport(sample_http_runtime_config(data_dir)?, transport)?;
+        let app = build_test_app_with_transport(
+            runtime_test_config_with_data_dir(&data_dir)
+                .map(|cfg| RuntimeConfigV2 {
+                    api: crate::config_v2::types::ApiConfig { auth, ..cfg.api },
+                    ..cfg
+                })
+                .map_err(|err| err.to_string())?,
+            transport,
+        )?;
 
         let response = app
             .oneshot(sample_admin_request("/reload/certs")?)

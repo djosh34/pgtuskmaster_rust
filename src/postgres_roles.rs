@@ -122,20 +122,6 @@ mod tests {
         postgres_roles::render_managed_role_reconciliation_sql_v2,
     };
 
-    fn sample_cfg() -> Result<crate::config_v2::RuntimeConfigV2, String> {
-        runtime_test_config()
-            .map(|cfg| crate::config_v2::RuntimeConfigV2 {
-                postgres: crate::config_v2::types::PostgresConfig {
-                    superuser: role("postgres", "postgres-secret"),
-                    replicator: role("replicator", "replicator-secret"),
-                    rewinder: role("rewinder", "rewinder-secret"),
-                    ..cfg.postgres
-                },
-                ..cfg
-            })
-            .map_err(|err| format!("runtime test config failed: {err}"))
-    }
-
     fn role(username: &str, password: &str) -> RoleConfig {
         RoleConfig {
             username: username.to_string(),
@@ -145,7 +131,18 @@ mod tests {
 
     #[test]
     fn renders_mandatory_role_sql() -> Result<(), String> {
-        let sql = render_managed_role_reconciliation_sql_v2(&sample_cfg()?)
+        let cfg = runtime_test_config()
+            .map(|cfg| crate::config_v2::RuntimeConfigV2 {
+                postgres: crate::config_v2::types::PostgresConfig {
+                    superuser: role("postgres", "postgres-secret"),
+                    replicator: role("replicator", "replicator-secret"),
+                    rewinder: role("rewinder", "rewinder-secret"),
+                    ..cfg.postgres
+                },
+                ..cfg
+            })
+            .map_err(|err| format!("runtime test config failed: {err}"))?;
+        let sql = render_managed_role_reconciliation_sql_v2(&cfg)
             .map_err(|err| format!("render sql failed: {err}"))?;
 
         assert!(sql.contains("ALTER ROLE %I WITH LOGIN SUPERUSER NOREPLICATION PASSWORD %L"));

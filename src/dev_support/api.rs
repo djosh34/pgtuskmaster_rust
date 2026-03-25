@@ -19,8 +19,15 @@ pub fn build_test_router(
     read_token: Option<&str>,
     admin_token: Option<&str>,
 ) -> Result<Router, HarnessError> {
+    let auth = api_auth_from_optional_tokens(read_token, admin_token)
+        .map_err(HarnessError::InvalidInput)?;
+    let config =
+        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     build_test_router_with_state(
-        build_test_runtime_config(read_token, admin_token)?,
+        RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+            ..config
+        },
         ApiObservedState::Unavailable,
     )
 }
@@ -29,13 +36,20 @@ pub fn build_test_router_with_live_state(
     read_token: Option<&str>,
     admin_token: Option<&str>,
 ) -> Result<Router, HarnessError> {
+    let auth = api_auth_from_optional_tokens(read_token, admin_token)
+        .map_err(HarnessError::InvalidInput)?;
+    let config =
+        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
     let (_pg_publisher, pg) = new_state_channel(sample_pg_state());
     let (_process_publisher, process) = new_state_channel(sample_process_state());
     let (_dcs_publisher, dcs) = new_state_channel(crate::dcs::DcsSnapshot::starting());
     let (_ha_publisher, ha) = new_state_channel(HaState::initial(WorkerStatus::Running));
 
     build_test_router_with_state(
-        build_test_runtime_config(read_token, admin_token)?,
+        RuntimeConfigV2 {
+            api: crate::config_v2::types::ApiConfig { auth, ..config.api },
+            ..config
+        },
         ApiObservedState::Live {
             pg,
             process,
@@ -43,20 +57,6 @@ pub fn build_test_router_with_live_state(
             ha,
         },
     )
-}
-
-fn build_test_runtime_config(
-    read_token: Option<&str>,
-    admin_token: Option<&str>,
-) -> Result<RuntimeConfigV2, HarnessError> {
-    let auth = api_auth_from_optional_tokens(read_token, admin_token)
-        .map_err(HarnessError::InvalidInput)?;
-    let config =
-        runtime_test_config().map_err(|err| HarnessError::InvalidInput(err.to_string()))?;
-    Ok(RuntimeConfigV2 {
-        api: crate::config_v2::types::ApiConfig { auth, ..config.api },
-        ..config
-    })
 }
 
 fn build_test_router_with_state(

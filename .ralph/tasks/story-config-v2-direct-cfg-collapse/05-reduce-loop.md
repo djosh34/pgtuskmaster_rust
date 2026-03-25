@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/66-delete-internal-runtime-test-renderer.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/67-delete-runtime-test-config-wrapper-helpers.md`
 
 Plan:
 
