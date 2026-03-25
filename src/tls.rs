@@ -51,15 +51,8 @@ fn build_server_config_from_paths(
     private_key_path: &std::path::Path,
     verifier: Arc<dyn ClientCertVerifier>,
 ) -> Result<rustls::ServerConfig, TlsConfigError> {
-    let cert_pem = std::fs::read(cert_path).map_err(|err| TlsConfigError::Io {
-        message: format!("read {} failed: {err}", cert_path.display()),
-    })?;
-    let key_pem = std::fs::read(private_key_path).map_err(|err| TlsConfigError::Io {
-        message: format!("read {} failed: {err}", private_key_path.display()),
-    })?;
-
-    let cert_chain = parse_pem_cert_chain(cert_pem.as_slice())?;
-    let key = parse_pem_private_key(key_pem.as_slice())?;
+    let cert_chain = load_pem_cert_chain_from_path(cert_path)?;
+    let key = load_pem_private_key_from_path(private_key_path)?;
 
     let provider = rustls::crypto::ring::default_provider();
     rustls::ServerConfig::builder_with_provider(provider.into())
@@ -82,10 +75,7 @@ fn build_client_verifier_from_paths(
     let Some(client_ca) = client_ca else {
         return Ok(Arc::new(rustls::server::NoClientAuth));
     };
-    let ca_pem = std::fs::read(client_ca).map_err(|err| TlsConfigError::Io {
-        message: format!("read {} failed: {err}", client_ca.display()),
-    })?;
-    let ca_certs = parse_pem_cert_chain(ca_pem.as_slice())?;
+    let ca_certs = load_pem_cert_chain_from_path(client_ca)?;
 
     let mut roots = rustls::RootCertStore::empty();
     for cert in ca_certs {
@@ -244,6 +234,42 @@ fn parse_pem_private_key(pem: &[u8]) -> Result<PrivateKeyDer<'static>, TlsConfig
         })
 }
 
+pub fn load_pem_cert_chain(path: &std::path::Path) -> Result<Vec<CertificateDer<'static>>, String> {
+    load_pem_cert_chain_from_path(path).map_err(|err| err.to_string())
+}
+
+pub fn load_pem_private_key(path: &std::path::Path) -> Result<PrivateKeyDer<'static>, String> {
+    load_pem_private_key_from_path(path).map_err(|err| err.to_string())
+}
+
+fn load_pem_cert_chain_from_path(
+    path: &std::path::Path,
+) -> Result<Vec<CertificateDer<'static>>, TlsConfigError> {
+    std::fs::read(path)
+        .map_err(|err| TlsConfigError::Io {
+            message: format!("read {} failed: {err}", path.display()),
+        })
+        .and_then(|pem| {
+            parse_pem_cert_chain(pem.as_slice()).map_err(|err| TlsConfigError::PemParse {
+                message: format!("parse certificate `{}` failed: {}", path.display(), err),
+            })
+        })
+}
+
+fn load_pem_private_key_from_path(
+    path: &std::path::Path,
+) -> Result<PrivateKeyDer<'static>, TlsConfigError> {
+    std::fs::read(path)
+        .map_err(|err| TlsConfigError::Io {
+            message: format!("read {} failed: {err}", path.display()),
+        })
+        .and_then(|pem| {
+            parse_pem_private_key(pem.as_slice()).map_err(|err| TlsConfigError::PemParse {
+                message: format!("parse private key `{}` failed: {}", path.display(), err),
+            })
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::{path::PathBuf, time::Duration};
@@ -259,6 +285,7 @@ mod tests {
     };
 
     use super::{build_api_server_config_v2, build_client_verifier_from_paths, TlsConfigError};
+    use super::{load_pem_cert_chain, load_pem_private_key};
 
     fn sample_validation_time() -> UnixTime {
         UnixTime::since_unix_epoch(Duration::from_secs(1_735_689_600))
@@ -410,6 +437,52 @@ mod tests {
         );
 
         assert!(result.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn load_pem_cert_chain_reads_valid_chain_from_path() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_adversarial_tls_fixture()?;
+        let dir = unique_test_dir("tls", "load-cert-chain")?;
+        let cert_path = write_text_file(
+            dir.as_path(),
+            "client-ca.crt",
+            fixture.trusted_client_ca.cert.cert_pem.as_str(),
+        )?;
+
+        let certs = load_pem_cert_chain(cert_path.as_path())?;
+
+        assert_eq!(certs.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn load_pem_private_key_reads_valid_key_from_path() -> Result<(), Box<dyn std::error::Error>> {
+        let fixture = build_adversarial_tls_fixture()?;
+        let dir = unique_test_dir("tls", "load-private-key")?;
+        let key_path = write_text_file(
+            dir.as_path(),
+            "client.key",
+            fixture.trusted_client.key_pem.as_str(),
+        )?;
+
+        let _key = load_pem_private_key(key_path.as_path())?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn load_pem_cert_chain_reports_path_in_parse_error() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = unique_test_dir("tls", "load-cert-chain-invalid")?;
+        let cert_path = write_text_file(dir.as_path(), "broken.crt", "not-a-cert")?;
+
+        let err = match load_pem_cert_chain(cert_path.as_path()) {
+            Ok(_) => return Err("expected certificate parse to fail".into()),
+            Err(err) => err,
+        };
+
+        assert!(err.contains("broken.crt"));
+        assert!(err.contains("parse certificate"));
         Ok(())
     }
 }

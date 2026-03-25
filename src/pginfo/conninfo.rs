@@ -37,6 +37,13 @@ impl PgSslMode {
             _ => None,
         }
     }
+
+    pub fn connect_mode(&self) -> Self {
+        match self {
+            Self::VerifyCa | Self::VerifyFull => Self::Require,
+            mode => *mode,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for PgSslMode {
@@ -76,6 +83,34 @@ pub struct PgClientTls {
     pub root_cert: Option<PathBuf>,
     pub client_cert: Option<PathBuf>,
     pub client_key: Option<PathBuf>,
+}
+
+impl PgConnInfo {
+    pub fn uses_tls_files(&self) -> bool {
+        self.tls.uses_files()
+    }
+
+    pub fn connect_ready(&self) -> Self {
+        Self {
+            tls: self.tls.connect_ready(),
+            ..self.clone()
+        }
+    }
+}
+
+impl PgClientTls {
+    pub fn uses_files(&self) -> bool {
+        self.root_cert.is_some() || self.client_cert.is_some() || self.client_key.is_some()
+    }
+
+    pub fn connect_ready(&self) -> Self {
+        Self {
+            mode: self.mode.connect_mode(),
+            root_cert: None,
+            client_cert: None,
+            client_key: None,
+        }
+    }
 }
 
 impl fmt::Display for PgConnInfo {
@@ -426,5 +461,61 @@ mod tests {
     fn pg_ssl_mode_parse_accepts_snake_case_aliases() {
         assert_eq!(PgSslMode::parse("verify_ca"), Some(PgSslMode::VerifyCa));
         assert_eq!(PgSslMode::parse("verify_full"), Some(PgSslMode::VerifyFull));
+    }
+
+    #[test]
+    fn pg_ssl_mode_connect_mode_downgrades_verify_variants() {
+        assert_eq!(PgSslMode::VerifyCa.connect_mode(), PgSslMode::Require);
+        assert_eq!(PgSslMode::VerifyFull.connect_mode(), PgSslMode::Require);
+        assert_eq!(PgSslMode::Prefer.connect_mode(), PgSslMode::Prefer);
+    }
+
+    #[test]
+    fn connect_ready_strips_tls_path_fields_but_preserves_general_conninfo() -> Result<(), String> {
+        let conninfo = PgConnInfo {
+            route: PgRoute::tcp_hostaddr(
+                "node-a".to_string(),
+                5432,
+                Some(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            )?,
+            user: "postgres".to_string(),
+            dbname: "postgres db".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            options: None,
+            tls: PgClientTls {
+                mode: PgSslMode::VerifyFull,
+                root_cert: Some("/tmp/ca bundle.pem".into()),
+                client_cert: Some("/tmp/client.crt".into()),
+                client_key: Some("/tmp/client.key".into()),
+            },
+        };
+        let connect_conninfo = conninfo.connect_ready();
+        let connect_dsn = connect_conninfo.to_string();
+
+        assert!(conninfo.uses_tls_files());
+        assert!(!connect_conninfo.uses_tls_files());
+        assert_eq!(connect_conninfo.tls.mode, PgSslMode::Require);
+        assert!(connect_dsn.contains("host=node-a"));
+        assert!(connect_dsn.contains("hostaddr=127.0.0.1"));
+        assert!(connect_dsn.contains("port=5432"));
+        assert!(connect_dsn.contains("user=postgres"));
+        assert!(connect_dsn.contains("dbname='postgres db'"));
+        assert!(connect_dsn.contains("sslmode=require"));
+        assert!(!connect_dsn.contains("sslrootcert"));
+        assert!(!connect_dsn.contains("sslcert"));
+        assert!(!connect_dsn.contains("sslkey"));
+        Ok(())
+    }
+
+    #[test]
+    fn uses_tls_files_is_false_when_no_tls_paths_are_present() {
+        assert!(!PgClientTls {
+            mode: PgSslMode::Require,
+            root_cert: None,
+            client_cert: None,
+            client_key: None,
+        }
+        .uses_files());
     }
 }

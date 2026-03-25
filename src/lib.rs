@@ -15,4 +15,4 @@ pub(crate) mod postgres_roles;
 pub mod process;
 pub mod runtime;
 pub mod state;
-pub(crate) mod tls;
+pub mod tls;
