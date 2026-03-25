@@ -1,0 +1,41 @@
+use thiserror::Error;
+
+use crate::{
+    process::{jobs::ProcessIntent, state::ProcessIntentRequest},
+    state::JobId,
+};
+
+use super::state::HaRuntimeCtx;
+
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+pub(crate) enum ProcessDispatchError {
+    #[error("process send failed for action `{action}`: {message}")]
+    ProcessSend { action: String, message: String },
+}
+
+pub(crate) fn dispatch_process_action(
+    ctx: &mut HaRuntimeCtx,
+    ha_tick: u64,
+    action_index: usize,
+    action: &ProcessIntent,
+) -> Result<(), ProcessDispatchError> {
+    let action_kind = action.job_kind();
+    let request = ProcessIntentRequest {
+        id: JobId(format!(
+            "ha-{}-{}-{}-{}-{}",
+            ctx.cfg.scope.as_str().trim_matches('/'),
+            ctx.cfg.member_id.0,
+            ha_tick,
+            action_index,
+            action_kind.as_str(),
+        )),
+        intent: action.clone(),
+    };
+    ctx.control
+        .process_intent_inbox
+        .send(request)
+        .map_err(|err| ProcessDispatchError::ProcessSend {
+            action: action_kind.as_str().to_string(),
+            message: err.to_string(),
+        })
+}

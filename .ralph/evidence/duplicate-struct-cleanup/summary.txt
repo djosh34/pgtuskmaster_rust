@@ -1,0 +1,5 @@
+HEAD baseline: 6c8de03095808ca9ca17a512c399a177d75a60bd
+Struct declaration count before refactor: 325
+Struct declaration count after refactor: 291
+Delta: -34
+Method: generated before/after inventories with cargo run --manifest-path tools/type_inventory_gen/Cargo.toml -- <output> on HEAD and on the working tree, then counted declaration lines that begin with struct syntax in the generated inventories.

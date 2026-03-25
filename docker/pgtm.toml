@@ -1,0 +1,16 @@
+[api]
+base_url = "https://127.0.0.1:18081"
+expected_transport = "https"
+
+[api.auth]
+type = "role_tokens"
+read_token = { path = "docker/secrets/api-read-token" }
+admin_token = { path = "docker/secrets/api-admin-token" }
+
+[api.tls]
+ca_cert = { path = "docker/certs/ca.crt" }
+identity = { cert = { path = "docker/certs/pgtm-client/tls.crt" }, key = { path = "docker/certs/pgtm-client/tls.key" } }
+
+[postgres.tls]
+ca_cert = { path = "docker/certs/ca.crt" }
+identity = { cert = { path = "docker/certs/pgtm-client/tls.crt" }, key = { path = "docker/certs/pgtm-client/tls.key" } }

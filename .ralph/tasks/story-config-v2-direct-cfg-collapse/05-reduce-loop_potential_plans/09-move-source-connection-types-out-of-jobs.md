@@ -1,0 +1,1 @@
+- Move `MandatorySourceRole` and `MandatoryRoleSourceConn` out of `src/process/jobs.rs`; they belong to source/planning materialization, not the jobs API surface.

@@ -1,0 +1,1 @@
+- Delete `DesiredManagedRoleSet`, `ManagedRoleSpec`, `MandatoryManagedRole`, and `ManagedRoleGrant` in `src/postgres_roles.rs`; they are short-lived DTOs that only exist to render one SQL batch.

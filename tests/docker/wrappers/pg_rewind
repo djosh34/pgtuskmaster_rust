@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+readonly BLOCKER_FILE="/var/lib/pgtuskmaster/faults/fail-pg-rewind"
+readonly REAL_BIN="/usr/lib/postgresql/16/bin/pg_rewind"
+
+if [[ -f "${BLOCKER_FILE}" ]]; then
+    printf 'pg_rewind wrapper forced failure because blocker exists: %s\n' "${BLOCKER_FILE}" >&2
+    exit 97
+fi
+
+exec "${REAL_BIN}" "$@"

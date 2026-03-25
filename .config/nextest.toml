@@ -1,0 +1,50 @@
+experimental = ["setup-scripts"]
+
+nextest-version = { recommended = "0.9.100" }
+
+[scripts.setup.ha-cucumber-image]
+command = { command-line = "tools/nextest/setup-ha-cucumber-image.sh", relative-to = "workspace-root" }
+slow-timeout = { period = "1800s", terminate-after = 1, grace-period = "30s" }
+capture-stdout = true
+capture-stderr = true
+
+[profile.default]
+fail-fast = false
+# Default runs keep the greenfield HA test binary out of the normal gate.
+default-filter = '''
+not (kind(test) & binary(ha) & test(/^ha_/))
+'''
+slow-timeout = { period = "120s", terminate-after = 1, grace-period = "15s" }
+
+[profile.default.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true
+
+[profile.ultra-long]
+fail-fast = false
+# The long-running greenfield HA tests live behind `make test-long` because they
+# take longer. Keep routing them by durable binary name rather than exact test lists.
+# These binaries are expected to be parallel-safe. If a scenario only passes in serial,
+# that scenario is buggy and must be fixed instead of protected by serialization.
+# Keep the thread count above the full HA test count so every scenario can
+# fan out at once; the harness is responsible for explicit subnet allocation.
+default-filter = '''
+kind(test) & binary(ha) & test(/^ha_/)
+'''
+test-threads = 128
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
+# Let the libtest harness forward stdout/stderr directly instead of buffering it
+# behind test completion, so long HA runs can surface logs while they execute.
+success-output = "immediate-final"
+
+[[profile.ultra-long.scripts]]
+filter = '''
+kind(test) & binary(ha) & test(/^ha_/)
+'''
+setup = "ha-cucumber-image"
+
+[profile.ultra-long.junit]
+path = "junit.xml"
+store-success-output = true
+store-failure-output = true

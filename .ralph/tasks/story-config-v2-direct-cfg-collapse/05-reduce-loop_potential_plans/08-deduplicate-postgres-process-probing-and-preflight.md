@@ -1,0 +1,1 @@
+- Dedupe postgres process probing between `src/process/worker.rs` and `src/process/postmaster.rs`; pidfile parsing, `/proc` inspection, and stale-process checks are split across two owners.

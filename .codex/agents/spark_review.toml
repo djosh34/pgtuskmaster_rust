@@ -1,0 +1,6 @@
+model = "gpt-5.3-codex-spark"
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+model_reasoning_summary = "none"
+model_verbosity = "high"
+model_supports_reasoning_summaries = false

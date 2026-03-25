@@ -1,0 +1,194 @@
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::mpsc::UnboundedReceiver;
+
+use crate::{
+    config_v2::RuntimeConfigV2,
+    dcs::DcsSnapshot,
+    logging::LogSender,
+    pginfo::state::PgInfoState,
+    postgres_managed::ManagedRecoverySignal,
+    state::{JobId, StatePublisher, StateSubscriber, UnixMillis, WorkerError, WorkerStatus},
+};
+
+use super::jobs::{
+    ActiveJob, ProcessCommandRunner, ProcessError, ProcessHandle, ProcessIntent, ProcessJobKind,
+};
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProcessState {
+    Idle {
+        worker: WorkerStatus,
+        last_outcome: Option<JobOutcome>,
+    },
+    Running {
+        worker: WorkerStatus,
+        active: ActiveJob,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessIntentRequest {
+    pub(crate) id: JobId,
+    pub(crate) intent: ProcessIntent,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ProcessJobRejection {
+    pub(crate) id: JobId,
+    pub(crate) error: ProcessError,
+    pub(crate) rejected_at: UnixMillis,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobOutcome {
+    Success {
+        id: JobId,
+        job_kind: ProcessJobKind,
+        finished_at: UnixMillis,
+    },
+    Failure {
+        id: JobId,
+        job_kind: ProcessJobKind,
+        error: ProcessError,
+        finished_at: UnixMillis,
+    },
+    Timeout {
+        id: JobId,
+        job_kind: ProcessJobKind,
+        finished_at: UnixMillis,
+    },
+}
+
+pub(crate) struct ActiveRuntime {
+    pub(crate) handle: Box<dyn ProcessHandle>,
+}
+
+pub(crate) struct ProcessWorkerCtx<'a> {
+    pub(crate) cfg: &'a RuntimeConfigV2,
+    pub(crate) cadence: ProcessCadence,
+    pub(crate) observed: ProcessObservedState,
+    pub(crate) state_channel: ProcessStateChannel,
+    pub(crate) control: ProcessControlPlane,
+    pub(crate) runtime: ProcessRuntime,
+}
+
+pub(crate) struct ProcessCadence {
+    pub(crate) poll_interval: Duration,
+    pub(crate) now: Box<dyn FnMut() -> Result<UnixMillis, WorkerError> + Send>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessObservedState {
+    pub(crate) dcs: StateSubscriber<DcsSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProcessObservedSnapshot {
+    pub(crate) dcs: DcsSnapshot,
+    pub(crate) managed_recovery_state: ManagedRecoverySignal,
+}
+
+pub(crate) struct ProcessStateChannel {
+    pub(crate) current: ProcessState,
+    pub(crate) publisher: StatePublisher<ProcessState>,
+    pub(crate) last_rejection: Option<ProcessJobRejection>,
+}
+
+pub(crate) struct ProcessControlPlane {
+    pub(crate) inbox: UnboundedReceiver<ProcessIntentRequest>,
+    pub(crate) inbox_disconnected_logged: bool,
+    pub(crate) active_runtime: Option<ActiveRuntime>,
+}
+
+pub(crate) struct ProcessRuntime {
+    pub(crate) log: LogSender,
+    pub(crate) command_runner: Box<dyn ProcessCommandRunner>,
+}
+
+impl ProcessState {
+    pub(crate) fn starting() -> Self {
+        Self::Idle {
+            worker: WorkerStatus::Starting,
+            last_outcome: None,
+        }
+    }
+
+    pub(crate) fn active(&self) -> Option<&ActiveJob> {
+        match self {
+            Self::Running { active, .. } => Some(active),
+            Self::Idle { .. } => None,
+        }
+    }
+
+    pub(crate) fn active_job(&self) -> Option<&ProcessJobKind> {
+        self.active().map(|active| &active.kind)
+    }
+
+    pub(crate) fn waiting_for_pg_observation(
+        &self,
+        pg: &PgInfoState,
+        expected: ProcessJobKind,
+    ) -> bool {
+        let Some(last_refresh_at) = pg.last_refresh_at() else {
+            return false;
+        };
+
+        self.last_success(expected)
+            .is_some_and(|finished_at| finished_at.0 >= last_refresh_at.0)
+    }
+
+    pub(crate) fn basebackup_completed_awaiting_pg_start(&self, pg: &PgInfoState) -> bool {
+        let Some(basebackup_finished_at) = self.last_success(ProcessJobKind::BaseBackup) else {
+            return false;
+        };
+
+        let last_start = [
+            ProcessJobKind::StartPrimary,
+            ProcessJobKind::StartDetachedStandby,
+            ProcessJobKind::StartReplica,
+        ]
+        .into_iter()
+        .filter_map(|job| self.last_success(job))
+        .max_by_key(|finished_at| finished_at.0);
+
+        if last_start.is_some_and(|started_at| started_at.0 >= basebackup_finished_at.0) {
+            return false;
+        }
+
+        !self.waiting_for_pg_observation(pg, ProcessJobKind::BaseBackup)
+    }
+
+    pub(crate) fn rewind_failed_requires_basebackup(&self) -> bool {
+        matches!(
+            self,
+            Self::Idle {
+                last_outcome: Some(
+                    JobOutcome::Failure {
+                        job_kind: ProcessJobKind::PgRewind,
+                        ..
+                    } | JobOutcome::Timeout {
+                        job_kind: ProcessJobKind::PgRewind,
+                        ..
+                    }
+                ),
+                ..
+            }
+        )
+    }
+
+    fn last_success(&self, expected: ProcessJobKind) -> Option<UnixMillis> {
+        match self {
+            Self::Idle {
+                last_outcome:
+                    Some(JobOutcome::Success {
+                        job_kind,
+                        finished_at,
+                        ..
+                    }),
+                ..
+            } if *job_kind == expected => Some(*finished_at),
+            Self::Idle { .. } | Self::Running { .. } => None,
+        }
+    }
+}

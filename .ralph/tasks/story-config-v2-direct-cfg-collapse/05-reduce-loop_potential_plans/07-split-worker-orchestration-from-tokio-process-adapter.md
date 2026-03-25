@@ -1,0 +1,1 @@
+- Split `src/process/worker.rs` into a worker state machine and a Tokio subprocess adapter; one file currently owns inbox draining, preflight cleanup, spawning, polling, timeout policy, output draining, and state transitions.

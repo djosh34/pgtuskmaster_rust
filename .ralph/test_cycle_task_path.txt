@@ -1,1 +1,1 @@
-.ralph/tasks/story-full-verification/01-meta-task-full-test-and-code-verification.md
+.ralph/tasks/meta-task/hidden/01-task-run-make-test-and-make-test-long-fix-issues.md

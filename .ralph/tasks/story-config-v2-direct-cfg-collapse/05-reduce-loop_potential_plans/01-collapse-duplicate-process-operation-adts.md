@@ -1,0 +1,1 @@
+- Collapse `src/process/jobs.rs`, `src/process/planner.rs`, and `src/process/state.rs` into one canonical process-operation ADT; `ProcessIntent`, `ClusterProcessPlan`, and `ProcessExecutionKind` re-encode the same workflow three times.

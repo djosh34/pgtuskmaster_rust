@@ -1,0 +1,1 @@
+- Collapse `ActiveJobKind`, `ProcessJobKind`, and the repeated `label`/`*_job_kind` match trees into one canonical job-kind source.

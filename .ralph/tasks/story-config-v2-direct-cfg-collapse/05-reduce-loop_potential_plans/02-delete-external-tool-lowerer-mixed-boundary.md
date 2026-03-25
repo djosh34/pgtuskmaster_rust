@@ -1,0 +1,1 @@
+- Delete `src/process/tools.rs::ExternalToolLowerer`; it mixes destructive data-dir prep, DTO lowering, validation, secret env building, and CLI argument rendering in one fake boundary.

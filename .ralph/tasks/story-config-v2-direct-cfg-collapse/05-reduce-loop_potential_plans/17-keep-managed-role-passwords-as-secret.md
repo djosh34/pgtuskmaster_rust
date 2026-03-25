@@ -1,0 +1,1 @@
+- Keep managed role passwords as `Secret` through `src/postgres_roles.rs`; `ManagedRoleSpec.password: String` strips the secret boundary long before SQL rendering.

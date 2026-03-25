@@ -24,3 +24,15 @@ mkdir -p "$SCRIPT_DIR/progress"
 jq -n --arg time "$TIMESTAMP" --arg agent "$AGENT_NAME" --arg content "$CONTENT" \
   '{time: $time, agent: $agent, content: $content}' -c \
   >> "$SCRIPT_DIR/progress/${ITERATION}.jsonl"
+
+# Send update email immediately on append; append must remain durable even if email fails.
+# Prefer systemd user runtime (same model as prior watcher-triggered email behavior).
+if ! systemd-run --user --collect --wait \
+    --property=Type=oneshot \
+    --working-directory="$(dirname "$SCRIPT_DIR")" \
+    /bin/bash "$SCRIPT_DIR/email.sh"; then
+  # Fallback for environments without user systemd bus access.
+  if ! "$SCRIPT_DIR/email.sh"; then
+    echo "progress appended, but email send failed, which can happen due to sandboxing, and is ok" >&2
+  fi
+fi

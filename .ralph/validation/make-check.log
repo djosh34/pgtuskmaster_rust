@@ -1,0 +1,4 @@
+cargo check --all-targets --target-dir "/tmp/pgtuskmaster_rust-target" --config "build.incremental=false"
+    Checking pgtuskmaster_rust v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust)
+    Checking pgtuskmaster_test_support v0.1.0 (/home/joshazimullah.linux/work_mounts/patroni_rewrite/pgtuskmaster_rust/crates/pgtuskmaster_test_support)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 5.89s

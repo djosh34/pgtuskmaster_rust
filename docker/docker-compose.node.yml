@@ -1,0 +1,48 @@
+services:
+  node:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    image: pgtuskmaster-local:compose
+    restart: unless-stopped
+    depends_on:
+      etcd:
+        condition: service_healthy
+    command:
+      - --config
+      - /etc/pgtuskmaster/runtime.toml
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pgtm -c /etc/pgtuskmaster/runtime.toml --base-url https://127.0.0.1:8443 status >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    configs:
+      - source: pg-hba
+        target: /etc/pgtuskmaster/pg/pg_hba.conf
+      - source: pg-ident
+        target: /etc/pgtuskmaster/pg/pg_ident.conf
+      - source: ca-cert
+        target: /etc/pgtuskmaster/certs/ca.crt
+      - source: pgtm-client-cert
+        target: /etc/pgtuskmaster/certs/pgtm-client/tls.crt
+    secrets:
+      - source: pgtm-client-key
+        target: /etc/pgtuskmaster/certs/pgtm-client/tls.key
+      - source: api-admin-token
+        target: /etc/pgtuskmaster/secrets/api-admin-token
+      - source: api-read-token
+        target: /etc/pgtuskmaster/secrets/api-read-token
+      - source: postgres-superuser-password
+        target: /etc/pgtuskmaster/secrets/postgres-superuser-password
+      - source: replicator-password
+        target: /etc/pgtuskmaster/secrets/replicator-password
+      - source: rewinder-password
+        target: /etc/pgtuskmaster/secrets/rewinder-password
+    networks:
+      - ha
