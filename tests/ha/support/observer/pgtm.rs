@@ -13,6 +13,7 @@ use pgtuskmaster_rust::{
         state::{PgConnInfo, PgInfoState, PgSslMode, Readiness},
     },
 };
+use pgtuskmaster_test_support::config_v2::{render_operator_test_config_toml, toml_path_source};
 use serde::de::DeserializeOwned;
 
 use crate::support::{
@@ -446,13 +447,14 @@ fn build_host_observer_config(
     observer_cert_path: &Path,
     observer_key_path: &Path,
 ) -> Result<String> {
-    Ok(format!(
-        r#"[api]
-base_url = {base_url}
-expected_transport = "https"
-resolve_to = {resolve_to}
-
-[api.auth]
+    let base_url = format!("https://{}:{}", member.service_name(), resolve_to.port());
+    Ok(render_operator_test_config_toml(
+        Some(base_url.as_str()),
+        None,
+        Some("https"),
+        Some(resolve_to),
+        [format!(
+            r#"[api.auth]
 type = "role_tokens"
 read_token = {read_token_path}
 admin_token = {admin_token_path}
@@ -463,29 +465,14 @@ identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}
 
 [postgres.tls]
 ca_cert = {ca_cert_path}
-identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}
-"#,
-        base_url = toml_string(
-            format!("https://{}:{}", member.service_name(), resolve_to.port()).as_str()
-        ),
-        resolve_to = toml_string(resolve_to.to_string().as_str()),
-        read_token_path = toml_path_source(read_token_path),
-        admin_token_path = toml_path_source(admin_token_path),
-        ca_cert_path = toml_path_source(ca_cert_path),
-        observer_cert_path = toml_path_source(observer_cert_path),
-        observer_key_path = toml_path_source(observer_key_path),
+identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}"#,
+            read_token_path = toml_path_source(read_token_path),
+            admin_token_path = toml_path_source(admin_token_path),
+            ca_cert_path = toml_path_source(ca_cert_path),
+            observer_cert_path = toml_path_source(observer_cert_path),
+            observer_key_path = toml_path_source(observer_key_path),
+        )],
     ))
-}
-
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_path_source(path: &Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
 }
 
 #[cfg(test)]

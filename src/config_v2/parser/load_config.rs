@@ -41,22 +41,66 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn toml_string(value: &str) -> String {
+pub fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_string()).to_string()
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn toml_string_secret(value: &str) -> String {
+pub fn toml_path_source(path: &Path) -> String {
+    format!(
+        "{{ path = {} }}",
+        toml_string(path.display().to_string().as_str())
+    )
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn toml_string_secret(value: &str) -> String {
     format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_runtime_test_config_toml<I, S, J, T>(
-    cluster_name: &str,
-    scope: &str,
-    member_id: &str,
-    paths: (&Path, &Path, &Path),
+pub fn render_operator_test_config_toml<J, T>(
+    base_url: Option<&str>,
+    advertised_url: Option<&str>,
+    expected_transport: Option<&str>,
+    resolve_to: Option<std::net::SocketAddr>,
+    extra_sections: J,
+) -> String
+where
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    join_rendered_sections(
+        format!(
+            r#"[api]
+{}{}{}{}
+"#,
+            base_url
+                .map(|value| format!("base_url = {}\n", toml_string(value)))
+                .unwrap_or_default(),
+            advertised_url
+                .map(|value| format!("advertised_url = {}\n", toml_string(value)))
+                .unwrap_or_default(),
+            expected_transport
+                .map(|value| format!("expected_transport = {}\n", toml_string(value)))
+                .unwrap_or_default(),
+            resolve_to
+                .map(|value| format!("resolve_to = {}\n", toml_string(value.to_string().as_str())))
+                .unwrap_or_default(),
+        )
+        .trim_end()
+        .to_string(),
+        extra_sections,
+    )
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+fn render_runtime_test_config_document_toml<I, S, J, T>(
+    identity: (&str, &str, &str),
+    paths: (&Path, Option<&Path>, Option<&Path>),
     dcs_endpoints: I,
+    role_credentials: [(&str, &str); 3],
+    access_contents: (&str, &str),
     extra_sections: J,
 ) -> String
 where
@@ -65,41 +109,67 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
+    let (cluster_name, scope, member_id) = identity;
     let (data_dir, socket_dir, log_file) = paths;
+    let [(superuser_username, superuser_password), (replicator_username, replicator_password), (rewinder_username, rewinder_password)] =
+        role_credentials;
+    let (hba_contents, ident_contents) = access_contents;
     let endpoints = dcs_endpoints
         .into_iter()
         .map(|endpoint| format!("  {}", toml_string(endpoint.as_ref())))
         .collect::<Vec<_>>()
         .join(",\n");
+    let postgres_path_lines = std::iter::once(format!(
+        "postgres.paths.data_dir = {}",
+        toml_string(data_dir.display().to_string().as_str())
+    ))
+    .chain(socket_dir.into_iter().map(|path| {
+        format!(
+            "postgres.paths.socket_dir = {}",
+            toml_string(path.display().to_string().as_str())
+        )
+    }))
+    .chain(log_file.into_iter().map(|path| {
+        format!(
+            "postgres.paths.log_file = {}",
+            toml_string(path.display().to_string().as_str())
+        )
+    }))
+    .collect::<Vec<_>>()
+    .join("\n");
 
     join_rendered_sections(
         format!(
             r#"cluster.name = {cluster_name}
 cluster.scope = {scope}
 cluster.member_id = {member_id}
-postgres.paths.data_dir = {data_dir}
-postgres.paths.socket_dir = {socket_dir}
-postgres.paths.log_file = {log_file}
-postgres.roles.mandatory.superuser.username = "postgres"
+{postgres_path_lines}
+postgres.roles.mandatory.superuser.username = {superuser_username}
 postgres.roles.mandatory.superuser.auth.type = "password"
-postgres.roles.mandatory.superuser.auth.password = {{ type = "string", value = "postgres" }}
-postgres.roles.mandatory.replicator.username = "replicator"
+postgres.roles.mandatory.superuser.auth.password = {superuser_password}
+postgres.roles.mandatory.replicator.username = {replicator_username}
 postgres.roles.mandatory.replicator.auth.type = "password"
-postgres.roles.mandatory.replicator.auth.password = {{ type = "string", value = "replicator" }}
-postgres.roles.mandatory.rewinder.username = "rewinder"
+postgres.roles.mandatory.replicator.auth.password = {replicator_password}
+postgres.roles.mandatory.rewinder.username = {rewinder_username}
 postgres.roles.mandatory.rewinder.auth.type = "password"
-postgres.roles.mandatory.rewinder.auth.password = {{ type = "string", value = "rewinder" }}
-postgres.access.hba = {{ content = "host all all 127.0.0.1/32 trust" }}
-postgres.access.ident = {{ content = "" }}
+postgres.roles.mandatory.rewinder.auth.password = {rewinder_password}
+postgres.access.hba = {{ content = {hba_contents} }}
+postgres.access.ident = {{ content = {ident_contents} }}
 dcs.endpoints = [
 {endpoints}
 ]"#,
             cluster_name = toml_string(cluster_name),
             scope = toml_string(scope),
             member_id = toml_string(member_id),
-            data_dir = toml_string(data_dir.display().to_string().as_str()),
-            socket_dir = toml_string(socket_dir.display().to_string().as_str()),
-            log_file = toml_string(log_file.display().to_string().as_str()),
+            postgres_path_lines = postgres_path_lines,
+            superuser_username = toml_string(superuser_username),
+            superuser_password = toml_string_secret(superuser_password),
+            replicator_username = toml_string(replicator_username),
+            replicator_password = toml_string_secret(replicator_password),
+            rewinder_username = toml_string(rewinder_username),
+            rewinder_password = toml_string_secret(rewinder_password),
+            hba_contents = toml_string(hba_contents),
+            ident_contents = toml_string(ident_contents),
             endpoints = endpoints,
         ),
         extra_sections,
@@ -128,43 +198,56 @@ where
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn render_runtime_fixture_toml<J, T>(
-    data_dir: &Path,
+pub fn render_runtime_test_config_toml<I, S, J, T>(
+    cluster_name: &str,
     scope: &str,
-    hba_contents: &str,
+    member_id: &str,
+    paths: (&Path, &Path, &Path),
+    dcs_endpoints: I,
     extra_sections: J,
 ) -> String
 where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    join_rendered_sections(
-        format!(
-            r#"cluster.name = "cluster-a"
-cluster.scope = {scope}
-cluster.member_id = "node-a"
-postgres.paths.data_dir = {data_dir}
-postgres.roles.mandatory.superuser.username = "postgres"
-postgres.roles.mandatory.superuser.auth.type = "password"
-postgres.roles.mandatory.superuser.auth.password = {superuser_password}
-postgres.roles.mandatory.replicator.username = "replicator"
-postgres.roles.mandatory.replicator.auth.type = "password"
-postgres.roles.mandatory.replicator.auth.password = {replicator_password}
-postgres.roles.mandatory.rewinder.username = "rewinder"
-postgres.roles.mandatory.rewinder.auth.type = "password"
-postgres.roles.mandatory.rewinder.auth.password = {rewinder_password}
-postgres.access.hba = {{ content = {hba_contents} }}
-postgres.access.ident = {{ content = "" }}
-dcs.endpoints = [
-  "http://127.0.0.1:2379"
-]"#,
-            scope = toml_string(scope),
-            data_dir = toml_string(data_dir.display().to_string().as_str()),
-            hba_contents = toml_string(hba_contents),
-            superuser_password = toml_string_secret("secret-password"),
-            replicator_password = toml_string_secret("secret-password"),
-            rewinder_password = toml_string_secret("secret-password"),
-        ),
+    let (data_dir, socket_dir, log_file) = paths;
+    render_runtime_test_config_toml_with_overrides(
+        (cluster_name, scope, member_id),
+        (data_dir, Some(socket_dir), Some(log_file)),
+        dcs_endpoints,
+        [
+            ("postgres", "postgres"),
+            ("replicator", "replicator"),
+            ("rewinder", "rewinder"),
+        ],
+        ("host all all 127.0.0.1/32 trust", ""),
+        extra_sections,
+    )
+}
+
+#[cfg(any(test, feature = "internal-test-support"))]
+pub fn render_runtime_test_config_toml_with_overrides<I, S, J, T>(
+    identity: (&str, &str, &str),
+    paths: (&Path, Option<&Path>, Option<&Path>),
+    dcs_endpoints: I,
+    role_credentials: [(&str, &str); 3],
+    access_contents: (&str, &str),
+    extra_sections: J,
+) -> String
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
+{
+    render_runtime_test_config_document_toml(
+        identity,
+        paths,
+        dcs_endpoints,
+        role_credentials,
+        access_contents,
         extra_sections,
     )
 }
@@ -180,10 +263,16 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let contents = render_runtime_fixture_toml(
-        data_dir,
-        scope,
-        hba_contents,
+    let contents = render_runtime_test_config_toml_with_overrides(
+        ("cluster-a", scope, "node-a"),
+        (data_dir, None, None),
+        ["http://127.0.0.1:2379"],
+        [
+            ("postgres", "secret-password"),
+            ("replicator", "secret-password"),
+            ("rewinder", "secret-password"),
+        ],
+        (hba_contents, ""),
         std::iter::once(RUNTIME_TEST_BINARY_OVERRIDES_TOML.to_string()).chain(
             extra_sections
                 .into_iter()
@@ -1373,9 +1462,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        join_rendered_sections, load_operator_config_contents, load_runtime_config_contents,
-        load_runtime_timing_values, render_default_runtime_test_config_toml,
-        render_runtime_test_config_toml, toml_string, toml_string_secret,
+        load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
+        render_default_runtime_test_config_toml, render_operator_test_config_toml,
+        render_runtime_test_config_toml, toml_path_source, toml_string_secret,
     };
     use crate::{
         config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
@@ -1383,51 +1472,6 @@ mod tests {
         pginfo::conninfo::PgSslMode,
     };
     use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
-
-    fn toml_path_source(path: &Path) -> String {
-        format!(
-            "{{ path = {} }}",
-            toml_string(path.display().to_string().as_str())
-        )
-    }
-
-    fn render_operator_test_config_toml<J, T>(
-        base_url: Option<&str>,
-        advertised_url: Option<&str>,
-        expected_transport: Option<&str>,
-        resolve_to: Option<SocketAddr>,
-        extra_sections: J,
-    ) -> String
-    where
-        J: IntoIterator<Item = T>,
-        T: AsRef<str>,
-    {
-        join_rendered_sections(
-            format!(
-                r#"[api]
-{}{}{}{}
-"#,
-                base_url
-                    .map(|value| format!("base_url = {}\n", toml_string(value)))
-                    .unwrap_or_default(),
-                advertised_url
-                    .map(|value| format!("advertised_url = {}\n", toml_string(value)))
-                    .unwrap_or_default(),
-                expected_transport
-                    .map(|value| format!("expected_transport = {}\n", toml_string(value)))
-                    .unwrap_or_default(),
-                resolve_to
-                    .map(|value| format!(
-                        "resolve_to = {}\n",
-                        toml_string(value.to_string().as_str())
-                    ))
-                    .unwrap_or_default(),
-            )
-            .trim_end()
-            .to_string(),
-            extra_sections,
-        )
-    }
 
     fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> String {
         render_default_runtime_test_config_toml(

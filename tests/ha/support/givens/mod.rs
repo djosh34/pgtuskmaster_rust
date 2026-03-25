@@ -3,7 +3,10 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pgtuskmaster_test_support::config_v2::load_runtime_config_contents;
+use pgtuskmaster_test_support::config_v2::{
+    load_runtime_config_contents, render_runtime_test_config_toml_with_overrides, toml_path_source,
+    toml_string, toml_string_secret,
+};
 
 use crate::support::{
     error::{HarnessError, Result},
@@ -23,6 +26,24 @@ const HA_REPLICATOR_PASSWORD: &str = "ha-cucumber-superuser-password";
 const HA_REWINDER_PASSWORD: &str = "ha-cucumber-superuser-password";
 const HA_API_READ_TOKEN: &str = "ha-cucumber-read-token";
 const HA_API_ADMIN_TOKEN: &str = "ha-cucumber-admin-token";
+const CONTAINER_PROCESS_BINARY_OVERRIDES: [&str; 4] = [
+    "/usr/lib/postgresql/16/bin/pg_ctl",
+    "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind",
+    "/usr/lib/postgresql/16/bin/initdb",
+    "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup",
+];
+const HOST_VALIDATION_PROCESS_BINARY_OVERRIDES: [&str; 4] =
+    ["/bin/true", "/bin/true", "/bin/true", "/bin/true"];
+const HA_POSTGRES_HBA_CONTENTS: &str = r#"local   all             all                                     peer
+hostnossl all           all             0.0.0.0/0               reject
+hostnossl replication   all             0.0.0.0/0               reject
+hostssl all            postgres        0.0.0.0/0               cert clientname=CN map=observer_as_postgres
+hostssl all            all             127.0.0.1/32            scram-sha-256
+hostssl all            all             ::1/128                 scram-sha-256
+hostssl all            all             0.0.0.0/0               scram-sha-256
+hostssl replication    all             127.0.0.1/32            scram-sha-256
+hostssl replication    all             0.0.0.0/0               scram-sha-256"#;
+const HA_POSTGRES_IDENT_CONTENTS: &str = "observer_as_postgres    observer        postgres";
 const SHARED_ETCD_SERVICES: [DcsService; 1] = [DcsService::SharedEtcd];
 const THREE_ETCD_QUORUM_SERVICES: [DcsService; 2] = [DcsService::EtcdA, DcsService::EtcdB];
 const PLAIN_GIVEN: HaGivenDefinition = HaGivenDefinition {
@@ -159,13 +180,11 @@ impl HaGivenId {
     }
 
     pub fn render_runtime_config(self, member: ClusterMember) -> Result<String> {
-        let rendered = render_ha_member_runtime_test_config_toml(
-            member.service_name(),
-            self.local_dcs_service_for(member).client_url(),
-            self.replicator_role(),
-            self.rewinder_role(),
+        let rendered = self.render_runtime_config_with_process_binaries(
+            member,
+            CONTAINER_PROCESS_BINARY_OVERRIDES,
         );
-        validate_runtime_config_for_host(rendered.as_str())?;
+        self.validate_runtime_config_for_host(member)?;
         Ok(rendered)
     }
 
@@ -195,6 +214,30 @@ impl HaGivenId {
         )?;
         Ok(())
     }
+
+    fn render_runtime_config_with_process_binaries(
+        self,
+        member: ClusterMember,
+        process_binary_overrides: [&str; 4],
+    ) -> String {
+        render_ha_member_runtime_test_config_toml(
+            member.service_name(),
+            self.local_dcs_service_for(member).client_url(),
+            self.replicator_role(),
+            self.rewinder_role(),
+            process_binary_overrides,
+        )
+    }
+
+    fn validate_runtime_config_for_host(self, member: ClusterMember) -> Result<()> {
+        let rendered = self.render_runtime_config_with_process_binaries(
+            member,
+            HOST_VALIDATION_PROCESS_BINARY_OVERRIDES,
+        );
+        load_runtime_config_contents(rendered.as_str())
+            .map(|_| ())
+            .map_err(|source| HarnessError::message(source.to_string()))
+    }
 }
 
 fn shared_dcs_service_for(_: ClusterMember) -> DcsService {
@@ -205,93 +248,70 @@ fn member_local_dcs_service_for(member: ClusterMember) -> DcsService {
     member.local_dcs_service()
 }
 
-fn toml_string(value: &str) -> String {
-    toml::Value::String(value.to_string()).to_string()
-}
-
-fn toml_path_source(path: &Path) -> String {
-    format!(
-        "{{ path = {} }}",
-        toml_string(path.display().to_string().as_str())
-    )
-}
-
-fn toml_string_secret(value: &str) -> String {
-    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
-}
-
 fn render_ha_member_runtime_test_config_toml(
     member_name: &str,
     dcs_endpoint: &str,
     replicator: &str,
     rewinder: &str,
+    process_binary_overrides: [&str; 4],
 ) -> String {
     let ca_cert_path = Path::new("/etc/pgtuskmaster/tls/ca.crt");
     let member_cert_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.crt"));
     let member_key_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.key"));
-    format!(
-        r#"[cluster]
-name = "ha-cucumber-cluster"
-scope = "ha-cucumber-cluster"
-member_id = {member_name}
-
-[postgres.paths]
-data_dir = "/var/lib/postgresql/data"
-socket_dir = "/var/lib/pgtuskmaster/socket"
-log_file = "/var/log/pgtuskmaster/postgres.log"
-
-[postgres.network]
+    let [pg_ctl_path, pg_rewind_path, initdb_path, pg_basebackup_path] = process_binary_overrides;
+    let ca_cert = toml_path_source(ca_cert_path);
+    let member_cert_path = toml_path_source(member_cert_path.as_path());
+    let member_key_path = toml_path_source(member_key_path.as_path());
+    let api_read_token = toml_string_secret(HA_API_READ_TOKEN);
+    let api_admin_token = toml_string_secret(HA_API_ADMIN_TOKEN);
+    let api_base_url = toml_string(format!("https://{member_name}:8443").as_str());
+    render_runtime_test_config_toml_with_overrides(
+        ("ha-cucumber-cluster", "ha-cucumber-cluster", member_name),
+        (
+            Path::new("/var/lib/postgresql/data"),
+            Some(Path::new("/var/lib/pgtuskmaster/socket")),
+            Some(Path::new("/var/log/pgtuskmaster/postgres.log")),
+        ),
+        [dcs_endpoint],
+        [
+            ("postgres", HA_SUPERUSER_PASSWORD),
+            (replicator, HA_REPLICATOR_PASSWORD),
+            (rewinder, HA_REWINDER_PASSWORD),
+        ],
+        (HA_POSTGRES_HBA_CONTENTS, HA_POSTGRES_IDENT_CONTENTS),
+        [
+            format!(
+                r#"[postgres.network]
 listen_host = {member_name}
-listen_port = 5432
-
-[postgres.rewind.transport]
+listen_port = 5432"#,
+                member_name = toml_string(member_name),
+            ),
+            format!(
+                r#"[postgres.rewind.transport]
 ssl_mode = "verify-full"
-ca_cert = {ca_cert}
-
-[postgres.tls]
+ca_cert = {ca_cert}"#,
+            ),
+            format!(
+                r#"[postgres.tls]
 mode = "enabled"
 identity = {{ cert_chain = {member_cert_path}, private_key = {member_key_path} }}
-client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}
-
-[postgres.roles.mandatory.superuser]
-username = "postgres"
-auth = {{ type = "password", password = {superuser_password} }}
-
-[postgres.roles.mandatory.replicator]
-username = {replicator}
-auth = {{ type = "password", password = {replicator_password} }}
-
-[postgres.roles.mandatory.rewinder]
-username = {rewinder}
-auth = {{ type = "password", password = {rewinder_password} }}
-
-[postgres.access.hba]
-content = """local   all             all                                     peer
-hostnossl all           all             0.0.0.0/0               reject
-hostnossl replication   all             0.0.0.0/0               reject
-hostssl all            postgres        0.0.0.0/0               cert clientname=CN map=observer_as_postgres
-hostssl all            all             127.0.0.1/32            scram-sha-256
-hostssl all            all             ::1/128                 scram-sha-256
-hostssl all            all             0.0.0.0/0               scram-sha-256
-hostssl replication    all             127.0.0.1/32            scram-sha-256
-hostssl replication    all             0.0.0.0/0               scram-sha-256"""
-
-[postgres.access.ident]
-content = "observer_as_postgres    observer        postgres"
-
-[postgres.extra_gucs]
-wal_keep_size = "128MB"
-
-[dcs]
-endpoints = [{dcs_endpoint}]
-
-[process.binaries.overrides]
-pg_ctl = "/usr/lib/postgresql/16/bin/pg_ctl"
-pg_rewind = "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind"
-initdb = "/usr/lib/postgresql/16/bin/initdb"
-pg_basebackup = "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup"
-
-[logging]
+client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}"#,
+            ),
+            r#"[postgres.extra_gucs]
+wal_keep_size = "128MB""#
+                .to_string(),
+            format!(
+                r#"[process.binaries.overrides]
+pg_ctl = {pg_ctl_path}
+pg_rewind = {pg_rewind_path}
+initdb = {initdb_path}
+pg_basebackup = {pg_basebackup_path}"#,
+                pg_ctl_path = toml_string(pg_ctl_path),
+                pg_rewind_path = toml_string(pg_rewind_path),
+                initdb_path = toml_string(initdb_path),
+                pg_basebackup_path = toml_string(pg_basebackup_path),
+            ),
+            r#"[logging]
 capture_subprocess_output = true
 
 [logging.postgres]
@@ -307,60 +327,28 @@ protect_recent_seconds = 300
 [logging.sinks.file]
 enabled = true
 path = "/var/log/pgtuskmaster/runtime.jsonl"
-mode = "append"
-
-[api]
+mode = "append""#
+                .to_string(),
+            format!(
+                r#"[api]
 listen_addr = "0.0.0.0:8443"
 transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {member_cert_path}, private_key = {member_key_path} }}, client_auth = {{ client_certificate = "disabled" }} }} }}
-auth = {{ type = "role_tokens", tokens = {{ read_token = {api_read_token}, admin_token = {api_admin_token} }} }}
-
-[pgtm.api]
+auth = {{ type = "role_tokens", tokens = {{ read_token = {api_read_token}, admin_token = {api_admin_token} }} }}"#,
+            ),
+            format!(
+                r#"[pgtm.api]
 base_url = {api_base_url}
 auth = {{ type = "role_tokens", read_token = {api_read_token}, admin_token = {api_admin_token} }}
 tls = {{ ca_cert = {ca_cert} }}
 
 [pgtm.postgres]
-tls = {{ ca_cert = {ca_cert} }}
-
-[debug]
-enabled = true
-"#,
-        member_name = toml_string(member_name),
-        dcs_endpoint = toml_string(dcs_endpoint),
-        ca_cert = toml_path_source(ca_cert_path),
-        member_cert_path = toml_path_source(member_cert_path.as_path()),
-        member_key_path = toml_path_source(member_key_path.as_path()),
-        superuser_password = toml_string_secret(HA_SUPERUSER_PASSWORD),
-        replicator = toml_string(replicator),
-        replicator_password = toml_string_secret(HA_REPLICATOR_PASSWORD),
-        rewinder = toml_string(rewinder),
-        rewinder_password = toml_string_secret(HA_REWINDER_PASSWORD),
-        api_read_token = toml_string_secret(HA_API_READ_TOKEN),
-        api_admin_token = toml_string_secret(HA_API_ADMIN_TOKEN),
-        api_base_url = toml_string(format!("https://{member_name}:8443").as_str()),
+tls = {{ ca_cert = {ca_cert} }}"#,
+            ),
+            r#"[debug]
+enabled = true"#
+                .to_string(),
+        ],
     )
-}
-
-fn validate_runtime_config_for_host(rendered: &str) -> Result<()> {
-    let host_validation_config = [
-        ("/usr/lib/postgresql/16/bin/pg_ctl", "/bin/true"),
-        (
-            "/usr/local/lib/pgtuskmaster/wrappers/pg_rewind",
-            "/bin/true",
-        ),
-        ("/usr/lib/postgresql/16/bin/initdb", "/bin/true"),
-        (
-            "/usr/local/lib/pgtuskmaster/wrappers/pg_basebackup",
-            "/bin/true",
-        ),
-    ]
-    .into_iter()
-    .fold(rendered.to_string(), |config, (from, to)| {
-        config.replace(from, to)
-    });
-    load_runtime_config_contents(host_validation_config.as_str())
-        .map(|_| ())
-        .map_err(|source| HarnessError::message(source.to_string()))
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {
@@ -447,7 +435,7 @@ mod tests {
         path::{Path, PathBuf},
     };
 
-    use super::{validate_runtime_config_for_host, HaGivenId};
+    use super::HaGivenId;
     use crate::support::{
         error::{HarnessError, Result},
         files::with_temporary_directory,
@@ -523,27 +511,27 @@ mod tests {
             (
                 HaGivenId::Plain,
                 ClusterMember::NodeA,
-                r#"endpoints = ["http://etcd:2379"]"#,
+                "http://etcd:2379",
                 r#"username = "replicator""#,
                 r#"username = "rewinder""#,
             ),
             (
                 HaGivenId::CustomRoles,
                 ClusterMember::NodeB,
-                r#"endpoints = ["http://etcd:2379"]"#,
+                "http://etcd:2379",
                 r#"username = "mirrorbot""#,
                 r#"username = "rewindbot""#,
             ),
             (
                 HaGivenId::ThreeEtcd,
                 ClusterMember::NodeC,
-                r#"endpoints = ["http://etcd-c:2379"]"#,
+                "http://etcd-c:2379",
                 r#"username = "replicator""#,
                 r#"username = "rewinder""#,
             ),
         ] {
             let rendered = given.render_runtime_config(member)?;
-            validate_runtime_config_for_host(rendered.as_str())?;
+            given.validate_runtime_config_for_host(member)?;
             assert!(rendered.contains(expected_endpoint));
             assert!(rendered.contains(expected_replicator));
             assert!(rendered.contains(expected_rewinder));
@@ -562,7 +550,7 @@ mod tests {
                 ClusterMember::NodeA,
                 r#"username = "replicator""#,
                 r#"username = "rewinder""#,
-                r#"endpoints = ["http://etcd:2379"]"#,
+                "http://etcd:2379",
             ),
             (
                 "custom-roles",
@@ -570,7 +558,7 @@ mod tests {
                 ClusterMember::NodeB,
                 r#"username = "mirrorbot""#,
                 r#"username = "rewindbot""#,
-                r#"endpoints = ["http://etcd:2379"]"#,
+                "http://etcd:2379",
             ),
             (
                 "three-etcd",
@@ -578,7 +566,7 @@ mod tests {
                 ClusterMember::NodeA,
                 r#"username = "replicator""#,
                 r#"username = "rewinder""#,
-                r#"endpoints = ["http://etcd-a:2379"]"#,
+                "http://etcd-a:2379",
             ),
         ] {
             with_temporary_directory("pgtm-ha-givens", name, |output_root| {
@@ -603,11 +591,13 @@ mod tests {
                         source,
                     }
                 })?;
-                validate_runtime_config_for_host(runtime.as_str()).map_err(|source| {
-                    HarnessError::message(format!(
-                        "materialized node runtime config failed validation: {source}"
-                    ))
-                })?;
+                given
+                    .validate_runtime_config_for_host(member)
+                    .map_err(|source| {
+                        HarnessError::message(format!(
+                            "materialized node runtime config failed validation: {source}"
+                        ))
+                    })?;
                 assert!(runtime.contains(expected_replicator));
                 assert!(runtime.contains(expected_rewinder));
                 assert!(runtime.contains(expected_endpoint));
