@@ -56,52 +56,34 @@ pub(crate) async fn run_node_from_config(cfg: RuntimeConfigV2) -> Result<(), Run
 }
 
 fn prepare_runtime_start_paths(cfg: &RuntimeConfigV2) -> Result<(), RuntimeError> {
-    let data_dir = &cfg.postgres.data_dir;
-    if let Some(parent) = data_dir.parent() {
-        fs::create_dir_all(parent).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to create postgres data dir parent `{}`: {err}",
-                parent.display()
-            ))
-        })?;
+    for (label, path) in cfg.startup_directories() {
+        create_runtime_directory(label, path)?;
     }
-
-    fs::create_dir_all(data_dir).map_err(|err| {
-        RuntimeError::StartupExecution(format!(
-            "failed to create postgres data dir `{}`: {err}",
-            data_dir.display()
-        ))
-    })?;
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        fs::set_permissions(data_dir, fs::Permissions::from_mode(0o700)).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to set postgres data dir permissions on `{}`: {err}",
-                data_dir.display()
-            ))
-        })?;
-    }
-
-    fs::create_dir_all(&cfg.postgres.socket_dir).map_err(|err| {
-        RuntimeError::StartupExecution(format!(
-            "failed to create postgres socket dir `{}`: {err}",
-            cfg.postgres.socket_dir.display()
-        ))
-    })?;
-
-    if let Some(log_parent) = cfg.postgres.log_file.parent() {
-        fs::create_dir_all(log_parent).map_err(|err| {
-            RuntimeError::StartupExecution(format!(
-                "failed to create postgres log dir `{}`: {err}",
-                log_parent.display()
-            ))
-        })?;
+        fs::set_permissions(&cfg.postgres.data_dir, fs::Permissions::from_mode(0o700)).map_err(
+            |err| {
+                RuntimeError::StartupExecution(format!(
+                    "failed to set postgres data dir permissions on `{}`: {err}",
+                    cfg.postgres.data_dir.display()
+                ))
+            },
+        )?;
     }
 
     Ok(())
+}
+
+fn create_runtime_directory(label: &str, path: &Path) -> Result<(), RuntimeError> {
+    fs::create_dir_all(path).map_err(|err| {
+        RuntimeError::StartupExecution(format!(
+            "failed to create {label} `{}`: {err}",
+            path.display()
+        ))
+    })
 }
 
 async fn run_workers(

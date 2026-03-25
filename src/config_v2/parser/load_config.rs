@@ -43,7 +43,7 @@ fn load_runtime_config_contents_at(
     let document = toml::from_str::<raw::RuntimeDocument>(contents)
         .map(raw::RuntimeDocument::normalize)
         .map_err(|source| parse_error(path, source))?;
-    map_runtime_document(document, path)
+    document.into_runtime_config(path)
 }
 
 fn load_operator_config_contents_at(
@@ -67,231 +67,132 @@ fn load_operator_config_contents_at(
     parse_operator_config_value_at(document, path, true)
 }
 
-fn map_runtime_document(
-    document: raw::RuntimeDocument,
-    path: &Path,
-) -> Result<RuntimeConfigV2, ConfigErrorV2> {
-    validate_non_empty("cluster.name", document.cluster.name.as_str())?;
-    validate_non_empty("cluster.scope", document.cluster.scope.as_str())?;
-    validate_non_empty("cluster.member_id", document.cluster.member_id.as_str())?;
+impl raw::RuntimeDocument {
+    fn into_runtime_config(self, path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
+        #[rustfmt::skip]
+        let raw::RuntimeDocument { cluster, postgres, dcs, ha, process, logging, api, pgtm, debug: raw::DebugConfig { enabled: _debug_enabled } } = self;
+        #[rustfmt::skip]
+        let raw::ClusterConfig { name, scope, member_id } = cluster;
+        validate_non_empty("cluster.name", name.as_str())?;
+        validate_non_empty("cluster.scope", scope.as_str())?;
+        validate_non_empty("cluster.member_id", member_id.as_str())?;
 
-    if document.dcs.endpoints.is_empty() {
-        return Err(validation_error(
-            "dcs.endpoints",
-            "at least one endpoint is required",
-        ));
-    }
+        #[rustfmt::skip]
+        let raw::DcsConfig { endpoints, client: raw::DcsClientConfig { auth: dcs_auth_input, tls: dcs_tls_input }, init } = dcs;
+        if endpoints.is_empty() {
+            return Err(validation_error(
+                "dcs.endpoints",
+                "at least one endpoint is required",
+            ));
+        }
+        if init.is_some() {
+            return Err(validation_error(
+                "dcs.init",
+                "is not supported by config_v2",
+            ));
+        }
 
-    if !document.postgres.roles.extra.is_empty() {
-        return Err(validation_error(
-            "postgres.roles.extra",
-            "managed extra roles are not supported by config_v2",
-        ));
-    }
-    if document.dcs.init.is_some() {
-        return Err(validation_error(
-            "dcs.init",
-            "is not supported by config_v2",
-        ));
-    }
-    let _debug_enabled = document.debug.enabled;
-    let _rewind_database = document.postgres.rewind.database.clone();
+        #[rustfmt::skip]
+        let raw::PostgresConfig { paths, network, connect_timeout_s, local_database, rewind: raw::PostgresRewindConfig { database: _rewind_database, transport }, tls, roles, access, extra_gucs } = postgres;
+        #[rustfmt::skip]
+        let raw::PostgresRolesConfig { mandatory: raw::MandatoryPostgresRolesConfig { superuser, replicator, rewinder }, extra } = roles;
+        if !extra.is_empty() {
+            return Err(validation_error(
+                "postgres.roles.extra",
+                "managed extra roles are not supported by config_v2",
+            ));
+        }
+        #[rustfmt::skip]
+        let raw::PostgresPathsConfig { data_dir, socket_dir, log_file } = paths;
+        #[rustfmt::skip]
+        let raw::PostgresNetworkConfig { listen_host, listen_port, cluster_advertise, operator_advertise } = network;
+        #[rustfmt::skip]
+        let raw::ProcessConfig { timeouts, working_root, binaries: raw::BinaryResolutionConfig { overrides: raw::BinaryPathOverrides { pg_ctl, pg_rewind, initdb, pg_basebackup } } } = process;
+        #[rustfmt::skip]
+        let raw::LoggingConfig { level, capture_subprocess_output, postgres: raw::PostgresLoggingConfig { enabled: postgres_logs_enabled, pg_ctl_log_file, log_dir, poll_interval_ms, cleanup: raw::LogCleanupConfig { enabled: postgres_log_cleanup_enabled, max_files: postgres_log_cleanup_max_files, max_age_seconds: postgres_log_cleanup_max_age_seconds, protect_recent_seconds: postgres_log_cleanup_protect_recent_seconds } }, sinks: raw::LoggingSinksConfig { stderr: raw::StderrSinkConfig { enabled: stderr_enabled }, file: raw::FileSinkConfig { enabled: file_enabled, path: runtime_log_path, mode: file_mode } } } = logging;
+        #[rustfmt::skip]
+        let raw::ApiConfig { listen_addr, transport: api_transport, auth: api_auth } = api;
 
-    let working_root = if document.process.working_root.as_os_str().is_empty() {
-        PathBuf::from("/tmp/pgtuskmaster")
-    } else {
-        document.process.working_root.clone()
-    };
-    let data_dir = document.postgres.paths.data_dir.clone();
-    let socket_dir = document
-        .postgres
-        .paths
-        .socket_dir
-        .clone()
-        .unwrap_or_else(|| working_root.join("socket"));
-    let log_file = document
-        .postgres
-        .paths
-        .log_file
-        .clone()
-        .unwrap_or_else(|| working_root.join("logs/postgres.log"));
-
-    let listen_host = document.postgres.network.listen_host.clone();
-    let listen_port = document.postgres.network.listen_port;
-    let cluster_advertise = map_postgres_advertise(
-        "postgres.network.cluster_advertise",
-        document
-            .postgres
-            .network
-            .cluster_advertise
-            .unwrap_or(raw::PostgresAdvertiseConfig {
+        let config_dir = resolve_config_dir(path)?;
+        let config_dir = config_dir.as_path();
+        let working_root = normalize_config_path(
+            "process.working_root",
+            if working_root.as_os_str().is_empty() {
+                PathBuf::from("/tmp/pgtuskmaster")
+            } else {
+                working_root
+            },
+            config_dir,
+        )?;
+        let data_dir = normalize_config_path("postgres.paths.data_dir", data_dir, config_dir)?;
+        let socket_dir = normalize_path_or_default(
+            "postgres.paths.socket_dir",
+            socket_dir,
+            || working_root.join("socket"),
+            config_dir,
+        )?;
+        let log_file = normalize_path_or_default(
+            "postgres.paths.log_file",
+            log_file,
+            || working_root.join("logs/postgres.log"),
+            config_dir,
+        )?;
+        let cluster_advertise = map_postgres_advertise(
+            "postgres.network.cluster_advertise",
+            cluster_advertise.unwrap_or(raw::PostgresAdvertiseConfig {
                 host: listen_host.clone(),
                 port: listen_port,
                 hostaddr: None,
             }),
-    )?;
-    let operator_advertise = document
-        .postgres
-        .network
-        .operator_advertise
-        .map(|advertise| map_postgres_advertise("postgres.network.operator_advertise", advertise))
-        .transpose()?;
-    let postgres = PostgresConfig {
-        data_dir: data_dir.clone(),
-        socket_dir,
-        log_file,
-        listen_host,
-        listen_port,
-        cluster_advertise,
-        operator_advertise,
-        connect_timeout: Duration::from_secs(u64::from(document.postgres.connect_timeout_s)),
-        local_database: non_empty_owned(
-            "postgres.local_database",
-            document.postgres.local_database,
-        )?,
-        source_client_tls: map_postgres_client_tls(document.postgres.rewind.transport)?,
-        superuser: map_postgres_role(
-            "postgres.roles.mandatory.superuser",
-            document.postgres.roles.mandatory.superuser,
-        )?,
-        replicator: map_postgres_role(
-            "postgres.roles.mandatory.replicator",
-            document.postgres.roles.mandatory.replicator,
-        )?,
-        rewinder: map_postgres_role(
-            "postgres.roles.mandatory.rewinder",
-            document.postgres.roles.mandatory.rewinder,
-        )?,
-        pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
-        pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-        pg_hba_contents: resolve_inline_or_path_string(
-            "postgres.access.hba",
-            document.postgres.access.hba,
-        )?,
-        pg_ident_contents: resolve_inline_or_path_string(
-            "postgres.access.ident",
-            document.postgres.access.ident,
-        )?,
-        extra_gucs: document.postgres.extra_gucs,
-        tls: map_postgres_tls(document.postgres.tls)?,
-    };
+        )?;
+        let operator_advertise = operator_advertise
+            .map(|advertise| {
+                map_postgres_advertise("postgres.network.operator_advertise", advertise)
+            })
+            .transpose()?;
+        #[rustfmt::skip]
+        let postgres = PostgresConfig { data_dir: data_dir.clone(), socket_dir, log_file, listen_host, listen_port, cluster_advertise, operator_advertise, connect_timeout: Duration::from_secs(u64::from(connect_timeout_s)), local_database: non_empty_owned("postgres.local_database", local_database)?, source_client_tls: map_postgres_client_tls(transport, config_dir)?, superuser: map_postgres_role("postgres.roles.mandatory.superuser", superuser, config_dir)?, replicator: map_postgres_role("postgres.roles.mandatory.replicator", replicator, config_dir)?, rewinder: map_postgres_role("postgres.roles.mandatory.rewinder", rewinder, config_dir)?, pg_hba_file: data_dir.join("pgtm.pg_hba.conf"), pg_ident_file: data_dir.join("pgtm.pg_ident.conf"), pg_hba_contents: resolve_inline_or_path_string("postgres.access.hba", access.hba, config_dir)?, pg_ident_contents: resolve_inline_or_path_string("postgres.access.ident", access.ident, config_dir)?, extra_gucs, tls: map_postgres_tls(tls, config_dir)? };
 
-    let dcs_tls = map_dcs_tls(document.dcs.client.tls)?;
-    if document
-        .dcs
-        .endpoints
-        .iter()
-        .any(|endpoint| endpoint.trim_start().starts_with("https://"))
-        && dcs_tls.is_none()
-    {
-        return Err(validation_error(
-            "dcs.client.tls",
-            "https DCS endpoints require `dcs.client.tls` to be configured",
-        ));
+        let dcs_tls = map_dcs_tls(dcs_tls_input, config_dir)?;
+        if endpoints
+            .iter()
+            .any(|endpoint| endpoint.trim_start().starts_with("https://"))
+            && dcs_tls.is_none()
+        {
+            return Err(validation_error(
+                "dcs.client.tls",
+                "https DCS endpoints require `dcs.client.tls` to be configured",
+            ));
+        }
+        #[rustfmt::skip]
+        let dcs = DcsConfig { endpoints: endpoints.into_iter().map(|endpoint| DcsEndpoint::new(endpoint.trim().to_string())).collect(), auth: map_dcs_auth(dcs_auth_input, config_dir)?, tls: dcs_tls };
+
+        #[rustfmt::skip]
+        let binaries = BinariesConfig { pg_ctl: resolve_binary_path("process.binaries.overrides.pg_ctl", "pg_ctl", pg_ctl, config_dir)?, initdb: resolve_binary_path("process.binaries.overrides.initdb", "initdb", initdb, config_dir)?, pg_rewind: resolve_binary_path("process.binaries.overrides.pg_rewind", "pg_rewind", pg_rewind, config_dir)?, pg_basebackup: resolve_binary_path("process.binaries.overrides.pg_basebackup", "pg_basebackup", pg_basebackup, config_dir)? };
+
+        let postgres_log_dir = normalize_path_or_default(
+            "logging.postgres.log_dir",
+            log_dir,
+            || working_root.join("logs/postgres"),
+            config_dir,
+        )?;
+        let postgres_pg_ctl_log = normalize_path_or_default(
+            "logging.postgres.pg_ctl_log_file",
+            pg_ctl_log_file,
+            || postgres_log_dir.join("pg_ctl.log"),
+            config_dir,
+        )?;
+        #[rustfmt::skip]
+        let logging = LoggingConfig { level, capture_subprocess_output, stderr_enabled, file_enabled, file_path: normalize_path_or_default("logging.sinks.file.path", runtime_log_path, || working_root.join("runtime.jsonl"), config_dir)?, file_mode, postgres_logs_enabled, postgres_log_dir: postgres_log_dir.clone(), postgres_pg_ctl_log, postgres_log_poll_interval: Duration::from_millis(poll_interval_ms), postgres_log_cleanup_enabled, postgres_log_cleanup_max_files, postgres_log_cleanup_max_age: Duration::from_secs(postgres_log_cleanup_max_age_seconds), postgres_log_cleanup_protect_recent: Duration::from_secs(postgres_log_cleanup_protect_recent_seconds) };
+        let operator_advertise = pgtm
+            .map(|pgtm| parse_operator_config_value_at(pgtm, path, false))
+            .transpose()?
+            .and_then(|config| config.advertised_url);
+
+        #[rustfmt::skip]
+        let runtime_config = RuntimeConfigV2 { cluster_name: ClusterName(name), scope: ScopeName(scope), member_id: MemberId(member_id), postgres, dcs, timing: TimingConfig { ha_loop_interval: Duration::from_millis(ha.loop_interval_ms), ha_lease_ttl: Duration::from_millis(ha.lease_ttl_ms), bootstrap_timeout: Duration::from_millis(timeouts.bootstrap_ms), pg_rewind_timeout: Duration::from_millis(timeouts.pg_rewind_ms), fencing_timeout: Duration::from_millis(timeouts.fencing_ms) }, binaries, logging, api: ApiConfig { listen_addr, transport: map_api_transport_at(api_transport, config_dir)?, auth: map_runtime_api_auth_at(api_auth, config_dir)?, advertise: operator_advertise } };
+        Ok(runtime_config)
     }
-
-    let dcs = DcsConfig {
-        endpoints: document
-            .dcs
-            .endpoints
-            .into_iter()
-            .map(|endpoint| DcsEndpoint::new(endpoint.trim().to_string()))
-            .collect(),
-        auth: map_dcs_auth(document.dcs.client.auth)?,
-        tls: dcs_tls,
-    };
-
-    let binaries = BinariesConfig {
-        pg_ctl: resolve_binary_path(
-            "process.binaries.overrides.pg_ctl",
-            "pg_ctl",
-            document.process.binaries.overrides.pg_ctl,
-        )?,
-        initdb: resolve_binary_path(
-            "process.binaries.overrides.initdb",
-            "initdb",
-            document.process.binaries.overrides.initdb,
-        )?,
-        pg_rewind: resolve_binary_path(
-            "process.binaries.overrides.pg_rewind",
-            "pg_rewind",
-            document.process.binaries.overrides.pg_rewind,
-        )?,
-        pg_basebackup: resolve_binary_path(
-            "process.binaries.overrides.pg_basebackup",
-            "pg_basebackup",
-            document.process.binaries.overrides.pg_basebackup,
-        )?,
-    };
-
-    let postgres_log_dir = document
-        .logging
-        .postgres
-        .log_dir
-        .clone()
-        .unwrap_or_else(|| working_root.join("logs/postgres"));
-
-    let logging = LoggingConfig {
-        level: document.logging.level,
-        capture_subprocess_output: document.logging.capture_subprocess_output,
-        stderr_enabled: document.logging.sinks.stderr.enabled,
-        file_enabled: document.logging.sinks.file.enabled,
-        file_path: document
-            .logging
-            .sinks
-            .file
-            .path
-            .clone()
-            .unwrap_or_else(|| working_root.join("runtime.jsonl")),
-        file_mode: document.logging.sinks.file.mode,
-        postgres_logs_enabled: document.logging.postgres.enabled,
-        postgres_log_dir: postgres_log_dir.clone(),
-        postgres_pg_ctl_log: document
-            .logging
-            .postgres
-            .pg_ctl_log_file
-            .clone()
-            .unwrap_or_else(|| postgres_log_dir.join("pg_ctl.log")),
-        postgres_log_poll_interval: Duration::from_millis(
-            document.logging.postgres.poll_interval_ms,
-        ),
-        postgres_log_cleanup_enabled: document.logging.postgres.cleanup.enabled,
-        postgres_log_cleanup_max_files: document.logging.postgres.cleanup.max_files,
-        postgres_log_cleanup_max_age: Duration::from_secs(
-            document.logging.postgres.cleanup.max_age_seconds,
-        ),
-        postgres_log_cleanup_protect_recent: Duration::from_secs(
-            document.logging.postgres.cleanup.protect_recent_seconds,
-        ),
-    };
-    let operator_advertise = document
-        .pgtm
-        .map(|pgtm| parse_operator_config_value_at(pgtm, path, false))
-        .transpose()?
-        .and_then(|config| config.advertised_url);
-
-    Ok(RuntimeConfigV2 {
-        cluster_name: ClusterName(document.cluster.name),
-        scope: ScopeName(document.cluster.scope),
-        member_id: MemberId(document.cluster.member_id),
-        postgres,
-        dcs,
-        timing: TimingConfig {
-            ha_loop_interval: Duration::from_millis(document.ha.loop_interval_ms),
-            ha_lease_ttl: Duration::from_millis(document.ha.lease_ttl_ms),
-            bootstrap_timeout: Duration::from_millis(document.process.timeouts.bootstrap_ms),
-            pg_rewind_timeout: Duration::from_millis(document.process.timeouts.pg_rewind_ms),
-            fencing_timeout: Duration::from_millis(document.process.timeouts.fencing_ms),
-        },
-        binaries,
-        logging,
-        api: ApiConfig {
-            listen_addr: document.api.listen_addr,
-            transport: map_api_transport(document.api.transport)?,
-            auth: map_runtime_api_auth(document.api.auth)?,
-            advertise: operator_advertise,
-        },
-    })
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -432,18 +333,21 @@ pub(super) fn normalize_optional_string(value: Option<String>) -> Option<String>
 pub(super) fn resolve_secret_optional(
     field: &'static str,
     source: Option<raw::SecretSource>,
+    config_dir: &Path,
 ) -> Result<Option<Secret>, ConfigErrorV2> {
     source
-        .map(|source| resolve_secret_required(field, source))
+        .map(|source| resolve_secret_required(field, source, config_dir))
         .transpose()
 }
 
 pub(super) fn resolve_secret_required(
     field: &'static str,
     source: raw::SecretSource,
+    config_dir: &Path,
 ) -> Result<Secret, ConfigErrorV2> {
     let value = match source {
         raw::SecretSource::PathConfig { path } => {
+            let path = normalize_config_path(field, path, config_dir)?;
             std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
                 path: path.display().to_string(),
                 source,
@@ -465,6 +369,7 @@ pub(super) fn resolve_secret_required(
                 )
             })?,
         raw::SecretSource::Tagged(raw::TaggedSecretSource::File { path }) => {
+            let path = normalize_config_path(field, path, config_dir)?;
             std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
                 path: path.display().to_string(),
                 source,
@@ -483,23 +388,23 @@ pub(super) fn resolve_secret_required(
 pub(super) fn resolve_path_only(
     field: &'static str,
     source: raw::PathSource,
+    config_dir: &Path,
 ) -> Result<PathBuf, ConfigErrorV2> {
     match source {
         raw::PathSource::Path(path) | raw::PathSource::PathConfig { path } => {
-            if path.as_os_str().is_empty() {
-                return Err(validation_error(field, "must not be empty"));
-            }
-            Ok(path)
+            normalize_config_path(field, path, config_dir)
         }
     }
 }
 
 fn resolve_inline_or_path_string(
-    _field: &'static str,
+    field: &'static str,
     source: raw::PathOrInline,
+    config_dir: &Path,
 ) -> Result<String, ConfigErrorV2> {
     match source {
         raw::PathOrInline::Path(path) | raw::PathOrInline::PathConfig { path } => {
+            let path = normalize_config_path(field, path, config_dir)?;
             std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
                 path: path.display().to_string(),
                 source,
@@ -512,23 +417,27 @@ fn resolve_inline_or_path_string(
 fn map_postgres_role(
     field_prefix: &'static str,
     role: raw::PostgresRoleConfig,
+    config_dir: &Path,
 ) -> Result<RoleConfig, ConfigErrorV2> {
     validate_non_empty(role_username_field(field_prefix), role.username.as_str())?;
     let raw::RoleAuthConfig::Password { password } = role.auth;
     Ok(RoleConfig {
         username: role.username,
-        password: resolve_secret_required(role_password_field(field_prefix), password)?,
+        password: resolve_secret_required(role_password_field(field_prefix), password, config_dir)?,
     })
 }
 
 fn map_postgres_client_tls(
     transport: raw::PostgresClientTransportConfig,
+    config_dir: &Path,
 ) -> Result<PgClientTls, ConfigErrorV2> {
     Ok(PgClientTls {
         mode: transport.ssl_mode,
         root_cert: transport
             .ca_cert
-            .map(|ca_cert| resolve_path_only("postgres.rewind.transport.ca_cert", ca_cert))
+            .map(|ca_cert| {
+                resolve_path_only("postgres.rewind.transport.ca_cert", ca_cert, config_dir)
+            })
             .transpose()?,
         client_cert: None,
         client_key: None,
@@ -555,39 +464,64 @@ fn role_password_field(field_prefix: &'static str) -> &'static str {
     }
 }
 
-fn map_postgres_tls(tls: raw::TlsServerConfig) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+fn map_postgres_tls(
+    tls: raw::TlsServerConfig,
+    config_dir: &Path,
+) -> Result<Option<TlsConfig>, ConfigErrorV2> {
     match tls {
         raw::TlsServerConfig::Disabled => Ok(None),
         raw::TlsServerConfig::Enabled {
             identity,
             client_auth,
         } => Ok(Some(TlsConfig {
-            cert: resolve_path_only("postgres.tls.identity.cert_chain", identity.cert_chain)?,
-            key: resolve_path_only("postgres.tls.identity.private_key", identity.private_key)?,
+            cert: resolve_path_only(
+                "postgres.tls.identity.cert_chain",
+                identity.cert_chain,
+                config_dir,
+            )?,
+            key: resolve_path_only(
+                "postgres.tls.identity.private_key",
+                identity.private_key,
+                config_dir,
+            )?,
             ca_cert: client_auth
                 .map(|client_auth| {
                     let _client_certificate_mode = client_auth.client_certificate;
-                    resolve_path_only("postgres.tls.client_auth.client_ca", client_auth.client_ca)
+                    resolve_path_only(
+                        "postgres.tls.client_auth.client_ca",
+                        client_auth.client_ca,
+                        config_dir,
+                    )
                 })
                 .transpose()?,
         })),
     }
 }
 
-fn map_dcs_auth(auth: raw::DcsAuthConfig) -> Result<Option<DcsAuth>, ConfigErrorV2> {
+fn map_dcs_auth(
+    auth: raw::DcsAuthConfig,
+    config_dir: &Path,
+) -> Result<Option<DcsAuth>, ConfigErrorV2> {
     match auth {
         raw::DcsAuthConfig::Disabled => Ok(None),
         raw::DcsAuthConfig::Basic { username, password } => {
             validate_non_empty("dcs.client.auth.username", username.as_str())?;
             Ok(Some(DcsAuth {
                 username,
-                password: resolve_secret_required("dcs.client.auth.password", password)?,
+                password: resolve_secret_required(
+                    "dcs.client.auth.password",
+                    password,
+                    config_dir,
+                )?,
             }))
         }
     }
 }
 
-fn map_dcs_tls(tls: raw::DcsTlsConfig) -> Result<Option<TlsConfig>, ConfigErrorV2> {
+fn map_dcs_tls(
+    tls: raw::DcsTlsConfig,
+    config_dir: &Path,
+) -> Result<Option<TlsConfig>, ConfigErrorV2> {
     match tls {
         raw::DcsTlsConfig::Disabled => Ok(None),
         raw::DcsTlsConfig::Enabled {
@@ -608,10 +542,10 @@ fn map_dcs_tls(tls: raw::DcsTlsConfig) -> Result<Option<TlsConfig>, ConfigErrorV
                 ));
             };
             Ok(Some(TlsConfig {
-                cert: resolve_path_only("dcs.client.tls.identity.cert", identity.cert)?,
-                key: resolve_path_only("dcs.client.tls.identity.key", identity.key)?,
+                cert: resolve_path_only("dcs.client.tls.identity.cert", identity.cert, config_dir)?,
+                key: resolve_path_only("dcs.client.tls.identity.key", identity.key, config_dir)?,
                 ca_cert: ca_cert
-                    .map(|ca_cert| resolve_path_only("dcs.client.tls.ca_cert", ca_cert))
+                    .map(|ca_cert| resolve_path_only("dcs.client.tls.ca_cert", ca_cert, config_dir))
                     .transpose()?,
             }))
         }
@@ -648,60 +582,7 @@ fn parse_operator_config_value_at(
     let document: raw::OperatorDocument = value
         .try_into()
         .map_err(|source| parse_error(path, source))?;
-    map_operator_document(document, resolve_auth_tokens)
-}
-
-fn map_operator_document(
-    document: raw::OperatorDocument,
-    resolve_auth_tokens: bool,
-) -> Result<OperatorConfigV2, ConfigErrorV2> {
-    let raw::OperatorDocument { api, postgres } = document;
-    let raw::OperatorApiConfig {
-        base_url,
-        advertised_url,
-        expected_transport,
-        resolve_to,
-        auth,
-        tls: api_tls,
-    } = api;
-    let (read_token_source, admin_token_source) = take_token_sources(auth.clone());
-    let (read_token, admin_token) = match (resolve_auth_tokens, token_auth_mode(&auth)) {
-        (_, TokenAuthMode::Disabled) | (false, TokenAuthMode::RoleTokens) => (None, None),
-        (true, TokenAuthMode::RoleTokens) => (
-            resolve_secret_optional("pgtm.api.auth.read_token", read_token_source)?,
-            resolve_secret_optional("pgtm.api.auth.admin_token", admin_token_source)?,
-        ),
-    };
-    let api_tls = resolve_operator_client_tls(
-        api_tls,
-        "pgtm.api.tls.ca_cert",
-        "pgtm.api.tls.identity.cert",
-        "pgtm.api.tls.identity.key",
-    )?;
-    let postgres_tls = resolve_operator_client_tls(
-        postgres.tls,
-        "pgtm.postgres.tls.ca_cert",
-        "pgtm.postgres.tls.identity.cert",
-        "pgtm.postgres.tls.identity.key",
-    )?;
-
-    Ok(OperatorConfigV2 {
-        base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?,
-        advertised_url: parse_operator_url(
-            "pgtm.api.advertised_url",
-            advertised_url,
-            expected_transport,
-        )?
-        .map(|url| {
-            ApiRoute::from_url(url).map_err(|err| validation_error("pgtm.api.advertised_url", err))
-        })
-        .transpose()?,
-        expected_transport,
-        resolve_to,
-        client_tls: merge_operator_client_tls(api_tls, postgres_tls)?,
-        read_token,
-        admin_token,
-    })
+    document.into_operator_config(path, resolve_auth_tokens)
 }
 
 fn resolve_operator_client_tls(
@@ -709,17 +590,18 @@ fn resolve_operator_client_tls(
     ca_field: &'static str,
     cert_field: &'static str,
     key_field: &'static str,
+    config_dir: &Path,
 ) -> Result<Option<PgClientTls>, ConfigErrorV2> {
     let root_cert = tls
         .ca_cert
-        .map(|ca_cert| resolve_path_only(ca_field, ca_cert))
+        .map(|ca_cert| resolve_path_only(ca_field, ca_cert, config_dir))
         .transpose()?;
     let identity = tls
         .identity
         .map(|identity| {
             Ok((
-                resolve_path_only(cert_field, identity.cert)?,
-                resolve_path_only(key_field, identity.key)?,
+                resolve_path_only(cert_field, identity.cert, config_dir)?,
+                resolve_path_only(key_field, identity.key, config_dir)?,
             ))
         })
         .transpose()?;
@@ -832,7 +714,10 @@ fn merge_operator_client_tls(
     }
 }
 
-fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport, ConfigErrorV2> {
+fn map_api_transport_at(
+    transport: raw::ApiTransportConfig,
+    config_dir: &Path,
+) -> Result<ApiTransport, ConfigErrorV2> {
     match transport {
         raw::ApiTransportConfig::Http => Ok(ApiTransport::Http),
         raw::ApiTransportConfig::Https { tls } => {
@@ -843,6 +728,7 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
                         Some(resolve_path_only(
                             "api.transport.tls.client_auth.client_ca",
                             client_ca,
+                            config_dir,
                         )?),
                         false,
                         Vec::new(),
@@ -854,6 +740,7 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
                         Some(resolve_path_only(
                             "api.transport.tls.client_auth.client_ca",
                             client_ca,
+                            config_dir,
                         )?),
                         true,
                         allowed_common_names,
@@ -865,10 +752,12 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
                     cert: resolve_path_only(
                         "api.transport.tls.identity.cert_chain",
                         tls.identity.cert_chain,
+                        config_dir,
                     )?,
                     key: resolve_path_only(
                         "api.transport.tls.identity.private_key",
                         tls.identity.private_key,
+                        config_dir,
                     )?,
                     ca_cert: None,
                 },
@@ -880,7 +769,10 @@ fn map_api_transport(transport: raw::ApiTransportConfig) -> Result<ApiTransport,
     }
 }
 
-fn map_runtime_api_auth(auth: raw::TokenAuthConfig) -> Result<ApiAuth, ConfigErrorV2> {
+fn map_runtime_api_auth_at(
+    auth: raw::TokenAuthConfig,
+    config_dir: &Path,
+) -> Result<ApiAuth, ConfigErrorV2> {
     let mode = token_auth_mode(&auth);
     let (read_token, admin_token) = take_token_sources(auth);
     match mode {
@@ -891,12 +783,14 @@ fn map_runtime_api_auth(auth: raw::TokenAuthConfig) -> Result<ApiAuth, ConfigErr
                 read_token.ok_or_else(|| {
                     validation_error("api.auth.read_token", "is required when auth is enabled")
                 })?,
+                config_dir,
             )?,
             admin_token: resolve_secret_required(
                 "api.auth.admin_token",
                 admin_token.ok_or_else(|| {
                     validation_error("api.auth.admin_token", "is required when auth is enabled")
                 })?,
+                config_dir,
             )?,
         }),
     }
@@ -940,8 +834,10 @@ fn resolve_binary_path(
     field: &'static str,
     executable: &str,
     override_path: Option<PathBuf>,
+    config_dir: &Path,
 ) -> Result<PathBuf, ConfigErrorV2> {
     if let Some(path) = override_path {
+        let path = normalize_config_path(field, path, config_dir)?;
         if !path.is_file() {
             return Err(validation_error(
                 "process.binaries",
@@ -991,6 +887,100 @@ fn resolve_binary_path(
             "unable to resolve `{executable}` via PATH or conventional PostgreSQL install locations; {detail}; set `{field}` explicitly if autodiscovery fails"
         ),
     ))
+}
+
+impl raw::OperatorDocument {
+    fn into_operator_config(
+        self,
+        path: &Path,
+        resolve_auth_tokens: bool,
+    ) -> Result<OperatorConfigV2, ConfigErrorV2> {
+        #[rustfmt::skip]
+        let raw::OperatorDocument { api, postgres } = self;
+        #[rustfmt::skip]
+        let raw::OperatorApiConfig { base_url, advertised_url, expected_transport, resolve_to, auth, tls: api_tls } = api;
+        let config_dir = resolve_config_dir(path)?;
+        let (read_token_source, admin_token_source) = take_token_sources(auth.clone());
+        let (read_token, admin_token) = match (resolve_auth_tokens, token_auth_mode(&auth)) {
+            (_, TokenAuthMode::Disabled) | (false, TokenAuthMode::RoleTokens) => (None, None),
+            (true, TokenAuthMode::RoleTokens) => (
+                resolve_secret_optional(
+                    "pgtm.api.auth.read_token",
+                    read_token_source,
+                    config_dir.as_path(),
+                )?,
+                resolve_secret_optional(
+                    "pgtm.api.auth.admin_token",
+                    admin_token_source,
+                    config_dir.as_path(),
+                )?,
+            ),
+        };
+        let api_tls = resolve_operator_client_tls(
+            api_tls,
+            "pgtm.api.tls.ca_cert",
+            "pgtm.api.tls.identity.cert",
+            "pgtm.api.tls.identity.key",
+            config_dir.as_path(),
+        )?;
+        let postgres_tls = resolve_operator_client_tls(
+            postgres.tls,
+            "pgtm.postgres.tls.ca_cert",
+            "pgtm.postgres.tls.identity.cert",
+            "pgtm.postgres.tls.identity.key",
+            config_dir.as_path(),
+        )?;
+
+        #[rustfmt::skip]
+        let operator_config = OperatorConfigV2 { base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?, advertised_url: parse_operator_url("pgtm.api.advertised_url", advertised_url, expected_transport)?.map(|url| ApiRoute::from_url(url).map_err(|err| validation_error("pgtm.api.advertised_url", err))).transpose()?, expected_transport, resolve_to, client_tls: merge_operator_client_tls(api_tls, postgres_tls)?, read_token, admin_token };
+        Ok(operator_config)
+    }
+}
+
+fn resolve_config_dir(path: &Path) -> Result<PathBuf, ConfigErrorV2> {
+    let relative_parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    if relative_parent.is_absolute() {
+        return Ok(relative_parent);
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(relative_parent))
+        .map_err(|source| ConfigErrorV2::Io {
+            path: ".".to_string(),
+            source,
+        })
+}
+
+fn normalize_config_path(
+    field: &'static str,
+    path: PathBuf,
+    config_dir: &Path,
+) -> Result<PathBuf, ConfigErrorV2> {
+    if path.as_os_str().is_empty() {
+        return Err(validation_error(field, "must not be empty"));
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    })
+}
+
+fn normalize_path_or_default<F>(
+    field: &'static str,
+    path: Option<PathBuf>,
+    default: F,
+    config_dir: &Path,
+) -> Result<PathBuf, ConfigErrorV2>
+where
+    F: FnOnce() -> PathBuf,
+{
+    path.map(|path| normalize_config_path(field, path, config_dir))
+        .transpose()?
+        .map_or_else(|| Ok(default()), Ok)
 }
 
 fn conventional_postgres_bin_dirs() -> Vec<PathBuf> {

@@ -98,15 +98,14 @@ pub(crate) fn materialize_managed_postgres_config(
         });
     }
 
-    let managed_hba = absolutize_path(&cfg.postgres.pg_hba_file)?;
-    let managed_ident = absolutize_path(&cfg.postgres.pg_ident_file)?;
-    let managed_postgresql_conf = absolutize_path(&managed_postgresql_conf_path(data_dir))?;
-    let managed_standby_passfile = absolutize_path(&managed_standby_passfile_path(data_dir))?;
-    let standby_signal = absolutize_path(&managed_standby_signal_path(data_dir))?;
-    let recovery_signal = absolutize_path(&managed_recovery_signal_path(data_dir))?;
-    let postgresql_auto_conf = absolutize_path(&managed_postgresql_auto_conf_path(data_dir))?;
-    let quarantined_postgresql_auto_conf =
-        absolutize_path(&quarantined_postgresql_auto_conf_path(data_dir))?;
+    let managed_hba = cfg.postgres.pg_hba_file.clone();
+    let managed_ident = cfg.postgres.pg_ident_file.clone();
+    let managed_postgresql_conf = managed_postgresql_conf_path(data_dir);
+    let managed_standby_passfile = managed_standby_passfile_path(data_dir);
+    let standby_signal = managed_standby_signal_path(data_dir);
+    let recovery_signal = managed_recovery_signal_path(data_dir);
+    let postgresql_auto_conf = managed_postgresql_auto_conf_path(data_dir);
+    let quarantined_postgresql_auto_conf = quarantined_postgresql_auto_conf_path(data_dir);
 
     write_atomic(
         &managed_hba,
@@ -158,38 +157,29 @@ pub(crate) fn inspect_managed_recovery_state(
 }
 
 fn managed_tls_config(cfg: &RuntimeConfigV2) -> Result<Option<TlsConfig>, ManagedPostgresError> {
-    match &cfg.postgres.tls {
-        None => Ok(None),
-        Some(tls) => Ok(Some(TlsConfig {
-            cert: resolve_existing_configured_file(
-                "postgres.tls.identity.cert_chain",
-                tls.cert.as_path(),
-            )?,
-            key: resolve_existing_configured_file(
-                "postgres.tls.identity.private_key",
-                tls.key.as_path(),
-            )?,
-            ca_cert: tls
-                .ca_cert
-                .as_ref()
-                .map(|path| {
-                    resolve_existing_configured_file(
-                        "postgres.tls.client_auth.client_ca",
-                        path.as_path(),
-                    )
-                })
-                .transpose()?,
-        })),
-    }
+    cfg.postgres
+        .tls
+        .as_ref()
+        .map(validate_managed_tls_config)
+        .transpose()?;
+    Ok(cfg.postgres.tls.clone())
 }
 
-fn resolve_existing_configured_file(
-    field: &str,
-    path: &Path,
-) -> Result<PathBuf, ManagedPostgresError> {
-    let path = absolutize_path(path)?;
-    match fs::metadata(&path) {
-        Ok(metadata) if metadata.is_file() => Ok(path),
+fn validate_managed_tls_config(tls: &TlsConfig) -> Result<(), ManagedPostgresError> {
+    validate_existing_configured_file("postgres.tls.identity.cert_chain", tls.cert.as_path())?;
+    validate_existing_configured_file("postgres.tls.identity.private_key", tls.key.as_path())?;
+    tls.ca_cert
+        .as_ref()
+        .map(|path| {
+            validate_existing_configured_file("postgres.tls.client_auth.client_ca", path.as_path())
+        })
+        .transpose()?;
+    Ok(())
+}
+
+fn validate_existing_configured_file(field: &str, path: &Path) -> Result<(), ManagedPostgresError> {
+    match fs::metadata(path) {
+        Ok(metadata) if metadata.is_file() => Ok(()),
         Ok(_) => Err(ManagedPostgresError::InvalidConfig {
             message: format!("{field} must point to a file: {}", path.display()),
         }),
@@ -568,16 +558,6 @@ fn existing_recovery_signal(
             ),
         }),
     }
-}
-
-fn absolutize_path(path: &Path) -> Result<PathBuf, ManagedPostgresError> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    let cwd = std::env::current_dir().map_err(|err| ManagedPostgresError::Io {
-        message: format!("failed to read current_dir: {err}"),
-    })?;
-    Ok(cwd.join(path))
 }
 
 fn remove_file_if_exists(path: &Path) -> Result<(), ManagedPostgresError> {

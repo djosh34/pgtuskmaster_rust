@@ -4,7 +4,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 
@@ -250,5 +250,20 @@ pub struct OperatorConfigV2 {
 impl OperatorConfigV2 {
     pub fn api_auth_enabled(&self) -> bool {
         self.read_token.is_some() || self.admin_token.is_some()
+    }
+}
+
+impl RuntimeConfigV2 {
+    pub(crate) fn startup_directories(&self) -> impl Iterator<Item = (&'static str, &Path)> {
+        [
+            Some(("postgres data dir", self.postgres.data_dir.as_path())),
+            Some(("postgres socket dir", self.postgres.socket_dir.as_path())),
+            self.postgres
+                .log_file
+                .parent()
+                .map(|path| ("postgres log dir", path)),
+        ]
+        .into_iter()
+        .flatten()
     }
 }
