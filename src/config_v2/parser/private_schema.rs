@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::{
     config_v2::types::{
@@ -72,7 +72,7 @@ where
     })
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum PathOrInline {
     Path(PathBuf),
@@ -80,21 +80,21 @@ pub(super) enum PathOrInline {
     Inline { content: String },
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub(super) enum PathSource {
     Path(PathBuf),
     PathConfig { path: PathBuf },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(super) enum SecretSource {
     Tagged(TaggedSecretSource),
     PathConfig { path: PathBuf },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub(super) enum TaggedSecretSource {
     None,
@@ -103,35 +103,35 @@ pub(super) enum TaggedSecretSource {
     String { value: String },
 }
 
-#[derive(Clone, Copy, Debug, Deserialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum ClientCertificateMode {
     Optional,
     Required,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsServerIdentityConfig {
     pub cert_chain: PathSource,
     pub private_key: PathSource,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsClientIdentityConfig {
     pub cert: PathSource,
     pub key: PathSource,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TlsClientAuthConfig {
     pub client_ca: PathSource,
     pub client_certificate: ClientCertificateMode,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub(super) enum TlsServerConfig {
     #[default]
@@ -142,7 +142,7 @@ pub(super) enum TlsServerConfig {
     },
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(tag = "client_certificate", rename_all = "snake_case")]
 pub(super) enum ApiClientAuthConfig {
     #[default]
@@ -157,7 +157,7 @@ pub(super) enum ApiClientAuthConfig {
     },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApiTlsConfig {
     pub identity: TlsServerIdentityConfig,
@@ -165,7 +165,7 @@ pub(super) struct ApiTlsConfig {
     pub client_auth: ApiClientAuthConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub(super) enum ApiTransportConfig {
     #[default]
@@ -175,7 +175,7 @@ pub(super) enum ApiTransportConfig {
     },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RuntimeDocument {
     pub cluster: ClusterConfig,
@@ -195,7 +195,7 @@ pub(super) struct RuntimeDocument {
     pub debug: DebugConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClusterConfig {
     pub name: String,
@@ -203,7 +203,7 @@ pub(super) struct ClusterConfig {
     pub member_id: String,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresConfig {
     pub paths: PostgresPathsConfig,
@@ -226,7 +226,7 @@ pub(super) struct PostgresConfig {
     pub extra_gucs: BTreeMap<String, String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresPathsConfig {
     pub data_dir: PathBuf,
@@ -234,7 +234,7 @@ pub(super) struct PostgresPathsConfig {
     pub log_file: Option<PathBuf>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresNetworkConfig {
     #[serde(deserialize_with = "deserialize_postgres_listen_host")]
@@ -256,7 +256,7 @@ impl Default for PostgresNetworkConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresAdvertiseConfig {
     pub host: String,
@@ -264,7 +264,7 @@ pub(super) struct PostgresAdvertiseConfig {
     pub hostaddr: Option<IpAddr>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresRewindConfig {
     #[serde(default = "default_postgres_database")]
@@ -282,7 +282,7 @@ impl Default for PostgresRewindConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresClientTransportConfig {
     #[serde(default = "default_pg_ssl_mode")]
@@ -299,20 +299,20 @@ impl Default for PostgresClientTransportConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum RoleAuthConfig {
     Password { password: SecretSource },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresRoleConfig {
     pub username: String,
     pub auth: RoleAuthConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct MandatoryPostgresRolesConfig {
     pub superuser: PostgresRoleConfig,
@@ -320,7 +320,7 @@ pub(super) struct MandatoryPostgresRolesConfig {
     pub rewinder: PostgresRoleConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresRolesConfig {
     pub mandatory: MandatoryPostgresRolesConfig,
@@ -328,14 +328,14 @@ pub(super) struct PostgresRolesConfig {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct PostgresAccessConfig {
     pub hba: PathOrInline,
     pub ident: PathOrInline,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DcsConfig {
     pub endpoints: Vec<String>,
@@ -344,7 +344,7 @@ pub(super) struct DcsConfig {
     pub init: Option<toml::Value>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DcsClientConfig {
     #[serde(default)]
@@ -353,7 +353,7 @@ pub(super) struct DcsClientConfig {
     pub tls: DcsTlsConfig,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(super) enum DcsAuthConfig {
     #[default]
@@ -364,7 +364,7 @@ pub(super) enum DcsAuthConfig {
     },
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(tag = "mode", rename_all = "lowercase")]
 pub(super) enum DcsTlsConfig {
     #[default]
@@ -376,7 +376,7 @@ pub(super) enum DcsTlsConfig {
     },
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ApiConfig {
     #[serde(default = "default_api_listen_addr")]
@@ -397,14 +397,14 @@ impl Default for ApiConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct TokenAuthConfig {
     #[serde(rename = "type")]
-    pub(super) kind: Option<String>,
-    pub(super) read_token: Option<SecretSource>,
-    pub(super) admin_token: Option<SecretSource>,
-    pub(super) tokens: Option<RoleTokens>,
+    pub kind: Option<String>,
+    pub read_token: Option<SecretSource>,
+    pub admin_token: Option<SecretSource>,
+    pub tokens: Option<RoleTokens>,
 }
 
 impl TokenAuthConfig {
@@ -419,18 +419,18 @@ impl TokenAuthConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct RoleTokens {
     pub read_token: Option<SecretSource>,
     pub admin_token: Option<SecretSource>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ClientTlsInput {
-    pub(super) ca_cert: Option<PathSource>,
-    pub(super) identity: Option<TlsClientIdentityConfig>,
+    pub ca_cert: Option<PathSource>,
+    pub identity: Option<TlsClientIdentityConfig>,
 }
 
 impl PathSource {
@@ -756,7 +756,7 @@ impl ApiTransportConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorDocument {
     #[serde(default)]
@@ -765,7 +765,7 @@ pub(super) struct OperatorDocument {
     pub client_tls: ClientTlsInput,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorApiConfig {
     pub base_url: Option<String>,
@@ -776,7 +776,7 @@ pub(super) struct OperatorApiConfig {
     pub auth: TokenAuthConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct DebugConfig {
     pub enabled: bool,

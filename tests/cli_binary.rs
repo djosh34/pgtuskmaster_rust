@@ -10,6 +10,14 @@ use std::{
 
 use pgtuskmaster_test_support::config_v2::render_runtime_test_config_toml;
 
+#[rustfmt::skip]
+const API_HTTP_DISABLED_AUTH: &str = "[api]\ntransport = { transport = \"http\" }\nauth = { type = \"disabled\" }";
+#[rustfmt::skip]
+const DCS_BASIC_AUTH_EMPTY_USERNAME: &str = "[dcs.client.auth]\ntype = \"basic\"\nusername = \"\"\npassword = { type = \"string\", value = \"secret-password\" }";
+#[rustfmt::skip]
+const MISSING_PROCESS_BINARIES: &str = "[process.binaries]\ninitdb = \"/definitely/missing/initdb\"\npg_basebackup = \"/definitely/missing/pg_basebackup\"\npg_rewind = \"/definitely/missing/pg_rewind\"\npg_ctl = \"/definitely/missing/pg_ctl\"";
+const PROCESS_BINARIES_USR_BIN: &str = "[process.binaries]\ninitdb = \"/usr/bin/initdb\"\npg_basebackup = \"/usr/bin/pg_basebackup\"\npg_rewind = \"/usr/bin/pg_rewind\"\npg_ctl = \"/usr/bin/pg_ctl\"";
+
 fn spawn_single_request_server(
     response: &str,
 ) -> Result<(std::net::SocketAddr, mpsc::Receiver<String>), String> {
@@ -80,6 +88,47 @@ fn write_temp_toml(label: &str, contents: impl AsRef<str>) -> Result<PathBuf, St
     fs::write(&path, contents.as_ref())
         .map_err(|err| format!("write config {} failed: {err}", path.display()))?;
     Ok(path)
+}
+
+fn assert_node_runtime_config_failure(
+    label: &str,
+    dcs_endpoint: &str,
+    extra_sections: &[&str],
+    expected_stderr: &str,
+) -> Result<(), String> {
+    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
+    let path = write_temp_toml(
+        label,
+        render_runtime_test_config_toml(
+            "cluster-a",
+            "scope-a",
+            "member-a",
+            (
+                Path::new("/var/lib/postgresql/data"),
+                Path::new("/tmp/pgtm-socket"),
+                Path::new("/tmp/pgtm.log"),
+            ),
+            [dcs_endpoint],
+            extra_sections.iter().copied(),
+        )
+        .map_err(|err| format!("render config failed: {err}"))?,
+    )
+    .map_err(|err| format!("write config failed: {err}"))?;
+
+    let output = Command::new(&bin)
+        .args(["--config", path.to_string_lossy().as_ref()])
+        .output()
+        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(expected_stderr),
+        "stderr should mention {expected_stderr}, got: {stderr}"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
 }
 
 #[test]
@@ -257,153 +306,41 @@ member_id = "member-a"
 
 #[test]
 fn node_missing_secure_field_prints_stable_field_path() -> Result<(), String> {
-    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_toml(
+    assert_node_runtime_config_failure(
         "missing-process-binaries",
-        render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "member-a",
-            (
-                Path::new("/var/lib/postgresql/data"),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
-            ),
-            ["http://127.0.0.1:2379"],
-            [
-                r#"[process.timeouts]
+        "http://127.0.0.1:2379",
+        &[
+            r#"[process.timeouts]
 pg_rewind_ms = 120000
 bootstrap_ms = 300000
 fencing_ms = 30000"#,
-                r#"[process.binaries]
-initdb = "/definitely/missing/initdb"
-pg_basebackup = "/definitely/missing/pg_basebackup"
-pg_rewind = "/definitely/missing/pg_rewind"
-pg_ctl = "/definitely/missing/pg_ctl""#,
-                r#"[api]
-transport = { transport = "http" }
-auth = { type = "disabled" }"#,
-            ],
-        ),
+            MISSING_PROCESS_BINARIES,
+            API_HTTP_DISABLED_AUTH,
+        ],
+        "`process.binaries`",
     )
-    .map_err(|err| format!("write config failed: {err}"))?;
-
-    let output = Command::new(&bin)
-        .args(["--config", path.to_string_lossy().as_ref()])
-        .output()
-        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "invalid configs should exit with code 1"
-    );
-
-    let stderr = String::from_utf8(output.stderr)
-        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
-    assert!(
-        stderr.contains("`process.binaries`"),
-        "stderr should mention stable field path, got: {stderr}"
-    );
-
-    let _ = std::fs::remove_file(path);
-    Ok(())
 }
 
 #[test]
 fn node_rejects_empty_dcs_basic_auth_username_with_stable_field_path() -> Result<(), String> {
-    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_toml(
+    assert_node_runtime_config_failure(
         "dcs-basic-auth-empty-username",
-        render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "member-a",
-            (
-                Path::new("/var/lib/postgresql/data"),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
-            ),
-            ["http://127.0.0.1:2379"],
-            [
-                r#"[dcs.client.auth]
-type = "basic"
-username = ""
-password = { type = "string", value = "secret-password" }"#,
-                r#"[process.binaries]
-initdb = "/usr/bin/initdb"
-pg_basebackup = "/usr/bin/pg_basebackup"
-pg_rewind = "/usr/bin/pg_rewind"
-pg_ctl = "/usr/bin/pg_ctl""#,
-                r#"[api]
-transport = { transport = "http" }
-auth = { type = "disabled" }"#,
-            ],
-        ),
+        "http://127.0.0.1:2379",
+        &[
+            DCS_BASIC_AUTH_EMPTY_USERNAME,
+            PROCESS_BINARIES_USR_BIN,
+            API_HTTP_DISABLED_AUTH,
+        ],
+        "`dcs.client.auth.username`",
     )
-    .map_err(|err| format!("write config failed: {err}"))?;
-
-    let output = Command::new(&bin)
-        .args(["--config", path.to_string_lossy().as_ref()])
-        .output()
-        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
-
-    assert_eq!(output.status.code(), Some(1));
-
-    let stderr = String::from_utf8(output.stderr)
-        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
-    assert!(
-        stderr.contains("`dcs.client.auth.username`"),
-        "stderr should mention stable field path, got: {stderr}"
-    );
-
-    let _ = std::fs::remove_file(path);
-    Ok(())
 }
 
 #[test]
 fn node_rejects_https_dcs_without_tls_config() -> Result<(), String> {
-    let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
-    let path = write_temp_toml(
+    assert_node_runtime_config_failure(
         "https-dcs-without-client-tls",
-        render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "member-a",
-            (
-                Path::new("/var/lib/postgresql/data"),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
-            ),
-            ["https://127.0.0.1:2379"],
-            [
-                r#"[process.binaries]
-initdb = "/usr/bin/initdb"
-pg_basebackup = "/usr/bin/pg_basebackup"
-pg_rewind = "/usr/bin/pg_rewind"
-pg_ctl = "/usr/bin/pg_ctl""#,
-                r#"[api]
-transport = { transport = "http" }
-auth = { type = "disabled" }"#,
-            ],
-        ),
+        "https://127.0.0.1:2379",
+        &[PROCESS_BINARIES_USR_BIN, API_HTTP_DISABLED_AUTH],
+        "`dcs.client.tls`",
     )
-    .map_err(|err| format!("write config failed: {err}"))?;
-
-    let output = Command::new(&bin)
-        .args(["--config", path.to_string_lossy().as_ref()])
-        .output()
-        .map_err(|err| format!("failed to run node with invalid config: {err}"))?;
-
-    assert_eq!(output.status.code(), Some(1));
-
-    let stderr = String::from_utf8(output.stderr)
-        .map_err(|err| format!("stderr utf8 decode failed: {err}"))?;
-    assert!(
-        stderr.contains("`dcs.client.tls`"),
-        "stderr should mention stable field path, got: {stderr}"
-    );
-
-    let _ = std::fs::remove_file(path);
-    Ok(())
 }

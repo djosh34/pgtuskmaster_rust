@@ -448,7 +448,7 @@ fn build_host_observer_config(
     observer_key_path: &Path,
 ) -> Result<String> {
     let base_url = format!("https://{}:{}", member.service_name(), resolve_to.port());
-    Ok(render_operator_test_config_toml(
+    render_operator_test_config_toml(
         Some(base_url.as_str()),
         None,
         Some("https"),
@@ -468,7 +468,8 @@ identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}"#,
             observer_cert_path = toml_path_source(observer_cert_path),
             observer_key_path = toml_path_source(observer_key_path),
         )],
-    ))
+    )
+    .map_err(|source| HarnessError::message(source.to_string()))
 }
 
 #[cfg(test)]

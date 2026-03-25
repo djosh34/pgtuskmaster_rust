@@ -34,6 +34,12 @@ const CONTAINER_PROCESS_BINARY_PATHS: [&str; 4] = [
 ];
 const HOST_VALIDATION_PROCESS_BINARY_PATHS: [&str; 4] =
     ["/bin/true", "/bin/true", "/bin/true", "/bin/true"];
+#[rustfmt::skip]
+const DEBUG_ENABLED_SECTION: &str = "[debug]\nenabled = true";
+#[rustfmt::skip]
+const HA_EXTRA_GUCS_SECTION: &str = "[postgres.extra_gucs]\nwal_keep_size = \"128MB\"";
+#[rustfmt::skip]
+const HA_LOGGING_SECTION: &str = "[logging]\ncapture_subprocess_output = true\n\n[logging.postgres]\nenabled = true\npoll_interval_ms = 200\n\n[logging.postgres.cleanup]\nenabled = true\nmax_files = 20\nmax_age_seconds = 86400\nprotect_recent_seconds = 300\n\n[logging.sinks.file]\nenabled = true\npath = \"/var/log/pgtuskmaster/runtime.jsonl\"\nmode = \"append\"";
 const HA_POSTGRES_HBA_CONTENTS: &str = r#"local   all             all                                     peer
 hostnossl all           all             0.0.0.0/0               reject
 hostnossl replication   all             0.0.0.0/0               reject
@@ -151,7 +157,7 @@ impl HaGivenId {
 
     pub fn render_runtime_config(self, member: ClusterMember) -> Result<String> {
         let rendered = self
-            .render_runtime_config_with_process_binaries(member, CONTAINER_PROCESS_BINARY_PATHS);
+            .render_runtime_config_with_process_binaries(member, CONTAINER_PROCESS_BINARY_PATHS)?;
         self.validate_runtime_config_for_host(member)?;
         Ok(rendered)
     }
@@ -187,7 +193,7 @@ impl HaGivenId {
         self,
         member: ClusterMember,
         process_binary_paths: [&str; 4],
-    ) -> String {
+    ) -> Result<String> {
         render_ha_member_runtime_test_config_toml(
             member.service_name(),
             self.local_dcs_service_for(member).client_url(),
@@ -195,6 +201,7 @@ impl HaGivenId {
             self.rewinder_role(),
             process_binary_paths,
         )
+        .map_err(|source| HarnessError::message(source.to_string()))
     }
 
     fn compose_variant_relative_path(self) -> &'static str {
@@ -214,7 +221,7 @@ impl HaGivenId {
         let rendered = self.render_runtime_config_with_process_binaries(
             member,
             HOST_VALIDATION_PROCESS_BINARY_PATHS,
-        );
+        )?;
         load_runtime_config_contents(rendered.as_str())
             .map(|_| ())
             .map_err(|source| HarnessError::message(source.to_string()))
@@ -227,7 +234,7 @@ fn render_ha_member_runtime_test_config_toml(
     replicator: &str,
     rewinder: &str,
     process_binary_paths: [&str; 4],
-) -> String {
+) -> Result<String> {
     let ca_cert_path = Path::new("/etc/pgtuskmaster/tls/ca.crt");
     let member_cert_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.crt"));
     let member_key_path = PathBuf::from(format!("/etc/pgtuskmaster/tls/{member_name}.key"));
@@ -270,9 +277,7 @@ mode = "enabled"
 identity = {{ cert_chain = {member_cert_path}, private_key = {member_key_path} }}
 client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}"#,
             ),
-            r#"[postgres.extra_gucs]
-wal_keep_size = "128MB""#
-                .to_string(),
+            HA_EXTRA_GUCS_SECTION.to_string(),
             format!(
                 r#"[process.binaries]
 pg_ctl = {pg_ctl_path}
@@ -284,24 +289,7 @@ pg_basebackup = {pg_basebackup_path}"#,
                 initdb_path = toml_string(initdb_path),
                 pg_basebackup_path = toml_string(pg_basebackup_path),
             ),
-            r#"[logging]
-capture_subprocess_output = true
-
-[logging.postgres]
-enabled = true
-poll_interval_ms = 200
-
-[logging.postgres.cleanup]
-enabled = true
-max_files = 20
-max_age_seconds = 86400
-protect_recent_seconds = 300
-
-[logging.sinks.file]
-enabled = true
-path = "/var/log/pgtuskmaster/runtime.jsonl"
-mode = "append""#
-                .to_string(),
+            HA_LOGGING_SECTION.to_string(),
             format!(
                 r#"[api]
 listen_addr = "0.0.0.0:8443"
@@ -316,11 +304,10 @@ auth = {{ type = "role_tokens", read_token = {api_read_token}, admin_token = {ap
 [pgtm.client_tls]
 ca_cert = {ca_cert}"#,
             ),
-            r#"[debug]
-enabled = true"#
-                .to_string(),
+            DEBUG_ENABLED_SECTION.to_string(),
         ],
     )
+    .map_err(|source| HarnessError::message(source.to_string()))
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {

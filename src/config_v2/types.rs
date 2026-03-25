@@ -1,7 +1,7 @@
 use crate::pginfo::conninfo::PgClientTls;
 use crate::state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName};
 use reqwest::Url;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -139,6 +139,22 @@ where
     D: Deserializer<'de>,
 {
     deserialize_u64_default_if_zero(deserializer, default_seconds).map(Duration::from_secs)
+}
+
+fn serialize_duration_millis<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(duration.as_millis().try_into().map_err(|_overflow| {
+        serde::ser::Error::custom("duration millis overflow u64 during serialization")
+    })?)
+}
+
+fn serialize_duration_seconds<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_u64(duration.as_secs())
 }
 
 pub(crate) fn deserialize_ha_loop_interval<'de, D>(deserializer: D) -> Result<Duration, D::Error>
@@ -281,19 +297,21 @@ pub(crate) struct DcsAuth {
 
 // === HA/PROCESS CONFIG ===
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct HaConfig {
     #[serde(
         rename = "loop_interval_ms",
         default = "default_ha_loop_interval",
-        deserialize_with = "deserialize_ha_loop_interval"
+        deserialize_with = "deserialize_ha_loop_interval",
+        serialize_with = "serialize_duration_millis"
     )]
     pub loop_interval: Duration,
     #[serde(
         rename = "lease_ttl_ms",
         default = "default_ha_lease_ttl",
-        deserialize_with = "deserialize_ha_lease_ttl"
+        deserialize_with = "deserialize_ha_lease_ttl",
+        serialize_with = "serialize_duration_millis"
     )]
     pub lease_ttl: Duration,
 }
@@ -307,7 +325,7 @@ impl Default for HaConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProcessConfig {
     #[serde(default)]
@@ -328,25 +346,28 @@ impl Default for ProcessConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProcessTimeoutsConfig {
     #[serde(
         rename = "pg_rewind_ms",
         default = "default_pg_rewind_timeout",
-        deserialize_with = "deserialize_pg_rewind_timeout"
+        deserialize_with = "deserialize_pg_rewind_timeout",
+        serialize_with = "serialize_duration_millis"
     )]
     pub pg_rewind: Duration,
     #[serde(
         rename = "bootstrap_ms",
         default = "default_bootstrap_timeout",
-        deserialize_with = "deserialize_bootstrap_timeout"
+        deserialize_with = "deserialize_bootstrap_timeout",
+        serialize_with = "serialize_duration_millis"
     )]
     pub bootstrap: Duration,
     #[serde(
         rename = "fencing_ms",
         default = "default_fencing_timeout",
-        deserialize_with = "deserialize_fencing_timeout"
+        deserialize_with = "deserialize_fencing_timeout",
+        serialize_with = "serialize_duration_millis"
     )]
     pub fencing: Duration,
 }
@@ -361,7 +382,7 @@ impl Default for ProcessTimeoutsConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ProcessBinariesConfig {
     #[serde(default)]
@@ -376,7 +397,7 @@ pub(crate) struct ProcessBinariesConfig {
 
 // === LOGGING CONFIG ===
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LoggingConfig {
     #[serde(default)]
@@ -404,7 +425,7 @@ fn default_logging_capture_subprocess_output() -> bool {
     DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PostgresLoggingConfig {
     #[serde(default = "default_logging_postgres_enabled")]
@@ -414,7 +435,8 @@ pub(crate) struct PostgresLoggingConfig {
     #[serde(
         rename = "poll_interval_ms",
         default = "default_logging_postgres_poll_interval",
-        deserialize_with = "deserialize_logging_postgres_poll_interval"
+        deserialize_with = "deserialize_logging_postgres_poll_interval",
+        serialize_with = "serialize_duration_millis"
     )]
     pub poll_interval: Duration,
     #[serde(default)]
@@ -436,7 +458,7 @@ fn default_logging_postgres_enabled() -> bool {
     DEFAULT_LOGGING_POSTGRES_ENABLED
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LoggingSinksConfig {
     #[serde(default)]
@@ -445,7 +467,7 @@ pub(crate) struct LoggingSinksConfig {
     pub file: FileSinkConfig,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StderrSinkConfig {
     pub enabled: bool,
@@ -459,7 +481,7 @@ impl Default for StderrSinkConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FileSinkConfig {
     pub enabled: bool,
@@ -479,7 +501,7 @@ impl Default for FileSinkConfig {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LogCleanupConfig {
     pub enabled: bool,
@@ -491,13 +513,15 @@ pub(crate) struct LogCleanupConfig {
     #[serde(
         rename = "max_age_seconds",
         default = "default_logging_cleanup_max_age",
-        deserialize_with = "deserialize_logging_cleanup_max_age"
+        deserialize_with = "deserialize_logging_cleanup_max_age",
+        serialize_with = "serialize_duration_seconds"
     )]
     pub max_age: Duration,
     #[serde(
         rename = "protect_recent_seconds",
         default = "default_logging_cleanup_protect_recent",
-        deserialize_with = "deserialize_logging_cleanup_protect_recent"
+        deserialize_with = "deserialize_logging_cleanup_protect_recent",
+        serialize_with = "serialize_duration_seconds"
     )]
     pub protect_recent: Duration,
 }
