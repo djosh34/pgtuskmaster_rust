@@ -6,9 +6,9 @@ use crate::{
         client::{CliApiClient, CliApiClientConfig},
         config::OperatorContext,
         error::CliError,
+        render::render_accepted_response,
         status::fetch_seed_state,
     },
-    command::CommandOutputDto,
     dcs::DcsMemberState,
     state::MemberId,
 };
@@ -16,7 +16,7 @@ use crate::{
 pub(crate) async fn run_clear(context: &OperatorContext, json: bool) -> Result<String, CliError> {
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let response = client.delete_switchover().await?;
-    CommandOutputDto::Switchover { output: response }.render(json)
+    render_accepted_response(&response, json)
 }
 
 pub(crate) async fn run_request(
@@ -30,7 +30,7 @@ pub(crate) async fn run_request(
 
     let client = CliApiClient::from_config(client_config)?;
     let response = client.post_switchover(switchover_to).await?;
-    CommandOutputDto::Switchover { output: response }.render(json)
+    render_accepted_response(&response, json)
 }
 
 fn authoritative_primary_client_config(

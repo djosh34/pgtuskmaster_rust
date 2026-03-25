@@ -1,112 +1,63 @@
-use std::fmt;
-
-use serde::{Deserialize, Serialize};
-
 use crate::{
-    api::{authoritative_primary_member, AcceptedResponse, NodeState, ReloadCertificatesResponse},
+    api::{authoritative_primary_member, AcceptedResponse, NodeState},
     cli::error::CliError,
     pginfo::state::PgConnInfo,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "snake_case")]
-pub enum CommandOutputDto {
-    State {
-        api_url: String,
-        verbose: bool,
-        state: Box<NodeState>,
-    },
-    Primary {
-        targets: Vec<PgConnInfo>,
-    },
-    Replicas {
-        targets: Vec<PgConnInfo>,
-    },
-    Switchover {
-        output: AcceptedResponse,
-    },
-    ReloadCertificates {
-        output: ReloadCertificatesResponse,
-    },
-}
-
-impl fmt::Display for CommandOutputDto {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::State {
-                api_url,
-                verbose,
-                state,
-            } => fmt_state_output(formatter, state.as_ref(), api_url, *verbose),
-            Self::Primary { targets } | Self::Replicas { targets } => {
-                fmt_connection_targets(formatter, targets.as_slice())
-            }
-            Self::Switchover { output } => write!(formatter, "accepted={}", output.accepted),
-            Self::ReloadCertificates { output } => match serde_json::to_string_pretty(output) {
-                Ok(json) => formatter.write_str(json.as_str()),
-                Err(_) => formatter.write_str("failed to encode reload certificates response"),
-            },
-        }
-    }
-}
-
-impl CommandOutputDto {
-    pub fn render(&self, json: bool) -> Result<String, CliError> {
-        if json {
-            Ok(serde_json::to_string_pretty(self)?)
-        } else {
-            Ok(self.to_string())
-        }
-    }
-}
-
-fn fmt_connection_targets(
-    formatter: &mut fmt::Formatter<'_>,
-    targets: &[PgConnInfo],
-) -> fmt::Result {
-    for (index, target) in targets.iter().enumerate() {
-        if index > 0 {
-            writeln!(formatter)?;
-        }
-        write!(formatter, "{target}")?;
-    }
-    Ok(())
-}
-
-fn fmt_state_output(
-    formatter: &mut fmt::Formatter<'_>,
+pub(crate) fn render_state_output(
     state: &NodeState,
     api_url: &str,
     verbose: bool,
-) -> fmt::Result {
+    json: bool,
+) -> Result<String, CliError> {
+    render_output(state, json, || format_state_output(state, api_url, verbose))
+}
+
+pub(crate) fn render_connection_targets(
+    targets: &[PgConnInfo],
+    json: bool,
+) -> Result<String, CliError> {
+    render_output(targets, json, || {
+        targets
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+    })
+}
+
+pub(crate) fn render_accepted_response(
+    response: &AcceptedResponse,
+    json: bool,
+) -> Result<String, CliError> {
+    render_output(response, json, || format!("accepted={}", response.accepted))
+}
+
+fn render_output<T>(
+    value: &T,
+    json: bool,
+    text_renderer: impl FnOnce() -> String,
+) -> Result<String, CliError>
+where
+    T: serde::Serialize + ?Sized,
+{
+    if json {
+        Ok(serde_json::to_string_pretty(value)?)
+    } else {
+        Ok(text_renderer())
+    }
+}
+
+fn format_state_output(state: &NodeState, api_url: &str, verbose: bool) -> String {
     let warnings = state_warnings(state);
     let pending_switchover_target = pending_switchover_target(state);
-    writeln!(
-        formatter,
-        "cluster: {}  health: {}",
-        state.identity.cluster_name.0,
-        if warnings.is_empty() {
-            "healthy"
-        } else {
-            "degraded"
-        }
-    )?;
-    writeln!(formatter, "queried via: {api_url}")?;
-
-    for warning in &warnings {
-        writeln!(formatter, "warning: {warning}")?;
-    }
-
-    if let Some(target_member_id) = pending_switchover_target {
-        writeln!(formatter, "switchover: pending -> {target_member_id}")?;
-    }
-
-    if !warnings.is_empty() || pending_switchover_target.is_some() {
-        writeln!(formatter)?;
-    }
-
-    let headers: &[&str] = if verbose {
-        &[
+    let health = if warnings.is_empty() {
+        "healthy"
+    } else {
+        "degraded"
+    };
+    let headers: Vec<&str> = if verbose {
+        vec![
             "NODE",
             "SELF",
             "ROLE",
@@ -117,7 +68,7 @@ fn fmt_state_output(
             "API",
         ]
     } else {
-        &["NODE", "SELF", "ROLE", "TRUST", "READINESS", "API"]
+        vec!["NODE", "SELF", "ROLE", "TRUST", "READINESS", "API"]
     };
     let authoritative_primary = authoritative_primary_member(state)
         .map(|member_id| member_id.as_str())
@@ -169,13 +120,37 @@ fn fmt_state_output(
                 .collect::<Vec<_>>()
         },
     );
+    let warning_lines = warnings
+        .iter()
+        .map(|warning| format!("warning: {warning}\n"))
+        .collect::<String>();
+    let switchover_line = pending_switchover_target
+        .map(|target_member_id| format!("switchover: pending -> {target_member_id}\n"))
+        .unwrap_or_default();
+    let details_gap = if warnings.is_empty() && pending_switchover_target.is_none() {
+        ""
+    } else {
+        "\n"
+    };
+    let table_rows = rows
+        .into_iter()
+        .map(|row| format_table_line(row.as_slice(), widths.as_slice()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let table = if table_rows.is_empty() {
+        format_table_line(headers.as_slice(), widths.as_slice())
+    } else {
+        format!(
+            "{}\n{}",
+            format_table_line(headers.as_slice(), widths.as_slice()),
+            table_rows
+        )
+    };
 
-    fmt_table_line(formatter, headers, widths.as_slice())?;
-    for row in rows {
-        writeln!(formatter)?;
-        fmt_table_line(formatter, row.as_slice(), widths.as_slice())?;
-    }
-    Ok(())
+    format!(
+        "cluster: {}  health: {health}\nqueried via: {api_url}\n{warning_lines}{switchover_line}{details_gap}{table}",
+        state.identity.cluster_name.0
+    )
 }
 
 fn state_warnings(state: &NodeState) -> Vec<String> {
@@ -207,18 +182,19 @@ fn pending_switchover_target(state: &NodeState) -> Option<&str> {
         })
 }
 
-fn fmt_table_line<T: AsRef<str>>(
-    formatter: &mut fmt::Formatter<'_>,
-    values: &[T],
-    widths: &[usize],
-) -> fmt::Result {
-    for (index, (value, width)) in values.iter().zip(widths.iter()).enumerate() {
-        if index > 0 {
-            formatter.write_str("  ")?;
-        }
-        write!(formatter, "{:<width$}", value.as_ref(), width = *width)?;
-    }
-    Ok(())
+fn format_table_line<T: AsRef<str>>(values: &[T], widths: &[usize]) -> String {
+    values
+        .iter()
+        .zip(widths.iter())
+        .enumerate()
+        .map(|(index, (value, width))| {
+            if index == 0 {
+                format!("{:<width$}", value.as_ref(), width = *width)
+            } else {
+                format!("  {:<width$}", value.as_ref(), width = *width)
+            }
+        })
+        .collect::<String>()
 }
 
 #[cfg(test)]
@@ -240,12 +216,12 @@ mod tests {
         },
     };
 
-    use super::CommandOutputDto;
+    use super::{render_accepted_response, render_connection_targets, render_state_output};
 
     #[test]
     fn connection_command_display_uses_canonical_conninfo_rendering() -> Result<(), String> {
-        let rendered = CommandOutputDto::Primary {
-            targets: vec![PgConnInfo {
+        let rendered = render_connection_targets(
+            &[PgConnInfo {
                 route: PgRoute::tcp("db.internal".to_string(), 5432)?,
                 user: "postgres".to_string(),
                 dbname: "postgres".to_string(),
@@ -259,49 +235,23 @@ mod tests {
                     client_key: Some(PathBuf::from("/tmp/client key.pem")),
                 },
             }],
-        };
+            false,
+        )
+        .map_err(|err| err.to_string())?;
 
         assert_eq!(
-            rendered.to_string(),
+            rendered,
             "host=db.internal port=5432 user=postgres dbname=postgres sslmode=verify-full sslrootcert='/tmp/ca bundle.pem' sslcert='/tmp/client cert.pem' sslkey='/tmp/client key.pem'"
         );
         Ok(())
     }
 
     #[test]
-    fn command_output_render_uses_display_when_json_disabled() -> Result<(), String> {
-        let output = CommandOutputDto::Primary {
-            targets: vec![PgConnInfo {
-                route: PgRoute::tcp("db.internal".to_string(), 5432)?,
-                user: "postgres".to_string(),
-                dbname: "postgres".to_string(),
-                application_name: None,
-                connect_timeout_s: None,
-                options: None,
-                tls: PgClientTls {
-                    mode: PgSslMode::Disable,
-                    root_cert: None,
-                    client_cert: None,
-                    client_key: None,
-                },
-            }],
-        };
+    fn accepted_response_render_emits_pretty_json_when_requested() -> Result<(), String> {
+        let rendered = render_accepted_response(&AcceptedResponse { accepted: true }, true)
+            .map_err(|err| err.to_string())?;
 
-        assert_eq!(
-            output.render(false).map_err(|err| err.to_string())?,
-            output.to_string()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn command_output_render_emits_pretty_json_when_requested() -> Result<(), String> {
-        let output = CommandOutputDto::Switchover {
-            output: AcceptedResponse { accepted: true },
-        };
-        let rendered = output.render(true).map_err(|err| err.to_string())?;
-
-        assert!(rendered.contains("\"command\": \"switchover\""));
+        assert!(!rendered.contains("\"command\""));
         assert!(rendered.contains("\"accepted\": true"));
         assert!(rendered.contains('\n'));
         Ok(())
@@ -350,10 +300,8 @@ mod tests {
     #[test]
     fn state_command_display_renders_typed_trust_and_readiness_labels() -> Result<(), String> {
         let member_id = MemberId("node-a".to_string());
-        let rendered = CommandOutputDto::State {
-            api_url: "http://node-a:8443".to_string(),
-            verbose: false,
-            state: Box::new(sample_state(
+        let rendered = render_state_output(
+            &sample_state(
                 DcsSnapshot::quorum(
                     None,
                     SwitchoverState::None,
@@ -368,9 +316,13 @@ mod tests {
                     )]),
                 ),
                 Readiness::Ready,
-            )),
-        };
-        let rendered = rendered.to_string();
+            ),
+            "http://node-a:8443",
+            false,
+            false,
+        )
+        .map_err(|err| err.to_string())?;
+
         assert!(rendered.contains("ROLE"));
         assert!(rendered.contains("TRUST"));
         assert!(rendered.contains("READINESS"));
@@ -381,14 +333,16 @@ mod tests {
     }
 
     #[test]
-    fn state_command_display_warns_with_typed_no_quorum_label() {
-        let rendered = CommandOutputDto::State {
-            api_url: "http://node-a:8443".to_string(),
-            verbose: false,
-            state: Box::new(sample_state(DcsSnapshot::NoQuorum, Readiness::NotReady)),
-        }
-        .to_string();
+    fn state_command_display_warns_with_typed_no_quorum_label() -> Result<(), String> {
+        let rendered = render_state_output(
+            &sample_state(DcsSnapshot::NoQuorum, Readiness::NotReady),
+            "http://node-a:8443",
+            false,
+            false,
+        )
+        .map_err(|err| err.to_string())?;
 
         assert!(rendered.contains("warning: seed node reports no_quorum DCS mode"));
+        Ok(())
     }
 }

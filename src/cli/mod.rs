@@ -3,6 +3,7 @@ pub mod client;
 pub mod config;
 pub mod connect;
 pub mod error;
+pub(crate) mod render;
 pub mod status;
 pub mod switchover;
 

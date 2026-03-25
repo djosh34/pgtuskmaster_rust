@@ -6,8 +6,7 @@ use std::{
 };
 
 use pgtuskmaster_rust::{
-    api::{authoritative_primary_member, NodeState},
-    command::CommandOutputDto,
+    api::{AcceptedResponse, NodeState, authoritative_primary_member},
     ha::types::{AuthorityProjection, PublicationState},
     pginfo::{
         conninfo::PgClientTls,
@@ -15,6 +14,7 @@ use pgtuskmaster_rust::{
     },
 };
 use pgtuskmaster_test_support::config_v2::{render_operator_test_config_toml, toml_path_source};
+use serde::de::DeserializeOwned;
 
 use crate::support::{
     config::harness_settings,
@@ -209,7 +209,7 @@ impl PgtmObserver {
                 ]
             })
             .collect::<Vec<_>>();
-        let output = self.run_command_via_member(
+        let output = self.run_command_via_member::<AcceptedResponse>(
             member,
             runtime_config.as_path(),
             ["switchover".to_string(), "request".to_string()]
@@ -217,19 +217,12 @@ impl PgtmObserver {
                 .chain(request_args)
                 .collect::<Vec<_>>(),
             "pgtm switchover request",
+            "switchover response",
         )?;
         match output {
-            Ok(CommandOutputDto::Switchover { output }) => {
-                serde_json::to_string(&output).map_err(|source| {
-                    HarnessError::message(format!(
-                        "serializing switchover response failed: {source}"
-                    ))
-                })
-            }
-            Ok(other) => Err(HarnessError::message(format!(
-                "expected `pgtm switchover request --json` output, observed command payload `{}`",
-                command_label(&other)
-            ))),
+            Ok(output) => serde_json::to_string(&output).map_err(|source| {
+                HarnessError::message(format!("serializing switchover response failed: {source}"))
+            }),
             Err(message) => Err(HarnessError::message(format!(
                 "pgtm switchover request via `{member}` failed: {message}"
             ))),
@@ -243,29 +236,27 @@ impl PgtmObserver {
         let runtime_config = self
             .materialize_host_observer_config(member)
             .map_err(|err| err.to_string())?;
-        self.run_command_via_member(
+        self.run_command_via_member::<NodeState>(
             member,
             runtime_config.as_path(),
             vec!["status".to_string()],
             "pgtm status",
+            "node state",
         )
         .map_err(|err| err.to_string())?
-        .and_then(|output| match output {
-            CommandOutputDto::State { state, .. } => Ok(*state),
-            other => Err(format!(
-                "expected `pgtm status --json` output, observed command payload `{}`",
-                command_label(&other)
-            )),
-        })
     }
 
-    fn run_command_via_member(
+    fn run_command_via_member<T>(
         &self,
         member: ClusterMember,
         runtime_config: &Path,
         command_args: Vec<String>,
         context_label: &str,
-    ) -> Result<std::result::Result<CommandOutputDto, String>> {
+        payload_label: &str,
+    ) -> Result<std::result::Result<T, String>>
+    where
+        T: DeserializeOwned,
+    {
         let env_candidate = std::env::var_os("CARGO_BIN_EXE_pgtm")
             .map(PathBuf::from)
             .filter(|path| path.exists());
@@ -292,13 +283,13 @@ impl PgtmObserver {
         );
         match output {
             Ok(stdout) => {
-                let dto = serde_json::from_str::<CommandOutputDto>(stdout.as_str()).map_err(
-                    |source| HarnessError::Json {
+                let parsed = serde_json::from_str::<T>(stdout.as_str()).map_err(|source| {
+                    HarnessError::Json {
                         context: context.clone(),
                         source,
-                    },
-                )?;
-                Ok(Ok(dto))
+                    }
+                })?;
+                Ok(Ok(parsed))
             }
             Err(HarnessError::CommandFailed {
                 executable,
@@ -307,8 +298,8 @@ impl PgtmObserver {
                 stdout,
                 stderr,
             }) => Ok(Err(format!(
-                "command `{}` failed while {context}: status={status}\nstdout:\n{stdout}\nstderr:\n{stderr}",
-                executable.display()
+                "command `{}` failed while {context}: status={status}\nexpected payload: {payload_label}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+                executable.display(),
             ))),
             Err(err) => Err(err),
         }
@@ -417,16 +408,6 @@ fn format_authority(status: &NodeState) -> String {
 fn authoritative_primary(status: &NodeState) -> Option<ClusterMember> {
     authoritative_primary_member(status)
         .and_then(|member_id| ClusterMember::parse(member_id.as_str()).ok())
-}
-
-fn command_label(output: &CommandOutputDto) -> &'static str {
-    match output {
-        CommandOutputDto::State { .. } => "state",
-        CommandOutputDto::Primary { .. } => "primary",
-        CommandOutputDto::Replicas { .. } => "replicas",
-        CommandOutputDto::Switchover { .. } => "switchover",
-        CommandOutputDto::ReloadCertificates { .. } => "reload_certificates",
-    }
 }
 
 fn host_postgres_conninfo(

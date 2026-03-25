@@ -1,9 +1,9 @@
 use crate::{
     api::authoritative_primary_member,
     cli::{
-        args::ConnectionOptions, config::OperatorContext, error::CliError, status::fetch_seed_state,
+        args::ConnectionOptions, config::OperatorContext, error::CliError,
+        render::render_connection_targets, status::fetch_seed_state,
     },
-    command::CommandOutputDto,
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
         state::PgConnInfo,
@@ -43,7 +43,7 @@ pub(crate) async fn run_primary(
         options: None,
         tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
     }];
-    CommandOutputDto::Primary { targets }.render(options.json)
+    render_connection_targets(targets.as_slice(), options.json)
 }
 
 pub(crate) async fn run_replicas(
@@ -84,7 +84,7 @@ pub(crate) async fn run_replicas(
         ));
     }
 
-    CommandOutputDto::Replicas { targets }.render(options.json)
+    render_connection_targets(targets.as_slice(), options.json)
 }
 
 fn build_connection_tls(tls: Option<&PgClientTls>, emit_tls: bool) -> PgClientTls {
