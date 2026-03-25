@@ -88,9 +88,9 @@ The old `local_conn_identity` and `rewind_conn_identity` blocks no longer exist.
 If you want `pgtm primary --tls` and `pgtm replicas --tls` to print PostgreSQL client certificate paths, configure:
 
 ```toml
-[pgtm.postgres.tls]
-ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
-identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pgtm/postgres.key" } }
+[pgtm.client_tls]
+ca_cert = { path = "/etc/pgtm/ca.pem" }
+identity = { cert = { path = "/etc/pgtm/client.crt" }, key = { path = "/etc/pgtm/client.key" } }
 ```
 
 ## Put the certificate material in place
@@ -139,7 +139,7 @@ Check the configured cert/key/CA paths first. HTTPS and enabled PostgreSQL TLS b
 Check:
 
 - `pgtm.api.base_url`
-- `pgtm.api.tls`
+- `pgtm.client_tls`
 - `pgtm.api.auth`
 
 ### PostgreSQL clients fail after the change
@@ -148,4 +148,4 @@ Check:
 
 - `postgres.tls`
 - `postgres.rewind.transport`
-- `pgtm.postgres.tls` if you rely on `--tls` DSN output
+- `pgtm.client_tls` if you rely on `--tls` DSN output

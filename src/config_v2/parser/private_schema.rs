@@ -762,7 +762,7 @@ pub(super) struct OperatorDocument {
     #[serde(default)]
     pub api: OperatorApiConfig,
     #[serde(default)]
-    pub postgres: OperatorPostgresConfig,
+    pub client_tls: ClientTlsInput,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -774,15 +774,6 @@ pub(super) struct OperatorApiConfig {
     pub resolve_to: Option<SocketAddr>,
     #[serde(default)]
     pub auth: TokenAuthConfig,
-    #[serde(default)]
-    pub tls: ClientTlsInput,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct OperatorPostgresConfig {
-    #[serde(default)]
-    pub tls: ClientTlsInput,
 }
 
 #[derive(Clone, Debug, Deserialize)]

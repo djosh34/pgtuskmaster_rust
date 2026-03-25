@@ -459,11 +459,7 @@ type = "role_tokens"
 read_token = {read_token_path}
 admin_token = {admin_token_path}
 
-[api.tls]
-ca_cert = {ca_cert_path}
-identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}
-
-[postgres.tls]
+[client_tls]
 ca_cert = {ca_cert_path}
 identity = {{ cert = {observer_cert_path}, key = {observer_key_path} }}"#,
             read_token_path = toml_path_source(read_token_path),

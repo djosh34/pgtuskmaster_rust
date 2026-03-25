@@ -88,9 +88,9 @@ ca_cert = { path = "/etc/pgtuskmaster/tls/postgres-ca.pem" }
 If operators need TLS-expanded DSN output from `pgtm`, configure:
 
 ```toml
-[pgtm.postgres.tls]
-ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
-identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pgtm/postgres.key" } }
+[pgtm.client_tls]
+ca_cert = { path = "/etc/pgtm/ca.pem" }
+identity = { cert = { path = "/etc/pgtm/client.crt" }, key = { path = "/etc/pgtm/client.key" } }
 ```
 
 ## Verify authorization after enabling TLS

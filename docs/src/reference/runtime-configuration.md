@@ -392,11 +392,10 @@ The runtime may include an operator-facing `pgtm` block, and `pgtm` can also loa
 base_url = "https://db-a.example.com:8443"
 expected_transport = "https"
 auth = { type = "role_tokens", read_token = { path = "/run/secrets/api-read-token" }, admin_token = { path = "/run/secrets/api-admin-token" } }
-tls = { ca_cert = { path = "/etc/pgtm/api-ca.pem" } }
 
-[pgtm.postgres.tls]
-ca_cert = { path = "/etc/pgtm/postgres-ca.pem" }
-identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pgtm/postgres.key" } }
+[pgtm.client_tls]
+ca_cert = { path = "/etc/pgtm/ca.pem" }
+identity = { cert = { path = "/etc/pgtm/client.crt" }, key = { path = "/etc/pgtm/client.key" } }
 ```
 
 ### Meaning
@@ -404,8 +403,7 @@ identity = { cert = { path = "/etc/pgtm/postgres.crt" }, key = { path = "/etc/pg
 - `pgtm.api.base_url`: operator-reachable API URL
 - `pgtm.api.expected_transport`: optional client-side check for `http` or `https`
 - `pgtm.api.auth`: operator token config
-- `pgtm.api.tls`: API client TLS material
-- `pgtm.postgres.tls`: PostgreSQL client TLS material that `pgtm primary --tls` and `pgtm replicas --tls` append after target selection has already been derived from `GET /state`
+- `pgtm.client_tls`: shared operator client TLS material used for HTTPS API calls and for `pgtm primary --tls` / `pgtm replicas --tls` output after target selection has already been derived from `GET /state`
 
 ## `debug`
 

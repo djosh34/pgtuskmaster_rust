@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/81-flatten-process-binaries-and-delete-overrides-wrapper.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/82-flatten-operator-client-tls-input-surface.md`
 
 <steps>
 - [ ] If fresh (based on progress history), untick all boxes, remove existing path to plan file
@@ -40,7 +40,7 @@ Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/81-
 - [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
 - [x] test&validate new code
 - [x] task_switch + commit everything (including .ralph etc) + push
-- [x] if not lower than 19k lines, DO NOT SET passes:true
+- [ ] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
 - [x] `make check`

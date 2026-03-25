@@ -102,7 +102,7 @@ Reads one seed `GET /state` payload and resolves the authoritative primary from 
 
 If the selected member publishes `operator_postgres`, the CLI emits that operator-routable route. Otherwise it falls back to `cluster_postgres`.
 
-Any `--tls` additions come only from local `pgtm.postgres.tls` config after the primary target has already been selected from that state payload.
+Any `--tls` additions come only from local `pgtm.client_tls` config after the primary target has already been selected from that state payload.
 
 Default output: one libpq keyword/value DSN line
 

@@ -2,7 +2,7 @@
 
 ## TLS Surfaces Overview
 
-pgtuskmaster exposes six distinct TLS configuration surfaces across runtime and operator schemas.
+pgtuskmaster exposes five distinct TLS configuration surfaces across runtime and operator schemas.
 
 ### Runtime Configuration Surfaces
 
@@ -17,8 +17,7 @@ pgtuskmaster exposes six distinct TLS configuration surfaces across runtime and 
 
 | Surface | Config Path | Direction | Purpose |
 |---------|-------------|-----------|---------|
-| API client | `pgtm.api.tls` | Client | TLS for operator API calls |
-| PostgreSQL client | `pgtm.postgres.tls` | Client | TLS for operator PostgreSQL access |
+| Shared operator client | `pgtm.client_tls` | Client | TLS for operator API calls and PostgreSQL DSN output |
 
 ```mermaid
 flowchart LR
@@ -32,8 +31,7 @@ flowchart LR
 
     subgraph Operator
         direction TB
-        pgtm_api["pgtm.api.tls<br/>client TLS"]
-        pgtm_pg["pgtm.postgres.tls<br/>client TLS"]
+        pgtm_client["pgtm.client_tls<br/>client TLS"]
     end
 ```
 
@@ -78,13 +76,13 @@ tls = { mode = "enabled", identity = { cert_chain = { path = "/etc/pgtuskmaster/
 
 ## Client Identity Configuration
 
-### Operator API and PostgreSQL Client Identity
+### Shared Operator Client Identity
 
 ```toml
-[api.tls]
+[client_tls]
 ca_cert = { path = "/etc/pgtuskmaster/tls/ca.pem" }
 
-[api.tls.identity]
+[client_tls.identity]
 cert = { path = "/etc/pgtuskmaster/tls/client.crt" }
 key = { type = "file", path = "/run/secrets/client-key.pem" }
 ```

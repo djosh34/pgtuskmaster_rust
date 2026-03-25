@@ -312,10 +312,9 @@ auth = {{ type = "role_tokens", tokens = {{ read_token = {api_read_token}, admin
                 r#"[pgtm.api]
 base_url = {api_base_url}
 auth = {{ type = "role_tokens", read_token = {api_read_token}, admin_token = {api_admin_token} }}
-tls = {{ ca_cert = {ca_cert} }}
 
-[pgtm.postgres]
-tls = {{ ca_cert = {ca_cert} }}"#,
+[pgtm.client_tls]
+ca_cert = {ca_cert}"#,
             ),
             r#"[debug]
 enabled = true"#

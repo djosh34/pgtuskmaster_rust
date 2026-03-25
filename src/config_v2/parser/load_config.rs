@@ -10,7 +10,7 @@ use crate::{
         PostgresConfig, PostgresLoggingConfig, ProcessBinariesConfig, ProcessConfig, RoleConfig,
         RuntimeConfigV2, Secret,
     },
-    pginfo::conninfo::{PgClientTls, PgSslMode},
+    pginfo::conninfo::PgClientTls,
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
 };
 use reqwest::Url;
@@ -563,57 +563,6 @@ fn parse_operator_url(
         .transpose()
 }
 
-fn merge_matching<T: PartialEq>(
-    left_field: &'static str,
-    left: Option<T>,
-    right_field: &'static str,
-    right: Option<T>,
-    merged_field: &'static str,
-) -> Result<Option<T>, ConfigErrorV2> {
-    match (left, right) {
-        (Some(left), Some(right)) if left != right => Err(raw::validation_error(
-            merged_field,
-            format!("`{left_field}` and `{right_field}` must match when both are configured"),
-        )),
-        (Some(value), Some(_)) | (Some(value), None) | (None, Some(value)) => Ok(Some(value)),
-        (None, None) => Ok(None),
-    }
-}
-
-fn merge_operator_client_tls(
-    left: Option<PgClientTls>,
-    right: Option<PgClientTls>,
-) -> Result<Option<PgClientTls>, ConfigErrorV2> {
-    match (left, right) {
-        (Some(left), Some(right)) => {
-            let merged_identity = merge_matching(
-                "pgtm.api.tls.identity",
-                left.client_cert.zip(left.client_key),
-                "pgtm.postgres.tls.identity",
-                right.client_cert.zip(right.client_key),
-                "pgtm.client_tls.identity",
-            )?;
-            let (client_cert, client_key) =
-                merged_identity.map_or((None, None), |(cert, key)| (Some(cert), Some(key)));
-
-            Ok(Some(PgClientTls {
-                mode: PgSslMode::VerifyFull,
-                root_cert: merge_matching(
-                    "pgtm.api.tls.ca_cert",
-                    left.root_cert,
-                    "pgtm.postgres.tls.ca_cert",
-                    right.root_cert,
-                    "pgtm.client_tls.ca_cert",
-                )?,
-                client_cert,
-                client_key,
-            }))
-        }
-        (Some(tls), None) | (None, Some(tls)) => Ok(Some(tls)),
-        (None, None) => Ok(None),
-    }
-}
-
 fn resolve_binary_path(
     field: &'static str,
     executable: &str,
@@ -1018,27 +967,21 @@ impl raw::OperatorDocument {
         resolve_auth_tokens: bool,
     ) -> Result<OperatorConfigV2, ConfigErrorV2> {
         #[rustfmt::skip]
-        let raw::OperatorDocument { api, postgres: raw::OperatorPostgresConfig { tls: postgres_tls_input } } = self;
+        let raw::OperatorDocument { api, client_tls } = self;
         #[rustfmt::skip]
-        let raw::OperatorApiConfig { base_url, advertised_url, expected_transport, resolve_to, auth, tls: api_tls_input } = api;
+        let raw::OperatorApiConfig { base_url, advertised_url, expected_transport, resolve_to, auth } = api;
         let config_dir = resolve_config_dir(path)?;
         let (read_token, admin_token) =
             auth.into_operator_tokens(resolve_auth_tokens, config_dir.as_path())?;
-        let api_tls = api_tls_input.into_pg_client_tls(
-            "pgtm.api.tls.ca_cert",
-            "pgtm.api.tls.identity.cert",
-            "pgtm.api.tls.identity.key",
-            config_dir.as_path(),
-        )?;
-        let postgres_tls = postgres_tls_input.into_pg_client_tls(
-            "pgtm.postgres.tls.ca_cert",
-            "pgtm.postgres.tls.identity.cert",
-            "pgtm.postgres.tls.identity.key",
+        let client_tls = client_tls.into_pg_client_tls(
+            "pgtm.client_tls.ca_cert",
+            "pgtm.client_tls.identity.cert",
+            "pgtm.client_tls.identity.key",
             config_dir.as_path(),
         )?;
 
         #[rustfmt::skip]
-        let operator_config = OperatorConfigV2 { base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?, advertised_url: parse_operator_url("pgtm.api.advertised_url", advertised_url, expected_transport)?.map(|url| ApiRoute::from_url(url).map_err(|err| raw::validation_error("pgtm.api.advertised_url", err))).transpose()?, expected_transport, resolve_to, client_tls: merge_operator_client_tls(api_tls, postgres_tls)?, read_token, admin_token };
+        let operator_config = OperatorConfigV2 { base_url: parse_operator_url("pgtm.api.base_url", base_url, expected_transport)?, advertised_url: parse_operator_url("pgtm.api.advertised_url", advertised_url, expected_transport)?.map(|url| ApiRoute::from_url(url).map_err(|err| raw::validation_error("pgtm.api.advertised_url", err))).transpose()?, expected_transport, resolve_to, client_tls, read_token, admin_token };
         Ok(operator_config)
     }
 }
@@ -1267,7 +1210,7 @@ identity = { cert_chain = { content = "CERT" }, private_key = { content = "KEY" 
                 None,
                 None,
                 None,
-                [r#"[api.tls]
+                [r#"[client_tls]
 identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "CLIENT_KEY" } }"#],
             )
             .as_str(),
@@ -1279,7 +1222,7 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
     }
 
     #[test]
-    fn load_operator_config_flattens_tokens_and_merges_client_tls() -> Result<(), String> {
+    fn load_operator_config_flattens_tokens_and_resolves_client_tls() -> Result<(), String> {
         let dir = unique_test_dir("load-operator-config", "merge")?;
         let api_ca_path = dir.join("api-ca.pem");
         let identity_cert_path = dir.join("client.crt");
@@ -1296,18 +1239,11 @@ type = "role_tokens"
 read_token = {}
 admin_token = {}
 
-[api.tls]
-ca_cert = {}
-identity = {{ cert = {}, key = {} }}
-
-[postgres.tls]
+[client_tls]
 ca_cert = {}
 identity = {{ cert = {}, key = {} }}"#,
                     toml_string_secret("read-token"),
                     toml_string_secret("admin-token"),
-                    toml_path_source(api_ca_path.as_path()),
-                    toml_path_source(identity_cert_path.as_path()),
-                    toml_path_source(identity_key_path.as_path()),
                     toml_path_source(api_ca_path.as_path()),
                     toml_path_source(identity_cert_path.as_path()),
                     toml_path_source(identity_key_path.as_path()),
