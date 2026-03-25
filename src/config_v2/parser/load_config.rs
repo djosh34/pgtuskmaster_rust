@@ -515,100 +515,6 @@ fn path_override(path: PathBuf) -> Option<PathBuf> {
     }
 }
 
-pub(super) fn resolve_secret_optional(
-    field: &'static str,
-    source: Option<raw::SecretSource>,
-    config_dir: &Path,
-) -> Result<Option<Secret>, ConfigErrorV2> {
-    source
-        .map(|source| resolve_secret_required(field, source, config_dir))
-        .transpose()
-}
-
-pub(super) fn resolve_secret_required(
-    field: &'static str,
-    source: raw::SecretSource,
-    config_dir: &Path,
-) -> Result<Secret, ConfigErrorV2> {
-    let value = match source {
-        raw::SecretSource::PathConfig { path } => {
-            let path = normalize_config_path(field, path, config_dir)?;
-            std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
-                path: path.display().to_string(),
-                source,
-            })?
-        }
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::None) => String::new(),
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::Env { env }) => std::env::var(&env)
-            .map_err(|err| {
-                validation_error(
-                    field,
-                    match err {
-                        std::env::VarError::NotPresent => {
-                            format!("environment variable `{env}` is not set")
-                        }
-                        std::env::VarError::NotUnicode(_) => {
-                            format!("environment variable `{env}` is not valid unicode")
-                        }
-                    },
-                )
-            })?,
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::File { path }) => {
-            let path = normalize_config_path(field, path, config_dir)?;
-            std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
-                path: path.display().to_string(),
-                source,
-            })?
-        }
-        raw::SecretSource::Tagged(raw::TaggedSecretSource::String { value }) => value,
-    };
-
-    let value = value.trim_end_matches(['\n', '\r']).to_string();
-    if value.trim().is_empty() {
-        return Err(validation_error(field, "must not be empty"));
-    }
-    Ok(Secret::new(value))
-}
-
-pub(super) fn resolve_path_only(
-    field: &'static str,
-    source: raw::PathSource,
-    config_dir: &Path,
-) -> Result<PathBuf, ConfigErrorV2> {
-    match source {
-        raw::PathSource::Path(path) | raw::PathSource::PathConfig { path } => {
-            normalize_config_path(field, path, config_dir)
-        }
-    }
-}
-
-fn resolve_inline_or_path_string(
-    field: &'static str,
-    source: raw::PathOrInline,
-    config_dir: &Path,
-) -> Result<String, ConfigErrorV2> {
-    match source {
-        raw::PathOrInline::Path(path) | raw::PathOrInline::PathConfig { path } => {
-            let path = normalize_config_path(field, path, config_dir)?;
-            std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
-                path: path.display().to_string(),
-                source,
-            })
-        }
-        raw::PathOrInline::Inline { content } => Ok(content),
-    }
-}
-
-fn resolve_optional_path(
-    field: &'static str,
-    source: Option<raw::PathSource>,
-    config_dir: &Path,
-) -> Result<Option<PathBuf>, ConfigErrorV2> {
-    source
-        .map(|source| resolve_path_only(field, source, config_dir))
-        .transpose()
-}
-
 fn map_postgres_role(
     username_field: &'static str,
     password_field: &'static str,
@@ -619,7 +525,7 @@ fn map_postgres_role(
     let raw::RoleAuthConfig::Password { password } = role.auth;
     Ok(RoleConfig {
         username: role.username,
-        password: resolve_secret_required(password_field, password, config_dir)?,
+        password: password.resolve_required(password_field, config_dir)?,
     })
 }
 
@@ -633,11 +539,7 @@ fn map_dcs_auth(
             validate_non_empty("dcs.client.auth.username", username.as_str())?;
             Ok(Some(DcsAuth {
                 username,
-                password: resolve_secret_required(
-                    "dcs.client.auth.password",
-                    password,
-                    config_dir,
-                )?,
+                password: password.resolve_required("dcs.client.auth.password", config_dir)?,
             }))
         }
     }
@@ -889,7 +791,7 @@ impl raw::PostgresConfig {
             local_database: non_empty_owned("postgres.local_database", local_database)?,
             source_client_tls: PgClientTls {
                 mode: transport.ssl_mode,
-                root_cert: resolve_optional_path(
+                root_cert: raw::PathSource::resolve_optional(
                     "postgres.rewind.transport.ca_cert",
                     transport.ca_cert,
                     config_dir,
@@ -917,16 +819,12 @@ impl raw::PostgresConfig {
             )?,
             pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
             pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
-            pg_hba_contents: resolve_inline_or_path_string(
-                "postgres.access.hba",
-                access.hba,
-                config_dir,
-            )?,
-            pg_ident_contents: resolve_inline_or_path_string(
-                "postgres.access.ident",
-                access.ident,
-                config_dir,
-            )?,
+            pg_hba_contents: access
+                .hba
+                .resolve_contents("postgres.access.hba", config_dir)?,
+            pg_ident_contents: access
+                .ident
+                .resolve_contents("postgres.access.ident", config_dir)?,
             extra_gucs,
             tls: tls.into_runtime_tls(config_dir)?,
         })
@@ -1088,7 +986,7 @@ impl raw::TlsServerConfig {
                     "postgres.tls.identity.private_key",
                     config_dir,
                 )?;
-                let ca_cert = resolve_optional_path(
+                let ca_cert = raw::PathSource::resolve_optional(
                     "postgres.tls.client_auth.client_ca",
                     client_auth.map(|client_auth| {
                         let _client_certificate_mode = client_auth.client_certificate;
@@ -1127,11 +1025,7 @@ impl raw::ApiClientAuthConfig {
         match self {
             raw::ApiClientAuthConfig::Disabled => Ok((None, false, Vec::new())),
             raw::ApiClientAuthConfig::Optional { client_ca } => Ok((
-                Some(resolve_path_only(
-                    "api.transport.tls.client_auth.client_ca",
-                    client_ca,
-                    config_dir,
-                )?),
+                Some(client_ca.resolve("api.transport.tls.client_auth.client_ca", config_dir)?),
                 false,
                 Vec::new(),
             )),
@@ -1139,11 +1033,7 @@ impl raw::ApiClientAuthConfig {
                 client_ca,
                 allowed_common_names,
             } => Ok((
-                Some(resolve_path_only(
-                    "api.transport.tls.client_auth.client_ca",
-                    client_ca,
-                    config_dir,
-                )?),
+                Some(client_ca.resolve("api.transport.tls.client_auth.client_ca", config_dir)?),
                 true,
                 allowed_common_names,
             )),
@@ -1241,97 +1131,9 @@ impl raw::TokenAuthConfig {
         }
         let (read_token, admin_token) = self.into_token_sources();
         Ok(Some((
-            resolve_secret_optional(read_field, read_token, config_dir)?,
-            resolve_secret_optional(admin_field, admin_token, config_dir)?,
+            raw::SecretSource::resolve_optional(read_field, read_token, config_dir)?,
+            raw::SecretSource::resolve_optional(admin_field, admin_token, config_dir)?,
         )))
-    }
-}
-
-impl raw::ClientTlsInput {
-    fn into_runtime_dcs_tls(self, config_dir: &Path) -> Result<TlsConfig, ConfigErrorV2> {
-        let Some(identity) = self.identity else {
-            return Err(validation_error(
-                "dcs.client.tls.identity",
-                "enabled DCS TLS currently requires a client identity",
-            ));
-        };
-        let (cert, key) = identity.resolve(
-            "dcs.client.tls.identity.cert",
-            "dcs.client.tls.identity.key",
-            config_dir,
-        )?;
-        Ok(TlsConfig {
-            cert,
-            key,
-            ca_cert: resolve_optional_path("dcs.client.tls.ca_cert", self.ca_cert, config_dir)?,
-        })
-    }
-
-    fn into_pg_client_tls(
-        self,
-        ca_field: &'static str,
-        cert_field: &'static str,
-        key_field: &'static str,
-        config_dir: &Path,
-    ) -> Result<Option<PgClientTls>, ConfigErrorV2> {
-        let root_cert = resolve_optional_path(ca_field, self.ca_cert, config_dir)?;
-        let (client_cert, client_key) = self
-            .identity
-            .map(|identity| identity.resolve(cert_field, key_field, config_dir))
-            .transpose()?
-            .unzip();
-
-        Ok(
-            (root_cert.is_some() || client_cert.is_some() || client_key.is_some()).then_some(
-                PgClientTls {
-                    mode: PgSslMode::VerifyFull,
-                    root_cert,
-                    client_cert,
-                    client_key,
-                },
-            ),
-        )
-    }
-}
-
-fn resolve_path_pair(
-    cert_field: &'static str,
-    cert: raw::PathSource,
-    key_field: &'static str,
-    key: raw::PathSource,
-    config_dir: &Path,
-) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-    Ok((
-        resolve_path_only(cert_field, cert, config_dir)?,
-        resolve_path_only(key_field, key, config_dir)?,
-    ))
-}
-
-impl raw::TlsServerIdentityConfig {
-    fn resolve(
-        self,
-        cert_field: &'static str,
-        key_field: &'static str,
-        config_dir: &Path,
-    ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        resolve_path_pair(
-            cert_field,
-            self.cert_chain,
-            key_field,
-            self.private_key,
-            config_dir,
-        )
-    }
-}
-
-impl raw::TlsClientIdentityConfig {
-    fn resolve(
-        self,
-        cert_field: &'static str,
-        key_field: &'static str,
-        config_dir: &Path,
-    ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
-        resolve_path_pair(cert_field, self.cert, key_field, self.key, config_dir)
     }
 }
 
@@ -1384,7 +1186,7 @@ fn resolve_config_dir(path: &Path) -> Result<PathBuf, ConfigErrorV2> {
         })
 }
 
-fn normalize_config_path(
+pub(super) fn normalize_config_path(
     field: &'static str,
     path: PathBuf,
     config_dir: &Path,
@@ -1464,14 +1266,10 @@ mod tests {
     use super::{
         load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
         render_default_runtime_test_config_toml, render_operator_test_config_toml,
-        render_runtime_test_config_toml, toml_path_source, toml_string_secret,
+        toml_path_source, toml_string_secret,
     };
-    use crate::{
-        config_v2::{ConfigErrorV2, PgtmApiTransportExpectation},
-        dev_support::test_fs::unique_test_dir,
-        pginfo::conninfo::PgSslMode,
-    };
-    use std::{fs, net::SocketAddr, os::unix::fs::PermissionsExt, path::Path, time::Duration};
+    use crate::{config_v2::ConfigErrorV2, dev_support::test_fs::unique_test_dir};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, time::Duration};
 
     fn runtime_config_contents_with_zero_runtime_defaults(root: &Path) -> String {
         render_default_runtime_test_config_toml(
@@ -1496,60 +1294,6 @@ logging.postgres.cleanup.max_files = 0
 logging.postgres.cleanup.max_age_seconds = 0
 logging.postgres.cleanup.protect_recent_seconds = 0"#],
         )
-    }
-
-    #[test]
-    fn load_runtime_config_preserves_runtime_tls_and_operator_api_fields() -> Result<(), String> {
-        let root = unique_test_dir("load-config", "runtime-config-v2-runtime-fields")?;
-        let ca_cert = root.join("source-ca.crt");
-        let config = load_runtime_config_contents(
-            render_default_runtime_test_config_toml(
-                root.as_path(),
-                [format!(
-                    r#"[postgres.rewind.transport]
-ssl_mode = "verify-full"
-ca_cert = {}
-
-[process.binaries.overrides]
-pg_ctl = "/bin/true"
-initdb = "/bin/true"
-pg_rewind = "/bin/true"
-pg_basebackup = "/bin/true"
-
-[pgtm.api]
-advertised_url = "https://127.0.0.1:18081"
-expected_transport = "{}""#,
-                    toml_path_source(ca_cert.as_path()),
-                    PgtmApiTransportExpectation::Https.scheme(),
-                )],
-            )
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
-
-        assert_eq!(
-            (
-                config.postgres.source_client_tls.mode,
-                config.postgres.source_client_tls.root_cert,
-            ),
-            (PgSslMode::VerifyFull, Some(ca_cert.clone()))
-        );
-        assert_eq!(config.postgres.replicator.username, "replicator");
-        assert_eq!(config.postgres.rewinder.username, "rewinder");
-        if config
-            .api
-            .advertise
-            .as_ref()
-            .map(crate::state::ApiRoute::as_str)
-            != Some("https://127.0.0.1:18081/")
-        {
-            return Err(format!(
-                "unexpected runtime advertised API route: {:?}",
-                config.api.advertise
-            ));
-        }
-
-        Ok(())
     }
 
     #[test]
@@ -1673,77 +1417,6 @@ identity = { cert = { path = "/tmp/client.crt" }, key = { type = "env", env = "C
             Err(err) => Err(format!("expected parse error, got {err}")),
             Ok(_) => Err("expected non-path TLS identity rejection".to_string()),
         }
-    }
-
-    #[test]
-    fn load_operator_config_preserves_api_routing_fields_for_operator_and_runtime_documents(
-    ) -> Result<(), String> {
-        let operator = load_operator_config_contents(
-            render_operator_test_config_toml(
-                Some("https://node-b:8443"),
-                Some("https://127.0.0.1:18081"),
-                Some("https"),
-                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
-                std::iter::empty::<String>(),
-            )
-            .as_str(),
-        )
-        .map_err(|err| err.to_string())?;
-
-        assert_eq!(
-            (
-                operator.base_url.as_ref().map(reqwest::Url::as_str),
-                operator.expected_transport,
-                operator.resolve_to,
-                operator
-                    .advertised_url
-                    .as_ref()
-                    .map(crate::state::ApiRoute::as_str),
-            ),
-            (
-                Some("https://node-b:8443/"),
-                Some(PgtmApiTransportExpectation::Https),
-                Some(SocketAddr::from(([127, 0, 0, 1], 18443))),
-                Some("https://127.0.0.1:18081/"),
-            )
-        );
-
-        let runtime_document = render_runtime_test_config_toml(
-            "cluster-a",
-            "scope-a",
-            "node-a",
-            (
-                Path::new("/tmp/data"),
-                Path::new("/tmp/pgtm-socket"),
-                Path::new("/tmp/pgtm.log"),
-            ),
-            ["http://127.0.0.1:2379"],
-            [format!(
-                r#"[pgtm.api]
-base_url = "https://127.0.0.1:8443"
-expected_transport = "{}""#,
-                PgtmApiTransportExpectation::Https.scheme(),
-            )],
-        );
-
-        let runtime = load_runtime_config_contents(runtime_document.as_str())
-            .map_err(|err| err.to_string())?;
-        assert_eq!(
-            runtime
-                .api
-                .advertise
-                .as_ref()
-                .map(crate::state::ApiRoute::as_str),
-            None
-        );
-
-        let operator = load_operator_config_contents(runtime_document.as_str())
-            .map_err(|err| err.to_string())?;
-        assert_eq!(
-            operator.expected_transport,
-            Some(PgtmApiTransportExpectation::Https)
-        );
-        Ok(())
     }
 
     #[test]

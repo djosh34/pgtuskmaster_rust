@@ -1,15 +1,20 @@
 use std::{
     collections::BTreeMap,
     net::{IpAddr, SocketAddr},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use serde::{Deserialize, Deserializer};
 
 use crate::{
-    config_v2::types::{HaConfig, LoggingConfig, PgtmApiTransportExpectation, ProcessConfig},
-    pginfo::conninfo::PgSslMode,
+    config_v2::types::{
+        ConfigErrorV2, HaConfig, LoggingConfig, PgtmApiTransportExpectation, ProcessConfig, Secret,
+        TlsConfig,
+    },
+    pginfo::conninfo::{PgClientTls, PgSslMode},
 };
+
+use super::load_config::{normalize_config_path, validation_error};
 
 const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
@@ -430,6 +435,200 @@ pub(super) struct ClientTlsInput {
     pub(super) identity: Option<TlsClientIdentityConfig>,
 }
 
+impl PathSource {
+    pub(super) fn resolve(
+        self,
+        field: &'static str,
+        config_dir: &Path,
+    ) -> Result<PathBuf, ConfigErrorV2> {
+        match self {
+            Self::Path(path) | Self::PathConfig { path } => {
+                normalize_config_path(field, path, config_dir)
+            }
+        }
+    }
+
+    pub(super) fn resolve_optional(
+        field: &'static str,
+        source: Option<Self>,
+        config_dir: &Path,
+    ) -> Result<Option<PathBuf>, ConfigErrorV2> {
+        source
+            .map(|source| source.resolve(field, config_dir))
+            .transpose()
+    }
+}
+
+fn read_config_string(
+    field: &'static str,
+    path: PathBuf,
+    config_dir: &Path,
+) -> Result<String, ConfigErrorV2> {
+    let path = normalize_config_path(field, path, config_dir)?;
+    std::fs::read_to_string(&path).map_err(|source| ConfigErrorV2::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+impl PathOrInline {
+    pub(super) fn resolve_contents(
+        self,
+        field: &'static str,
+        config_dir: &Path,
+    ) -> Result<String, ConfigErrorV2> {
+        match self {
+            Self::Path(path) | Self::PathConfig { path } => {
+                read_config_string(field, path, config_dir)
+            }
+            Self::Inline { content } => Ok(content),
+        }
+    }
+}
+
+impl SecretSource {
+    pub(super) fn resolve_optional(
+        field: &'static str,
+        source: Option<Self>,
+        config_dir: &Path,
+    ) -> Result<Option<Secret>, ConfigErrorV2> {
+        source
+            .map(|source| source.resolve_required(field, config_dir))
+            .transpose()
+    }
+
+    pub(super) fn resolve_required(
+        self,
+        field: &'static str,
+        config_dir: &Path,
+    ) -> Result<Secret, ConfigErrorV2> {
+        let value = match self {
+            Self::PathConfig { path } => read_config_string(field, path, config_dir)?,
+            Self::Tagged(TaggedSecretSource::None) => String::new(),
+            Self::Tagged(TaggedSecretSource::Env { env }) => {
+                std::env::var(&env).map_err(|err| {
+                    validation_error(
+                        field,
+                        match err {
+                            std::env::VarError::NotPresent => {
+                                format!("environment variable `{env}` is not set")
+                            }
+                            std::env::VarError::NotUnicode(_) => {
+                                format!("environment variable `{env}` is not valid unicode")
+                            }
+                        },
+                    )
+                })?
+            }
+            Self::Tagged(TaggedSecretSource::File { path }) => {
+                read_config_string(field, path, config_dir)?
+            }
+            Self::Tagged(TaggedSecretSource::String { value }) => value,
+        };
+
+        let value = value.trim_end_matches(['\n', '\r']).to_string();
+        if value.trim().is_empty() {
+            return Err(validation_error(field, "must not be empty"));
+        }
+        Ok(Secret::new(value))
+    }
+}
+
+fn resolve_path_pair(
+    cert_field: &'static str,
+    cert: PathSource,
+    key_field: &'static str,
+    key: PathSource,
+    config_dir: &Path,
+) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
+    Ok((
+        cert.resolve(cert_field, config_dir)?,
+        key.resolve(key_field, config_dir)?,
+    ))
+}
+
+impl TlsServerIdentityConfig {
+    pub(super) fn resolve(
+        self,
+        cert_field: &'static str,
+        key_field: &'static str,
+        config_dir: &Path,
+    ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
+        resolve_path_pair(
+            cert_field,
+            self.cert_chain,
+            key_field,
+            self.private_key,
+            config_dir,
+        )
+    }
+}
+
+impl TlsClientIdentityConfig {
+    pub(super) fn resolve(
+        self,
+        cert_field: &'static str,
+        key_field: &'static str,
+        config_dir: &Path,
+    ) -> Result<(PathBuf, PathBuf), ConfigErrorV2> {
+        resolve_path_pair(cert_field, self.cert, key_field, self.key, config_dir)
+    }
+}
+
+impl ClientTlsInput {
+    pub(super) fn into_runtime_dcs_tls(
+        self,
+        config_dir: &Path,
+    ) -> Result<TlsConfig, ConfigErrorV2> {
+        let Some(identity) = self.identity else {
+            return Err(validation_error(
+                "dcs.client.tls.identity",
+                "enabled DCS TLS currently requires a client identity",
+            ));
+        };
+        let (cert, key) = identity.resolve(
+            "dcs.client.tls.identity.cert",
+            "dcs.client.tls.identity.key",
+            config_dir,
+        )?;
+        Ok(TlsConfig {
+            cert,
+            key,
+            ca_cert: PathSource::resolve_optional(
+                "dcs.client.tls.ca_cert",
+                self.ca_cert,
+                config_dir,
+            )?,
+        })
+    }
+
+    pub(super) fn into_pg_client_tls(
+        self,
+        ca_field: &'static str,
+        cert_field: &'static str,
+        key_field: &'static str,
+        config_dir: &Path,
+    ) -> Result<Option<PgClientTls>, ConfigErrorV2> {
+        let root_cert = PathSource::resolve_optional(ca_field, self.ca_cert, config_dir)?;
+        let (client_cert, client_key) = self
+            .identity
+            .map(|identity| identity.resolve(cert_field, key_field, config_dir))
+            .transpose()?
+            .unzip();
+
+        Ok(
+            (root_cert.is_some() || client_cert.is_some() || client_key.is_some()).then_some(
+                PgClientTls {
+                    mode: PgSslMode::VerifyFull,
+                    root_cert,
+                    client_cert,
+                    client_key,
+                },
+            ),
+        )
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct OperatorDocument {
@@ -470,5 +669,122 @@ impl Default for DebugConfig {
         Self {
             enabled: DEFAULT_DEBUG_ENABLED,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PathOrInline, PathSource, SecretSource, TaggedSecretSource, TlsServerIdentityConfig,
+    };
+    use crate::{config_v2::ConfigErrorV2, dev_support::test_fs::unique_test_dir};
+    use std::{fs, path::PathBuf};
+
+    #[test]
+    fn raw_source_owners_resolve_paths_contents_and_tls_pairs() -> Result<(), String> {
+        let root = unique_test_dir("private-schema", "source-owner-resolution")?;
+        let config_dir = root.join("config");
+        fs::create_dir_all(config_dir.as_path()).map_err(|err| err.to_string())?;
+        fs::write(
+            config_dir.join("pg_hba.conf"),
+            "host all all 0.0.0.0/0 md5\n",
+        )
+        .map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            PathSource::PathConfig {
+                path: PathBuf::from("tls/server.crt"),
+            }
+            .resolve("tls.cert", config_dir.as_path())
+            .map_err(|err| err.to_string())?,
+            config_dir.join("tls/server.crt")
+        );
+        assert_eq!(
+            PathOrInline::PathConfig {
+                path: PathBuf::from("pg_hba.conf"),
+            }
+            .resolve_contents("postgres.access.hba", config_dir.as_path())
+            .map_err(|err| err.to_string())?,
+            "host all all 0.0.0.0/0 md5\n"
+        );
+        assert_eq!(
+            PathOrInline::Inline {
+                content: "local all all trust".to_string(),
+            }
+            .resolve_contents("postgres.access.ident", config_dir.as_path())
+            .map_err(|err| err.to_string())?,
+            "local all all trust"
+        );
+        assert_eq!(
+            TlsServerIdentityConfig {
+                cert_chain: PathSource::PathConfig {
+                    path: PathBuf::from("server.crt"),
+                },
+                private_key: PathSource::PathConfig {
+                    path: PathBuf::from("server.key"),
+                },
+            }
+            .resolve(
+                "postgres.tls.identity.cert_chain",
+                "postgres.tls.identity.private_key",
+                config_dir.as_path(),
+            )
+            .map_err(|err| err.to_string())?,
+            (config_dir.join("server.crt"), config_dir.join("server.key"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn secret_source_owners_trim_files_and_report_missing_env() -> Result<(), String> {
+        let root = unique_test_dir("private-schema", "secret-source-resolution")?;
+        let config_dir = root.join("config");
+        fs::create_dir_all(config_dir.as_path()).map_err(|err| err.to_string())?;
+        fs::write(config_dir.join("secret.txt"), "from-file\r\n").map_err(|err| err.to_string())?;
+
+        assert_eq!(
+            SecretSource::Tagged(TaggedSecretSource::File {
+                path: PathBuf::from("secret.txt"),
+            })
+            .resolve_required("api.auth.read_token", config_dir.as_path())
+            .map_err(|err| err.to_string())?
+            .as_str(),
+            "from-file"
+        );
+        assert_eq!(
+            SecretSource::Tagged(TaggedSecretSource::String {
+                value: "inline-token".to_string(),
+            })
+            .resolve_required("api.auth.admin_token", config_dir.as_path())
+            .map_err(|err| err.to_string())?
+            .as_str(),
+            "inline-token"
+        );
+        assert_eq!(
+            SecretSource::resolve_optional("api.auth.optional", None, config_dir.as_path())
+                .map_err(|err| err.to_string())?,
+            None
+        );
+        match SecretSource::Tagged(TaggedSecretSource::Env {
+            env: "PGTM_PRIVATE_SCHEMA_MISSING_ENV".to_string(),
+        })
+        .resolve_required("api.auth.read_token", config_dir.as_path())
+        {
+            Ok(secret) => {
+                return Err(format!(
+                    "expected missing env error, got `{}`",
+                    secret.as_str()
+                ));
+            }
+            Err(ConfigErrorV2::Validation { field, message }) => {
+                assert_eq!(field, "api.auth.read_token");
+                assert_eq!(
+                    message,
+                    "environment variable `PGTM_PRIVATE_SCHEMA_MISSING_ENV` is not set"
+                );
+            }
+            Err(other) => return Err(format!("expected validation error, got {other}")),
+        }
+        Ok(())
     }
 }
