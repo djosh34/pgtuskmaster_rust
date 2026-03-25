@@ -30,21 +30,23 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/58-collapse-process-worker-real-test-waiters-with-sync-predicates.md`
+
 Plan:
 
 <steps>
 - [ ] If fresh (based on progress history), untick all boxes, remove existing path to plan file
-- [ ] Find a potential plan if it exists, otherwise find new ones
-- [ ] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
-- [ ] Do improvement
-- [ ] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
-- [ ] test&validate new code
-- [ ] task_switch + commit everything (including .ralph etc) + push
-- [ ] if not lower than 19k lines, DO NOT SET passes:true
+- [x] Find a potential plan if it exists, otherwise find new ones
+- [x] Choose one improvement and write a plan, add the path to that plan inside task_file, remove potential plan file after plan written
+- [x] Do improvement
+- [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
+- [x] test&validate new code
+- [x] task_switch + commit everything (including .ralph etc) + push
+- [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
-- [ ] `make check`
-- [ ] `make lint`
-- [ ] `make test`
-- [ ] `make test-long`
+- [x] `make check`
+- [x] `make lint`
+- [x] `make test`
+- [x] `make test-long`
 </acceptance_criteria>

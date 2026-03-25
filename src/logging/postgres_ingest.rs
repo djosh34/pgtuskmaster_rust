@@ -1193,7 +1193,7 @@ mod tests {
     }
 
     mod real_binary {
-        use std::path::PathBuf;
+        use std::path::{Path, PathBuf};
         use std::time::Duration;
 
         use tokio::process::Command;
@@ -1226,8 +1226,8 @@ mod tests {
             step_once as ingest_step_once, PostgresIngestWorkerCtx, PostgresIngestWorkerState,
         };
         use super::{
-            start_test_log, REAL_INGEST_RETRY_SLEEP, REAL_PROCESS_WORKER_POLL_INTERVAL,
-            REAL_PSQL_RETRY_SLEEP,
+            start_test_log, RunningTestLog, REAL_INGEST_RETRY_SLEEP,
+            REAL_PROCESS_WORKER_POLL_INTERVAL, REAL_PSQL_RETRY_SLEEP,
         };
 
         async fn wait_for_process_idle_success(
@@ -1244,75 +1244,95 @@ mod tests {
             timeout: Duration,
             debug_log_path: Option<&PathBuf>,
         ) -> Result<(), WorkerError> {
-            let started = Instant::now();
-            while started.elapsed() < timeout {
-                process_step_once(ctx).await?;
-                if let ProcessState::Idle {
-                    last_outcome: Some(outcome),
-                    ..
-                } = &ctx.state_channel.current
-                {
-                    match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. } if id == job_id => {
-                            return Ok(());
+            if !wait_for_process_condition(
+                ctx,
+                None,
+                timeout,
+                Duration::from_millis(10),
+                |ctx, _| {
+                    if let ProcessState::Idle {
+                        last_outcome: Some(outcome),
+                        ..
+                    } = &ctx.state_channel.current
+                    {
+                        match outcome {
+                            crate::process::state::JobOutcome::Success { id, .. }
+                                if id == job_id =>
+                            {
+                                return Ok(true);
+                            }
+                            crate::process::state::JobOutcome::Failure { id, error, .. }
+                                if id == job_id =>
+                            {
+                                return Err(WorkerError::Message(format!(
+                                    "process job {} failed unexpectedly: {error}{}",
+                                    job_id.0,
+                                    debug_tail_suffix(debug_log_path)
+                                )));
+                            }
+                            crate::process::state::JobOutcome::Timeout { id, .. }
+                                if id == job_id =>
+                            {
+                                return Err(WorkerError::Message(format!(
+                                    "process job {} timed out unexpectedly{}",
+                                    job_id.0,
+                                    debug_tail_suffix(debug_log_path)
+                                )));
+                            }
+                            _ => {}
                         }
-                        crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if id == job_id =>
-                        {
-                            let debug_tail = match debug_log_path {
-                                Some(path) => tail_file_best_effort(path, 60),
-                                None => String::new(),
-                            };
-                            return Err(WorkerError::Message(format!(
-                                "process job {} failed unexpectedly: {error}{}",
-                                job_id.0,
-                                if debug_tail.is_empty() {
-                                    "".to_string()
-                                } else {
-                                    format!(
-                                        "\n--- debug tail {} ---\n{debug_tail}",
-                                        path_display(debug_log_path)
-                                    )
-                                }
-                            )));
-                        }
-                        crate::process::state::JobOutcome::Timeout { id, .. } if id == job_id => {
-                            let debug_tail = match debug_log_path {
-                                Some(path) => tail_file_best_effort(path, 60),
-                                None => String::new(),
-                            };
-                            return Err(WorkerError::Message(format!(
-                                "process job {} timed out unexpectedly{}",
-                                job_id.0,
-                                if debug_tail.is_empty() {
-                                    "".to_string()
-                                } else {
-                                    format!(
-                                        "\n--- debug tail {} ---\n{debug_tail}",
-                                        path_display(debug_log_path)
-                                    )
-                                }
-                            )));
-                        }
-                        _ => {}
                     }
+                    Ok(false)
+                },
+            )
+            .await?
+            {
+                return Err(WorkerError::Message(format!(
+                    "timed out waiting for job {} success",
+                    job_id.0
+                )));
+            }
+            Ok(())
+        }
+
+        async fn wait_for_process_condition<Done>(
+            ctx: &mut ProcessWorkerCtx<'_>,
+            test_log: Option<&RunningTestLog>,
+            timeout: Duration,
+            poll_interval: Duration,
+            mut done: Done,
+        ) -> Result<bool, WorkerError>
+        where
+            Done: FnMut(&ProcessWorkerCtx<'_>, &[LogRecord]) -> Result<bool, WorkerError>,
+        {
+            let started = Instant::now();
+            let mut collected: Vec<LogRecord> = Vec::new();
+            loop {
+                process_step_once(ctx).await?;
+                if let Some(test_log) = test_log {
+                    collected.extend(test_log.take().await);
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            Err(WorkerError::Message(format!(
-                "timed out waiting for job {} success",
-                job_id.0
-            )))
-        }
-
-        fn path_display(path: Option<&PathBuf>) -> String {
-            match path {
-                Some(path) => path.display().to_string(),
-                None => "<none>".to_string(),
+                if done(ctx, &collected)? {
+                    return Ok(true);
+                }
+                if started.elapsed() >= timeout {
+                    return Ok(false);
+                }
+                tokio::time::sleep(poll_interval).await;
             }
         }
 
-        fn tail_file_best_effort(path: &PathBuf, max_lines: usize) -> String {
+        fn debug_tail_suffix(debug_log_path: Option<&PathBuf>) -> String {
+            debug_log_path.map_or_else(String::new, |path| {
+                format!(
+                    "\n--- debug tail {} ---\n{}",
+                    path.display(),
+                    tail_file_best_effort(path, 60)
+                )
+            })
+        }
+
+        fn tail_file_best_effort(path: &Path, max_lines: usize) -> String {
             let contents = match std::fs::read_to_string(path) {
                 Ok(contents) => contents,
                 Err(err) => return format!("(failed to read {}: {err})", path.display()),
@@ -1608,85 +1628,85 @@ mod tests {
             })
             .map_err(|_| WorkerError::Message("send start job failed".to_string()))?;
 
-            let started = Instant::now();
-            let mut collected_for_debug: Vec<LogRecord> = Vec::new();
-            while started.elapsed() < Duration::from_secs(60) {
-                process_step_once(&mut process_ctx).await?;
-                collected_for_debug.extend(test_log.take().await);
-
-                if let ProcessState::Idle {
-                    last_outcome: Some(outcome),
-                    ..
-                } = &process_ctx.state_channel.current
-                {
-                    match outcome {
-                        crate::process::state::JobOutcome::Success { id, .. }
-                            if *id == start_id =>
-                        {
-                            break;
-                        }
-                        crate::process::state::JobOutcome::Failure { id, error, .. }
-                            if *id == start_id =>
-                        {
-                            let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
-                            let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
-                            let postmaster_pid =
-                                tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
-
-                            let mut pg_tool_lines = Vec::new();
-                            for record in &collected_for_debug {
-                                if record.producer != crate::logging::LogProducer::PgTool {
-                                    continue;
-                                }
-                                let job_kind = record
-                                    .attributes
-                                    .get("job.kind")
-                                    .and_then(|v| v.as_str())
-                                    .map_or("<none>", |value| value);
-                                if job_kind != "start_postgres" {
-                                    continue;
-                                }
-                                pg_tool_lines.push(format!(
-                                    "{:?} {}: {}",
-                                    record.transport,
-                                    record
-                                        .attributes
-                                        .get("postgres.path")
-                                        .and_then(|value| value.as_str())
-                                        .map_or("<none>", |value| value),
-                                    record.message
-                                ));
+            if !wait_for_process_condition(
+                &mut process_ctx,
+                Some(&test_log),
+                Duration::from_secs(60),
+                Duration::from_millis(10),
+                |process_ctx, collected_for_debug| {
+                    if let ProcessState::Idle {
+                        last_outcome: Some(outcome),
+                        ..
+                    } = &process_ctx.state_channel.current
+                    {
+                        match outcome {
+                            crate::process::state::JobOutcome::Success { id, .. }
+                                if *id == start_id =>
+                            {
+                                return Ok(true);
                             }
-                            if pg_tool_lines.len() > 60 {
-                                let start = pg_tool_lines.len().saturating_sub(60);
-                                pg_tool_lines.drain(0..start);
-                            }
-                            let pg_tool_debug = if pg_tool_lines.is_empty() {
-                                "(no captured pg_tool stdout/stderr lines for start_postgres)"
-                                    .to_string()
-                            } else {
-                                pg_tool_lines.join("\n")
-                            };
+                            crate::process::state::JobOutcome::Failure { id, error, .. }
+                                if *id == start_id =>
+                            {
+                                let pg_ctl_tail = tail_file_best_effort(&log_file, 120);
+                                let postgres_json_tail = tail_file_best_effort(&jsonlog_path, 120);
+                                let postmaster_pid =
+                                    tail_file_best_effort(&data_dir.join("postmaster.pid"), 60);
 
-                            return Err(WorkerError::Message(format!(
-                                "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
-                                start_id.0,
-                                log_file.display(),
-                                pg_ctl_tail,
-                                jsonlog_path.display(),
-                                postgres_json_tail,
-                                data_dir.join("postmaster.pid").display(),
-                                postmaster_pid,
-                                pg_tool_debug
-                            )));
+                                let mut pg_tool_lines = collected_for_debug
+                                    .iter()
+                                    .filter(|record| {
+                                        record.producer == crate::logging::LogProducer::PgTool
+                                            && record
+                                                .attributes
+                                                .get("job.kind")
+                                                .and_then(|v| v.as_str())
+                                                == Some("start_postgres")
+                                    })
+                                    .map(|record| {
+                                        format!(
+                                            "{:?} {}: {}",
+                                            record.transport,
+                                            record
+                                                .attributes
+                                                .get("postgres.path")
+                                                .and_then(|value| value.as_str())
+                                                .map_or("<none>", |value| value),
+                                            record.message
+                                        )
+                                    })
+                                    .collect::<Vec<_>>();
+                                if pg_tool_lines.len() > 60 {
+                                    let start = pg_tool_lines.len().saturating_sub(60);
+                                    pg_tool_lines.drain(0..start);
+                                }
+                                let pg_tool_debug = if pg_tool_lines.is_empty() {
+                                    "(no captured pg_tool stdout/stderr lines for start_postgres)"
+                                        .to_string()
+                                } else {
+                                    pg_tool_lines.join("\n")
+                                };
+
+                                return Err(WorkerError::Message(format!(
+                                    "process job {} failed unexpectedly: {error}\n--- pg_ctl log tail {} ---\n{}\n--- postgres jsonlog tail {} ---\n{}\n--- postmaster.pid tail {} ---\n{}\n--- captured pg_tool output (start_postgres) ---\n{}",
+                                    start_id.0,
+                                    log_file.display(),
+                                    pg_ctl_tail,
+                                    jsonlog_path.display(),
+                                    postgres_json_tail,
+                                    data_dir.join("postmaster.pid").display(),
+                                    postmaster_pid,
+                                    pg_tool_debug
+                                )));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-            if started.elapsed() >= Duration::from_secs(60) {
+                    Ok(false)
+                },
+            )
+            .await?
+            {
                 return Err(WorkerError::Message(
                     "timed out waiting for start_postgres job success".to_string(),
                 ));
@@ -1716,7 +1736,7 @@ mod tests {
             }
 
             let deadline = Instant::now() + Duration::from_secs(10);
-            let mut collected = Vec::new();
+            let mut collected: Vec<LogRecord> = Vec::new();
             while Instant::now() < deadline {
                 ingest_step_once(&ingest_ctx, &mut ingest_state).await?;
                 process_step_once(&mut process_ctx).await?;
@@ -1861,21 +1881,23 @@ mod tests {
             })
             .map_err(|_| WorkerError::Message("send basebackup job failed".to_string()))?;
 
-            let deadline = Instant::now() + Duration::from_secs(10);
-            let mut collected = Vec::new();
-            while Instant::now() < deadline {
-                process_step_once(&mut ctx).await?;
-                collected.extend(test_log.take().await);
-                let saw_stderr = collected.iter().any(|r| {
-                    r.producer == crate::logging::LogProducer::PgTool
-                        && r.transport == crate::logging::LogTransport::ChildStderr
-                        && r.attributes.get("job.kind").and_then(|v| v.as_str())
-                            == Some("base_backup")
-                });
-                if saw_stderr {
-                    return Ok(());
-                }
-                tokio::time::sleep(REAL_INGEST_RETRY_SLEEP).await;
+            if wait_for_process_condition(
+                &mut ctx,
+                Some(&test_log),
+                Duration::from_secs(10),
+                REAL_INGEST_RETRY_SLEEP,
+                |_, collected| {
+                    Ok(collected.iter().any(|r| {
+                        r.producer == crate::logging::LogProducer::PgTool
+                            && r.transport == crate::logging::LogTransport::ChildStderr
+                            && r.attributes.get("job.kind").and_then(|v| v.as_str())
+                                == Some("base_backup")
+                    }))
+                },
+            )
+            .await?
+            {
+                return Ok(());
             }
 
             Err(WorkerError::Message(
