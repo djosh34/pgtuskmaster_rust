@@ -38,8 +38,8 @@ Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/83-
 - [x] Do improvement
 - [x] Validate if improvement actually reduced lines, otherwise go replan: no line count reduction = failure
 - [x] test&validate new code
-- [ ] task_switch + commit everything (including .ralph etc) + push
-- [ ] if not lower than 19k lines, DO NOT SET passes:true
+- [x] task_switch + commit everything (including .ralph etc) + push
+- [x] if not lower than 19k lines, DO NOT SET passes:true
 </steps>
 <acceptance_criteria>
 - [x] `make check`
