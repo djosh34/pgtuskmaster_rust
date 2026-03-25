@@ -1,1 +1,0 @@
-- Collapse passfile rendering in `src/postgres_managed.rs` and `primary_conninfo` rendering in `src/postgres_managed_conf.rs`; replica connection state is split across two string renderers that both derive from the same `PgConnInfo`.

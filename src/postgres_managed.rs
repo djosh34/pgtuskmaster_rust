@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::{
     config_v2::{types::TlsConfig, RuntimeConfigV2},
-    pginfo::{conninfo::render_conninfo_value, state::PgConnInfo},
+    pginfo::state::PgConnInfo,
     process::jobs::PostgresStartIntent,
 };
 
@@ -189,64 +189,11 @@ fn materialize_managed_standby_passfile(
         return Ok(());
     };
 
-    let rendered =
-        render_libpq_passfile_entry(primary_conninfo, cfg.postgres.replicator.password.as_str())?;
+    let rendered = primary_conninfo
+        .standby_passfile_entry(cfg.postgres.replicator.password.as_str())
+        .map_err(|message| ManagedPostgresError::InvalidConfig { message })?;
     write_atomic(managed_passfile_path, rendered.as_bytes(), Some(0o600))?;
     Ok(())
-}
-
-fn render_libpq_passfile_entry(
-    conninfo: &PgConnInfo,
-    password: &str,
-) -> Result<String, ManagedPostgresError> {
-    const STREAMING_REPLICATION_DATABASE: &str = "replication";
-    let (host, port) = passfile_target_fields(conninfo.route.endpoint());
-
-    if [
-        host.as_str(),
-        conninfo.user.as_str(),
-        password,
-        STREAMING_REPLICATION_DATABASE,
-    ]
-    .iter()
-    .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
-    {
-        return Err(ManagedPostgresError::InvalidConfig {
-            message: "managed standby passfile fields must not contain newlines".to_string(),
-        });
-    }
-
-    Ok(format!(
-        "{}:{}:{}:{}:{}\n",
-        escape_libpq_passfile_field(host.as_str()),
-        port,
-        STREAMING_REPLICATION_DATABASE,
-        escape_libpq_passfile_field(conninfo.user.as_str()),
-        escape_libpq_passfile_field(password),
-    ))
-}
-
-fn passfile_target_fields(endpoint: &crate::state::PgEndpoint) -> (String, u16) {
-    match endpoint {
-        crate::state::PgEndpoint::Tcp { host, port } => (host.clone(), *port),
-        crate::state::PgEndpoint::UnixSocket { socket_dir, port } => {
-            (socket_dir.display().to_string(), *port)
-        }
-    }
-}
-
-fn escape_libpq_passfile_field(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            ':' | '\\' => {
-                escaped.push('\\');
-                escaped.push(ch);
-            }
-            _ => escaped.push(ch),
-        }
-    }
-    escaped
 }
 
 fn render_managed_postgres_conf(
@@ -292,16 +239,12 @@ fn render_managed_postgres_conf(
 
     push_bool_setting(&mut rendered, "hot_standby", start_intent.hot_standby());
     if let Some(primary_conninfo) = replica_primary_conninfo(start_intent, primary_conninfo)? {
-        let mut primary_conninfo_with_passfile = primary_conninfo.to_string();
-        primary_conninfo_with_passfile.push(' ');
-        primary_conninfo_with_passfile.push_str("passfile=");
-        primary_conninfo_with_passfile.push_str(
-            render_conninfo_value(managed_standby_passfile.display().to_string().as_str()).as_str(),
-        );
         push_string_setting(
             &mut rendered,
             "primary_conninfo",
-            primary_conninfo_with_passfile.as_str(),
+            primary_conninfo
+                .with_passfile(managed_standby_passfile)
+                .as_str(),
         );
     }
 
@@ -845,20 +788,15 @@ mod tests {
         if !rendered.starts_with(MANAGED_POSTGRESQL_CONF_HEADER) {
             return Err(format!("missing managed header: {rendered}"));
         }
-        if !rendered.contains("logging_collector = on") {
-            return Err(format!("missing logging_collector=on: {rendered}"));
-        }
-        if !rendered.contains("log_destination = 'jsonlog,stderr'") {
-            return Err(format!("missing jsonlog destination: {rendered}"));
-        }
-        if !rendered.contains("ssl = on") {
-            return Err(format!("missing ssl=on: {rendered}"));
-        }
-        if !rendered.contains("hot_standby = on") {
-            return Err(format!("missing hot_standby=on: {rendered}"));
-        }
-        if !rendered.contains("primary_conninfo =") {
-            return Err(format!("missing primary_conninfo: {rendered}"));
+        for setting in [
+            "logging_collector = on",
+            "log_destination = 'jsonlog,stderr'",
+            "ssl = on",
+            "hot_standby = on",
+        ] {
+            if !rendered.contains(setting) {
+                return Err(format!("missing `{setting}`: {rendered}"));
+            }
         }
         Ok(())
     }

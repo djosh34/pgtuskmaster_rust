@@ -1,4 +1,9 @@
-use std::{fmt, net::IpAddr, path::PathBuf, str::FromStr};
+use std::{
+    fmt,
+    net::IpAddr,
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use serde::{de, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -96,6 +101,47 @@ impl PgConnInfo {
             ..self.clone()
         }
     }
+
+    pub fn with_passfile(&self, passfile: &Path) -> String {
+        format!(
+            "{} passfile={}",
+            self,
+            render_conninfo_value(passfile.display().to_string().as_str())
+        )
+    }
+
+    pub fn standby_passfile_entry(&self, password: &str) -> Result<String, String> {
+        const STREAMING_REPLICATION_DATABASE: &str = "replication";
+        let host = self.passfile_host();
+
+        if [
+            host.as_str(),
+            self.user.as_str(),
+            password,
+            STREAMING_REPLICATION_DATABASE,
+        ]
+        .iter()
+        .any(|value| value.chars().any(|ch| ch == '\n' || ch == '\r'))
+        {
+            return Err("managed standby passfile fields must not contain newlines".to_string());
+        }
+
+        Ok(format!(
+            "{}:{}:{}:{}:{}\n",
+            escape_passfile_field(host.as_str()),
+            self.route.port(),
+            STREAMING_REPLICATION_DATABASE,
+            escape_passfile_field(self.user.as_str()),
+            escape_passfile_field(password),
+        ))
+    }
+
+    fn passfile_host(&self) -> String {
+        match self.route.endpoint() {
+            PgEndpoint::Tcp { host, .. } => host.clone(),
+            PgEndpoint::UnixSocket { socket_dir, .. } => socket_dir.display().to_string(),
+        }
+    }
 }
 
 impl PgClientTls {
@@ -115,12 +161,8 @@ impl PgClientTls {
 
 impl fmt::Display for PgConnInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let (host, port) = match self.route.endpoint() {
-            PgEndpoint::Tcp { host, port } => (host.clone(), *port),
-            PgEndpoint::UnixSocket { socket_dir, port } => {
-                (socket_dir.display().to_string(), *port)
-            }
-        };
+        let host = self.passfile_host();
+        let port = self.route.port();
 
         write!(f, "host={}", render_conninfo_value(host.as_str()))?;
         if let Some(value) = self.route.hostaddr() {
@@ -270,6 +312,10 @@ pub fn render_conninfo_value(value: &str) -> String {
     }
 }
 
+fn escape_passfile_field(value: &str) -> String {
+    value.replace('\\', "\\\\").replace(':', "\\:")
+}
+
 fn parse_conninfo_entries(
     input: &str,
 ) -> Result<std::collections::BTreeMap<String, String>, String> {
@@ -347,7 +393,7 @@ fn parse_conninfo_entries(
 mod tests {
     use std::{
         net::{IpAddr, Ipv4Addr},
-        path::PathBuf,
+        path::{Path, PathBuf},
     };
 
     use super::{
@@ -385,13 +431,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_accepts_rendered_conninfo_with_extra_keys() -> Result<(), String> {
-        let rendered = format!(
-            "{} passfile='/var/lib/postgresql/data/pgtm.standby.passfile'",
-            sample_conninfo()?
-        );
+    fn standby_passfile_entry_follows_libpq_rules() -> Result<(), String> {
+        let sample = sample_conninfo()?;
+        let rendered =
+            sample.with_passfile(Path::new("/var/lib/postgresql data/pgtm.standby.passfile"));
+        let conninfo = PgConnInfo {
+            route: PgRoute::unix_socket(PathBuf::from("/tmp/pgtm:socket"), 5432)?,
+            user: r#"repl:user\name"#.to_string(),
+            ..sample.clone()
+        };
 
-        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample_conninfo()?));
+        assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(sample));
+        assert_eq!(
+            conninfo.standby_passfile_entry(r#"s:ec\ret"#)?,
+            "/tmp/pgtm\\:socket:5432:replication:repl\\:user\\\\name:s\\:ec\\\\ret\n"
+        );
+        let err = sample_conninfo()?
+            .standby_passfile_entry("secret\npassword")
+            .err()
+            .ok_or_else(|| "newline must fail".to_string())?;
+        assert_eq!(
+            err,
+            "managed standby passfile fields must not contain newlines"
+        );
         Ok(())
     }
 
@@ -405,9 +467,7 @@ mod tests {
             )?,
             ..sample_conninfo()?
         };
-
         let rendered = conninfo.to_string();
-
         assert!(rendered.contains("hostaddr=127.0.0.1"));
         assert_eq!(parse_pg_conninfo(rendered.as_str()), Ok(conninfo));
         Ok(())
