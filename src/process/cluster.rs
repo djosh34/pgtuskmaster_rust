@@ -178,11 +178,33 @@ fn materialize_start_config(
     })
 }
 
-fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
-    let program = cfg.process.binaries.initdb.clone();
+fn build_command(
+    cfg: &RuntimeConfigV2,
+    program: std::path::PathBuf,
+    args: Vec<String>,
+    env: Vec<ProcessEnvVar>,
+) -> ProcessCommandSpec {
     ProcessCommandSpec {
-        program: program.clone(),
-        args: vec![
+        program,
+        args,
+        env,
+        capture_output: cfg.logging.capture_subprocess_output,
+    }
+}
+
+fn build_pg_ctl_command(cfg: &RuntimeConfigV2, args: Vec<String>) -> ProcessCommandSpec {
+    build_command(cfg, cfg.process.binaries.pg_ctl.clone(), args, Vec::new())
+}
+
+fn source_conninfo_and_env(source: &SourceConn) -> (String, Vec<ProcessEnvVar>) {
+    (source.conninfo.to_string(), role_auth_env(&source.auth))
+}
+
+fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
+    build_command(
+        cfg,
+        cfg.process.binaries.initdb.clone(),
+        vec![
             "-D".to_string(),
             cfg.postgres.data_dir.display().to_string(),
             "-A".to_string(),
@@ -190,41 +212,40 @@ fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
             "-U".to_string(),
             cfg.postgres.superuser.username.clone(),
         ],
-        env: Vec::new(),
-        capture_output: cfg.logging.capture_subprocess_output,
-    }
+        Vec::new(),
+    )
 }
 
 fn build_basebackup_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
-    let program = cfg.process.binaries.pg_basebackup.clone();
-    ProcessCommandSpec {
-        program: program.clone(),
-        args: vec![
+    let (conninfo, env) = source_conninfo_and_env(source);
+    build_command(
+        cfg,
+        cfg.process.binaries.pg_basebackup.clone(),
+        vec![
             "--dbname".to_string(),
-            source.conninfo.to_string(),
+            conninfo,
             "-D".to_string(),
             cfg.postgres.data_dir.display().to_string(),
             "-Fp".to_string(),
             "-Xs".to_string(),
         ],
-        env: role_auth_env(&source.auth),
-        capture_output: cfg.logging.capture_subprocess_output,
-    }
+        env,
+    )
 }
 
 fn build_pg_rewind_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
-    let program = cfg.process.binaries.pg_rewind.clone();
-    ProcessCommandSpec {
-        program: program.clone(),
-        args: vec![
+    let (conninfo, env) = source_conninfo_and_env(source);
+    build_command(
+        cfg,
+        cfg.process.binaries.pg_rewind.clone(),
+        vec![
             "--target-pgdata".to_string(),
             cfg.postgres.data_dir.display().to_string(),
             "--source-server".to_string(),
-            source.conninfo.to_string(),
+            conninfo,
         ],
-        env: role_auth_env(&source.auth),
-        capture_output: cfg.logging.capture_subprocess_output,
-    }
+        env,
+    )
 }
 
 fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> ProcessCommandSpec {
@@ -232,7 +253,6 @@ fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> Pr
         .into_iter()
         .flat_map(|seconds| ["-t".to_string(), seconds.to_string()])
         .collect::<Vec<_>>();
-    let program = cfg.process.binaries.pg_ctl.clone();
     let args = [
         vec![
             "-D".to_string(),
@@ -243,19 +263,13 @@ fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> Pr
         wait_args,
     ]
     .concat();
-    ProcessCommandSpec {
-        program: program.clone(),
-        args,
-        env: Vec::new(),
-        capture_output: cfg.logging.capture_subprocess_output,
-    }
+    build_pg_ctl_command(cfg, args)
 }
 
 fn build_demote_command(cfg: &RuntimeConfigV2, mode: &ShutdownMode) -> ProcessCommandSpec {
-    let program = cfg.process.binaries.pg_ctl.clone();
-    ProcessCommandSpec {
-        program: program.clone(),
-        args: vec![
+    build_pg_ctl_command(
+        cfg,
+        vec![
             "-D".to_string(),
             cfg.postgres.data_dir.display().to_string(),
             "stop".to_string(),
@@ -263,9 +277,7 @@ fn build_demote_command(cfg: &RuntimeConfigV2, mode: &ShutdownMode) -> ProcessCo
             mode.as_pg_ctl_arg().to_string(),
             "-w".to_string(),
         ],
-        env: Vec::new(),
-        capture_output: cfg.logging.capture_subprocess_output,
-    }
+    )
 }
 
 fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandSpec, ProcessError> {
@@ -275,10 +287,9 @@ fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandS
         format!("config_file={}", config_file.display()),
     ];
     let options = render_pg_ctl_option_string(&option_tokens)?;
-    let program = cfg.process.binaries.pg_ctl.clone();
-    Ok(ProcessCommandSpec {
-        program: program.clone(),
-        args: vec![
+    Ok(build_pg_ctl_command(
+        cfg,
+        vec![
             "-D".to_string(),
             cfg.postgres.data_dir.display().to_string(),
             "-l".to_string(),
@@ -290,9 +301,7 @@ fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandS
             "-t".to_string(),
             PG_CTL_DEFAULT_WAIT_SECONDS.to_string(),
         ],
-        env: Vec::new(),
-        capture_output: cfg.logging.capture_subprocess_output,
-    })
+    ))
 }
 
 fn role_auth_env(auth: &Secret) -> Vec<ProcessEnvVar> {
@@ -527,6 +536,37 @@ mod tests {
         SourceMaterializationError,
     };
 
+    fn test_cfg(data_dir: &Path) -> Result<RuntimeConfigV2, String> {
+        runtime_test_config_with_data_dir(data_dir.to_path_buf()).map_err(|err| err.to_string())
+    }
+
+    fn observed(dcs: DcsSnapshot) -> crate::process::state::ProcessObservedSnapshot {
+        crate::process::state::ProcessObservedSnapshot {
+            dcs,
+            managed_recovery_state: ManagedRecoverySignal::None,
+        }
+    }
+
+    fn test_request(id: &str, intent: ProcessIntent) -> ProcessIntentRequest {
+        ProcessIntentRequest {
+            id: JobId(id.to_string()),
+            intent,
+        }
+    }
+
+    fn leader_observed(
+        host: &str,
+        port: u16,
+    ) -> Result<(MemberId, crate::process::state::ProcessObservedSnapshot), String> {
+        let leader = MemberId("node-b".to_string());
+        let dcs = DcsSnapshot::quorum(
+            None,
+            SwitchoverState::None,
+            BTreeMap::from([(leader.clone(), primary_member(host, port)?)]),
+        );
+        Ok((leader, observed(dcs)))
+    }
+
     fn primary_member(host: &str, port: u16) -> Result<DcsMemberState, String> {
         Ok(DcsMemberState {
             cluster_postgres: PgRoute::tcp(host.to_string(), port)?,
@@ -589,21 +629,12 @@ mod tests {
     ) -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "replica-start")?;
         let data_dir = root.join("data");
-        let cfg =
-            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
-        let leader = MemberId("node-b".to_string());
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: DcsSnapshot::quorum(
-                None,
-                SwitchoverState::None,
-                BTreeMap::from([(leader.clone(), primary_member("10.0.0.13", 5432)?)]),
-            ),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-start-replica".to_string()),
-            intent: ProcessIntent::Start(PostgresStartIntent::Replica { leader }),
-        };
+        let cfg = test_cfg(&data_dir)?;
+        let (leader, observed) = leader_observed("10.0.0.13", 5432)?;
+        let request = test_request(
+            "job-start-replica",
+            ProcessIntent::Start(PostgresStartIntent::Replica { leader }),
+        );
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare replica start failed: {err}"))?;
@@ -646,7 +677,7 @@ mod tests {
             .map_err(|err| format!("create data dir {} failed: {err}", data_dir.display()))?;
         let expected_root_cert = root.join("source-ca.crt");
         let true_path = Path::new("/bin/true").to_path_buf();
-        let cfg = runtime_test_config_with_data_dir(data_dir)
+        let cfg = test_cfg(&data_dir)
             .map(|cfg| RuntimeConfigV2 {
                 postgres: crate::config_v2::types::PostgresConfig {
                     source_client_tls: PgClientTls {
@@ -669,19 +700,11 @@ mod tests {
                 ..cfg
             })
             .map_err(|err| err.to_string())?;
-        let leader = MemberId("node-b".to_string());
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: DcsSnapshot::quorum(
-                None,
-                SwitchoverState::None,
-                BTreeMap::from([(leader.clone(), primary_member("10.0.0.13", 5432)?)]),
-            ),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-basebackup".to_string()),
-            intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
-        };
+        let (leader, observed) = leader_observed("10.0.0.13", 5432)?;
+        let request = test_request(
+            "job-basebackup",
+            ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
+        );
 
         let prepared = prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
@@ -719,18 +742,14 @@ mod tests {
         fs::write(&stale, "stale")
             .map_err(|err| format!("write stale file {} failed: {err}", stale.display()))?;
 
-        let cfg =
-            runtime_test_config_with_data_dir(data_dir.clone()).map_err(|err| err.to_string())?;
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: crate::dcs::DcsSnapshot::starting(),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-basebackup".to_string()),
-            intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
+        let cfg = test_cfg(&data_dir)?;
+        let observed = observed(crate::dcs::DcsSnapshot::starting());
+        let request = test_request(
+            "job-basebackup",
+            ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup {
                 leader: MemberId("node-b".to_string()),
             }),
-        };
+        );
 
         let error = prepare_process_launch(&cfg, &observed, &request)
             .err()
@@ -750,19 +769,11 @@ mod tests {
             ));
         }
 
-        let leader = MemberId("node-b".to_string());
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: crate::dcs::DcsSnapshot::quorum(
-                None,
-                SwitchoverState::None,
-                BTreeMap::from([(leader.clone(), primary_member("10.0.0.11", 5432)?)]),
-            ),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-basebackup-success".to_string()),
-            intent: ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
-        };
+        let (leader, observed) = leader_observed("10.0.0.11", 5432)?;
+        let request = test_request(
+            "job-basebackup-success",
+            ProcessIntent::ProvisionReplica(ReplicaProvisionIntent::BaseBackup { leader }),
+        );
 
         prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare basebackup failed: {err}"))?;
@@ -785,16 +796,9 @@ mod tests {
     #[test]
     fn prepare_non_start_plan_skips_managed_session_materialization() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "skip-non-start")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: DcsSnapshot::starting(),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
-        let request = ProcessIntentRequest {
-            id: JobId("job-promote".to_string()),
-            intent: ProcessIntent::Promote,
-        };
+        let cfg = test_cfg(&root.join("data"))?;
+        let observed = observed(DcsSnapshot::starting());
+        let request = test_request("job-promote", ProcessIntent::Promote);
 
         prepare_process_launch(&cfg, &observed, &request)
             .map_err(|err| format!("prepare non-start plan failed: {err}"))?;
@@ -818,16 +822,15 @@ mod tests {
     #[test]
     fn prepare_primary_start_rejects_existing_managed_replica_state() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "primary-reject")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = test_cfg(&root.join("data"))?;
         let observed = crate::process::state::ProcessObservedSnapshot {
             dcs: DcsSnapshot::starting(),
             managed_recovery_state: ManagedRecoverySignal::Standby,
         };
-        let request = ProcessIntentRequest {
-            id: JobId("job-start-primary".to_string()),
-            intent: ProcessIntent::Start(PostgresStartIntent::Primary),
-        };
+        let request = test_request(
+            "job-start-primary",
+            ProcessIntent::Start(PostgresStartIntent::Primary),
+        );
 
         let error = prepare_process_launch(&cfg, &observed, &request)
             .err()
@@ -842,17 +845,8 @@ mod tests {
     #[test]
     fn prepare_intents_map_to_expected_canonical_job_kinds() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "intent-variants")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
-        let leader = MemberId("node-b".to_string());
-        let observed = crate::process::state::ProcessObservedSnapshot {
-            dcs: DcsSnapshot::quorum(
-                None,
-                SwitchoverState::None,
-                BTreeMap::from([(leader.clone(), primary_member("10.0.0.8", 5432)?)]),
-            ),
-            managed_recovery_state: ManagedRecoverySignal::None,
-        };
+        let cfg = test_cfg(&root.join("data"))?;
+        let (leader, observed) = leader_observed("10.0.0.8", 5432)?;
         let cases = [
             (ProcessIntent::Bootstrap, ProcessJobKind::Bootstrap),
             (
@@ -889,10 +883,7 @@ mod tests {
         ];
 
         for (intent, job_kind) in cases {
-            let request = ProcessIntentRequest {
-                id: JobId(format!("job-{}", job_kind.as_str())),
-                intent,
-            };
+            let request = test_request(&format!("job-{}", job_kind.as_str()), intent);
             let prepared = prepare_process_launch(&cfg, &observed, &request)
                 .map_err(|err| format!("prepare {} failed: {err}", job_kind.as_str()))?;
             assert_eq!(request.intent.job_kind(), job_kind);
@@ -913,8 +904,7 @@ mod tests {
     #[test]
     fn source_from_member_selects_role_specific_credentials() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "source-credentials")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = test_cfg(&root.join("data"))?;
         let member_id = MemberId("node-b".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
@@ -952,8 +942,7 @@ mod tests {
     #[test]
     fn source_from_member_uses_shared_source_client_tls_for_all_roles() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "source-shared-tls")?;
-        let config =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let config = test_cfg(&root.join("data"))?;
         let cfg = RuntimeConfigV2 {
             postgres: crate::config_v2::types::PostgresConfig {
                 source_client_tls: PgClientTls {
@@ -999,8 +988,7 @@ mod tests {
     #[test]
     fn source_from_member_rejects_empty_host_route() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "source-empty-host")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = test_cfg(&root.join("data"))?;
         let member_id = MemberId("node-b".to_string());
         let member = DcsMemberState {
             cluster_postgres: PgRoute::unix_socket("/tmp/pgtm".into(), 5432)?,
@@ -1027,8 +1015,7 @@ mod tests {
     #[test]
     fn source_from_member_rejects_non_primary_source() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "source-non-primary")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = test_cfg(&root.join("data"))?;
         let member_id = MemberId("node-b".to_string());
         let member = replica_member("10.0.0.9", 5432)?;
 
@@ -1050,8 +1037,7 @@ mod tests {
     #[test]
     fn source_from_member_rejects_self_target() -> Result<(), String> {
         let root = unique_test_dir("process-cluster", "source-self-target")?;
-        let cfg =
-            runtime_test_config_with_data_dir(root.join("data")).map_err(|err| err.to_string())?;
+        let cfg = test_cfg(&root.join("data"))?;
         let member_id = MemberId("node-a".to_string());
         let member = primary_member("10.0.0.9", 5432)?;
 
