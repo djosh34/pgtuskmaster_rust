@@ -352,7 +352,7 @@ impl From<Vec<IngestIssue>> for WorkerError {
 async fn collect_ingestable_postgres_log_paths(
     dir: &Path,
     stage: &'static str,
-) -> Result<Vec<PathBuf>, IngestIssue> {
+) -> Result<Vec<(PathBuf, StartPosition)>, IngestIssue> {
     let mut entries = match tokio::fs::read_dir(dir).await {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -370,8 +370,11 @@ async fn collect_ingestable_postgres_log_paths(
             Ok(ft) => ft.is_file(),
             Err(err) => return Err(IngestIssue::new(stage, "file_type", path.as_path(), err)),
         };
-        if is_file && ingestable_postgres_log_start(path.as_path()).is_some() {
-            paths.push(path);
+        if !is_file {
+            continue;
+        }
+        if let Some(start) = ingestable_postgres_log_start(path.as_path()) {
+            paths.push((path, start));
         }
     }
 
@@ -405,78 +408,87 @@ async fn emit_tailer_lines(
     Ok(emitted)
 }
 
+async fn emit_tailer_lines_or_issue(
+    log: &LogSender,
+    tailer: &mut FileTailer,
+    read_stage: &'static str,
+    emit_stage: &'static str,
+    max_bytes_per_file: usize,
+    issues: &mut Vec<IngestIssue>,
+) -> u64 {
+    match emit_tailer_lines(log, tailer, read_stage, emit_stage, max_bytes_per_file).await {
+        Ok(emitted) => emitted,
+        Err(issue) => {
+            issues.push(issue);
+            0
+        }
+    }
+}
+
 async fn step_once(
     ctx: &PostgresIngestWorkerCtx<'_>,
     state: &mut PostgresIngestWorkerState,
 ) -> Result<(), Vec<IngestIssue>> {
     let max_bytes_per_file = POSTGRES_INGEST_MAX_BYTES_PER_FILE;
-    let mut pg_ctl_lines_emitted: u64 = 0;
     let mut log_dir_lines_emitted: u64 = 0;
     let mut log_dir_files_tailed: u64 = 0;
 
     let mut issues = Vec::new();
 
-    match emit_tailer_lines(
+    let pg_ctl_lines_emitted = emit_tailer_lines_or_issue(
         &ctx.log,
         &mut state.pg_ctl_log,
         "pg_ctl_log_file.read",
         "pg_ctl_log_file.emit",
         max_bytes_per_file,
+        &mut issues,
     )
-    .await
-    {
-        Ok(emitted) => {
-            pg_ctl_lines_emitted = emitted;
+    .await;
+
+    let dir = ctx.cfg.logging.postgres.log_dir.as_path();
+    match collect_ingestable_postgres_log_paths(dir, "log_dir.discover").await {
+        Ok(paths) => {
+            for (path, start) in paths {
+                state.dir_tailers.ensure_file(path, start);
+            }
         }
         Err(issue) => issues.push(issue),
     }
 
-    if ctx.cfg.logging.postgres.enabled {
-        let dir = ctx.cfg.logging.postgres.log_dir.as_path();
-        if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
-            issues.push(err);
-        }
-
-        for (_, tailer) in state.dir_tailers.iter_mut() {
-            log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
-            match emit_tailer_lines(
+    for (_, tailer) in state.dir_tailers.iter_mut() {
+        log_dir_files_tailed = log_dir_files_tailed.saturating_add(1);
+        log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(
+            emit_tailer_lines_or_issue(
                 &ctx.log,
                 tailer,
                 "log_dir.read",
                 "log_dir.emit",
                 max_bytes_per_file,
-            )
-            .await
-            {
-                Ok(emitted) => {
-                    log_dir_lines_emitted = log_dir_lines_emitted.saturating_add(emitted);
-                }
-                Err(issue) => {
-                    issues.push(issue);
-                }
-            }
-        }
-
-        if ctx.cfg.logging.postgres.cleanup.enabled {
-            match cleanup_log_dir(
-                dir,
-                ctx.cfg.logging.postgres.cleanup.max_files,
-                ctx.cfg.logging.postgres.cleanup.max_age,
-                ctx.cfg.logging.postgres.cleanup.protect_recent,
-                &[state.pg_ctl_log.path()],
-                SystemTime::now(),
                 &mut issues,
             )
-            .await
-            {
-                Ok(()) => {}
-                Err(err) => issues.push(IngestIssue::new(
-                    "log_dir.cleanup",
-                    "cleanup.fatal",
-                    dir,
-                    err,
-                )),
-            }
+            .await,
+        );
+    }
+
+    if ctx.cfg.logging.postgres.cleanup.enabled {
+        match cleanup_log_dir(
+            dir,
+            ctx.cfg.logging.postgres.cleanup.max_files,
+            ctx.cfg.logging.postgres.cleanup.max_age,
+            ctx.cfg.logging.postgres.cleanup.protect_recent,
+            &[state.pg_ctl_log.path()],
+            SystemTime::now(),
+            &mut issues,
+        )
+        .await
+        {
+            Ok(()) => {}
+            Err(err) => issues.push(IngestIssue::new(
+                "log_dir.cleanup",
+                "cleanup.fatal",
+                dir,
+                err,
+            )),
         }
     }
 
@@ -502,17 +514,6 @@ async fn step_once(
     Err(issues)
 }
 
-async fn discover_log_dir(tailers: &mut DirTailers, dir: &Path) -> Result<(), IngestIssue> {
-    for path in collect_ingestable_postgres_log_paths(dir, "log_dir.discover").await? {
-        let start = match ingestable_postgres_log_start(path.as_path()) {
-            Some(start) => start,
-            None => continue,
-        };
-        tailers.ensure_file(path, start);
-    }
-    Ok(())
-}
-
 async fn cleanup_log_dir(
     dir: &Path,
     max_files: u64,
@@ -529,7 +530,7 @@ async fn cleanup_log_dir(
     ];
 
     let mut candidates = Vec::new();
-    for path in collect_ingestable_postgres_log_paths(dir, "cleanup.collect").await? {
+    for (path, _) in collect_ingestable_postgres_log_paths(dir, "cleanup.collect").await? {
         let mut protected = protected_paths.contains(&path.as_path());
 
         let file_name = match path.file_name() {
@@ -697,27 +698,52 @@ fn hex_encode(bytes: &[u8]) -> String {
 
 fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLineLogEvent {
     if let Ok(value) = serde_json::from_str::<Value>(line) {
-        if let Some(parsed) = normalize_postgres_json(value) {
-            let path = source.path.clone();
-            return PostgresLineLogEvent::Json {
-                source,
-                severity: parsed.severity,
-                message: parsed.message,
-                payload: parsed.payload,
-                path,
+        if let Some(obj) = value.as_object() {
+            let message = match obj.get("message").and_then(|v| v.as_str()) {
+                Some(message) => message.to_string(),
+                None => String::new(),
             };
+            let severity_raw = obj
+                .get("error_severity")
+                .and_then(|v| v.as_str())
+                .or_else(|| obj.get("severity").and_then(|v| v.as_str()))
+                .map_or("INFO", |severity| severity);
+            let path = source.path.clone();
+            if !message.trim().is_empty() {
+                return PostgresLineLogEvent::Json {
+                    source,
+                    severity: map_pg_severity(severity_raw),
+                    message,
+                    payload: obj
+                        .iter()
+                        .map(|(key, value)| (key.clone(), value.clone()))
+                        .collect(),
+                    path,
+                };
+            }
         }
     }
 
-    if let Some(parsed) = normalize_postgres_plain(line) {
-        let path = source.path.clone();
-        return PostgresLineLogEvent::Plain {
-            source,
-            severity: parsed.severity,
-            message: parsed.message,
-            level_raw: parsed.level_raw,
-            path,
-        };
+    // Example:
+    // 2026-01-01 12:34:56.789 UTC [123] LOG:  message
+    if let Some(bracket) = line.find('[') {
+        if let Some(after_bracket) = line[bracket..].find(']') {
+            let rest = line[bracket + after_bracket + 1..].trim_start();
+            if let Some((level, message)) = rest.split_once(':') {
+                let level = level.trim();
+                let message = message.trim_start();
+                if !level.is_empty() && !message.is_empty() {
+                    let path = source.path.clone();
+                    return PostgresLineLogEvent::Plain {
+                        source,
+                        severity: map_pg_severity(level),
+                        message: message.to_string(),
+                        level_raw: level.to_string(),
+                        path,
+                    };
+                }
+            }
+        }
     }
 
     let path = source.path.clone();
@@ -726,64 +752,6 @@ fn normalize_postgres_line(line: &str, source: PostgresLineSource) -> PostgresLi
         raw_line: line.to_string(),
         path,
     }
-}
-
-struct ParsedLine {
-    severity: LogSeverity,
-    message: String,
-    payload: BTreeMap<String, Value>,
-    level_raw: String,
-}
-
-fn normalize_postgres_json(value: Value) -> Option<ParsedLine> {
-    let obj = value.as_object()?;
-    let message = match obj.get("message").and_then(|v| v.as_str()) {
-        Some(message) => message.to_string(),
-        None => String::new(),
-    };
-    if message.trim().is_empty() {
-        return None;
-    }
-
-    let severity_raw = obj
-        .get("error_severity")
-        .and_then(|v| v.as_str())
-        .or_else(|| obj.get("severity").and_then(|v| v.as_str()));
-    let severity_raw = severity_raw.map_or("INFO", |severity| severity);
-    let severity = map_pg_severity(severity_raw);
-
-    Some(ParsedLine {
-        severity,
-        message,
-        payload: obj
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect(),
-        level_raw: String::new(),
-    })
-}
-
-fn normalize_postgres_plain(line: &str) -> Option<ParsedLine> {
-    // Example:
-    // 2026-01-01 12:34:56.789 UTC [123] LOG:  message
-    let bracket = line.find('[')?;
-    let after_bracket = line[bracket..].find(']')?;
-    let rest = line[bracket + after_bracket + 1..].trim_start();
-
-    let (level, message) = rest.split_once(':')?;
-    let level = level.trim();
-    let message = message.trim_start().to_string();
-    if level.is_empty() || message.is_empty() {
-        return None;
-    }
-    let severity = map_pg_severity(level);
-
-    Some(ParsedLine {
-        severity,
-        message,
-        payload: BTreeMap::new(),
-        level_raw: level.to_string(),
-    })
 }
 
 fn map_pg_severity(raw: &str) -> LogSeverity {
