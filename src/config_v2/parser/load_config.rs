@@ -16,7 +16,7 @@ use reqwest::Url;
 
 use super::private_schema as raw;
 
-type ResolvedOptionalTokens = (Option<Secret>, Option<Secret>);
+type OptionalTokens = (Option<Secret>, Option<Secret>);
 
 pub fn load_runtime_config(path: &Path) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let contents = read_config_file(path)?;
@@ -411,35 +411,17 @@ fn resolve_optional_path(
 }
 
 fn map_postgres_role(
-    field_prefix: &'static str,
+    username_field: &'static str,
+    password_field: &'static str,
     role: raw::PostgresRoleConfig,
     config_dir: &Path,
 ) -> Result<RoleConfig, ConfigErrorV2> {
-    let (username_field, password_field) = role_fields(field_prefix);
     validate_non_empty(username_field, role.username.as_str())?;
     let raw::RoleAuthConfig::Password { password } = role.auth;
     Ok(RoleConfig {
         username: role.username,
         password: resolve_secret_required(password_field, password, config_dir)?,
     })
-}
-
-fn role_fields(field_prefix: &'static str) -> (&'static str, &'static str) {
-    match field_prefix {
-        "postgres.roles.mandatory.superuser" => (
-            "postgres.roles.mandatory.superuser.username",
-            "postgres.roles.mandatory.superuser.auth.password",
-        ),
-        "postgres.roles.mandatory.replicator" => (
-            "postgres.roles.mandatory.replicator.username",
-            "postgres.roles.mandatory.replicator.auth.password",
-        ),
-        "postgres.roles.mandatory.rewinder" => (
-            "postgres.roles.mandatory.rewinder.username",
-            "postgres.roles.mandatory.rewinder.auth.password",
-        ),
-        _ => (field_prefix, field_prefix),
-    }
 }
 
 fn map_dcs_auth(
@@ -504,33 +486,21 @@ fn parse_operator_url(
         .map(|value| {
             let url = Url::parse(value.as_str())
                 .map_err(|err| validation_error(field, format!("must be a valid URL: {err}")))?;
-            validate_expected_transport(field, &url, expected_transport)?;
+            if let Some(expected_transport) = expected_transport.filter(|transport| {
+                !transport.matches_url(&url)
+            }) {
+                return Err(validation_error(
+                    field,
+                    format!(
+                        "operator config expects `{}` API transport, but resolved base URL uses `{}`",
+                        expected_transport.scheme(),
+                        url.scheme()
+                    ),
+                ));
+            }
             Ok(url)
         })
         .transpose()
-}
-
-fn validate_expected_transport(
-    field: &'static str,
-    url: &Url,
-    expected_transport: Option<PgtmApiTransportExpectation>,
-) -> Result<(), ConfigErrorV2> {
-    let Some(expected_transport) = expected_transport else {
-        return Ok(());
-    };
-
-    if expected_transport.matches_url(url) {
-        return Ok(());
-    }
-
-    Err(validation_error(
-        field,
-        format!(
-            "operator config expects `{}` API transport, but resolved base URL uses `{}`",
-            expected_transport.scheme(),
-            url.scheme()
-        ),
-    ))
 }
 
 fn merge_matching<T: PartialEq>(
@@ -740,16 +710,23 @@ impl raw::PostgresConfig {
                 client_key: None,
             },
             superuser: map_postgres_role(
-                "postgres.roles.mandatory.superuser",
+                "postgres.roles.mandatory.superuser.username",
+                "postgres.roles.mandatory.superuser.auth.password",
                 superuser,
                 config_dir,
             )?,
             replicator: map_postgres_role(
-                "postgres.roles.mandatory.replicator",
+                "postgres.roles.mandatory.replicator.username",
+                "postgres.roles.mandatory.replicator.auth.password",
                 replicator,
                 config_dir,
             )?,
-            rewinder: map_postgres_role("postgres.roles.mandatory.rewinder", rewinder, config_dir)?,
+            rewinder: map_postgres_role(
+                "postgres.roles.mandatory.rewinder.username",
+                "postgres.roles.mandatory.rewinder.auth.password",
+                rewinder,
+                config_dir,
+            )?,
             pg_hba_file: data_dir.join("pgtm.pg_hba.conf"),
             pg_ident_file: data_dir.join("pgtm.pg_ident.conf"),
             pg_hba_contents: resolve_inline_or_path_string(
@@ -1090,13 +1067,14 @@ impl raw::TokenAuthConfig {
             admin_token,
             tokens,
         } = self;
-        match tokens {
-            Some(tokens) => (
-                read_token.or(tokens.read_token),
-                admin_token.or(tokens.admin_token),
-            ),
-            None => (read_token, admin_token),
-        }
+        let raw::RoleTokens {
+            read_token: nested_read_token,
+            admin_token: nested_admin_token,
+        } = tokens.unwrap_or_default();
+        (
+            read_token.or(nested_read_token),
+            admin_token.or(nested_admin_token),
+        )
     }
 
     fn resolve_tokens(
@@ -1104,7 +1082,7 @@ impl raw::TokenAuthConfig {
         read_field: &'static str,
         admin_field: &'static str,
         config_dir: &Path,
-    ) -> Result<Option<ResolvedOptionalTokens>, ConfigErrorV2> {
+    ) -> Result<Option<OptionalTokens>, ConfigErrorV2> {
         if self.is_disabled() {
             return Ok(None);
         }
