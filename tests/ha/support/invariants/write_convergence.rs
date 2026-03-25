@@ -10,11 +10,8 @@ use std::{
 };
 
 use rustls::{self, RootCertStore};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    task::JoinHandle,
-};
-use tokio_postgres::{Client, Connection, NoTls, Socket};
+use tokio::task::JoinHandle;
+use tokio_postgres::{Client, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use pgtuskmaster_rust::{
@@ -174,9 +171,7 @@ pub fn probe_routing_target_connectivity(
 ) -> Result<(), WriteConvergenceInvariantError> {
     let routing_target = routing_target.clone();
     let future = async move {
-        let (_client, connection_task) = connect_member(&routing_target, connect_timeout).await?;
-        connection_task.abort();
-        Ok::<(), String>(())
+        with_connected_member(&routing_target, connect_timeout, |_| async { Ok(()) }).await
     };
 
     block_on_support_future(
@@ -361,74 +356,66 @@ impl Drop for WritePermit {
     }
 }
 
-async fn connect_member(
+async fn with_connected_member<T, O, F>(
     routing_target: &PostgresRoutingTarget,
     connect_timeout: Duration,
-) -> Result<(Arc<Client>, ConnectionTask), String> {
+    operation: O,
+) -> Result<T, String>
+where
+    O: FnOnce(Arc<Client>) -> F,
+    F: Future<Output = Result<T, String>>,
+{
     let connect_dsn = routing_target.conninfo.connect_ready().to_string();
-    if routing_target.conninfo.uses_tls_files() {
+    let (client, connection_task) = if routing_target.conninfo.uses_tls_files() {
         let tls = build_tls_connector(&routing_target.conninfo).map_err(|err| err.to_string())?;
-        return connect_and_probe_member(
-            &routing_target.member,
+        let (client, connection) = tokio::time::timeout(
             connect_timeout,
             tokio_postgres::connect(connect_dsn.as_str(), tls),
         )
-        .await;
-    }
-
-    connect_and_probe_member(
-        &routing_target.member,
-        connect_timeout,
-        tokio_postgres::connect(connect_dsn.as_str(), NoTls),
-    )
-    .await
-}
-
-async fn connect_and_probe_member<S, F>(
-    member: &ClusterMember,
-    connect_timeout: Duration,
-    connect_future: F,
-) -> Result<(Arc<Client>, ConnectionTask), String>
-where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-    F: Future<Output = std::result::Result<(Client, Connection<Socket, S>), tokio_postgres::Error>>,
-{
-    let (client, connection) = tokio::time::timeout(connect_timeout, connect_future)
         .await
         .map_err(|_| {
             format!(
                 "connect to `{}` timed out after {:?}",
-                member, connect_timeout
+                routing_target.member, connect_timeout
             )
         })?
-        .map_err(|err| format!("connect to `{}` failed: {err}", member))?;
-    let client: Arc<Client> = Arc::new(client);
-    let connection_task = tokio::spawn(connection);
+        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+        (Arc::new(client), tokio::spawn(connection))
+    } else {
+        let (client, connection) = tokio::time::timeout(
+            connect_timeout,
+            tokio_postgres::connect(connect_dsn.as_str(), NoTls),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "connect to `{}` timed out after {:?}",
+                routing_target.member, connect_timeout
+            )
+        })?
+        .map_err(|err| format!("connect to `{}` failed: {err}", routing_target.member))?;
+        (Arc::new(client), tokio::spawn(connection))
+    };
     match tokio::time::timeout(connect_timeout, client.simple_query("SELECT 1")).await {
         Ok(Ok(_)) => {}
         Ok(Err(err)) => {
             connection_task.abort();
-            return Err(format!("connect to `{}` failed: {err}", member));
+            return Err(format!(
+                "connect to `{}` failed: {err}",
+                routing_target.member
+            ));
         }
         Err(_) => {
             connection_task.abort();
             return Err(format!(
                 "connect to `{}` probe timed out after {:?}",
-                member, connect_timeout
+                routing_target.member, connect_timeout
             ));
         }
     }
-    Ok((client, connection_task))
-}
-
-async fn apply_fixture_row_setup(
-    client: &Client,
-) -> std::result::Result<(), tokio_postgres::Error> {
-    client.batch_execute(CREATE_FIXTURE_TABLE_SQL).await?;
-    client
-        .execute(ENSURE_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
-        .await
-        .map(|_| ())
+    let result = operation(Arc::clone(&client)).await;
+    connection_task.abort();
+    result
 }
 
 fn spawn_authoritative_worker(
@@ -487,8 +474,7 @@ async fn attempt_authoritative_write(
         Some(routing_target) => routing_target,
         None => return Ok(()),
     };
-    let (client, connection_task) = connect_member(&routing_target, query_timeout).await?;
-    let write_result =
+    with_connected_member(&routing_target, query_timeout, |client| async move {
         perform_authoritative_write(client.as_ref(), write_gate.as_ref(), query_timeout)
             .await
             .map_err(|err| {
@@ -496,9 +482,9 @@ async fn attempt_authoritative_write(
                     "authoritative write via `{}` failed: {err}",
                     routing_target.member
                 )
-            });
-    connection_task.abort();
-    write_result
+            })
+    })
+    .await
 }
 
 fn authoritative_primary_routing_target(
@@ -533,17 +519,14 @@ async fn perform_authoritative_write(
     write_gate: &WriteGate,
     query_timeout: Duration,
 ) -> Result<(), WriteConvergenceInvariantError> {
-    tokio::time::timeout(query_timeout, apply_fixture_row_setup(client))
-        .await
-        .map_err(|_| {
-            WriteConvergenceInvariantError::Failed(format!(
-                "prepare fixture row timed out after {:?}",
-                query_timeout
-            ))
-        })?
-        .map_err(|err| {
-            WriteConvergenceInvariantError::Failed(format!("prepare fixture row failed: {err}"))
-        })?;
+    run_timed_query(query_timeout, "prepare fixture row", async {
+        client.batch_execute(CREATE_FIXTURE_TABLE_SQL).await?;
+        client
+            .execute(ENSURE_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID])
+            .await?;
+        Ok::<(), tokio_postgres::Error>(())
+    })
+    .await?;
     if write_gate.accepted_count().is_none() {
         write_gate.record_accepted_count(read_count(client, query_timeout).await?);
     }
@@ -555,72 +538,27 @@ async fn increment_fixture_row(
     client: &Client,
     query_timeout: Duration,
 ) -> Result<u64, WriteConvergenceInvariantError> {
-    let row = tokio::time::timeout(
+    let row = run_timed_query(
         query_timeout,
+        "increment fixture row",
         client.query_one(INCREMENT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
     )
-    .await
-    .map_err(|_| {
-        WriteConvergenceInvariantError::Failed(format!(
-            "increment fixture row timed out after {:?}",
-            query_timeout
-        ))
-    })?
-    .map_err(|err| {
-        WriteConvergenceInvariantError::Failed(format!("increment fixture row failed: {err}"))
-    })?;
+    .await?;
     u64::try_from(row.get::<_, i64>(0)).map_err(|err| {
         WriteConvergenceInvariantError::Failed(format!("fixture count was negative: {err}"))
     })
-}
-
-async fn read_member_count_via_fresh_connection(
-    member: &PostgresRoutingTarget,
-    observer: Option<&PgtmObserver>,
-    query_timeout: Duration,
-) -> MemberCountObservation {
-    let routing_target = match observer.map_or_else(
-        || Ok(member.clone()),
-        |observer| {
-            observer
-                .postgres_routing_target(member.member)
-                .map_err(|err| err.to_string())
-        },
-    ) {
-        Ok(routing_target) => routing_target,
-        Err(err) => {
-            return MemberCountObservation::Failed {
-                member: member.member,
-                message: err,
-            };
-        }
-    };
-    match read_count_via_fresh_connection_target(&routing_target, query_timeout).await {
-        Ok(count) => MemberCountObservation::Observed {
-            member: member.member,
-            count,
-        },
-        Err(err) => MemberCountObservation::Failed {
-            member: member.member,
-            message: err,
-        },
-    }
 }
 
 async fn read_count_via_fresh_connection_target(
     routing_target: &PostgresRoutingTarget,
     query_timeout: Duration,
 ) -> Result<u64, String> {
-    match connect_member(routing_target, query_timeout).await {
-        Ok((client, connection_task)) => {
-            let read_result = read_count(client.as_ref(), query_timeout)
-                .await
-                .map_err(|err| err.to_string());
-            connection_task.abort();
-            read_result
-        }
-        Err(err) => Err(err),
-    }
+    with_connected_member(routing_target, query_timeout, |client| async move {
+        read_count(client.as_ref(), query_timeout)
+            .await
+            .map_err(|err| err.to_string())
+    })
+    .await
 }
 
 async fn wait_for_convergence(
@@ -636,7 +574,37 @@ async fn wait_for_convergence(
         poll_interval,
         || async {
             let observations = futures::future::join_all(members.iter().map(|member| {
-                read_member_count_via_fresh_connection(member, observer, poll_interval)
+                let member = member.clone();
+                async move {
+                    let routing_target = match observer.map_or_else(
+                        || Ok(member.clone()),
+                        |observer| {
+                            observer
+                                .postgres_routing_target(member.member)
+                                .map_err(|err| err.to_string())
+                        },
+                    ) {
+                        Ok(routing_target) => routing_target,
+                        Err(err) => {
+                            return MemberCountObservation::Failed {
+                                member: member.member,
+                                message: err,
+                            };
+                        }
+                    };
+                    match read_count_via_fresh_connection_target(&routing_target, poll_interval)
+                        .await
+                    {
+                        Ok(count) => MemberCountObservation::Observed {
+                            member: member.member,
+                            count,
+                        },
+                        Err(err) => MemberCountObservation::Failed {
+                            member: member.member,
+                            message: err,
+                        },
+                    }
+                }
             }))
             .await;
             Ok(
@@ -706,20 +674,12 @@ async fn read_count(
     client: &Client,
     query_timeout: Duration,
 ) -> Result<u64, WriteConvergenceInvariantError> {
-    let row = tokio::time::timeout(
+    let row = run_timed_query(
         query_timeout,
+        "select fixture row",
         client.query_opt(SELECT_FIXTURE_ROW_SQL, &[&FIXTURE_ROW_ID]),
     )
-    .await
-    .map_err(|_| {
-        WriteConvergenceInvariantError::Failed(format!(
-            "select fixture row timed out after {:?}",
-            query_timeout
-        ))
-    })?
-    .map_err(|err| {
-        WriteConvergenceInvariantError::Failed(format!("select fixture row failed: {err}"))
-    })?
+    .await?
     .ok_or_else(|| {
         WriteConvergenceInvariantError::Failed(format!(
             "fixture row `{FIXTURE_ROW_ID}` missing from `{FIXTURE_TABLE}`"
@@ -841,6 +801,22 @@ fn render_observations(observations: &[MemberCountObservation]) -> String {
         .join(", ")
 }
 
+async fn run_timed_query<T>(
+    query_timeout: Duration,
+    operation: &str,
+    query: impl Future<Output = std::result::Result<T, tokio_postgres::Error>>,
+) -> Result<T, WriteConvergenceInvariantError> {
+    tokio::time::timeout(query_timeout, query)
+        .await
+        .map_err(|_| {
+            WriteConvergenceInvariantError::Failed(format!(
+                "{operation} timed out after {:?}",
+                query_timeout
+            ))
+        })?
+        .map_err(|err| WriteConvergenceInvariantError::Failed(format!("{operation} failed: {err}")))
+}
+
 fn convergence_failure_message(
     observed: impl Into<String>,
     write_deadline: Duration,
@@ -862,26 +838,13 @@ fn convergence_failure_message(
     )
 }
 
-fn convergence_failure(
-    observations: &[MemberCountObservation],
-    write_deadline: Duration,
-    expected_count: Option<u64>,
-    last_write_error: Option<&str>,
-) -> WriteConvergenceInvariantError {
-    WriteConvergenceInvariantError::Failed(convergence_failure_message(
-        render_observations(observations),
-        write_deadline,
-        expected_count,
-        last_write_error,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
-        convergence_failure, observations_are_converged, perform_authoritative_write, read_count,
-        ConnectionTask, MemberCountObservation, ThreadJoinHandle, WriteConvergenceInvariantError,
-        WriteConvergenceInvariantRunner, WriteGate, CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
+        convergence_failure_message, observations_are_converged, perform_authoritative_write,
+        read_count, render_observations, ConnectionTask, MemberCountObservation, ThreadJoinHandle,
+        WriteConvergenceInvariantError, WriteConvergenceInvariantRunner, WriteGate,
+        CREATE_FIXTURE_TABLE_SQL, FIXTURE_ROW_ID,
     };
     use crate::support::{
         observer::pgtm::PostgresRoutingTarget, poll_async_until, spawn_named_current_thread,
@@ -928,12 +891,12 @@ mod tests {
 
         assert!(!observations_are_converged(observations.as_slice(), None));
 
-        let err = convergence_failure(
-            observations.as_slice(),
+        let err = WriteConvergenceInvariantError::Failed(convergence_failure_message(
+            render_observations(observations.as_slice()),
             Duration::from_millis(10),
             None,
             None,
-        );
+        ));
 
         match err {
             WriteConvergenceInvariantError::Failed(message) => {
