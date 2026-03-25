@@ -57,7 +57,7 @@ pub(crate) fn bootstrap_with_now<'a>(
 }
 
 pub(crate) async fn run(mut ctx: HaRuntimeCtx<'_>) -> Result<(), WorkerError> {
-    let mut interval = tokio::time::interval(ctx.cfg.timing.ha_loop_interval);
+    let mut interval = tokio::time::interval(ctx.cfg.ha.loop_interval);
     loop {
         tokio::select! {
             changed = ctx.observed.pg.changed() => {
@@ -299,7 +299,7 @@ async fn execute_step(
 }
 
 fn lease_ttl_ms(cfg: &crate::config_v2::RuntimeConfigV2) -> u64 {
-    u64::try_from(cfg.timing.ha_lease_ttl.as_millis()).unwrap_or(u64::MAX)
+    u64::try_from(cfg.ha.lease_ttl.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

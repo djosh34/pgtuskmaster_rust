@@ -5,14 +5,20 @@ use std::{
 
 use crate::{
     config_v2::types::{
-        ApiAuth, ApiConfig, ApiTransport, BinariesConfig, ConfigErrorV2, DcsAuth, DcsConfig,
-        DcsEndpoint, LoggingConfig, OperatorConfigV2, PgtmApiTransportExpectation, PostgresConfig,
-        RoleConfig, RuntimeConfigV2, Secret, TimingConfig, TlsConfig,
+        ApiAuth, ApiConfig, ApiTransport, ConfigErrorV2, DcsAuth, DcsConfig, DcsEndpoint,
+        FileSinkConfig, LoggingConfig, LoggingSinksConfig, OperatorConfigV2,
+        PgtmApiTransportExpectation, PostgresConfig, PostgresLoggingConfig, ProcessBinariesConfig,
+        ProcessConfig, RoleConfig, RuntimeConfigV2, Secret, TlsConfig,
     },
     pginfo::conninfo::{PgClientTls, PgSslMode},
     state::{ApiRoute, ClusterName, MemberId, PgRoute, ScopeName},
 };
 use reqwest::Url;
+
+#[cfg(any(test, feature = "internal-test-support"))]
+use crate::config_v2::types::{
+    HaConfig, LogCleanupConfig, ProcessTimeoutsConfig, StderrSinkConfig,
+};
 
 use super::private_schema as raw;
 
@@ -75,7 +81,8 @@ impl raw::RuntimeDocument {
         let raw::RuntimeDocument { cluster, postgres, dcs, ha, process, logging, api, pgtm, debug: raw::DebugConfig { enabled: _debug_enabled } } = self;
         let config_dir = resolve_config_dir(path)?;
         let config_dir = config_dir.as_path();
-        let (working_root, timeouts, binaries) = process.into_runtime_parts(config_dir)?;
+        let process = process.finalize(config_dir)?;
+        let working_root = process.working_root.clone();
         let operator_advertise = pgtm
             .map(|pgtm| pgtm.into_operator_config(path, false))
             .transpose()?
@@ -95,15 +102,9 @@ impl raw::RuntimeDocument {
             member_id: MemberId(member_id),
             postgres: postgres.into_runtime_config(working_root.as_path(), config_dir)?,
             dcs: dcs.into_runtime_config(config_dir)?,
-            timing: TimingConfig {
-                ha_loop_interval: Duration::from_millis(ha.loop_interval_ms),
-                ha_lease_ttl: Duration::from_millis(ha.lease_ttl_ms),
-                bootstrap_timeout: Duration::from_millis(timeouts.bootstrap_ms),
-                pg_rewind_timeout: Duration::from_millis(timeouts.pg_rewind_ms),
-                fencing_timeout: Duration::from_millis(timeouts.fencing_ms),
-            },
-            binaries,
-            logging: logging.into_runtime_config(working_root.as_path(), config_dir)?,
+            ha,
+            process,
+            logging: logging.finalize(working_root.as_path(), config_dir)?,
             api: ApiConfig {
                 listen_addr: api.listen_addr,
                 transport: api.transport.into_runtime_transport(config_dir)?,
@@ -132,12 +133,17 @@ pub fn managed_postgres_test_config(
 ) -> Result<RuntimeConfigV2, ConfigErrorV2> {
     let config = load_runtime_test_config_from_paths(data_dir.into(), "cluster-a")?;
     Ok(RuntimeConfigV2 {
-        timing: TimingConfig {
-            ha_loop_interval: Duration::from_millis(500),
-            ha_lease_ttl: Duration::from_secs(5),
-            bootstrap_timeout: Duration::from_secs(30),
-            pg_rewind_timeout: Duration::from_secs(30),
-            fencing_timeout: Duration::from_secs(10),
+        ha: HaConfig {
+            loop_interval: Duration::from_millis(500),
+            lease_ttl: Duration::from_secs(5),
+        },
+        process: ProcessConfig {
+            timeouts: ProcessTimeoutsConfig {
+                bootstrap: Duration::from_secs(30),
+                pg_rewind: Duration::from_secs(30),
+                fencing: Duration::from_secs(10),
+            },
+            ..config.process
         },
         ..config
     })
@@ -154,8 +160,14 @@ pub fn trace_logging_test_config() -> Result<RuntimeConfigV2, ConfigErrorV2> {
         },
         logging: LoggingConfig {
             level: crate::config_v2::types::LogLevel::Trace,
-            postgres_log_poll_interval: Duration::from_millis(50),
-            postgres_log_cleanup_enabled: false,
+            postgres: PostgresLoggingConfig {
+                poll_interval: Duration::from_millis(50),
+                cleanup: LogCleanupConfig {
+                    enabled: false,
+                    ..config.logging.postgres.cleanup
+                },
+                ..config.logging.postgres
+            },
             ..config.logging
         },
         ..config
@@ -170,10 +182,10 @@ pub fn load_runtime_timing_values(
     let document = toml::from_str::<raw::RuntimeDocument>(&contents)
         .map_err(|source| parse_error(path, source))?;
     Ok((
-        Duration::from_millis(document.ha.loop_interval_ms),
-        Duration::from_millis(document.ha.lease_ttl_ms),
-        Duration::from_millis(document.process.timeouts.bootstrap_ms),
-        Duration::from_millis(document.process.timeouts.pg_rewind_ms),
+        document.ha.loop_interval,
+        document.ha.lease_ttl,
+        document.process.timeouts.bootstrap,
+        document.process.timeouts.pg_rewind,
     ))
 }
 
@@ -236,33 +248,46 @@ fn load_runtime_test_config_from_paths(
             auth: None,
             tls: None,
         },
-        timing: TimingConfig {
-            ha_loop_interval: Duration::from_millis(1_000),
-            ha_lease_ttl: Duration::from_millis(10_000),
-            bootstrap_timeout: Duration::from_millis(300_000),
-            pg_rewind_timeout: Duration::from_millis(120_000),
-            fencing_timeout: Duration::from_millis(30_000),
+        ha: HaConfig {
+            loop_interval: Duration::from_millis(1_000),
+            lease_ttl: Duration::from_millis(10_000),
         },
-        binaries: BinariesConfig {
-            pg_ctl: resolve_binary_path("process.binaries.overrides.pg_ctl", "pg_ctl", None, config_dir)?,
-            initdb: resolve_binary_path("process.binaries.overrides.initdb", "initdb", None, config_dir)?,
-            pg_rewind: resolve_binary_path("process.binaries.overrides.pg_rewind", "pg_rewind", None, config_dir)?,
-            pg_basebackup: resolve_binary_path("process.binaries.overrides.pg_basebackup", "pg_basebackup", None, config_dir)?,
+        process: ProcessConfig {
+            timeouts: ProcessTimeoutsConfig {
+                bootstrap: Duration::from_millis(300_000),
+                pg_rewind: Duration::from_millis(120_000),
+                fencing: Duration::from_millis(30_000),
+            },
+            working_root: working_root.clone(),
+            binaries: ProcessBinariesConfig {
+                pg_ctl: resolve_binary_path("process.binaries.overrides.pg_ctl", "pg_ctl", None, config_dir)?,
+                initdb: resolve_binary_path("process.binaries.overrides.initdb", "initdb", None, config_dir)?,
+                pg_rewind: resolve_binary_path("process.binaries.overrides.pg_rewind", "pg_rewind", None, config_dir)?,
+                pg_basebackup: resolve_binary_path("process.binaries.overrides.pg_basebackup", "pg_basebackup", None, config_dir)?,
+            },
         },
         logging: LoggingConfig {
             level: crate::config_v2::types::LogLevel::Info,
             capture_subprocess_output: true,
-            stderr_enabled: true,
-            file_enabled: false,
-            file_path: working_root.join("runtime.jsonl"),
-            file_mode: crate::config_v2::types::FileSinkMode::Append,
-            postgres_logs_enabled: true,
-            postgres_log_dir: postgres_log_dir.clone(),
-            postgres_log_poll_interval: Duration::from_millis(200),
-            postgres_log_cleanup_enabled: true,
-            postgres_log_cleanup_max_files: 50,
-            postgres_log_cleanup_max_age: Duration::from_secs(7 * 24 * 60 * 60),
-            postgres_log_cleanup_protect_recent: Duration::from_secs(300),
+            sinks: LoggingSinksConfig {
+                stderr: StderrSinkConfig { enabled: true },
+                file: FileSinkConfig {
+                    enabled: false,
+                    path: working_root.join("runtime.jsonl"),
+                    mode: crate::config_v2::types::FileSinkMode::Append,
+                },
+            },
+            postgres: PostgresLoggingConfig {
+                enabled: true,
+                log_dir: postgres_log_dir.clone(),
+                poll_interval: Duration::from_millis(200),
+                cleanup: LogCleanupConfig {
+                    enabled: true,
+                    max_files: 50,
+                    max_age: Duration::from_secs(7 * 24 * 60 * 60),
+                    protect_recent: Duration::from_secs(300),
+                },
+            },
         },
         api: ApiConfig {
             listen_addr: std::net::SocketAddr::from((std::net::Ipv4Addr::new(127, 0, 0, 1), 8080)),
@@ -316,6 +341,14 @@ pub(super) fn normalize_optional_string(value: Option<String>) -> Option<String>
             Some(trimmed.to_string())
         }
     })
+}
+
+fn path_override(path: PathBuf) -> Option<PathBuf> {
+    if path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(path)
+    }
 }
 
 pub(super) fn resolve_secret_optional(
@@ -779,12 +812,9 @@ impl raw::DcsConfig {
     }
 }
 
-impl raw::ProcessConfig {
-    fn into_runtime_parts(
-        self,
-        config_dir: &Path,
-    ) -> Result<(PathBuf, raw::ProcessTimeoutsConfig, BinariesConfig), ConfigErrorV2> {
-        let raw::ProcessConfig {
+impl ProcessConfig {
+    fn finalize(self, config_dir: &Path) -> Result<Self, ConfigErrorV2> {
+        let Self {
             timeouts,
             working_root,
             binaries,
@@ -798,117 +828,85 @@ impl raw::ProcessConfig {
             },
             config_dir,
         )?;
-        Ok((
-            working_root,
+        Ok(Self {
             timeouts,
-            binaries.into_runtime_config(config_dir)?,
-        ))
+            working_root,
+            binaries: binaries.finalize(config_dir)?,
+        })
     }
 }
 
-impl raw::BinaryResolutionConfig {
-    fn into_runtime_config(self, config_dir: &Path) -> Result<BinariesConfig, ConfigErrorV2> {
-        let raw::BinaryResolutionConfig {
-            overrides:
-                raw::BinaryPathOverrides {
-                    pg_ctl,
-                    pg_rewind,
-                    initdb,
-                    pg_basebackup,
-                },
+impl ProcessBinariesConfig {
+    fn finalize(self, config_dir: &Path) -> Result<Self, ConfigErrorV2> {
+        let Self {
+            pg_ctl,
+            pg_rewind,
+            initdb,
+            pg_basebackup,
         } = self;
-        Ok(BinariesConfig {
+        Ok(Self {
             pg_ctl: resolve_binary_path(
                 "process.binaries.overrides.pg_ctl",
                 "pg_ctl",
-                pg_ctl,
+                path_override(pg_ctl),
                 config_dir,
             )?,
             initdb: resolve_binary_path(
                 "process.binaries.overrides.initdb",
                 "initdb",
-                initdb,
+                path_override(initdb),
                 config_dir,
             )?,
             pg_rewind: resolve_binary_path(
                 "process.binaries.overrides.pg_rewind",
                 "pg_rewind",
-                pg_rewind,
+                path_override(pg_rewind),
                 config_dir,
             )?,
             pg_basebackup: resolve_binary_path(
                 "process.binaries.overrides.pg_basebackup",
                 "pg_basebackup",
-                pg_basebackup,
+                path_override(pg_basebackup),
                 config_dir,
             )?,
         })
     }
 }
 
-impl raw::LoggingConfig {
-    fn into_runtime_config(
-        self,
-        working_root: &Path,
-        config_dir: &Path,
-    ) -> Result<LoggingConfig, ConfigErrorV2> {
-        let raw::LoggingConfig {
+impl LoggingConfig {
+    fn finalize(self, working_root: &Path, config_dir: &Path) -> Result<Self, ConfigErrorV2> {
+        let Self {
             level,
             capture_subprocess_output,
-            postgres:
-                raw::PostgresLoggingConfig {
-                    enabled: postgres_logs_enabled,
-                    log_dir,
-                    poll_interval_ms,
-                    cleanup:
-                        raw::LogCleanupConfig {
-                            enabled: postgres_log_cleanup_enabled,
-                            max_files: postgres_log_cleanup_max_files,
-                            max_age_seconds: postgres_log_cleanup_max_age_seconds,
-                            protect_recent_seconds: postgres_log_cleanup_protect_recent_seconds,
-                        },
-                },
-            sinks:
-                raw::LoggingSinksConfig {
-                    stderr:
-                        raw::StderrSinkConfig {
-                            enabled: stderr_enabled,
-                        },
-                    file:
-                        raw::FileSinkConfig {
-                            enabled: file_enabled,
-                            path: file_path,
-                            mode: file_mode,
-                        },
-                },
+            postgres,
+            sinks,
         } = self;
         let postgres_log_dir = normalize_path_or_default(
             "logging.postgres.log_dir",
-            log_dir,
+            path_override(postgres.log_dir),
             || working_root.join("logs/postgres"),
             config_dir,
         )?;
-        Ok(LoggingConfig {
+        let file_path = normalize_path_or_default(
+            "logging.sinks.file.path",
+            path_override(sinks.file.path),
+            || working_root.join("runtime.jsonl"),
+            config_dir,
+        )?;
+        Ok(Self {
             level,
             capture_subprocess_output,
-            stderr_enabled,
-            file_enabled,
-            file_path: normalize_path_or_default(
-                "logging.sinks.file.path",
-                file_path,
-                || working_root.join("runtime.jsonl"),
-                config_dir,
-            )?,
-            file_mode,
-            postgres_logs_enabled,
-            postgres_log_dir,
-            postgres_log_poll_interval: Duration::from_millis(poll_interval_ms),
-            postgres_log_cleanup_enabled,
-            postgres_log_cleanup_max_files,
-            postgres_log_cleanup_max_age: Duration::from_secs(postgres_log_cleanup_max_age_seconds),
-            postgres_log_cleanup_protect_recent: Duration::from_secs(
-                postgres_log_cleanup_protect_recent_seconds,
-            ),
+            postgres: PostgresLoggingConfig {
+                log_dir: postgres_log_dir,
+                ..postgres
+            },
+            sinks: LoggingSinksConfig {
+                file: FileSinkConfig {
+                    path: file_path,
+                    ..sinks.file
+                },
+                ..sinks
+            },
         })
     }
 }
@@ -1544,8 +1542,8 @@ expected_transport = "{}""#,
                 config.postgres.cluster_advertise.host(),
                 config.postgres.cluster_advertise.port(),
                 config.postgres.connect_timeout,
-                config.timing.bootstrap_timeout,
-                config.logging.postgres_log_poll_interval,
+                config.process.timeouts.bootstrap,
+                config.logging.postgres.poll_interval,
             ),
             (
                 "127.0.0.1",
@@ -1557,7 +1555,7 @@ expected_transport = "{}""#,
                 Duration::from_millis(200),
             )
         );
-        assert_eq!(config.logging.postgres_log_cleanup_max_files, 50);
+        assert_eq!(config.logging.postgres.cleanup.max_files, 50);
         let config_path = root.join("runtime.toml");
         fs::write(config_path.as_path(), contents).map_err(|err| err.to_string())?;
 

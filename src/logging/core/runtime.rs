@@ -645,24 +645,23 @@ pub(crate) fn bootstrap(
     };
     let mut sinks: Vec<(String, Arc<dyn LogSink>)> = Vec::new();
 
-    if cfg.logging.stderr_enabled {
+    if cfg.logging.sinks.stderr.enabled {
         sinks.push((
             "stderr".to_string(),
             Arc::new(JsonlStderrSink::new()) as Arc<dyn LogSink>,
         ));
     }
 
-    if cfg.logging.file_enabled {
-        let path = cfg.logging.file_path.clone();
+    if cfg.logging.sinks.file.enabled {
+        let path = cfg.logging.sinks.file.path.clone();
 
         let label = format!("file:{}", path.display());
-        let sink =
-            JsonlFileSink::new(path.clone(), cfg.logging.file_mode.clone()).map_err(|err| {
-                LogBootstrapError::FileSinkInit {
-                    path,
-                    cause: err.to_string(),
-                }
-            })?;
+        let sink = JsonlFileSink::new(path.clone(), cfg.logging.sinks.file.mode.clone()).map_err(
+            |err| LogBootstrapError::FileSinkInit {
+                path,
+                cause: err.to_string(),
+            },
+        )?;
         sinks.push((label, Arc::new(sink) as Arc<dyn LogSink>));
     }
 
@@ -1091,9 +1090,9 @@ mod tests {
 
         let mut cfg =
             crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
-        cfg.logging.stderr_enabled = false;
-        cfg.logging.file_enabled = true;
-        cfg.logging.file_path = path.clone();
+        cfg.logging.sinks.stderr.enabled = false;
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = path.clone();
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1123,9 +1122,9 @@ mod tests {
 
         let mut cfg =
             crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
-        cfg.logging.stderr_enabled = true;
-        cfg.logging.file_enabled = true;
-        cfg.logging.file_path = path.clone();
+        cfg.logging.sinks.stderr.enabled = true;
+        cfg.logging.sinks.file.enabled = true;
+        cfg.logging.sinks.file.path = path.clone();
 
         let LoggingSystem { sender, worker } = bootstrap(&cfg)?;
         sender.send(sample_runtime_event())?;
@@ -1145,8 +1144,8 @@ mod tests {
     fn bootstrap_with_all_sinks_disabled_is_non_fatal() -> Result<(), String> {
         let mut cfg =
             crate::config_v2::trace_logging_test_config().map_err(|err| err.to_string())?;
-        cfg.logging.stderr_enabled = false;
-        cfg.logging.file_enabled = false;
+        cfg.logging.sinks.stderr.enabled = false;
+        cfg.logging.sinks.file.enabled = false;
 
         let system = bootstrap(&cfg).map_err(|err| err.to_string())?;
         let res = system.sender.send(sample_runtime_event());

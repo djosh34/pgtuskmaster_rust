@@ -233,7 +233,7 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx<'_>) -> Result<(), WorkerEr
     let mut limiter = IngestErrorRateLimiter::new(POSTGRES_INGEST_ERROR_RATE_LIMIT_WINDOW_MS);
     let mut consecutive_failures = 0u32;
     loop {
-        if ctx.cfg.logging.postgres_logs_enabled {
+        if ctx.cfg.logging.postgres.enabled {
             match step_once(&ctx, &mut state).await {
                 Ok(()) => {
                     if consecutive_failures > 0 {
@@ -278,8 +278,7 @@ pub(crate) async fn run(ctx: PostgresIngestWorkerCtx<'_>) -> Result<(), WorkerEr
             }
         }
         tokio::time::sleep(Duration::from_millis(
-            u64::try_from(ctx.cfg.logging.postgres_log_poll_interval.as_millis())
-                .unwrap_or(u64::MAX),
+            u64::try_from(ctx.cfg.logging.postgres.poll_interval.as_millis()).unwrap_or(u64::MAX),
         ))
         .await;
     }
@@ -432,8 +431,8 @@ async fn step_once(
         Err(issue) => issues.push(issue),
     }
 
-    if ctx.cfg.logging.postgres_logs_enabled {
-        let dir = ctx.cfg.logging.postgres_log_dir.as_path();
+    if ctx.cfg.logging.postgres.enabled {
+        let dir = ctx.cfg.logging.postgres.log_dir.as_path();
         if let Err(err) = discover_log_dir(&mut state.dir_tailers, dir).await {
             issues.push(err);
         }
@@ -458,12 +457,12 @@ async fn step_once(
             }
         }
 
-        if ctx.cfg.logging.postgres_log_cleanup_enabled {
+        if ctx.cfg.logging.postgres.cleanup.enabled {
             match cleanup_log_dir(
                 dir,
-                ctx.cfg.logging.postgres_log_cleanup_max_files,
-                ctx.cfg.logging.postgres_log_cleanup_max_age,
-                ctx.cfg.logging.postgres_log_cleanup_protect_recent,
+                ctx.cfg.logging.postgres.cleanup.max_files,
+                ctx.cfg.logging.postgres.cleanup.max_age,
+                ctx.cfg.logging.postgres.cleanup.protect_recent,
                 &[state.pg_ctl_log.path()],
                 SystemTime::now(),
                 &mut issues,
@@ -1510,7 +1509,7 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.logging.postgres_log_dir = log_dir;
+            cfg.logging.postgres.log_dir = log_dir;
             cfg.postgres.log_file = ns.child_dir("runtime/pg_ctl.log");
 
             let test_log = start_test_log();
@@ -1583,9 +1582,9 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.binaries = binaries.clone();
-            cfg.timing.bootstrap_timeout = Duration::from_secs(30);
-            cfg.timing.fencing_timeout = Duration::from_secs(30);
+            cfg.process.binaries = binaries.clone();
+            cfg.process.timeouts.bootstrap = Duration::from_secs(30);
+            cfg.process.timeouts.fencing = Duration::from_secs(30);
             cfg.postgres.data_dir = data_dir.clone();
             cfg.postgres.pg_hba_file = data_dir.join("pgtm.pg_hba.conf");
             cfg.postgres.pg_ident_file = data_dir.join("pgtm.pg_ident.conf");
@@ -1605,7 +1604,7 @@ mod tests {
             cfg.postgres
                 .extra_gucs
                 .insert("log_statement".to_string(), "all".to_string());
-            cfg.logging.postgres_log_dir = log_dir.clone();
+            cfg.logging.postgres.log_dir = log_dir.clone();
 
             let test_log = start_test_log();
 
@@ -1839,7 +1838,7 @@ mod tests {
 
             let mut cfg = crate::config_v2::trace_logging_test_config()
                 .map_err(|err| WorkerError::Message(err.to_string()))?;
-            cfg.binaries = binaries;
+            cfg.process.binaries = binaries;
 
             let test_log = start_test_log();
 

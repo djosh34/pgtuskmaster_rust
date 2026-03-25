@@ -7,7 +7,7 @@ use std::{
 use serde::{Deserialize, Deserializer};
 
 use crate::{
-    config_v2::types::{FileSinkMode, LogLevel, PgtmApiTransportExpectation},
+    config_v2::types::{HaConfig, LoggingConfig, PgtmApiTransportExpectation, ProcessConfig},
     pginfo::conninfo::PgSslMode,
 };
 
@@ -15,26 +15,7 @@ const DEFAULT_POSTGRES_DATABASE: &str = "postgres";
 const DEFAULT_POSTGRES_CONNECT_TIMEOUT_S: u32 = 5;
 const DEFAULT_POSTGRES_LISTEN_HOST: &str = "127.0.0.1";
 const DEFAULT_POSTGRES_LISTEN_PORT: u16 = 5432;
-const DEFAULT_HA_LOOP_INTERVAL_MS: u64 = 1_000;
-const DEFAULT_HA_LEASE_TTL_MS: u64 = 10_000;
-const DEFAULT_PG_REWIND_TIMEOUT_MS: u64 = 120_000;
-const DEFAULT_BOOTSTRAP_TIMEOUT_MS: u64 = 300_000;
-const DEFAULT_FENCING_TIMEOUT_MS: u64 = 30_000;
-const DEFAULT_RUNTIME_WORKING_ROOT: &str = "/tmp/pgtuskmaster";
-const DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT: bool = true;
-const DEFAULT_LOGGING_POSTGRES_ENABLED: bool = true;
-const DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS: u64 = 200;
-const DEFAULT_LOGGING_CLEANUP_ENABLED: bool = true;
-const DEFAULT_LOGGING_CLEANUP_MAX_FILES: u64 = 50;
-const DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS: u64 = 7 * 24 * 60 * 60;
-const DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS: u64 = 300;
-const DEFAULT_LOGGING_SINK_STDERR_ENABLED: bool = true;
-const DEFAULT_LOGGING_SINK_FILE_ENABLED: bool = false;
 const DEFAULT_DEBUG_ENABLED: bool = false;
-
-fn default_runtime_working_root() -> PathBuf {
-    PathBuf::from(DEFAULT_RUNTIME_WORKING_ROOT)
-}
 
 fn default_api_listen_addr() -> SocketAddr {
     SocketAddr::from((std::net::Ipv4Addr::new(127, 0, 0, 1), 8080))
@@ -72,47 +53,6 @@ deserialize_default_if_zero!(
     deserialize_postgres_connect_timeout_s,
     u32,
     DEFAULT_POSTGRES_CONNECT_TIMEOUT_S
-);
-deserialize_default_if_zero!(
-    deserialize_ha_loop_interval_ms,
-    u64,
-    DEFAULT_HA_LOOP_INTERVAL_MS
-);
-deserialize_default_if_zero!(deserialize_ha_lease_ttl_ms, u64, DEFAULT_HA_LEASE_TTL_MS);
-deserialize_default_if_zero!(
-    deserialize_pg_rewind_timeout_ms,
-    u64,
-    DEFAULT_PG_REWIND_TIMEOUT_MS
-);
-deserialize_default_if_zero!(
-    deserialize_bootstrap_timeout_ms,
-    u64,
-    DEFAULT_BOOTSTRAP_TIMEOUT_MS
-);
-deserialize_default_if_zero!(
-    deserialize_fencing_timeout_ms,
-    u64,
-    DEFAULT_FENCING_TIMEOUT_MS
-);
-deserialize_default_if_zero!(
-    deserialize_logging_postgres_poll_interval_ms,
-    u64,
-    DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS
-);
-deserialize_default_if_zero!(
-    deserialize_logging_cleanup_max_files,
-    u64,
-    DEFAULT_LOGGING_CLEANUP_MAX_FILES
-);
-deserialize_default_if_zero!(
-    deserialize_logging_cleanup_max_age_seconds,
-    u64,
-    DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS
-);
-deserialize_default_if_zero!(
-    deserialize_logging_cleanup_protect_recent_seconds,
-    u64,
-    DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS
 );
 
 fn deserialize_postgres_listen_host<'de, D>(deserializer: D) -> Result<String, D::Error>
@@ -431,192 +371,6 @@ pub(super) enum DcsTlsConfig {
         tls: ClientTlsInput,
         server_name: Option<String>,
     },
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct HaConfig {
-    #[serde(deserialize_with = "deserialize_ha_loop_interval_ms")]
-    pub loop_interval_ms: u64,
-    #[serde(deserialize_with = "deserialize_ha_lease_ttl_ms")]
-    pub lease_ttl_ms: u64,
-}
-
-impl Default for HaConfig {
-    fn default() -> Self {
-        Self {
-            loop_interval_ms: DEFAULT_HA_LOOP_INTERVAL_MS,
-            lease_ttl_ms: DEFAULT_HA_LEASE_TTL_MS,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ProcessConfig {
-    #[serde(default)]
-    pub timeouts: ProcessTimeoutsConfig,
-    #[serde(default = "default_runtime_working_root")]
-    pub working_root: PathBuf,
-    #[serde(default)]
-    pub binaries: BinaryResolutionConfig,
-}
-
-impl Default for ProcessConfig {
-    fn default() -> Self {
-        Self {
-            timeouts: ProcessTimeoutsConfig::default(),
-            working_root: PathBuf::from(DEFAULT_RUNTIME_WORKING_ROOT),
-            binaries: BinaryResolutionConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ProcessTimeoutsConfig {
-    #[serde(deserialize_with = "deserialize_pg_rewind_timeout_ms")]
-    pub pg_rewind_ms: u64,
-    #[serde(deserialize_with = "deserialize_bootstrap_timeout_ms")]
-    pub bootstrap_ms: u64,
-    #[serde(deserialize_with = "deserialize_fencing_timeout_ms")]
-    pub fencing_ms: u64,
-}
-
-impl Default for ProcessTimeoutsConfig {
-    fn default() -> Self {
-        Self {
-            pg_rewind_ms: DEFAULT_PG_REWIND_TIMEOUT_MS,
-            bootstrap_ms: DEFAULT_BOOTSTRAP_TIMEOUT_MS,
-            fencing_ms: DEFAULT_FENCING_TIMEOUT_MS,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BinaryResolutionConfig {
-    #[serde(default)]
-    pub overrides: BinaryPathOverrides,
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct BinaryPathOverrides {
-    pub pg_ctl: Option<PathBuf>,
-    pub pg_rewind: Option<PathBuf>,
-    pub initdb: Option<PathBuf>,
-    pub pg_basebackup: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LoggingConfig {
-    #[serde(default)]
-    pub level: LogLevel,
-    pub capture_subprocess_output: bool,
-    #[serde(default)]
-    pub postgres: PostgresLoggingConfig,
-    #[serde(default)]
-    pub sinks: LoggingSinksConfig,
-}
-
-impl Default for LoggingConfig {
-    fn default() -> Self {
-        Self {
-            level: LogLevel::Info,
-            capture_subprocess_output: DEFAULT_LOGGING_CAPTURE_SUBPROCESS_OUTPUT,
-            postgres: PostgresLoggingConfig::default(),
-            sinks: LoggingSinksConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct PostgresLoggingConfig {
-    pub enabled: bool,
-    pub log_dir: Option<PathBuf>,
-    #[serde(deserialize_with = "deserialize_logging_postgres_poll_interval_ms")]
-    pub poll_interval_ms: u64,
-    #[serde(default)]
-    pub cleanup: LogCleanupConfig,
-}
-
-impl Default for PostgresLoggingConfig {
-    fn default() -> Self {
-        Self {
-            enabled: DEFAULT_LOGGING_POSTGRES_ENABLED,
-            log_dir: None,
-            poll_interval_ms: DEFAULT_LOGGING_POSTGRES_POLL_INTERVAL_MS,
-            cleanup: LogCleanupConfig::default(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LoggingSinksConfig {
-    #[serde(default)]
-    pub stderr: StderrSinkConfig,
-    #[serde(default)]
-    pub file: FileSinkConfig,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct StderrSinkConfig {
-    pub enabled: bool,
-}
-
-impl Default for StderrSinkConfig {
-    fn default() -> Self {
-        Self {
-            enabled: DEFAULT_LOGGING_SINK_STDERR_ENABLED,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct FileSinkConfig {
-    pub enabled: bool,
-    pub path: Option<PathBuf>,
-    #[serde(default)]
-    pub mode: FileSinkMode,
-}
-
-impl Default for FileSinkConfig {
-    fn default() -> Self {
-        Self {
-            enabled: DEFAULT_LOGGING_SINK_FILE_ENABLED,
-            path: None,
-            mode: FileSinkMode::Append,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct LogCleanupConfig {
-    pub enabled: bool,
-    #[serde(deserialize_with = "deserialize_logging_cleanup_max_files")]
-    pub max_files: u64,
-    #[serde(deserialize_with = "deserialize_logging_cleanup_max_age_seconds")]
-    pub max_age_seconds: u64,
-    #[serde(deserialize_with = "deserialize_logging_cleanup_protect_recent_seconds")]
-    pub protect_recent_seconds: u64,
-}
-
-impl Default for LogCleanupConfig {
-    fn default() -> Self {
-        Self {
-            enabled: DEFAULT_LOGGING_CLEANUP_ENABLED,
-            max_files: DEFAULT_LOGGING_CLEANUP_MAX_FILES,
-            max_age_seconds: DEFAULT_LOGGING_CLEANUP_MAX_AGE_SECONDS,
-            protect_recent_seconds: DEFAULT_LOGGING_CLEANUP_PROTECT_RECENT_SECONDS,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Deserialize)]

@@ -31,7 +31,7 @@ pub(crate) fn bootstrap<'a>(
 pub(crate) async fn run(mut ctx: PgInfoWorkerCtx<'_>) -> Result<(), WorkerError> {
     loop {
         step_once(&mut ctx).await?;
-        tokio::time::sleep(ctx.cfg.timing.ha_loop_interval).await;
+        tokio::time::sleep(ctx.cfg.ha.loop_interval).await;
     }
 }
 

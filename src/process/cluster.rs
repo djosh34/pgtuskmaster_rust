@@ -179,7 +179,7 @@ fn materialize_start_config(
 }
 
 fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
-    let program = cfg.binaries.initdb.clone();
+    let program = cfg.process.binaries.initdb.clone();
     ProcessCommandSpec {
         program: program.clone(),
         args: vec![
@@ -196,7 +196,7 @@ fn build_bootstrap_command(cfg: &RuntimeConfigV2) -> ProcessCommandSpec {
 }
 
 fn build_basebackup_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
-    let program = cfg.binaries.pg_basebackup.clone();
+    let program = cfg.process.binaries.pg_basebackup.clone();
     ProcessCommandSpec {
         program: program.clone(),
         args: vec![
@@ -213,7 +213,7 @@ fn build_basebackup_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> Proce
 }
 
 fn build_pg_rewind_command(cfg: &RuntimeConfigV2, source: &SourceConn) -> ProcessCommandSpec {
-    let program = cfg.binaries.pg_rewind.clone();
+    let program = cfg.process.binaries.pg_rewind.clone();
     ProcessCommandSpec {
         program: program.clone(),
         args: vec![
@@ -232,7 +232,7 @@ fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> Pr
         .into_iter()
         .flat_map(|seconds| ["-t".to_string(), seconds.to_string()])
         .collect::<Vec<_>>();
-    let program = cfg.binaries.pg_ctl.clone();
+    let program = cfg.process.binaries.pg_ctl.clone();
     let args = [
         vec![
             "-D".to_string(),
@@ -252,7 +252,7 @@ fn build_promote_command(cfg: &RuntimeConfigV2, wait_seconds: Option<u64>) -> Pr
 }
 
 fn build_demote_command(cfg: &RuntimeConfigV2, mode: &ShutdownMode) -> ProcessCommandSpec {
-    let program = cfg.binaries.pg_ctl.clone();
+    let program = cfg.process.binaries.pg_ctl.clone();
     ProcessCommandSpec {
         program: program.clone(),
         args: vec![
@@ -275,7 +275,7 @@ fn build_start_postgres_command(cfg: &RuntimeConfigV2) -> Result<ProcessCommandS
         format!("config_file={}", config_file.display()),
     ];
     let options = render_pg_ctl_option_string(&option_tokens)?;
-    let program = cfg.binaries.pg_ctl.clone();
+    let program = cfg.process.binaries.pg_ctl.clone();
     Ok(ProcessCommandSpec {
         program: program.clone(),
         args: vec![
@@ -657,11 +657,14 @@ mod tests {
                     },
                     ..cfg.postgres
                 },
-                binaries: crate::config_v2::types::BinariesConfig {
-                    pg_ctl: true_path.clone(),
-                    initdb: true_path.clone(),
-                    pg_rewind: true_path.clone(),
-                    pg_basebackup: true_path,
+                process: crate::config_v2::types::ProcessConfig {
+                    binaries: crate::config_v2::types::ProcessBinariesConfig {
+                        pg_ctl: true_path.clone(),
+                        initdb: true_path.clone(),
+                        pg_rewind: true_path.clone(),
+                        pg_basebackup: true_path,
+                    },
+                    ..cfg.process
                 },
                 ..cfg
             })

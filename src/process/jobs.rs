@@ -35,14 +35,14 @@ impl ProcessIntent {
 
     pub(crate) fn timeout_ms(&self, cfg: &RuntimeConfigV2) -> u64 {
         let duration = match self.job_kind() {
-            ProcessJobKind::PgRewind => cfg.timing.pg_rewind_timeout,
-            ProcessJobKind::Demote => cfg.timing.fencing_timeout,
+            ProcessJobKind::PgRewind => cfg.process.timeouts.pg_rewind,
+            ProcessJobKind::Demote => cfg.process.timeouts.fencing,
             ProcessJobKind::Bootstrap
             | ProcessJobKind::BaseBackup
             | ProcessJobKind::Promote
             | ProcessJobKind::StartPrimary
             | ProcessJobKind::StartDetachedStandby
-            | ProcessJobKind::StartReplica => cfg.timing.bootstrap_timeout,
+            | ProcessJobKind::StartReplica => cfg.process.timeouts.bootstrap,
         };
         duration_millis_u64(duration)
     }

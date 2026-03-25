@@ -154,7 +154,7 @@ impl<'a> DcsWorker<'a> {
 
     async fn run(mut self) -> Result<(), WorkerError> {
         let mut reconnect_at = Instant::now();
-        let mut tick = tokio::time::interval(self.cfg.timing.ha_loop_interval);
+        let mut tick = tokio::time::interval(self.cfg.ha.loop_interval);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         self.publish_current_view(false)?;
 
@@ -1001,7 +1001,7 @@ impl EtcdRuntime {
 }
 
 fn lease_ttl_ms(cfg: &RuntimeConfigV2) -> u64 {
-    u64::try_from(cfg.timing.ha_lease_ttl.as_millis()).unwrap_or(u64::MAX)
+    u64::try_from(cfg.ha.lease_ttl.as_millis()).unwrap_or(u64::MAX)
 }
 
 fn advertised_cluster_postgres(cfg: &RuntimeConfigV2) -> PgRoute {

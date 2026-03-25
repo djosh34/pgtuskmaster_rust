@@ -30,7 +30,7 @@ YOU ARE ONLY DONE IFF THE NUMBER OF LINES WAS REDUCED MORE THAN 50% and thus src
 DO TRY TO GO LOWER IF POSSIBLE!
 DO COMMIT BETWEEN EACH IMPROVEMENT!
 
-Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/74-collapse-config-parser-raw-runtime-shape-duplication.md`
+Plan: `.ralph/tasks/story-config-v2-direct-cfg-collapse/05-reduce-loop_plans/75-promote-runtime-process-logging-shapes-and-delete-parser-mirrors.md`
 
 <steps>
 - [x] If fresh (based on progress history), untick all boxes, remove existing path to plan file

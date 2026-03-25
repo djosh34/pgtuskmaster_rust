@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
-use crate::config_v2::types::BinariesConfig;
+use crate::config_v2::types::ProcessBinariesConfig;
 use crate::dev_support::provenance;
 use crate::dev_support::HarnessError;
 
@@ -57,9 +57,9 @@ pub fn require_pg16_bin_for_real_tests(name: &str) -> Result<PathBuf, HarnessErr
 }
 
 #[cfg(test)]
-pub(crate) fn require_pg16_process_binaries_for_real_tests() -> Result<BinariesConfig, HarnessError>
-{
-    Ok(BinariesConfig {
+pub(crate) fn require_pg16_process_binaries_for_real_tests(
+) -> Result<ProcessBinariesConfig, HarnessError> {
+    Ok(ProcessBinariesConfig {
         pg_ctl: require_pg16_bin_for_real_tests("pg_ctl")?,
         pg_rewind: require_pg16_bin_for_real_tests("pg_rewind")?,
         initdb: require_pg16_bin_for_real_tests("initdb")?,

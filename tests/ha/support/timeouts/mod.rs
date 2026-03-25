@@ -25,7 +25,7 @@ pub struct TimeoutModel {
 
 impl TimeoutModel {
     pub fn from_runtime_config(path: &Path) -> Result<Self> {
-        let (ha_loop_interval, ha_lease_ttl, bootstrap_timeout, pg_rewind_timeout) =
+        let (loop_interval, lease_ttl, bootstrap_timeout, pg_rewind_timeout) =
             pgtuskmaster_test_support::config_v2::load_runtime_timing_values(path).map_err(
                 |err| {
                     HarnessError::message(format!(
@@ -35,8 +35,8 @@ impl TimeoutModel {
                 },
             )?;
         Ok(derive_timeout_model(
-            ha_loop_interval,
-            ha_lease_ttl,
+            loop_interval,
+            lease_ttl,
             bootstrap_timeout,
             pg_rewind_timeout,
         ))
