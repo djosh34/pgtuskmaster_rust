@@ -3,7 +3,7 @@ use std::{io::Write, time::Duration};
 use crate::{
     api::NodeState,
     cli::{args::StatusOptions, client::CliApiClient, config::OperatorContext, error::CliError},
-    command::{CommandOutputDto, StateCommandOutputDto, StateQueryOriginDto},
+    command::{CommandOutputDto, StateCommandOutputDto},
 };
 
 pub(crate) async fn run_status(
@@ -23,25 +23,19 @@ pub(crate) async fn run_status(
 
 pub(crate) async fn fetch_seed_state(
     context: &OperatorContext,
-) -> Result<(NodeState, StateQueryOriginDto), CliError> {
+) -> Result<(NodeState, String), CliError> {
     let client = CliApiClient::from_config(context.api_client.clone())?;
     let state = client.get_state().await?;
-    let queried_via = StateQueryOriginDto {
-        member_id: state.identity.member_id.0.clone(),
-        api_url: client.base_url().to_string(),
-    };
-    Ok((state, queried_via))
+    Ok((state, client.base_url().to_string()))
 }
 
 pub(crate) async fn fetch_state_command_output(
     context: &OperatorContext,
     verbose: bool,
 ) -> Result<StateCommandOutputDto, CliError> {
-    let (state, queried_via) = fetch_seed_state(context).await?;
+    let (state, api_url) = fetch_seed_state(context).await?;
     Ok(StateCommandOutputDto::from_seed_state(
-        state,
-        queried_via,
-        verbose,
+        state, api_url, verbose,
     ))
 }
 

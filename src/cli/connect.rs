@@ -3,10 +3,7 @@ use crate::{
     cli::{
         args::ConnectionOptions, config::OperatorContext, error::CliError, status::fetch_seed_state,
     },
-    command::{
-        CommandOutputDto, StateDerivedConnectionCommandDto, StateDerivedConnectionTargetDto,
-        StateProjectionDto,
-    },
+    command::{CommandOutputDto, StateDerivedConnectionCommandDto},
     pginfo::{
         conninfo::{PgClientTls, PgSslMode},
         state::PgConnInfo,
@@ -17,7 +14,7 @@ pub(crate) async fn run_primary(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let (state, queried_via) = fetch_seed_state(context).await?;
+    let (state, _api_url) = fetch_seed_state(context).await?;
     let primary_id = authoritative_primary_member(&state).ok_or_else(|| {
         CliError::Resolution(
             "seed state does not currently expose an authoritative primary".to_string(),
@@ -38,18 +35,14 @@ pub(crate) async fn run_primary(
         ));
     }
     let view = StateDerivedConnectionCommandDto {
-        projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
-        targets: vec![StateDerivedConnectionTargetDto {
-            member_id: primary_id.0.clone(),
-            conninfo: PgConnInfo {
-                route: postgres_target.clone(),
-                user: "postgres".to_string(),
-                dbname: "postgres".to_string(),
-                application_name: None,
-                connect_timeout_s: None,
-                options: None,
-                tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
-            },
+        targets: vec![PgConnInfo {
+            route: postgres_target.clone(),
+            user: "postgres".to_string(),
+            dbname: "postgres".to_string(),
+            application_name: None,
+            connect_timeout_s: None,
+            options: None,
+            tls: build_connection_tls(context.postgres_client_tls.as_ref(), options.tls),
         }],
     };
     CommandOutputDto::Primary { output: view }.render(options.json)
@@ -59,13 +52,13 @@ pub(crate) async fn run_replicas(
     context: &OperatorContext,
     options: ConnectionOptions,
 ) -> Result<String, CliError> {
-    let (state, queried_via) = fetch_seed_state(context).await?;
+    let (state, _api_url) = fetch_seed_state(context).await?;
     let connection_tls = build_connection_tls(context.postgres_client_tls.as_ref(), options.tls);
     let targets = state
         .dcs
         .members()
         .filter(|(_member_id, member)| member.postgres().is_ready_replica())
-        .map(|(member_id, member)| {
+        .map(|(_member_id, member)| {
             let postgres_target = member.operator_or_cluster_postgres_target();
             let postgres_host = postgres_target.host().trim();
             let postgres_port = postgres_target.port();
@@ -75,17 +68,14 @@ pub(crate) async fn run_replicas(
                 ));
             }
 
-            Ok(StateDerivedConnectionTargetDto {
-                member_id: member_id.0.clone(),
-                conninfo: PgConnInfo {
-                    route: postgres_target.clone(),
-                    user: "postgres".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    options: None,
-                    tls: connection_tls.clone(),
-                },
+            Ok(PgConnInfo {
+                route: postgres_target.clone(),
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                options: None,
+                tls: connection_tls.clone(),
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -96,10 +86,7 @@ pub(crate) async fn run_replicas(
         ));
     }
 
-    let view = StateDerivedConnectionCommandDto {
-        projection: StateProjectionDto::from_seed_state(&state, queried_via, false),
-        targets,
-    };
+    let view = StateDerivedConnectionCommandDto { targets };
     CommandOutputDto::Replicas { output: view }.render(options.json)
 }
 

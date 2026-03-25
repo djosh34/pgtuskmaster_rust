@@ -6,7 +6,6 @@ use crate::{
     api::{authoritative_primary_member, AcceptedResponse, NodeState, ReloadCertificatesResponse},
     cli::error::CliError,
     pginfo::state::PgConnInfo,
-    state::SwitchoverState,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,137 +31,25 @@ pub enum CommandOutputDto {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StateCommandOutputDto {
-    pub projection: StateProjectionDto,
+    pub api_url: String,
+    pub verbose: bool,
     pub state: NodeState,
 }
 
 impl StateCommandOutputDto {
-    pub(crate) fn from_seed_state(
-        state: NodeState,
-        queried_via: StateQueryOriginDto,
-        verbose: bool,
-    ) -> Self {
-        let projection = StateProjectionDto::from_seed_state(&state, queried_via, verbose);
-        Self { projection, state }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StateProjectionDto {
-    pub cluster_name: String,
-    pub scope: String,
-    pub queried_via: StateQueryOriginDto,
-    pub health: StateHealthDto,
-    pub verbose: bool,
-    pub discovered_member_count: usize,
-    pub warnings: Vec<StateWarningDto>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub switchover: Option<StateSwitchoverDto>,
-}
-
-impl StateProjectionDto {
-    pub(crate) fn from_seed_state(
-        state: &NodeState,
-        queried_via: StateQueryOriginDto,
-        verbose: bool,
-    ) -> Self {
-        let degraded_mode_warning = (!state.dcs.is_quorum()).then(|| StateWarningDto {
-            code: "degraded_dcs_mode".to_string(),
-            message: format!("seed node reports {} DCS mode", state.dcs.authority()),
-        });
-        let no_primary_warning =
-            authoritative_primary_member(state)
-                .is_none()
-                .then(|| StateWarningDto {
-                    code: "no_primary".to_string(),
-                    message: "seed node does not currently project an authoritative primary"
-                        .to_string(),
-                });
-        let no_members_warning = (state.dcs.member_count() == 0).then(|| StateWarningDto {
-            code: "no_members".to_string(),
-            message: "seed node does not currently expose any DCS member slots".to_string(),
-        });
-        let warnings: Vec<_> = [
-            degraded_mode_warning,
-            no_primary_warning,
-            no_members_warning,
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let health = if warnings.is_empty() {
-            StateHealthDto::Healthy
-        } else {
-            StateHealthDto::Degraded
-        };
-        let switchover = state
-            .dcs
-            .switchover()
-            .and_then(StateSwitchoverDto::from_state);
-
+    pub(crate) fn from_seed_state(state: NodeState, api_url: String, verbose: bool) -> Self {
         Self {
-            cluster_name: state.identity.cluster_name.0.clone(),
-            scope: state.identity.scope.0.clone(),
-            queried_via,
-            health,
+            api_url,
             verbose,
-            discovered_member_count: state.dcs.member_count(),
-            warnings,
-            switchover,
+            state,
         }
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StateWarningDto {
-    pub code: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StateQueryOriginDto {
-    pub member_id: String,
-    pub api_url: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StateHealthDto {
-    Healthy,
-    Degraded,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StateSwitchoverDto {
-    pub pending: bool,
-    pub target_member_id: Option<String>,
-}
-
-impl StateSwitchoverDto {
-    fn from_state(state: &SwitchoverState) -> Option<Self> {
-        state.request().map(|request| Self {
-            pending: true,
-            target_member_id: request.target.member().map(|member_id| member_id.0.clone()),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct StateDerivedConnectionCommandDto {
-    pub projection: StateProjectionDto,
-    pub targets: Vec<StateDerivedConnectionTargetDto>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct StateDerivedConnectionTargetDto {
-    pub member_id: String,
-    pub conninfo: PgConnInfo,
+    pub targets: Vec<PgConnInfo>,
 }
 
 impl fmt::Display for CommandOutputDto {
@@ -195,7 +82,7 @@ impl fmt::Display for StateDerivedConnectionCommandDto {
             if index > 0 {
                 writeln!(formatter)?;
             }
-            write!(formatter, "{}", target.conninfo)?;
+            write!(formatter, "{target}")?;
         }
         Ok(())
     }
@@ -203,31 +90,33 @@ impl fmt::Display for StateDerivedConnectionCommandDto {
 
 impl fmt::Display for StateCommandOutputDto {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let projection = &self.projection;
+        let warnings = state_warnings(&self.state);
+        let pending_switchover_target = pending_switchover_target(&self.state);
         writeln!(
             formatter,
             "cluster: {}  health: {}",
-            projection.cluster_name, projection.health
+            self.state.identity.cluster_name.0,
+            if warnings.is_empty() {
+                "healthy"
+            } else {
+                "degraded"
+            }
         )?;
-        writeln!(formatter, "queried via: {}", projection.queried_via.api_url)?;
+        writeln!(formatter, "queried via: {}", self.api_url)?;
 
-        for warning in &projection.warnings {
-            writeln!(formatter, "warning: {}", warning.message)?;
+        for warning in &warnings {
+            writeln!(formatter, "warning: {warning}")?;
         }
 
-        if let Some(switchover) = &projection.switchover {
-            writeln!(
-                formatter,
-                "switchover: pending -> {}",
-                switchover.target_member_id.as_deref().unwrap_or("auto")
-            )?;
+        if let Some(target_member_id) = pending_switchover_target {
+            writeln!(formatter, "switchover: pending -> {target_member_id}")?;
         }
 
-        if !projection.warnings.is_empty() || projection.switchover.is_some() {
+        if !warnings.is_empty() || pending_switchover_target.is_some() {
             writeln!(formatter)?;
         }
 
-        let headers: &[&str] = if projection.verbose {
+        let headers: &[&str] = if self.verbose {
             &[
                 "NODE",
                 "SELF",
@@ -261,7 +150,7 @@ impl fmt::Display for StateCommandOutputDto {
                     .to_string(),
                     self.state.dcs.authority().to_string(),
                 ];
-                if projection.verbose {
+                if self.verbose {
                     row.push(
                         authoritative_primary_member(&self.state)
                             .map(|member_id| member_id.as_str())
@@ -270,7 +159,7 @@ impl fmt::Display for StateCommandOutputDto {
                     );
                 }
                 row.push(postgres.readiness().to_string());
-                if projection.verbose {
+                if self.verbose {
                     row.push(if is_self {
                         format!("{:?}", self.state.process).to_lowercase()
                     } else {
@@ -302,6 +191,35 @@ impl fmt::Display for StateCommandOutputDto {
     }
 }
 
+fn state_warnings(state: &NodeState) -> Vec<String> {
+    [
+        (!state.dcs.is_quorum())
+            .then(|| format!("seed node reports {} DCS mode", state.dcs.authority())),
+        authoritative_primary_member(state)
+            .is_none()
+            .then(|| "seed node does not currently project an authoritative primary".to_string()),
+        (state.dcs.member_count() == 0)
+            .then(|| "seed node does not currently expose any DCS member slots".to_string()),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+fn pending_switchover_target(state: &NodeState) -> Option<&str> {
+    state
+        .dcs
+        .switchover()
+        .and_then(|switchover| switchover.request())
+        .map(|request| {
+            request
+                .target
+                .member()
+                .map(|member_id| member_id.as_str())
+                .unwrap_or("auto")
+        })
+}
+
 fn fmt_table_line<T: AsRef<str>>(
     formatter: &mut fmt::Formatter<'_>,
     values: &[T],
@@ -314,15 +232,6 @@ fn fmt_table_line<T: AsRef<str>>(
         write!(formatter, "{:<width$}", value.as_ref(), width = *width)?;
     }
     Ok(())
-}
-
-impl fmt::Display for StateHealthDto {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(match self {
-            Self::Healthy => "healthy",
-            Self::Degraded => "degraded",
-        })
-    }
 }
 
 #[cfg(test)]
@@ -344,46 +253,23 @@ mod tests {
         },
     };
 
-    use super::{
-        CommandOutputDto, StateCommandOutputDto, StateDerivedConnectionCommandDto,
-        StateDerivedConnectionTargetDto, StateHealthDto, StateProjectionDto, StateQueryOriginDto,
-    };
-
-    fn sample_projection() -> StateProjectionDto {
-        StateProjectionDto {
-            cluster_name: "cluster-a".to_string(),
-            scope: "scope-a".to_string(),
-            queried_via: StateQueryOriginDto {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8443".to_string(),
-            },
-            health: StateHealthDto::Healthy,
-            verbose: false,
-            discovered_member_count: 1,
-            warnings: Vec::new(),
-            switchover: None,
-        }
-    }
+    use super::{CommandOutputDto, StateCommandOutputDto, StateDerivedConnectionCommandDto};
 
     #[test]
     fn connection_command_display_uses_canonical_conninfo_rendering() -> Result<(), String> {
         let output = StateDerivedConnectionCommandDto {
-            projection: sample_projection(),
-            targets: vec![StateDerivedConnectionTargetDto {
-                member_id: "node-a".to_string(),
-                conninfo: PgConnInfo {
-                    route: PgRoute::tcp("db.internal".to_string(), 5432)?,
-                    user: "postgres".to_string(),
-                    dbname: "postgres".to_string(),
-                    application_name: None,
-                    connect_timeout_s: None,
-                    options: None,
-                    tls: PgClientTls {
-                        mode: PgSslMode::VerifyFull,
-                        root_cert: Some(PathBuf::from("/tmp/ca bundle.pem")),
-                        client_cert: Some(PathBuf::from("/tmp/client cert.pem")),
-                        client_key: Some(PathBuf::from("/tmp/client key.pem")),
-                    },
+            targets: vec![PgConnInfo {
+                route: PgRoute::tcp("db.internal".to_string(), 5432)?,
+                user: "postgres".to_string(),
+                dbname: "postgres".to_string(),
+                application_name: None,
+                connect_timeout_s: None,
+                options: None,
+                tls: PgClientTls {
+                    mode: PgSslMode::VerifyFull,
+                    root_cert: Some(PathBuf::from("/tmp/ca bundle.pem")),
+                    client_cert: Some(PathBuf::from("/tmp/client cert.pem")),
+                    client_key: Some(PathBuf::from("/tmp/client key.pem")),
                 },
             }],
         };
@@ -399,22 +285,18 @@ mod tests {
     fn command_output_render_uses_display_when_json_disabled() -> Result<(), String> {
         let output = CommandOutputDto::Primary {
             output: StateDerivedConnectionCommandDto {
-                projection: sample_projection(),
-                targets: vec![StateDerivedConnectionTargetDto {
-                    member_id: "node-a".to_string(),
-                    conninfo: PgConnInfo {
-                        route: PgRoute::tcp("db.internal".to_string(), 5432)?,
-                        user: "postgres".to_string(),
-                        dbname: "postgres".to_string(),
-                        application_name: None,
-                        connect_timeout_s: None,
-                        options: None,
-                        tls: PgClientTls {
-                            mode: PgSslMode::Disable,
-                            root_cert: None,
-                            client_cert: None,
-                            client_key: None,
-                        },
+                targets: vec![PgConnInfo {
+                    route: PgRoute::tcp("db.internal".to_string(), 5432)?,
+                    user: "postgres".to_string(),
+                    dbname: "postgres".to_string(),
+                    application_name: None,
+                    connect_timeout_s: None,
+                    options: None,
+                    tls: PgClientTls {
+                        mode: PgSslMode::Disable,
+                        root_cert: None,
+                        client_cert: None,
+                        client_key: None,
                     },
                 }],
             },
@@ -500,10 +382,7 @@ mod tests {
                 ),
                 Readiness::Ready,
             ),
-            StateQueryOriginDto {
-                member_id: member_id.0,
-                api_url: "http://node-a:8443".to_string(),
-            },
+            "http://node-a:8443".to_string(),
             false,
         );
 
@@ -521,10 +400,7 @@ mod tests {
     fn state_command_display_warns_with_typed_no_quorum_label() {
         let output = StateCommandOutputDto::from_seed_state(
             sample_state(DcsSnapshot::NoQuorum, Readiness::NotReady),
-            StateQueryOriginDto {
-                member_id: "node-a".to_string(),
-                api_url: "http://node-a:8443".to_string(),
-            },
+            "http://node-a:8443".to_string(),
             false,
         );
 
