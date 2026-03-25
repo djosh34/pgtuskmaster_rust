@@ -48,6 +48,19 @@ pub enum BlockerKind {
 }
 
 impl BlockerKind {
+    pub fn parse(raw_value: &str) -> Result<Self> {
+        Ok(match raw_value {
+            "pg_basebackup" => Self::PgBasebackup,
+            "pg_rewind" => Self::PgRewind,
+            "postgres_start" => Self::PostgresStart,
+            _ => {
+                return Err(HarnessError::message(format!(
+                    "unsupported blocker `{raw_value}`"
+                )))
+            }
+        })
+    }
+
     pub fn label(self) -> &'static str {
         self.spec().0
     }

@@ -79,6 +79,18 @@ That is nine local helper definitions for three tiny behaviors.
 - Keep the large handwritten fixture renderers local for now unless they fall out naturally from this cleanup; this plan is about deleting repeated literal encoders, not forcing another broad renderer abstraction.
 - If the shared helper exports end up costing more lines than the deleted duplicates, switch this plan back to `TO BE VERIFIED`.
 
+### Reverification on 2026-03-25
+
+This plan is stale and must not be executed as written.
+
+- `src/config_v2/test_support.rs` already exists and already owns `toml_string(...)`, `toml_path_source(...)`, and `toml_string_secret(...)`.
+- `src/config_v2/parser/load_config.rs` already imports those helpers instead of defining local copies.
+- `tests/ha/support/givens/mod.rs` already imports the shared helpers from `pgtuskmaster_test_support::config_v2::test_support`.
+- `tests/ha/support/observer/pgtm.rs` already imports the shared helpers from `pgtuskmaster_test_support::config_v2::test_support`.
+- `tests/cli_binary.rs` already imports `toml_string(...)` from `pgtuskmaster_test_support::config_v2::test_support`.
+
+The original overlap described above no longer exists. The next pass should pick a different reduction target and replace this stale plan with a newly verified one before execution.
+
 ### Expected yield
 
 - Delete duplicated `toml_string(...)` helpers from four files down to one owner.
@@ -86,4 +98,4 @@ That is nine local helper definitions for three tiny behaviors.
 - Delete duplicated `toml_string_secret(...)` helpers from two files down to one owner.
 - Shrink the cfg-gated config test-support surface without reintroducing the larger stale renderer plans.
 
-NOW EXECUTE
+TO BE VERIFIED

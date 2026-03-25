@@ -88,6 +88,15 @@ impl HaWorld {
             .or_else(|_| ClusterMember::parse(member_ref))
     }
 
+    pub fn with_resolved_member<T>(
+        &mut self,
+        member_ref: &str,
+        action: impl FnOnce(&mut Self, ClusterMember) -> Result<T>,
+    ) -> Result<T> {
+        let member = self.resolve_member_reference(member_ref)?;
+        action(self, member)
+    }
+
     pub fn kill_nodes(&mut self, members: impl IntoIterator<Item = ClusterMember>) -> Result<()> {
         for member in members {
             self.harness()?.run_container_action(

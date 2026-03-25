@@ -16,7 +16,7 @@ use crate::support::{
     givens::HaGivenId,
     invariants::probe_routing_target_connectivity,
     observer::{pgtm::ClusterStateObservation, sql},
-    topology::{ClusterMember, DcsService},
+    topology::ClusterMember,
     world::{HaWorld, HarnessShared},
 };
 
@@ -152,8 +152,9 @@ async fn i_choose_the_two_non_primary_nodes_as(
 
 #[when(regex = r#"^I kill the node named "([^"]+)"$"#)]
 async fn i_kill_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.kill_nodes([member_id])
+    world.with_resolved_member(member_ref.as_str(), |world, member| {
+        world.kill_nodes([member])
+    })
 }
 
 #[when(regex = r#"^I kill the nodes named "([^"]+)" and "([^"]+)"$"#)]
@@ -163,8 +164,8 @@ async fn i_kill_the_nodes_named(
     member_ref_b: String,
 ) -> Result<()> {
     world.kill_nodes([
-        resolve_member(world, member_ref_a.as_str())?,
-        resolve_member(world, member_ref_b.as_str())?,
+        world.resolve_member_reference(member_ref_a.as_str())?,
+        world.resolve_member_reference(member_ref_b.as_str())?,
     ])
 }
 
@@ -175,8 +176,9 @@ async fn i_kill_all_database_nodes(world: &mut HaWorld) -> Result<()> {
 
 #[when(regex = r#"^I restart the node named "([^"]+)"$"#)]
 async fn i_restart_the_node_named(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.start_nodes([member_id])
+    world.with_resolved_member(member_ref.as_str(), |world, member| {
+        world.start_nodes([member])
+    })
 }
 
 #[when(regex = r#"^I start only the fixed nodes "([^"]+)" and "([^"]+)"$"#)]
@@ -186,8 +188,8 @@ async fn i_start_only_the_fixed_nodes(
     member_ref_b: String,
 ) -> Result<()> {
     world.start_nodes([
-        resolve_member(world, member_ref_a.as_str())?,
-        resolve_member(world, member_ref_b.as_str())?,
+        world.resolve_member_reference(member_ref_a.as_str())?,
+        world.resolve_member_reference(member_ref_b.as_str())?,
     ])
 }
 
@@ -279,7 +281,7 @@ async fn i_request_a_planned_switchover(world: &mut HaWorld) -> Result<()> {
 
 #[when(regex = r#"^I request a targeted switchover to "([^"]+)"$"#)]
 async fn i_request_a_targeted_switchover_to(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
     let deadline = world.harness()?.timeouts.failover_deadline;
     poll_until(
@@ -327,7 +329,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let seed_member = world.require_member_alias("current_primary")?;
     let deadline = world.harness()?.timeouts.failover_deadline;
     poll_until(
@@ -376,7 +378,7 @@ async fn i_attempt_a_targeted_switchover_to_and_capture_the_operator_visible_err
 
 #[then(regex = r#"^"([^"]+)" becomes primary$"#)]
 async fn quoted_member_becomes_primary(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
+    let member_id = world.resolve_member_reference(member_ref.as_str())?;
     let (observed, _) = wait_for_authoritative_single_primary(
         world,
         format!("outcome.primary.{member_id}").as_str(),
@@ -398,25 +400,25 @@ async fn quoted_member_becomes_primary(world: &mut HaWorld, member_ref: String) 
 #[when("I stop the DCS service")]
 async fn i_stop_the_dcs_service(world: &mut HaWorld) -> Result<()> {
     let harness = world.harness()?;
-    set_dcs_services(world, harness.given.dcs_services(), false)
+    harness.stop_dcs_services(harness.given.dcs_services().iter().copied())
 }
 
 #[when("I stop a DCS quorum majority")]
 async fn i_stop_a_dcs_quorum_majority(world: &mut HaWorld) -> Result<()> {
     let harness = world.harness()?;
-    set_dcs_services(world, harness.given.quorum_majority_dcs_services(), false)
+    harness.stop_dcs_services(harness.given.quorum_majority_dcs_services().iter().copied())
 }
 
 #[when("I start the DCS service")]
 async fn i_start_the_dcs_service(world: &mut HaWorld) -> Result<()> {
     let harness = world.harness()?;
-    set_dcs_services(world, harness.given.dcs_services(), true)
+    harness.start_dcs_services(harness.given.dcs_services().iter().copied())
 }
 
 #[when("I restore DCS quorum")]
 async fn i_restore_dcs_quorum(world: &mut HaWorld) -> Result<()> {
     let harness = world.harness()?;
-    set_dcs_services(world, harness.given.quorum_majority_dcs_services(), true)
+    harness.start_dcs_services(harness.given.quorum_majority_dcs_services().iter().copied())
 }
 
 #[when(regex = r#"^I stop the local DCS service for node named "([^"]+)"$"#)]
@@ -425,10 +427,9 @@ async fn i_stop_the_local_dcs_service_for_node_named(
     member_ref: String,
 ) -> Result<()> {
     let harness = world.harness()?;
-    let service = harness
+    harness.stop_dcs_services([harness
         .given
-        .local_dcs_service_for(resolve_member(world, member_ref.as_str())?);
-    set_dcs_services(world, &[service], false)
+        .local_dcs_service_for(world.resolve_member_reference(member_ref.as_str())?)])
 }
 
 #[when(regex = r#"^I start the local DCS service for node named "([^"]+)"$"#)]
@@ -437,10 +438,9 @@ async fn i_start_the_local_dcs_service_for_node_named(
     member_ref: String,
 ) -> Result<()> {
     let harness = world.harness()?;
-    let service = harness
+    harness.start_dcs_services([harness
         .given
-        .local_dcs_service_for(resolve_member(world, member_ref.as_str())?);
-    set_dcs_services(world, &[service], true)
+        .local_dcs_service_for(world.resolve_member_reference(member_ref.as_str())?)])
 }
 
 #[when(regex = r#"^I fully isolate the node named "([^"]+)" from the cluster$"#)]
@@ -448,21 +448,20 @@ async fn i_fully_isolate_the_node_named_from_the_cluster(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.fully_isolate_node_from_cluster(member_id)
+    world.with_resolved_member(
+        member_ref.as_str(),
+        HaWorld::fully_isolate_node_from_cluster,
+    )
 }
 
 #[when(regex = r#"^I cut the node named "([^"]+)" off from DCS$"#)]
 async fn i_cut_the_node_named_off_from_dcs(world: &mut HaWorld, member_ref: String) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
     let harness = world.harness()?;
+    let member = world.resolve_member_reference(member_ref.as_str())?;
     harness.block_member_path_to_host(
-        member_id,
+        member,
         TrafficPath::Dcs,
-        harness
-            .given
-            .local_dcs_service_for(member_id)
-            .service_name(),
+        harness.given.local_dcs_service_for(member).service_name(),
     )
 }
 
@@ -471,8 +470,10 @@ async fn i_isolate_the_node_named_from_observer_api_access(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.isolate_node_from_observer_api_access(member_id)
+    world.with_resolved_member(
+        member_ref.as_str(),
+        HaWorld::isolate_node_from_observer_api_access,
+    )
 }
 
 #[when(regex = r#"^I heal network faults on the node named "([^"]+)"$"#)]
@@ -480,8 +481,7 @@ async fn i_heal_network_faults_on_the_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.heal_node_network_faults(member_id)
+    world.with_resolved_member(member_ref.as_str(), HaWorld::heal_node_network_faults)
 }
 
 #[when("I heal all network faults")]
@@ -496,9 +496,11 @@ async fn i_enable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(member_id, blocker, true)
+    world.harness()?.set_blocker(
+        world.resolve_member_reference(member_ref.as_str())?,
+        BlockerKind::parse(blocker_name.as_str())?,
+        true,
+    )
 }
 
 #[given(regex = r#"^I disable the "([^"]+)" blocker on the node named "([^"]+)"$"#)]
@@ -508,9 +510,11 @@ async fn i_disable_the_blocker_on_the_node_named(
     blocker_name: String,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    let blocker = parse_blocker_kind(blocker_name.as_str())?;
-    world.harness()?.set_blocker(member_id, blocker, false)
+    world.harness()?.set_blocker(
+        world.resolve_member_reference(member_ref.as_str())?,
+        BlockerKind::parse(blocker_name.as_str())?,
+        false,
+    )
 }
 
 #[when(regex = r#"^I wipe the data directory on the node named "([^"]+)"$"#)]
@@ -518,8 +522,9 @@ async fn i_wipe_the_data_directory_on_the_node_named(
     world: &mut HaWorld,
     member_ref: String,
 ) -> Result<()> {
-    let member_id = resolve_member(world, member_ref.as_str())?;
-    world.harness()?.wipe_member_data_dir(member_id)
+    world
+        .harness()?
+        .wipe_member_data_dir(world.resolve_member_reference(member_ref.as_str())?)
 }
 
 async fn wait_for_replicas<F>(
@@ -637,19 +642,6 @@ fn member_slot_is_api_switchover_eligible(member: &DcsMemberState) -> bool {
         PgInfoState::Unknown { common } | PgInfoState::Replica { common, .. } => {
             common.readiness == Readiness::Ready
         }
-    }
-}
-
-fn resolve_member(world: &HaWorld, member_ref: &str) -> Result<ClusterMember> {
-    world.resolve_member_reference(member_ref)
-}
-
-fn set_dcs_services(world: &HaWorld, services: &[DcsService], started: bool) -> Result<()> {
-    let harness = world.harness()?;
-    if started {
-        harness.start_dcs_services(services.iter().copied())
-    } else {
-        harness.stop_dcs_services(services.iter().copied())
     }
 }
 
@@ -864,17 +856,6 @@ impl PollKind {
             Self::Startup => "startup",
             Self::Recovery => "recovery",
         }
-    }
-}
-
-fn parse_blocker_kind(raw_value: &str) -> Result<BlockerKind> {
-    match raw_value {
-        "pg_basebackup" => Ok(BlockerKind::PgBasebackup),
-        "pg_rewind" => Ok(BlockerKind::PgRewind),
-        "postgres_start" => Ok(BlockerKind::PostgresStart),
-        _ => Err(HarnessError::message(format!(
-            "unsupported blocker `{raw_value}`"
-        ))),
     }
 }
 
