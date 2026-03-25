@@ -3,10 +3,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use pgtuskmaster_test_support::config_v2::{
-    load_runtime_config_contents, render_runtime_test_config_document_toml, toml_path_source,
-    toml_string, toml_string_secret,
-};
+use pgtuskmaster_test_support::config_v2::load_runtime_config_contents;
 
 use crate::support::{
     error::{HarnessError, Result},
@@ -34,12 +31,6 @@ const CONTAINER_PROCESS_BINARY_PATHS: [&str; 4] = [
 ];
 const HOST_VALIDATION_PROCESS_BINARY_PATHS: [&str; 4] =
     ["/bin/true", "/bin/true", "/bin/true", "/bin/true"];
-#[rustfmt::skip]
-const DEBUG_ENABLED_SECTION: &str = "[debug]\nenabled = true";
-#[rustfmt::skip]
-const HA_EXTRA_GUCS_SECTION: &str = "[postgres.extra_gucs]\nwal_keep_size = \"128MB\"";
-#[rustfmt::skip]
-const HA_LOGGING_SECTION: &str = "[logging]\ncapture_subprocess_output = true\n\n[logging.postgres]\nenabled = true\npoll_interval_ms = 200\n\n[logging.postgres.cleanup]\nenabled = true\nmax_files = 20\nmax_age_seconds = 86400\nprotect_recent_seconds = 300\n\n[logging.sinks.file]\nenabled = true\npath = \"/var/log/pgtuskmaster/runtime.jsonl\"\nmode = \"append\"";
 const HA_POSTGRES_HBA_CONTENTS: &str = r#"local   all             all                                     peer
 hostnossl all           all             0.0.0.0/0               reject
 hostnossl replication   all             0.0.0.0/0               reject
@@ -52,6 +43,21 @@ hostssl replication    all             0.0.0.0/0               scram-sha-256"#;
 const HA_POSTGRES_IDENT_CONTENTS: &str = "observer_as_postgres    observer        postgres";
 const SHARED_ETCD_SERVICES: [DcsService; 1] = [DcsService::SharedEtcd];
 const THREE_ETCD_QUORUM_SERVICES: [DcsService; 2] = [DcsService::EtcdA, DcsService::EtcdB];
+
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+fn toml_path_source(path: &Path) -> String {
+    format!(
+        "{{ path = {} }}",
+        toml_string(path.display().to_string().as_str())
+    )
+}
+
+fn toml_string_secret(value: &str) -> String {
+    format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum HaGivenId {
@@ -245,69 +251,121 @@ fn render_ha_member_runtime_test_config_toml(
     let api_read_token = toml_string_secret(HA_API_READ_TOKEN);
     let api_admin_token = toml_string_secret(HA_API_ADMIN_TOKEN);
     let api_base_url = toml_string(format!("https://{member_name}:8443").as_str());
-    render_runtime_test_config_document_toml(
-        ("ha-cucumber-cluster", "ha-cucumber-cluster", member_name),
-        (
-            Path::new("/var/lib/postgresql/data"),
-            Some(Path::new("/var/lib/pgtuskmaster/socket")),
-            Some(Path::new("/var/log/pgtuskmaster/postgres.log")),
-        ),
-        [dcs_endpoint],
-        [
-            ("postgres", HA_SUPERUSER_PASSWORD),
-            (replicator, HA_REPLICATOR_PASSWORD),
-            (rewinder, HA_REWINDER_PASSWORD),
-        ],
-        (HA_POSTGRES_HBA_CONTENTS, HA_POSTGRES_IDENT_CONTENTS),
-        [
-            format!(
-                r#"[postgres.network]
+    Ok(format!(
+        r#"[cluster]
+name = "ha-cucumber-cluster"
+scope = "ha-cucumber-cluster"
+member_id = {member_name}
+
+[postgres.paths]
+data_dir = "/var/lib/postgresql/data"
+socket_dir = "/var/lib/pgtuskmaster/socket"
+log_file = "/var/log/pgtuskmaster/postgres.log"
+
+[postgres.network]
 listen_host = {member_name}
-listen_port = 5432"#,
-                member_name = toml_string(member_name),
-            ),
-            format!(
-                r#"[postgres.rewind.transport]
+listen_port = 5432
+
+[postgres.rewind.transport]
 ssl_mode = "verify-full"
-ca_cert = {ca_cert}"#,
-            ),
-            format!(
-                r#"[postgres.tls]
+ca_cert = {ca_cert}
+
+[postgres.tls]
 mode = "enabled"
 identity = {{ cert_chain = {member_cert_path}, private_key = {member_key_path} }}
-client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}"#,
-            ),
-            HA_EXTRA_GUCS_SECTION.to_string(),
-            format!(
-                r#"[process.binaries]
+client_auth = {{ client_ca = {ca_cert}, client_certificate = "optional" }}
+
+[postgres.roles.mandatory.superuser]
+username = "postgres"
+auth = {{ type = "password", password = {{ type = "string", value = {superuser_password} }} }}
+
+[postgres.roles.mandatory.replicator]
+username = {replicator}
+auth = {{ type = "password", password = {{ type = "string", value = {replicator_password} }} }}
+
+[postgres.roles.mandatory.rewinder]
+username = {rewinder}
+auth = {{ type = "password", password = {{ type = "string", value = {rewinder_password} }} }}
+
+[postgres.access]
+hba = {{ content = {postgres_hba_contents} }}
+ident = {{ content = {postgres_ident_contents} }}
+
+[postgres.extra_gucs]
+wal_keep_size = "128MB"
+
+[dcs]
+endpoints = [{dcs_endpoint}]
+
+[process.binaries]
 pg_ctl = {pg_ctl_path}
 pg_rewind = {pg_rewind_path}
 initdb = {initdb_path}
-pg_basebackup = {pg_basebackup_path}"#,
-                pg_ctl_path = toml_string(pg_ctl_path),
-                pg_rewind_path = toml_string(pg_rewind_path),
-                initdb_path = toml_string(initdb_path),
-                pg_basebackup_path = toml_string(pg_basebackup_path),
-            ),
-            HA_LOGGING_SECTION.to_string(),
-            format!(
-                r#"[api]
+pg_basebackup = {pg_basebackup_path}
+
+[logging]
+capture_subprocess_output = true
+
+[logging.postgres]
+enabled = true
+poll_interval_ms = 200
+
+[logging.postgres.cleanup]
+enabled = true
+max_files = 20
+max_age_seconds = 86400
+protect_recent_seconds = 300
+
+[logging.sinks.file]
+enabled = true
+path = "/var/log/pgtuskmaster/runtime.jsonl"
+mode = "append"
+
+[api]
 listen_addr = "0.0.0.0:8443"
 transport = {{ transport = "https", tls = {{ identity = {{ cert_chain = {member_cert_path}, private_key = {member_key_path} }}, client_auth = {{ client_certificate = "disabled" }} }} }}
-auth = {{ type = "role_tokens", tokens = {{ read_token = {api_read_token}, admin_token = {api_admin_token} }} }}"#,
-            ),
-            format!(
-                r#"[pgtm.api]
+
+[api.auth]
+type = "role_tokens"
+
+[api.auth.tokens]
+read_token = {api_read_token}
+admin_token = {api_admin_token}
+
+[pgtm.api]
 base_url = {api_base_url}
-auth = {{ type = "role_tokens", read_token = {api_read_token}, admin_token = {api_admin_token} }}
+
+[pgtm.api.auth]
+type = "role_tokens"
+read_token = {api_read_token}
+admin_token = {api_admin_token}
 
 [pgtm.client_tls]
-ca_cert = {ca_cert}"#,
-            ),
-            DEBUG_ENABLED_SECTION.to_string(),
-        ],
-    )
-    .map_err(|source| HarnessError::message(source.to_string()))
+ca_cert = {ca_cert}
+
+[debug]
+enabled = true
+"#,
+        member_name = toml_string(member_name),
+        ca_cert = ca_cert,
+        member_cert_path = member_cert_path,
+        member_key_path = member_key_path,
+        superuser_password = toml_string(HA_SUPERUSER_PASSWORD),
+        replicator = toml_string(replicator),
+        replicator_password = toml_string(HA_REPLICATOR_PASSWORD),
+        rewinder = toml_string(rewinder),
+        rewinder_password = toml_string(HA_REWINDER_PASSWORD),
+        postgres_hba_contents = toml_string(HA_POSTGRES_HBA_CONTENTS),
+        postgres_ident_contents = toml_string(HA_POSTGRES_IDENT_CONTENTS),
+        dcs_endpoint = toml_string(dcs_endpoint),
+        pg_ctl_path = toml_string(pg_ctl_path),
+        pg_rewind_path = toml_string(pg_rewind_path),
+        initdb_path = toml_string(initdb_path),
+        pg_basebackup_path = toml_string(pg_basebackup_path),
+        api_read_token = api_read_token,
+        api_admin_token = api_admin_token,
+        api_base_url = api_base_url,
+    ))
 }
 
 fn copy_file(from: &Path, to: &Path) -> Result<()> {

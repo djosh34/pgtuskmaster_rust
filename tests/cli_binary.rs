@@ -2,13 +2,11 @@ use std::{
     fs,
     io::{Read, Write},
     net::TcpListener,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     sync::mpsc,
     time::{SystemTime, UNIX_EPOCH},
 };
-
-use pgtuskmaster_test_support::config_v2::render_runtime_test_config_document_toml;
 
 #[rustfmt::skip]
 const API_HTTP_DISABLED_AUTH: &str = "[api]\ntransport = { transport = \"http\" }\nauth = { type = \"disabled\" }";
@@ -17,6 +15,44 @@ const DCS_BASIC_AUTH_EMPTY_USERNAME: &str = "[dcs.client.auth]\ntype = \"basic\"
 #[rustfmt::skip]
 const MISSING_PROCESS_BINARIES: &str = "[process.binaries]\ninitdb = \"/definitely/missing/initdb\"\npg_basebackup = \"/definitely/missing/pg_basebackup\"\npg_rewind = \"/definitely/missing/pg_rewind\"\npg_ctl = \"/definitely/missing/pg_ctl\"";
 const PROCESS_BINARIES_USR_BIN: &str = "[process.binaries]\ninitdb = \"/usr/bin/initdb\"\npg_basebackup = \"/usr/bin/pg_basebackup\"\npg_rewind = \"/usr/bin/pg_rewind\"\npg_ctl = \"/usr/bin/pg_ctl\"";
+
+fn toml_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+fn render_runtime_config_toml(dcs_endpoint: &str, extra_sections: &[&str]) -> String {
+    let extra_sections = extra_sections
+        .iter()
+        .map(|section| section.trim())
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let extra_sections = if extra_sections.is_empty() {
+        String::new()
+    } else {
+        format!("\n\n{extra_sections}")
+    };
+    format!(
+        r#"cluster.name = "cluster-a"
+cluster.scope = "scope-a"
+cluster.member_id = "member-a"
+postgres.paths.data_dir = "/var/lib/postgresql/data"
+postgres.paths.socket_dir = "/tmp/pgtm-socket"
+postgres.paths.log_file = "/tmp/pgtm.log"
+postgres.roles.mandatory.superuser.username = "postgres"
+postgres.roles.mandatory.superuser.auth = {{ type = "password", password = {{ type = "string", value = "postgres" }} }}
+postgres.roles.mandatory.replicator.username = "replicator"
+postgres.roles.mandatory.replicator.auth = {{ type = "password", password = {{ type = "string", value = "replicator" }} }}
+postgres.roles.mandatory.rewinder.username = "rewinder"
+postgres.roles.mandatory.rewinder.auth = {{ type = "password", password = {{ type = "string", value = "rewinder" }} }}
+postgres.access.hba = {{ content = "host all all 127.0.0.1/32 trust" }}
+postgres.access.ident = {{ content = "" }}
+dcs.endpoints = [{dcs_endpoint}]{extra_sections}
+"#,
+        dcs_endpoint = toml_string(dcs_endpoint),
+        extra_sections = extra_sections,
+    )
+}
 
 fn spawn_single_request_server(
     response: &str,
@@ -99,23 +135,7 @@ fn assert_node_runtime_config_failure(
     let bin = binary_path("CARGO_BIN_EXE_pgtuskmaster", "pgtuskmaster")?;
     let path = write_temp_toml(
         label,
-        render_runtime_test_config_document_toml(
-            ("cluster-a", "scope-a", "member-a"),
-            (
-                Path::new("/var/lib/postgresql/data"),
-                Some(Path::new("/tmp/pgtm-socket")),
-                Some(Path::new("/tmp/pgtm.log")),
-            ),
-            [dcs_endpoint],
-            [
-                ("postgres", "postgres"),
-                ("replicator", "replicator"),
-                ("rewinder", "rewinder"),
-            ],
-            ("host all all 127.0.0.1/32 trust", ""),
-            extra_sections.iter().copied(),
-        )
-        .map_err(|err| format!("render config failed: {err}"))?,
+        render_runtime_config_toml(dcs_endpoint, extra_sections),
     )
     .map_err(|err| format!("write config failed: {err}"))?;
 

@@ -26,220 +26,80 @@ process.binaries.pg_rewind = "/bin/true"
 process.binaries.pg_basebackup = "/bin/true""#;
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn string_secret(value: &str) -> raw::SecretSource {
-    raw::SecretSource::Tagged(raw::TaggedSecretSource::String {
-        value: value.to_string(),
-    })
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn test_render_error(message: impl Into<String>) -> ConfigErrorV2 {
-    ConfigErrorV2::Validation {
-        field: "test-support",
-        message: message.into(),
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn render_test_toml_with_sections<V, J, T>(
-    value: &V,
-    extra_sections: J,
-) -> Result<String, ConfigErrorV2>
-where
-    V: serde::Serialize,
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    let base = toml::Value::try_from(value).map_err(|source| {
-        test_render_error(format!("config document should serialize: {source}"))
-    })?;
-    let merged = extra_sections
-        .into_iter()
-        .filter_map(|section| {
-            let trimmed = section.as_ref().trim();
-            (!trimmed.is_empty()).then_some(trimmed.to_string())
-        })
-        .map(|section| {
-            toml::from_str(section.as_str())
-                .map(toml::Value::Table)
-                .map_err(|source| parse_error(Path::new("<test-support extra sections>"), source))
-        })
-        .try_fold(base, |merged, section| {
-            section.map(|section| merge_toml_value(merged, section))
-        })?;
-
-    toml::to_string(&merged)
-        .map_err(|source| test_render_error(format!("merged TOML should serialize: {source}")))
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-fn merge_toml_value(base: toml::Value, overlay: toml::Value) -> toml::Value {
-    match (base, overlay) {
-        (toml::Value::Table(base), toml::Value::Table(overlay)) => {
-            toml::Value::Table(overlay.into_iter().fold(base, |mut merged, (key, value)| {
-                let next = merged
-                    .remove(&key)
-                    .map_or(value.clone(), |existing| merge_toml_value(existing, value));
-                let _ = merged.insert(key, next);
-                merged
-            }))
-        }
-        (_, overlay) => overlay,
-    }
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn toml_string(value: &str) -> String {
+fn toml_string(value: &str) -> String {
     toml::Value::String(value.to_string()).to_string()
 }
 
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn toml_path_source(path: &Path) -> String {
+#[cfg(test)]
+fn toml_path_source(path: &Path) -> String {
     format!(
         "{{ path = {} }}",
         toml_string(path.display().to_string().as_str())
     )
 }
 
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn toml_string_secret(value: &str) -> String {
+#[cfg(test)]
+fn toml_string_secret(value: &str) -> String {
     format!(r#"{{ type = "string", value = {} }}"#, toml_string(value))
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
-fn runtime_test_document<I, S>(
-    identity: (&str, &str, &str),
-    paths: (&Path, Option<&Path>, Option<&Path>),
-    dcs_endpoints: I,
+fn render_runtime_test_config_toml<J, T>(
+    data_dir: &Path,
+    scope: &str,
     role_credentials: [(&str, &str); 3],
-    access_contents: (&str, &str),
-) -> raw::RuntimeDocument
+    hba_contents: &str,
+    extra_sections: J,
+) -> String
 where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
+    J: IntoIterator<Item = T>,
+    T: AsRef<str>,
 {
-    let (cluster_name, scope, member_id) = identity;
-    let (data_dir, socket_dir, log_file) = paths;
+    let extra_sections = extra_sections
+        .into_iter()
+        .map(|section| section.as_ref().trim().to_string())
+        .filter(|section| !section.is_empty())
+        .collect::<Vec<_>>();
+    let has_process_binaries_override = extra_sections.iter().any(|section| {
+        section.contains("process.binaries.") || section.contains("[process.binaries]")
+    });
     let [(superuser_username, superuser_password), (replicator_username, replicator_password), (rewinder_username, rewinder_password)] =
         role_credentials;
-    let (hba_contents, ident_contents) = access_contents;
-    let password_role = |username: &str, password: &str| raw::PostgresRoleConfig {
-        username: username.to_string(),
-        auth: raw::RoleAuthConfig::Password {
-            password: string_secret(password),
-        },
-    };
-    let inline = |content: &str| raw::PathOrInline::Inline {
-        content: content.to_string(),
-    };
-    raw::RuntimeDocument {
-        cluster: raw::ClusterConfig {
-            name: cluster_name.to_string(),
-            scope: scope.to_string(),
-            member_id: member_id.to_string(),
-        },
-        postgres: raw::PostgresConfig {
-            paths: raw::PostgresPathsConfig {
-                data_dir: data_dir.to_path_buf(),
-                socket_dir: socket_dir.map(Path::to_path_buf),
-                log_file: log_file.map(Path::to_path_buf),
-            },
-            network: raw::PostgresNetworkConfig::default(),
-            connect_timeout_s: 5,
-            local_database: "postgres".to_string(),
-            rewind: raw::PostgresRewindConfig::default(),
-            tls: raw::TlsServerConfig::Disabled,
-            roles: raw::PostgresRolesConfig {
-                mandatory: raw::MandatoryPostgresRolesConfig {
-                    superuser: password_role(superuser_username, superuser_password),
-                    replicator: password_role(replicator_username, replicator_password),
-                    rewinder: password_role(rewinder_username, rewinder_password),
-                },
-                extra: Default::default(),
-            },
-            access: raw::PostgresAccessConfig {
-                hba: inline(hba_contents),
-                ident: inline(ident_contents),
-            },
-            extra_gucs: Default::default(),
-        },
-        dcs: raw::DcsConfig {
-            endpoints: dcs_endpoints
-                .into_iter()
-                .map(|endpoint| endpoint.as_ref().to_string())
-                .collect(),
-            client: raw::DcsClientConfig::default(),
-            init: None,
-        },
-        ha: crate::config_v2::types::HaConfig::default(),
-        process: ProcessConfig::default(),
-        logging: LoggingConfig::default(),
-        api: raw::ApiConfig::default(),
-        pgtm: None,
-        debug: raw::DebugConfig::default(),
-    }
-}
+    let extra_sections = (if has_process_binaries_override {
+        Vec::new()
+    } else {
+        vec![RUNTIME_TEST_BINARY_PATHS_TOML.to_string()]
+    })
+    .into_iter()
+    .chain(extra_sections)
+    .collect::<Vec<_>>()
+    .join("\n\n");
+    format!(
+        r#"cluster.name = "cluster-a"
+cluster.scope = {scope}
+cluster.member_id = "node-a"
+postgres.paths.data_dir = {data_dir}
+postgres.roles.mandatory.superuser.username = {superuser_username}
+postgres.roles.mandatory.superuser.auth = {{ type = "password", password = {{ type = "string", value = {superuser_password} }} }}
+postgres.roles.mandatory.replicator.username = {replicator_username}
+postgres.roles.mandatory.replicator.auth = {{ type = "password", password = {{ type = "string", value = {replicator_password} }} }}
+postgres.roles.mandatory.rewinder.username = {rewinder_username}
+postgres.roles.mandatory.rewinder.auth = {{ type = "password", password = {{ type = "string", value = {rewinder_password} }} }}
+postgres.access.hba = {{ content = {hba_contents} }}
+postgres.access.ident = {{ content = "" }}
+dcs.endpoints = ["http://127.0.0.1:2379"]
 
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_operator_test_config_toml<J, T>(
-    base_url: Option<&str>,
-    advertised_url: Option<&str>,
-    expected_transport: Option<&str>,
-    resolve_to: Option<std::net::SocketAddr>,
-    extra_sections: J,
-) -> Result<String, ConfigErrorV2>
-where
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    let expected_transport = expected_transport
-        .map(|transport| match transport {
-            "http" => Ok(PgtmApiTransportExpectation::Http),
-            "https" => Ok(PgtmApiTransportExpectation::Https),
-            other => Err(test_render_error(format!(
-                "unsupported test transport expectation `{other}`"
-            ))),
-        })
-        .transpose()?;
-    render_test_toml_with_sections(
-        &raw::OperatorDocument {
-            api: raw::OperatorApiConfig {
-                base_url: base_url.map(str::to_string),
-                advertised_url: advertised_url.map(str::to_string),
-                expected_transport,
-                resolve_to,
-                auth: raw::TokenAuthConfig::default(),
-            },
-            client_tls: raw::ClientTlsInput::default(),
-        },
-        extra_sections,
-    )
-}
-
-#[cfg(any(test, feature = "internal-test-support"))]
-pub fn render_runtime_test_config_document_toml<I, S, J, T>(
-    identity: (&str, &str, &str),
-    paths: (&Path, Option<&Path>, Option<&Path>),
-    dcs_endpoints: I,
-    role_credentials: [(&str, &str); 3],
-    access_contents: (&str, &str),
-    extra_sections: J,
-) -> Result<String, ConfigErrorV2>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-    J: IntoIterator<Item = T>,
-    T: AsRef<str>,
-{
-    render_test_toml_with_sections(
-        &runtime_test_document(
-            identity,
-            paths,
-            dcs_endpoints,
-            role_credentials,
-            access_contents,
-        ),
-        extra_sections,
+{extra_sections}
+"#,
+        scope = toml_string(scope),
+        data_dir = toml_string(data_dir.display().to_string().as_str()),
+        superuser_username = toml_string(superuser_username),
+        superuser_password = toml_string(superuser_password),
+        replicator_username = toml_string(replicator_username),
+        replicator_password = toml_string(replicator_password),
+        rewinder_username = toml_string(rewinder_username),
+        rewinder_password = toml_string(rewinder_password),
+        hba_contents = toml_string(hba_contents),
     )
 }
 
@@ -252,22 +112,17 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    render_runtime_test_config_document_toml(
-        ("cluster-a", "scope-a", "node-a"),
-        (
-            root.join("data").as_path(),
-            Some(Path::new("/tmp/pgtm-socket")),
-            Some(Path::new("/tmp/pgtm.log")),
-        ),
-        ["http://127.0.0.1:2379"],
+    Ok(render_runtime_test_config_toml(
+        root.join("data").as_path(),
+        "scope-a",
         [
             ("postgres", "postgres"),
             ("replicator", "replicator"),
             ("rewinder", "rewinder"),
         ],
-        ("host all all 127.0.0.1/32 trust", ""),
+        "host all all 127.0.0.1/32 trust",
         extra_sections,
-    )
+    ))
 }
 
 #[cfg(any(test, feature = "internal-test-support"))]
@@ -281,22 +136,17 @@ where
     J: IntoIterator<Item = T>,
     T: AsRef<str>,
 {
-    let contents = render_runtime_test_config_document_toml(
-        ("cluster-a", scope, "node-a"),
-        (data_dir, None, None),
-        ["http://127.0.0.1:2379"],
+    let contents = render_runtime_test_config_toml(
+        data_dir,
+        scope,
         [
             ("postgres", "secret-password"),
             ("replicator", "secret-password"),
             ("rewinder", "secret-password"),
         ],
-        (hba_contents, ""),
-        std::iter::once(RUNTIME_TEST_BINARY_PATHS_TOML.to_string()).chain(
-            extra_sections
-                .into_iter()
-                .map(|section| section.as_ref().to_string()),
-        ),
-    )?;
+        hba_contents,
+        extra_sections,
+    );
     load_runtime_config_contents(contents.as_str())
 }
 
@@ -1052,8 +902,7 @@ where
 mod tests {
     use super::{
         load_operator_config_contents, load_runtime_config_contents, load_runtime_timing_values,
-        render_default_runtime_test_config_toml, render_operator_test_config_toml,
-        toml_path_source, toml_string_secret,
+        render_default_runtime_test_config_toml, toml_path_source, toml_string, toml_string_secret,
     };
     use crate::{config_v2::ConfigErrorV2, dev_support::test_fs::unique_test_dir};
     use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
@@ -1064,6 +913,51 @@ mod tests {
     const INLINE_RUNTIME_TLS_SECTION: &str = "[postgres.tls]\nmode = \"enabled\"\nidentity = { cert_chain = { content = \"CERT\" }, private_key = { content = \"KEY\" } }";
     #[rustfmt::skip]
     const ZERO_RUNTIME_DEFAULT_OVERRIDES: &str = "postgres.connect_timeout_s = 0\npostgres.network.listen_host = \"   \"\npostgres.network.listen_port = 0\nha.loop_interval_ms = 0\nha.lease_ttl_ms = 0\nprocess.timeouts.pg_rewind_ms = 0\nprocess.timeouts.bootstrap_ms = 0\nprocess.timeouts.fencing_ms = 0\nprocess.binaries.pg_ctl = \"/bin/true\"\nprocess.binaries.initdb = \"/bin/true\"\nprocess.binaries.pg_rewind = \"/bin/true\"\nprocess.binaries.pg_basebackup = \"/bin/true\"\nlogging.capture_subprocess_output = true\nlogging.postgres.enabled = true\nlogging.postgres.poll_interval_ms = 0\nlogging.postgres.cleanup.enabled = true\nlogging.postgres.cleanup.max_files = 0\nlogging.postgres.cleanup.max_age_seconds = 0\nlogging.postgres.cleanup.protect_recent_seconds = 0";
+
+    fn render_operator_test_config_toml<J, T>(
+        base_url: Option<&str>,
+        advertised_url: Option<&str>,
+        expected_transport: Option<&str>,
+        resolve_to: Option<std::net::SocketAddr>,
+        extra_sections: J,
+    ) -> Result<String, ConfigErrorV2>
+    where
+        J: IntoIterator<Item = T>,
+        T: AsRef<str>,
+    {
+        let expected_transport = expected_transport
+            .map(|transport| match transport {
+                "http" | "https" => Ok(format!("expected_transport = {transport:?}")),
+                other => Err(ConfigErrorV2::Validation {
+                    field: "test-support",
+                    message: format!("unsupported test transport expectation `{other}`"),
+                }),
+            })
+            .transpose()?;
+        let api_lines = [
+            base_url.map(|value| format!("base_url = {}", toml_string(value))),
+            advertised_url.map(|value| format!("advertised_url = {}", toml_string(value))),
+            expected_transport,
+            resolve_to
+                .map(|value| format!("resolve_to = {}", toml_string(value.to_string().as_str()))),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+        let extra_sections = extra_sections
+            .into_iter()
+            .map(|section| section.as_ref().trim().to_string())
+            .filter(|section| !section.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let extra_sections = if extra_sections.is_empty() {
+            String::new()
+        } else {
+            format!("\n{extra_sections}")
+        };
+        Ok(format!("[api]\n{api_lines}{extra_sections}\n"))
+    }
 
     #[test]
     fn load_runtime_config_and_timing_values_normalize_zero_runtime_fields() -> Result<(), String> {
